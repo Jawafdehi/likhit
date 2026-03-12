@@ -8,9 +8,13 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
 dependencies = [
+    "fonttools>=4.47.0,<5.0.0",
     "pymupdf>=1.27.2,<2.0.0",
     "pyyaml>=6.0,<7.0"
 ]
+
+[project.scripts]
+likhit = "likhit.cli:main"
 
 [tool.poetry]
 packages = [{ include = "likhit", from = "src" }]
