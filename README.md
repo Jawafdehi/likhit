@@ -1,6 +1,8 @@
 # likhit
 
-Extract structured and textual data from Nepali official documents.
+Extract Nepali official documents into structured Markdown.
+
+The current MVP supports CIAA press release PDFs and focuses on non-tabular text extraction with Kalimati font fixing.
 
 ## Installation
 
@@ -10,13 +12,7 @@ Extract structured and textual data from Nepali official documents.
 poetry install
 ```
 
-Activate the virtual environment and run the package tools with:
-
-```bash
-poetry shell
-```
-
-Or run commands directly:
+Run project commands with `poetry run`:
 
 ```bash
 poetry run pytest
@@ -24,17 +20,95 @@ poetry run ruff check .
 poetry run black --check .
 ```
 
-### With pip
+## How To Run
 
-Install the package from the repository root:
+Extract one press release:
 
 ```bash
-pip install .
+poetry run likhit extract path/to/pressrelease.pdf --type ciaa-press-release --out path/to/pressrelease.md
 ```
+
+Extract multiple press releases at once:
+
+```bash
+poetry run likhit extract path/to/pressrelease.pdf path/to/pressrelease-2.pdf --type ciaa-press-release --out-dir path/to/output-dir
+```
+
+Auto-generate output names from extracted metadata:
+
+```bash
+poetry run likhit extract path/to/pressrelease-1.pdf path/to/pressrelease-2.pdf --type ciaa-press-release
+```
+
+Limit extraction to specific pages:
+
+```bash
+poetry run likhit extract path/to/pressrelease.pdf --type ciaa-press-release --pages 1-2 --out path/to/pressrelease.md
+```
+
+
+## Current Scope
+
+- Supported document type: `ciaa-press-release`
+- Supported input format: PDF
+- Current output format: Markdown
+- Current content scope: non-tabular press release body
+- Batch mode: supported through a single `extract` command with one or many input files
+
+## Extraction Pipeline
+
+The current pipeline is:
+
+1. Open the PDF with `pymupdf`.
+2. Repair Kalimati font mappings with `fonttools`.
+3. Extract positioned text lines from the PDF.
+4. Normalize Devanagari ordering and token-level spacing.
+5. Detect CIAA press release metadata such as title and publication date.
+6. Remove header noise and stop before tabular/list sections.
+7. Merge visual lines back into prose paragraphs.
+8. Render the result as Markdown with YAML frontmatter.
 
 ## Project Layout
 
-- `src/likhit/` contains the Python package.
-- `tests/` contains the test suite.
-- `samples/` holds sample documents and fixtures.
+Top-level folders:
+
+- `src/likhit/` contains the library and CLI.
+- `tests/` contains unit and integration tests.
+- `samples/` contains sample PDFs used for development and tests.
 - `docs/` is reserved for project documentation.
+
+Key package files:
+
+- `src/likhit/cli.py`: CLI entry point for `likhit extract`
+- `src/likhit/core.py`: public extraction/rendering entry points
+- `src/likhit/errors.py`: project exceptions
+- `src/likhit/version.py`: version constant
+
+Package modules:
+
+- `src/likhit/models/`: enums and result models
+- `src/likhit/extractors/`: PDF extraction and Kalimati repair
+- `src/likhit/handlers/`: document-type-specific parsing
+- `src/likhit/renderers/`: Markdown rendering
+
+Key test files:
+
+- `tests/test_smoke.py`: package import sanity
+- `tests/test_models.py`: model validation
+- `tests/test_extraction.py`: extraction behavior and integration coverage
+- `tests/test_cli.py`: CLI behavior
+
+Current sample files:
+
+- `samples/pressrelease.pdf`
+- `samples/Press Release.pdf`
+- `samples/table.pdf`
+- `samples/my-table.pdf`
+- `samples/82.pdf`
+
+
+## Dependencies
+
+- `pymupdf` is required for PDF parsing.
+- `fonttools` is required for Kalimati font fixing.
+- `pyyaml` is used for Markdown frontmatter rendering.
