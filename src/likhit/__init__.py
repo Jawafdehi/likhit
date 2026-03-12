@@ -1,5 +1,6 @@
 """Likhit package."""
 
-__all__ = ["__version__"]
+from likhit.core import extract, extract_many
+from likhit.version import __version__
 
-__version__ = "0.1.0"
+__all__ = ["__version__", "extract", "extract_many"]
