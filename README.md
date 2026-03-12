@@ -37,7 +37,7 @@ poetry run likhit extract path/to/pressrelease.pdf path/to/pressrelease-2.pdf --
 Auto-generate output names from extracted metadata:
 
 ```bash
-poetry run likhit extract path/to/pressrelease-1.pdf path/to/pressrelease-2.pdf --type ciaa-press-release
+poetry run likhit extract path/to/pressrelease.pdf path/to/pressrelease-2.pdf --type ciaa-press-release
 ```
 
 Limit extraction to specific pages:
