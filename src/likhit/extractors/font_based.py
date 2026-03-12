@@ -15,6 +15,7 @@ from likhit.extractors.kalimati import (
     normalize_devanagari_spacing,
     reorder_devanagari,
 )
+from likhit.models import Table
 
 
 PAGE_RANGE_PATTERN = re.compile(r"^\d+(?:-\d+)?$")
@@ -76,9 +77,7 @@ class FontBasedStrategy(ExtractionStrategy):
     def extract_text(self, file_path: str, pages: str | None = None) -> RawDocument:
         path = Path(file_path)
         if path.suffix.lower() != ".pdf":
-            raise ValidationError(
-                "Unsupported file format. Please upload PDF or DOCX file"
-            )
+            raise ValidationError("Unsupported file format. Please upload a PDF file")
         if not path.exists():
             raise ValidationError(f"File not found: {file_path}")
 
@@ -166,8 +165,14 @@ class FontBasedStrategy(ExtractionStrategy):
                 raw_text=raw_text,
                 fragments=fragments,
             )
+        except (ExtractionError, ValidationError):
+            raise
+        except Exception as exc:
+            raise ExtractionError(
+                f"Failed to extract text from PDF: {path.name}"
+            ) from exc
         finally:
             doc.close()
 
-    def extract_tables(self, file_path: str) -> list[object]:
+    def extract_tables(self, file_path: str) -> list[Table]:
         return []

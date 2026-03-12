@@ -8,8 +8,10 @@ import pytest
 from likhit.errors import ExtractionError, ValidationError
 from likhit.core import derive_output_name, extract, render_markdown
 from likhit.extractors.base import RawDocument, TextFragment
+import likhit.extractors.font_based as font_based_module
 from likhit.extractors.kalimati import _get_font_correction_map
 from likhit.extractors.font_based import (
+    FontBasedStrategy,
     join_words_with_spacing,
     normalize_extracted_word,
     parse_page_range,
@@ -214,6 +216,43 @@ def test_handler_starts_new_paragraph_for_large_line_gap_within_same_margin() ->
     )
 
 
+def test_handler_starts_new_paragraph_on_page_transition() -> None:
+    handler = CIAAPressReleaseHandler()
+    raw_document = RawDocument(
+        paragraphs=[],
+        raw_text="",
+        fragments=[
+            TextFragment("मिति: २०८२।०१।१४", 1, 200, 100, 300, 120),
+            TextFragment("विषय: आरोपपत्र दायर गररएको ।", 1, 180, 130, 340, 150),
+            TextFragment("पहिलो पेजको अन्तिम लाइन", 1, 45, 700, 400, 720),
+            TextFragment("दोस्रो पेजको पहिलो लाइन", 2, 45, 120, 420, 140),
+        ],
+    )
+
+    result = handler.build_result(raw_document, {})
+
+    assert result.sections[0].body == "पहिलो पेजको अन्तिम लाइन\n\nदोस्रो पेजको पहिलो लाइन"
+
+
+def test_handler_extracts_date_only_from_date_line() -> None:
+    handler = CIAAPressReleaseHandler()
+    raw_document = RawDocument(
+        paragraphs=[],
+        raw_text="",
+        fragments=[
+            TextFragment("मिति: २०८२।०१।१४", 1, 200, 100, 300, 120),
+            TextFragment("विषय: आरोपपत्र दायर गररएको ।", 1, 180, 130, 340, 150),
+            TextFragment(
+                "मुख्य विवरणमा २०७९।०१।२९ को अर्को मिति उल्लेख छ।", 1, 45, 200, 420, 220
+            ),
+        ],
+    )
+
+    result = handler.build_result(raw_document, {})
+
+    assert result.publication_date == "2082-01-14"
+
+
 def test_derive_output_name_uses_publication_date() -> None:
     result = extract(str(PRESS_RELEASE), "ciaa-press-release")
 
@@ -233,6 +272,26 @@ def test_parse_page_range_rejects_invalid_formats() -> None:
         parse_page_range("1-", total_pages=3)
     with pytest.raises(ValidationError):
         parse_page_range("9", total_pages=3)
+
+
+def test_font_based_strategy_rejects_non_pdf_input(tmp_path: Path) -> None:
+    source = tmp_path / "document.docx"
+    source.write_text("not a pdf", encoding="utf-8")
+
+    with pytest.raises(ValidationError, match="Please upload a PDF file"):
+        FontBasedStrategy().extract_text(str(source))
+
+
+def test_font_based_strategy_wraps_unexpected_extraction_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_fix_kalimati_cmap(doc: object) -> tuple[object, bool]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(font_based_module, "fix_kalimati_cmap", fake_fix_kalimati_cmap)
+
+    with pytest.raises(ExtractionError, match="Failed to extract text from PDF"):
+        FontBasedStrategy().extract_text(str(PRESS_RELEASE))
 
 
 def test_kalimati_fix_requires_fonttools(monkeypatch: pytest.MonkeyPatch) -> None:

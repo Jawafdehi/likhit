@@ -5,6 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from likhit.models import Table
+
 
 @dataclass(slots=True)
 class TextFragment:
@@ -38,5 +40,5 @@ class ExtractionStrategy(ABC):
         """Extract unstructured text from a document."""
 
     @abstractmethod
-    def extract_tables(self, file_path: str) -> list[object]:
-        """Extract tables from a document."""
+    def extract_tables(self, file_path: str) -> list[Table]:
+        """Extract structured tables from a document."""

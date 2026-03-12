@@ -115,6 +115,8 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
 
     def _extract_date(self, paragraphs: Iterable[str]) -> str | None:
         for paragraph in paragraphs:
+            if not self._is_date_line(paragraph):
+                continue
             normalized = normalize_nepali_date(paragraph)
             if normalized:
                 return normalized
@@ -353,6 +355,15 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
                 continue
 
             if not current:
+                current.append(text)
+                previous_fragment = fragment
+                continue
+
+            if (
+                previous_fragment
+                and fragment.page_number != previous_fragment.page_number
+            ):
+                flush()
                 current.append(text)
                 previous_fragment = fragment
                 continue

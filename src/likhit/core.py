@@ -10,6 +10,10 @@ from likhit.handlers import CIAAPressReleaseHandler
 from likhit.models import DocumentType, ExtractionResult
 from likhit.renderers import MarkdownRenderer
 
+DOC_TYPE_PREFIXES = {
+    DocumentType.CIAA_PRESS_RELEASE: "pressrelease",
+}
+
 
 def _metadata_from_options(
     title: str | None,
@@ -62,7 +66,7 @@ def _slugify_for_filename(text: str) -> str:
 def derive_output_name(
     result: ExtractionResult, source_path: str, existing: set[str]
 ) -> str:
-    base_name = "pressrelease"
+    base_name = DOC_TYPE_PREFIXES.get(result.doc_type, "document")
     if result.publication_date:
         base_name = f"{base_name}-{result.publication_date}"
     else:

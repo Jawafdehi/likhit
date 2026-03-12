@@ -36,12 +36,16 @@ class Section:
     subsections: list["Section"] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.body, str):
+            raise ValidationError("Section body must be a string")
         if self.level < 1 or self.level > 6:
             raise ValidationError("Section level must be between 1 and 6")
         self.body = self.body.strip()
         if not self.body:
             raise ValidationError("Section body cannot be empty")
         if self.heading is not None:
+            if not isinstance(self.heading, str):
+                raise ValidationError("Section heading must be a string or None")
             self.heading = self.heading.strip() or None
 
 
@@ -69,6 +73,8 @@ class ExtractionResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.title, str):
+            raise ValidationError("ExtractionResult title must be a string")
         self.title = self.title.strip()
         if not self.title:
             raise ValidationError("ExtractionResult title cannot be empty")

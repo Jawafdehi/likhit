@@ -53,7 +53,7 @@ poetry run likhit extract path/to/pressrelease.pdf --type ciaa-press-release --p
 - Supported input format: PDF
 - Current output format: Markdown
 - Current content scope: non-tabular press release body
-- Batch mode: supported through a single `extract` command with one or many input files
+- Batch mode works through a single `extract` command with one or many input files
 
 ## Extraction Pipeline
 
@@ -72,10 +72,10 @@ The current pipeline is:
 
 Top-level folders:
 
-- `src/likhit/` contains the library and CLI.
-- `tests/` contains unit and integration tests.
-- `samples/` contains sample PDFs used for development and tests.
-- `docs/` is reserved for project documentation.
+- `src/likhit/` holds the library and CLI.
+- `tests/` includes unit and integration coverage.
+- `samples/` provides PDFs for development and test fixtures.
+- `docs/` remains reserved for project documentation.
 
 Key package files:
 
@@ -109,6 +109,6 @@ Current sample files:
 
 ## Dependencies
 
-- `pymupdf` is required for PDF parsing.
-- `fonttools` is required for Kalimati font fixing.
-- `pyyaml` is used for Markdown frontmatter rendering.
+- `pymupdf` handles PDF parsing.
+- `fonttools` powers Kalimati font fixing.
+- `pyyaml` renders Markdown frontmatter.

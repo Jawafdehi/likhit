@@ -253,13 +253,14 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
             return {}
 
         font_data = doc.xref_stream(int(fontfile_match.group(1)))
-        temp_path = os.path.join(tempfile.gettempdir(), "likhit_kalimati.ttf")
+        temp_path: str | None = None
         try:
-            with open(temp_path, "wb") as font_file:
-                font_file.write(font_data)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".ttf") as tmp:
+                tmp.write(font_data)
+                temp_path = tmp.name
             font = TTFont(temp_path)
         finally:
-            if os.path.exists(temp_path):
+            if temp_path and os.path.exists(temp_path):
                 os.unlink(temp_path)
 
         glyph_order = font.getGlyphOrder()
