@@ -59,7 +59,9 @@ def _slugify_for_filename(text: str) -> str:
     return slug[:48] or "document"
 
 
-def derive_output_name(result: ExtractionResult, source_path: str, existing: set[str]) -> str:
+def derive_output_name(
+    result: ExtractionResult, source_path: str, existing: set[str]
+) -> str:
     base_name = "pressrelease"
     if result.publication_date:
         base_name = f"{base_name}-{result.publication_date}"

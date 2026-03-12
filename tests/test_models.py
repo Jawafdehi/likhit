@@ -17,7 +17,9 @@ def test_document_type_parse_rejects_unknown_values() -> None:
 
 def test_extraction_result_requires_sections() -> None:
     with pytest.raises(ValidationError):
-        ExtractionResult(title="x", doc_type=DocumentType.CIAA_PRESS_RELEASE, sections=[])
+        ExtractionResult(
+            title="x", doc_type=DocumentType.CIAA_PRESS_RELEASE, sections=[]
+        )
 
 
 def test_section_rejects_empty_body() -> None:

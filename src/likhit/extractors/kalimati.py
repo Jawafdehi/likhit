@@ -15,11 +15,11 @@ from likhit.errors import ExtractionError
 
 logger = logging.getLogger(__name__)
 
-_PUA_REPH = "\uF000"
-_PUA_IKAR = "\uF001"
-_VIRAMA = "\u094D"
+_PUA_REPH = "\uf000"
+_PUA_IKAR = "\uf001"
+_VIRAMA = "\u094d"
 _RA = "\u0930"
-_IKAR = "\u093F"
+_IKAR = "\u093f"
 
 
 def _is_devanagari_consonant(char: str) -> bool:
@@ -27,7 +27,7 @@ def _is_devanagari_consonant(char: str) -> bool:
 
 
 def _is_devanagari_matra(char: str) -> bool:
-    return "\u093E" <= char <= "\u094C" or char in {"\u0962", "\u0963"}
+    return "\u093e" <= char <= "\u094c" or char in {"\u0962", "\u0963"}
 
 
 def _parse_tounicode_cmap(cmap_bytes: bytes) -> dict[int, str]:
@@ -68,9 +68,7 @@ def _parse_tounicode_cmap(cmap_bytes: bytes) -> dict[int, str]:
                 if chars:
                     mapping[gid] = chars
 
-        cleaned = re.sub(
-            r"<[^>]+>\s*<[^>]+>\s*\[.*?\]", "", content, flags=re.DOTALL
-        )
+        cleaned = re.sub(r"<[^>]+>\s*<[^>]+>\s*\[.*?\]", "", content, flags=re.DOTALL)
         for match in re.finditer(
             r"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>", cleaned
         ):
@@ -101,7 +99,9 @@ def _build_cmap_stream(mapping: dict[int, str]) -> bytes:
         lines.append(f"{len(chunk)} beginbfchar")
         for gid, unicode_value in chunk:
             hex_gid = f"<{gid:04X}>"
-            hex_unicode = "<" + "".join(f"{ord(char):04X}" for char in unicode_value) + ">"
+            hex_unicode = (
+                "<" + "".join(f"{ord(char):04X}" for char in unicode_value) + ">"
+            )
             lines.append(f"{hex_gid} {hex_unicode}")
         lines.append("endbfchar")
     lines.extend(
@@ -147,7 +147,7 @@ def _analyze_gsub(
                     elif features & {"blwf"}:
                         derived[to_gid] = _VIRAMA + from_unicode
                     elif features & {"nukt"}:
-                        derived[to_gid] = from_unicode + "\u093C"
+                        derived[to_gid] = from_unicode + "\u093c"
                     else:
                         derived[to_gid] = from_unicode
 
@@ -225,6 +225,7 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
         )
 
     try:
+
         def _follow_xref(xref: int) -> int:
             obj = doc.xref_object(xref, compressed=False).strip()
             if obj.startswith("["):
@@ -286,6 +287,7 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
 
 def _get_fontfile_xref(doc: fitz.Document, type0_xref: int) -> Optional[int]:
     try:
+
         def _follow_xref(xref: int) -> int:
             obj = doc.xref_object(xref, compressed=False).strip()
             if obj.startswith("["):
@@ -436,7 +438,7 @@ def reorder_devanagari(text: str) -> str:
             cursor = index - 1
             while cursor >= 0 and (
                 _is_devanagari_matra(chars[cursor])
-                or chars[cursor] in "\u0901\u0902\u0903\u094D"
+                or chars[cursor] in "\u0901\u0902\u0903\u094d"
             ):
                 cursor -= 1
             while (

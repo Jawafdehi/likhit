@@ -77,8 +77,7 @@ def test_handler_merges_continuation_lines_within_a_paragraph() -> None:
     result = handler.build_result(raw_document, {})
 
     assert (
-        result.sections[0].body
-        == "पहिलो अनुच्छेदको पहिलो लाइन पहिलो अनुच्छेदको दोस्रो लाइन"
+        result.sections[0].body == "पहिलो अनुच्छेदको पहिलो लाइन पहिलो अनुच्छेदको दोस्रो लाइन"
     )
 
 
@@ -127,9 +126,7 @@ def test_handler_preserves_body_text_from_inline_subject_fragment() -> None:
     result = handler.build_result(raw_document, {})
 
     assert result.title == "आरोपपत्र दायर गररएको"
-    assert "यो पहिलो अनुच्छेदको सुरुवात हो। अर्को वाक्य यहींबाट चल्छ।" in result.sections[
-        0
-    ].body
+    assert "यो पहिलो अनुच्छेदको सुरुवात हो। अर्को वाक्य यहींबाट चल्छ।" in result.sections[0].body
 
 
 def test_handler_does_not_split_subject_on_plain_periods() -> None:
@@ -150,14 +147,18 @@ def test_handler_does_not_split_subject_on_plain_periods() -> None:
     assert "मुख्य सामग्री यहाँबाट सुरु हुन्छ।" in result.sections[0].body
 
 
-def test_handler_preserves_body_text_when_subject_body_has_no_space_after_punctuation() -> None:
+def test_handler_preserves_body_text_when_subject_body_has_no_space_after_punctuation() -> (
+    None
+):
     handler = CIAAPressReleaseHandler()
     raw_document = RawDocument(
         paragraphs=[],
         raw_text="",
         fragments=[
             TextFragment("मिति: २०८२।०१।१४", 1, 200, 100, 300, 120),
-            TextFragment("विषय: आरोपपत्र दायर गररएको।यो मुख्य भाग हो।", 1, 180, 130, 430, 150),
+            TextFragment(
+                "विषय: आरोपपत्र दायर गररएको।यो मुख्य भाग हो।", 1, 180, 130, 430, 150
+            ),
         ],
     )
 
@@ -286,6 +287,7 @@ def test_handler_excludes_footer_signature_from_non_tabular_body() -> None:
     result = handler.build_result(raw_document, {})
 
     assert result.sections[0].body == "मुख्य अनुच्छेद"
+
 
 def test_handler_raises_when_non_tabular_body_starts_at_boundary() -> None:
     handler = CIAAPressReleaseHandler()

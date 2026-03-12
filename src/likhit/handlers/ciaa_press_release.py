@@ -17,7 +17,9 @@ NEPALI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 
 
 def normalize_nepali_date(text: str) -> str | None:
-    match = re.search(r"([०-९0-9]{4})[।./-]\s*([०-९0-9]{1,2})[।./-]\s*([०-९0-9]{1,2})", text)
+    match = re.search(
+        r"([०-९0-9]{4})[।./-]\s*([०-९0-9]{1,2})[।./-]\s*([०-९0-9]{1,2})", text
+    )
     if not match:
         return None
     year = match.group(1).translate(NEPALI_DIGITS).zfill(4)
@@ -151,7 +153,9 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
             fragment for fragment in fragments if fragment.page_number == first_page
         ]
         page_left = min((fragment.x0 for fragment in first_page_fragments), default=0.0)
-        page_right = max((fragment.x1 for fragment in first_page_fragments), default=0.0)
+        page_right = max(
+            (fragment.x1 for fragment in first_page_fragments), default=0.0
+        )
 
         subject_index = next(
             (
@@ -182,13 +186,10 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
                 continue
 
             text = fragment.text.strip()
-            is_header_meta = (
-                fragment.y0 <= 220
-                and (
-                    self._is_date_line(text)
-                    or self._is_press_release_line(text)
-                    or self._looks_centered(fragment, page_left, page_right)
-                )
+            is_header_meta = fragment.y0 <= 220 and (
+                self._is_date_line(text)
+                or self._is_press_release_line(text)
+                or self._looks_centered(fragment, page_left, page_right)
             )
             if is_header_meta:
                 continue
@@ -202,7 +203,8 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
         return bool(
             re.match(r"^(?:देहाय[:：]?)$", text)
             or re.match(r"^(?:सि\.?नं|सि\.? नं)", text)
-            or "नामथर" in text and "कसुर" in text
+            or "नामथर" in text
+            and "कसुर" in text
         )
 
     def _is_footer_boundary(self, text: str) -> bool:
@@ -214,7 +216,9 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
         prose_fragments: list[TextFragment] = []
         for fragment in fragments:
             stripped = fragment.text.strip()
-            if self._is_tabular_boundary(stripped) or self._is_footer_boundary(stripped):
+            if self._is_tabular_boundary(stripped) or self._is_footer_boundary(
+                stripped
+            ):
                 break
             prose_fragments.append(fragment)
         return prose_fragments
@@ -291,7 +295,9 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
                 return None
 
             bucket_size = 4.0
-            bucketed = [round(fragment.x0 / bucket_size) * bucket_size for fragment in fragments]
+            bucketed = [
+                round(fragment.x0 / bucket_size) * bucket_size for fragment in fragments
+            ]
             dominant_bucket, _count = Counter(bucketed).most_common(1)[0]
             dominant_values = [
                 fragment.x0
@@ -301,8 +307,10 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
                 )
                 < 0.01
             ]
-            base_margin = median(dominant_values) if dominant_values else min(
-                fragment.x0 for fragment in fragments
+            base_margin = (
+                median(dominant_values)
+                if dominant_values
+                else min(fragment.x0 for fragment in fragments)
             )
             candidate_margins = sorted(
                 {
@@ -316,7 +324,9 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
             nearest_indent = candidate_margins[0]
             return base_margin + max(8.0, (nearest_indent - base_margin) / 2)
 
-        typical_line_height = median(fragment.y1 - fragment.y0 for fragment in fragments)
+        typical_line_height = median(
+            fragment.y1 - fragment.y0 for fragment in fragments
+        )
         indent_threshold = paragraph_indent_threshold()
 
         def starts_indented_paragraph(fragment: TextFragment) -> bool:
