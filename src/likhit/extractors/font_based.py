@@ -214,6 +214,6 @@ class FontBasedStrategy(ExtractionStrategy):
             return text
 
         if strategy == "broken_cmap" and needs_reorder:
-            text = normalize_devanagari_spacing(text)
             text = reorder_devanagari(text)
+            text = normalize_devanagari_spacing(text)
         return text
