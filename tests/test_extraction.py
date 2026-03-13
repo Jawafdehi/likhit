@@ -8,6 +8,7 @@ import pytest
 from likhit.errors import ExtractionError, ValidationError
 from likhit.core import derive_output_name, extract, render_markdown
 from likhit.extractors.base import RawDocument, TextFragment
+from likhit.extractors.font_classifier import classify_font
 import likhit.extractors.font_based as font_based_module
 from likhit.extractors.kalimati import _get_font_correction_map
 from likhit.extractors.font_based import (
@@ -311,12 +312,73 @@ def test_parse_page_range_rejects_invalid_formats() -> None:
         parse_page_range("9", total_pages=3)
 
 
+def test_classify_font_detects_legacy_broken_and_correct_fonts() -> None:
+    assert classify_font("ABCDEF+Preeti", "Type0") == "legacy_remap"
+    assert classify_font("ABCDEF+Kalimati", "Type0") == "broken_cmap"
+    assert classify_font("Helvetica", "Type1") == "correct"
+
+
 def test_font_based_strategy_rejects_non_pdf_input(tmp_path: Path) -> None:
     source = tmp_path / "document.docx"
     source.write_text("not a pdf", encoding="utf-8")
 
     with pytest.raises(ValidationError, match="Please upload a PDF file"):
         FontBasedStrategy().extract_text(str(source))
+
+
+def test_font_based_strategy_auto_detects_and_converts_legacy_fonts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "legacy.pdf"
+    source.write_bytes(b"%PDF-1.4")
+
+    class FakePage:
+        def get_fonts(self, full: bool = True) -> list[tuple[object, ...]]:
+            del full
+            return [(1, "ttf", "Type0", "ABCDEF+Preeti", "Identity-H")]
+
+        def get_text(self, mode: str, flags: int | None = None) -> dict[str, object]:
+            assert mode == "dict"
+            del flags
+            return {
+                "blocks": [
+                    {
+                        "lines": [
+                            {
+                                "spans": [
+                                    {
+                                        "font": "ABCDEF+Preeti",
+                                        "text": "abc",
+                                        "bbox": (10.0, 20.0, 40.0, 35.0),
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+
+    class FakeDoc:
+        page_count = 1
+
+        def __getitem__(self, index: int) -> FakePage:
+            assert index == 0
+            return FakePage()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(font_based_module.fitz, "open", lambda _: FakeDoc())
+    monkeypatch.setattr(
+        font_based_module,
+        "get_converter",
+        lambda _font_name: (lambda text: f"converted:{text}"),
+    )
+
+    result = FontBasedStrategy().extract_text(str(source))
+
+    assert result.raw_text == "converted:abc"
+    assert result.fragments[0].text == "converted:abc"
 
 
 def test_font_based_strategy_wraps_unexpected_extraction_failures(
