@@ -17,9 +17,19 @@ from likhit.extractors.font_based import (
     normalize_extracted_word,
     parse_page_range,
 )
+from likhit.handlers.content_blocks import build_content_blocks
 from likhit.handlers.ciaa_press_release import CIAAPressReleaseHandler
 from likhit.handlers.kanun_patrika import KanunPatrikaHandler
-from likhit.models import DocumentType
+from likhit.models import (
+    DocumentType,
+    ExtractionResult,
+    ParagraphBlock,
+    Section,
+    Table,
+    TableBlock,
+    TableCell,
+    TableRegion,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +46,8 @@ def _sample_path(*candidates: str) -> Path:
 PRESS_RELEASE = _sample_path("pressrelease.pdf")
 PRESS_RELEASE_ALT = _sample_path("Press Release.pdf", "Press_Release.pdf")
 KANUN_PATRIKA = _sample_path("kanunpatrika.pdf")
+TABLE_SAMPLE = _sample_path("table.pdf")
+MERGED_TABLE_SAMPLE = _sample_path("my-table.pdf")
 
 
 @pytest.mark.parametrize(
@@ -74,6 +86,20 @@ def test_render_markdown_does_not_break_mid_paragraph_for_press_release_alt() ->
     assert "स्पष्ट\n\nआधार" not in markdown
 
 
+def test_render_markdown_inlines_detected_press_release_tables() -> None:
+    result = extract(str(PRESS_RELEASE_ALT), "ciaa-press-release")
+
+    markdown = render_markdown(result)
+
+    assert "देहाय:" in markdown
+    assert markdown.count("देहाय:") == 1
+    assert "**1.**" in markdown
+    assert "- **नामथर, पद र कार्यालय:**" in markdown
+    assert "- **बिगो रु.:**" in markdown
+    assert "- **कसुर तथा सजायको मागदाबी:**" in markdown
+    assert "<details>" not in markdown
+
+
 def test_extract_kanun_patrika_sample() -> None:
     result = extract(str(KANUN_PATRIKA), DocumentType.KANUN_PATRIKA)
 
@@ -93,6 +119,196 @@ def test_render_markdown_for_kanun_patrika_includes_doc_type() -> None:
 
     assert "doc_type: kanun-patrika" in markdown
     assert "नेपाल कानून पत्रिका" in markdown
+
+
+def test_font_based_strategy_extracts_and_merges_continuation_tables() -> None:
+    raw_document = FontBasedStrategy().extract_text(str(TABLE_SAMPLE))
+
+    assert len(raw_document.tables) == 1
+    table = raw_document.tables[0]
+    assert table.row_count == 45
+    assert table.col_count == 5
+    assert len(table.regions) == 3
+    assert table.cells[0].text == "सि.नं."
+    assert any("15,000" in cell.text for cell in table.cells)
+
+
+def test_font_based_strategy_preserves_merged_cells() -> None:
+    raw_document = FontBasedStrategy().extract_text(str(MERGED_TABLE_SAMPLE))
+
+    assert raw_document.tables
+    table = raw_document.tables[0]
+    assert table.caption == "तालका २.१९"
+    assert any(cell.colspan > 1 for cell in table.cells)
+    assert any(cell.rowspan > 1 for cell in table.cells)
+    assert any(
+        cell.row == 0 and cell.col == 0 and cell.colspan == 16 for cell in table.cells
+    )
+
+
+def test_render_markdown_renders_my_table_as_grouped_records() -> None:
+    result = extract(str(MERGED_TABLE_SAMPLE), DocumentType.CIAA_PRESS_RELEASE)
+
+    markdown = render_markdown(result)
+
+    assert "तालिका २.१९" in markdown
+    assert "तालका २.१९" not in markdown
+    assert "<table>" not in markdown
+    assert "**1**" in markdown or "**1.**" in markdown
+    assert "- **आयोगको निर्णय:**" in markdown
+    assert "- **प्रतिवादीको नाम, पद र कार्यालय:**" in markdown
+    assert "**2 (जारी)**" in markdown
+    assert "50 परिच्छेद" not in markdown
+
+
+def test_build_content_blocks_inserts_tables_inline_without_duplicate_fragments() -> (
+    None
+):
+    def build_paragraphs(fragments: list[TextFragment]) -> list[str]:
+        return [" ".join(fragment.text for fragment in fragments)] if fragments else []
+
+    blocks = build_content_blocks(
+        [
+            TextFragment("पहिले", 1, 10, 10, 30, 20),
+            TextFragment("तालिका कोष", 1, 20, 40, 80, 55),
+            TextFragment("अर्को कोष", 1, 90, 40, 150, 55),
+            TextFragment("पछि", 1, 10, 90, 30, 100),
+        ],
+        [
+            Table(
+                row_count=1,
+                col_count=2,
+                cells=[
+                    TableCell(row=0, col=0, text="तालिका कोष"),
+                    TableCell(row=0, col=1, text="अर्को कोष"),
+                ],
+                regions=[TableRegion(page_number=1, x0=0, y0=35, x1=180, y1=60)],
+            )
+        ],
+        build_paragraphs,
+    )
+
+    assert [type(block).__name__ for block in blocks] == [
+        "ParagraphBlock",
+        "TableBlock",
+        "ParagraphBlock",
+    ]
+    assert isinstance(blocks[0], ParagraphBlock)
+    assert blocks[0].text == "पहिले"
+    assert isinstance(blocks[1], TableBlock)
+    assert blocks[1].table.cells[0].text == "तालिका कोष"
+    assert isinstance(blocks[2], ParagraphBlock)
+    assert blocks[2].text == "पछि"
+
+
+def test_render_markdown_renders_simple_tables_as_records() -> None:
+    table = Table(
+        row_count=2,
+        col_count=2,
+        cells=[
+            TableCell(row=0, col=0, text="शीर्षक १"),
+            TableCell(row=0, col=1, text="शीर्षक २"),
+            TableCell(row=1, col=0, text="बायाँ"),
+            TableCell(row=1, col=1, text="दायाँ"),
+        ],
+        caption="तालिका १",
+        regions=[TableRegion(page_number=1, x0=0, y0=0, x1=100, y1=50)],
+    )
+    result = ExtractionResult(
+        title="तालिका नमूना",
+        doc_type=DocumentType.CIAA_PRESS_RELEASE,
+        sections=[
+            Section(
+                heading=None,
+                body="पहिले\n\nतालिका १\n\nशीर्षक १\tशीर्षक २\nबायाँ\tदायाँ\n\nपछि",
+                blocks=[
+                    ParagraphBlock(text="पहिले"),
+                    TableBlock(table=table),
+                    ParagraphBlock(text="पछि"),
+                ],
+            )
+        ],
+    )
+
+    markdown = render_markdown(result)
+
+    assert "तालिका १" in markdown
+    assert "**पंक्ति 1**" in markdown
+    assert "- **शीर्षक १:** बायाँ" in markdown
+    assert "- **शीर्षक २:** दायाँ" in markdown
+    assert "<table>" not in markdown
+
+
+def test_render_markdown_renders_merged_tables_as_records() -> None:
+    table = Table(
+        row_count=2,
+        col_count=2,
+        cells=[
+            TableCell(row=0, col=0, text="शीर्षक", colspan=2),
+            TableCell(row=1, col=0, text="बायाँ"),
+            TableCell(row=1, col=1, text="दायाँ"),
+        ],
+        caption="तालिका १",
+        regions=[TableRegion(page_number=1, x0=0, y0=0, x1=100, y1=50)],
+    )
+    result = ExtractionResult(
+        title="तालिका नमूना",
+        doc_type=DocumentType.CIAA_PRESS_RELEASE,
+        sections=[
+            Section(
+                heading=None,
+                body="पहिले\n\nतालिका १\nबायाँ\tदायाँ\n\nपछि",
+                blocks=[
+                    ParagraphBlock(text="पहिले"),
+                    TableBlock(table=table),
+                    ParagraphBlock(text="पछि"),
+                ],
+            )
+        ],
+    )
+
+    markdown = render_markdown(result)
+
+    assert "तालिका १" in markdown
+    assert "**पंक्ति 1**" in markdown
+    assert "बायाँ" in markdown
+    assert "दायाँ" in markdown
+    assert "<table>" not in markdown
+    assert "पहिले" in markdown
+    assert "पछि" in markdown
+
+
+def test_render_markdown_merges_continuation_rows_in_record_view() -> None:
+    table = Table(
+        row_count=3,
+        col_count=3,
+        cells=[
+            TableCell(row=0, col=0, text="सि.नं"),
+            TableCell(row=0, col=1, text="नाम"),
+            TableCell(row=0, col=2, text="मागदाबी"),
+            TableCell(row=1, col=0, text="1."),
+            TableCell(row=1, col=1, text="पहिलो भाग"),
+            TableCell(row=1, col=2, text="पहिलो मागदाबी"),
+            TableCell(row=2, col=1, text="दोस्रो भाग"),
+            TableCell(row=2, col=2, text="थप विवरण"),
+        ],
+        caption="देहाय:",
+        regions=[TableRegion(page_number=1, x0=0, y0=0, x1=100, y1=80)],
+    )
+    result = ExtractionResult(
+        title="तालिका नमूना",
+        doc_type=DocumentType.CIAA_PRESS_RELEASE,
+        sections=[
+            Section(heading=None, body="देहाय:", blocks=[TableBlock(table=table)])
+        ],
+    )
+
+    markdown = render_markdown(result)
+
+    assert markdown.count("**1.**") == 1
+    assert "- **नाम:** पहिलो भाग दोस्रो भाग" in markdown
+    assert "- **मागदाबी:** पहिलो मागदाबी थप विवरण" in markdown
+    assert "<details>" not in markdown
 
 
 def test_handler_merges_continuation_lines_within_a_paragraph() -> None:

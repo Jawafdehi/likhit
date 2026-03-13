@@ -11,6 +11,7 @@ from likhit.errors import ExtractionError
 from likhit.extractors.base import RawDocument, TextFragment
 from likhit.extractors.font_based import FontBasedStrategy
 from likhit.handlers.base import DocumentTypeHandler
+from likhit.handlers.content_blocks import blocks_to_text, build_content_blocks
 from likhit.models import DocumentType, ExtractionResult, Section
 
 NEPALI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
@@ -70,8 +71,12 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
         body_fragments = fragments
         if not body_fragments:
             raise ExtractionError("No body text content found in document")
-        body_paragraphs = self._merge_body_lines(body_fragments)
-        body = "\n\n".join(body_paragraphs).strip()
+        blocks = build_content_blocks(
+            body_fragments,
+            raw_document.tables,
+            self._merge_body_lines,
+        )
+        body = blocks_to_text(blocks).strip()
         section_heading = title if title != "प्रेस विज्ञप्ति" else None
 
         result_metadata = {
@@ -81,7 +86,7 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
         if metadata.get("source_url"):
             result_metadata["source_url"] = metadata["source_url"]
 
-        section = Section(heading=section_heading, body=body, level=1)
+        section = Section(heading=section_heading, body=body, level=1, blocks=blocks)
         return ExtractionResult(
             title=title,
             doc_type=DocumentType.CIAA_PRESS_RELEASE,

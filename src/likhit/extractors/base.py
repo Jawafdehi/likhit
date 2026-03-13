@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from likhit.models import Table
 
@@ -30,6 +30,7 @@ class RawDocument:
     paragraphs: list[str]
     raw_text: str
     fragments: list[TextFragment]
+    tables: list[Table] = field(default_factory=list)
 
 
 class ExtractionStrategy(ABC):
