@@ -59,8 +59,6 @@ def test_render_markdown_does_not_break_mid_paragraph_for_press_release_alt() ->
     markdown = render_markdown(result)
 
     assert "स्पष्ट\n\nआधार" not in markdown
-    assert "\n\nदेहाय:" not in markdown
-    assert "\n\nसि.नं" not in markdown
 
 
 def test_handler_merges_continuation_lines_within_a_paragraph() -> None:
@@ -308,7 +306,7 @@ def test_kalimati_fix_requires_fonttools(monkeypatch: pytest.MonkeyPatch) -> Non
         _get_font_correction_map(None, 1)  # type: ignore[arg-type]
 
 
-def test_handler_keeps_numbered_prose_before_explicit_table_boundary() -> None:
+def test_handler_keeps_table_content_after_numbered_prose() -> None:
     handler = CIAAPressReleaseHandler()
     raw_document = RawDocument(
         paragraphs=[],
@@ -326,10 +324,10 @@ def test_handler_keeps_numbered_prose_before_explicit_table_boundary() -> None:
     result = handler.build_result(raw_document, {})
 
     assert "1. पहिलो बुँदा यसको व्याख्या" in result.sections[0].body
-    assert "देहाय:" not in result.sections[0].body
+    assert "देहाय: सि.नं नामथर" in result.sections[0].body
 
 
-def test_handler_excludes_footer_signature_from_non_tabular_body() -> None:
+def test_handler_keeps_footer_signature_in_body() -> None:
     handler = CIAAPressReleaseHandler()
     raw_document = RawDocument(
         paragraphs=[],
@@ -345,10 +343,12 @@ def test_handler_excludes_footer_signature_from_non_tabular_body() -> None:
 
     result = handler.build_result(raw_document, {})
 
-    assert result.sections[0].body == "मुख्य अनुच्छेद"
+    assert result.sections[0].body == (
+        "मुख्य अनुच्छेद\n\nप्रवक्ता\n\nराजेन्द्र कुमार पौडेल"
+    )
 
 
-def test_handler_raises_when_non_tabular_body_starts_at_boundary() -> None:
+def test_handler_keeps_body_when_it_starts_with_table_content() -> None:
     handler = CIAAPressReleaseHandler()
     raw_document = RawDocument(
         paragraphs=[],
@@ -361,8 +361,9 @@ def test_handler_raises_when_non_tabular_body_starts_at_boundary() -> None:
         ],
     )
 
-    with pytest.raises(ExtractionError, match="No non-tabular text content found"):
-        handler.build_result(raw_document, {})
+    result = handler.build_result(raw_document, {})
+
+    assert result.sections[0].body == "देहाय: सि.नं"
 
 
 def test_join_words_with_spacing_preserves_word_boundary() -> None:

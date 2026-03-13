@@ -68,9 +68,8 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
         )
 
         body_fragments = self._strip_header(fragments)
-        body_fragments = self._truncate_before_tabular_section(body_fragments)
         if not body_fragments:
-            raise ExtractionError("No non-tabular text content found in document")
+            raise ExtractionError("No body text content found in document")
         body_paragraphs = self._merge_body_lines(body_fragments)
         body = "\n\n".join(body_paragraphs).strip()
         section_heading = title if title != "प्रेस विज्ञप्ति" else None
@@ -200,30 +199,6 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
             kept.append(fragment)
 
         return kept or fragments
-
-    def _is_tabular_boundary(self, text: str) -> bool:
-        return bool(
-            re.match(r"^(?:देहाय[:：]?)$", text)
-            or re.match(r"^(?:सि\.?नं|सि\.? नं)", text)
-            or "नामथर" in text
-            and "कसुर" in text
-        )
-
-    def _is_footer_boundary(self, text: str) -> bool:
-        return text in {"प्रवक्ता", "सूचना अधिकारी"} or text.endswith("प्रवक्ता")
-
-    def _truncate_before_tabular_section(
-        self, fragments: list[TextFragment]
-    ) -> list[TextFragment]:
-        prose_fragments: list[TextFragment] = []
-        for fragment in fragments:
-            stripped = fragment.text.strip()
-            if self._is_tabular_boundary(stripped) or self._is_footer_boundary(
-                stripped
-            ):
-                break
-            prose_fragments.append(fragment)
-        return prose_fragments
 
     def _split_subject_remainder(self, remainder: str) -> tuple[str, str]:
         title_text = remainder.strip()
