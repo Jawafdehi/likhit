@@ -75,7 +75,7 @@ class KanunPatrikaHandler(DocumentTypeHandler):
         for page_number in sorted(by_page):
             page_fragments = by_page[page_number]
             ordered_fragments = self._order_page_fragments(page_fragments)
-            paragraphs.extend(_clean_paragraph(fragment.text) for fragment in ordered_fragments)
+            paragraphs.extend(self._merge_fragments_to_paragraphs(ordered_fragments))
 
         return paragraphs
 
@@ -115,6 +115,74 @@ class KanunPatrikaHandler(DocumentTypeHandler):
         right = sorted(right, key=lambda fragment: (fragment.y0, fragment.x0))
         centered = sorted(centered, key=lambda fragment: (fragment.y0, fragment.x0))
         return header + left + right + centered
+
+    def _merge_fragments_to_paragraphs(
+        self, fragments: list[TextFragment]
+    ) -> list[str]:
+        if not fragments:
+            return []
+
+        typical_line_height = min(
+            (
+                sorted(fragment.y1 - fragment.y0 for fragment in fragments)[
+                    len(fragments) // 2
+                ]
+            ),
+            24.0,
+        )
+        line_merge_threshold = max(1.5, typical_line_height * 0.18)
+        paragraph_gap_threshold = max(8.0, typical_line_height * 0.7)
+
+        merged_lines: list[tuple[float, float, str]] = []
+        current_line: list[TextFragment] = []
+
+        def flush_line() -> None:
+            if not current_line:
+                return
+            ordered_line = sorted(current_line, key=lambda fragment: fragment.x0)
+            y0 = min(fragment.y0 for fragment in ordered_line)
+            y1 = max(fragment.y1 for fragment in ordered_line)
+            text = " ".join(
+                _clean_paragraph(fragment.text) for fragment in ordered_line if _clean_paragraph(fragment.text)
+            ).strip()
+            if text:
+                merged_lines.append((y0, y1, text))
+            current_line.clear()
+
+        for fragment in fragments:
+            if not current_line:
+                current_line.append(fragment)
+                continue
+
+            current_y0 = min(item.y0 for item in current_line)
+            if abs(fragment.y0 - current_y0) <= line_merge_threshold:
+                current_line.append(fragment)
+                continue
+
+            flush_line()
+            current_line.append(fragment)
+
+        flush_line()
+
+        paragraphs: list[str] = []
+        current_paragraph: list[str] = []
+        previous_y1: float | None = None
+
+        def flush_paragraph() -> None:
+            if current_paragraph:
+                paragraphs.append("\n".join(current_paragraph).strip())
+                current_paragraph.clear()
+
+        for y0, y1, text in merged_lines:
+            if previous_y1 is not None:
+                gap = y0 - previous_y1
+                if gap > paragraph_gap_threshold or gap < -line_merge_threshold:
+                    flush_paragraph()
+            current_paragraph.append(text)
+            previous_y1 = y1
+
+        flush_paragraph()
+        return paragraphs
 
     def _is_noise_only(self, text: str) -> bool:
         compact = text.replace(" ", "")

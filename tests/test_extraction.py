@@ -224,7 +224,30 @@ def test_kanun_patrika_handler_orders_header_then_left_then_right_columns() -> N
     assert result.title == "पृष्ठ शीर्षक"
     assert (
         result.sections[0].body
-        == "पृष्ठ शीर्षक\n\nबायाँ १\n\nबायाँ २\n\nदायाँ १\n\nदायाँ २\n\n664"
+        == "पृष्ठ शीर्षक\n\nबायाँ १\nबायाँ २\n\nदायाँ १\nदायाँ २\n\n664"
+    )
+
+
+def test_kanun_patrika_handler_merges_same_line_fragments_and_nearby_lines() -> None:
+    handler = KanunPatrikaHandler()
+    raw_document = RawDocument(
+        paragraphs=[],
+        raw_text="",
+        fragments=[
+            TextFragment("शीर्षक", 1, 250, 50, 320, 65),
+            TextFragment("समेतसंग", 1, 130, 280, 175, 296),
+            TextFragment("वाझिएका", 1, 189, 280, 237, 296),
+            TextFragment("कानूनलाई", 1, 251, 280, 305, 296),
+            TextFragment("समानताको सिद्धान्त अनुसार कानून", 1, 130, 298, 300, 314),
+            TextFragment("निर्माण गर्न परमादेश समेत जारी", 1, 130, 314, 300, 330),
+        ],
+    )
+
+    result = handler.build_result(raw_document, {})
+
+    assert (
+        result.sections[0].body
+        == "शीर्षक\n\nसमेतसंग वाझिएका कानूनलाई\nसमानताको सिद्धान्त अनुसार कानून\nनिर्माण गर्न परमादेश समेत जारी"
     )
 
 
