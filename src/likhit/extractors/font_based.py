@@ -21,6 +21,7 @@ from likhit.models import Table
 
 
 PAGE_RANGE_PATTERN = re.compile(r"^\d+(?:-\d+)?$")
+SPAN_GAP_THRESHOLD = 0.75
 
 
 def parse_page_range(spec: str, total_pages: int) -> tuple[int, int]:
@@ -63,6 +64,33 @@ def join_words_with_spacing(words: list[str]) -> str:
     """Reconstruct a line from extracted word tokens."""
 
     return " ".join(word.strip() for word in words if word.strip())
+
+
+def join_spans_with_layout(
+    spans: list[tuple[float, float, float, float, str]],
+) -> str:
+    """Reconstruct a line from positioned spans without forcing spaces inside words."""
+
+    if not spans:
+        return ""
+
+    parts: list[str] = []
+    previous_x1: float | None = None
+    for x0, _y0, x1, _y1, text in spans:
+        if not text:
+            continue
+        if (
+            previous_x1 is not None
+            and x0 - previous_x1 > SPAN_GAP_THRESHOLD
+            and parts
+            and not parts[-1].endswith((" ", "\t"))
+            and not text.startswith((" ", "\t"))
+        ):
+            parts.append(" ")
+        parts.append(text)
+        previous_x1 = x1
+
+    return "".join(parts)
 
 
 def normalize_extracted_word(text: str) -> str:
@@ -122,7 +150,7 @@ class FontBasedStrategy(ExtractionStrategy):
                                 font_strategies,
                                 needs_reorder,
                             )
-                            if not text.strip():
+                            if not text:
                                 continue
                             x0, y0, x1, y1 = span["bbox"]
                             lines_by_key[(block_number, line_number)].append(
@@ -144,9 +172,7 @@ class FontBasedStrategy(ExtractionStrategy):
                     ),
                 ):
                     ordered_words = sorted(line_words, key=lambda piece: piece[0])
-                    line_text = join_words_with_spacing(
-                        [piece[4] for piece in ordered_words]
-                    )
+                    line_text = join_spans_with_layout(ordered_words)
                     paragraph = normalize_press_release_paragraph(line_text)
                     if not paragraph:
                         previous_y1 = None

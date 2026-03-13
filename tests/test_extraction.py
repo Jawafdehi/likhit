@@ -13,6 +13,7 @@ import likhit.extractors.font_based as font_based_module
 from likhit.extractors.kalimati import _get_font_correction_map
 from likhit.extractors.font_based import (
     FontBasedStrategy,
+    join_spans_with_layout,
     join_words_with_spacing,
     normalize_extracted_word,
     parse_page_range,
@@ -559,6 +560,29 @@ def test_handler_keeps_body_when_it_starts_with_table_content() -> None:
 
 def test_join_words_with_spacing_preserves_word_boundary() -> None:
     joined = join_words_with_spacing(["Mindray", "BS-230"])
+
+    assert joined == "Mindray BS-230"
+
+
+def test_join_spans_with_layout_keeps_font_split_word_together() -> None:
+    joined = join_spans_with_layout(
+        [
+            (10.0, 0.0, 20.0, 10.0, "२०७४"),
+            (19.95, 0.0, 22.0, 10.0, "/"),
+            (21.95, 0.0, 40.0, 10.0, "७५"),
+        ]
+    )
+
+    assert joined == "२०७४/७५"
+
+
+def test_join_spans_with_layout_adds_space_for_real_visual_gap() -> None:
+    joined = join_spans_with_layout(
+        [
+            (10.0, 0.0, 30.0, 10.0, "Mindray"),
+            (32.0, 0.0, 50.0, 10.0, "BS-230"),
+        ]
+    )
 
     assert joined == "Mindray BS-230"
 
