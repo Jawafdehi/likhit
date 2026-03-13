@@ -14,7 +14,9 @@ def _sample_path(*candidates: str) -> Path:
         path = ROOT / "samples" / candidate
         if path.exists():
             return path
-    return ROOT / "samples" / candidates[0]
+    raise FileNotFoundError(
+        f"Missing sample PDF in {ROOT / 'samples'}. Tried: {', '.join(candidates)}"
+    )
 
 
 PRESS_RELEASE = _sample_path("pressrelease.pdf")
@@ -96,3 +98,12 @@ def test_cli_extract_kanun_patrika_auto_names_output(tmp_path: Path) -> None:
 
     assert exit_code == 0
     assert (tmp_path / "kanunpatrika.md").exists()
+
+
+def test_derive_output_name_uses_kanun_patrika_prefix_with_publication_date() -> None:
+    result = extract(str(KANUN_PATRIKA), "kanun-patrika")
+    result.publication_date = "2082-01-14"
+
+    output_name = derive_output_name(result, "any-source-name.pdf", existing=set())
+
+    assert output_name == "kanunpatrika-2082-01-14.md"

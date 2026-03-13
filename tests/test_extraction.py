@@ -30,7 +30,9 @@ def _sample_path(*candidates: str) -> Path:
         path = ROOT / "samples" / candidate
         if path.exists():
             return path
-    return ROOT / "samples" / candidates[0]
+    raise FileNotFoundError(
+        f"Missing sample PDF in {ROOT / 'samples'}. Tried: {', '.join(candidates)}"
+    )
 
 
 PRESS_RELEASE = _sample_path("pressrelease.pdf")

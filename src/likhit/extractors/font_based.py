@@ -144,7 +144,9 @@ class FontBasedStrategy(ExtractionStrategy):
                     ),
                 ):
                     ordered_words = sorted(line_words, key=lambda piece: piece[0])
-                    line_text = "".join(piece[4] for piece in ordered_words)
+                    line_text = join_words_with_spacing(
+                        [piece[4] for piece in ordered_words]
+                    )
                     paragraph = normalize_press_release_paragraph(line_text)
                     if not paragraph:
                         previous_y1 = None
