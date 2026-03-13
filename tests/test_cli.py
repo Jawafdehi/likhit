@@ -7,8 +7,18 @@ from likhit.core import extract, derive_output_name
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PRESS_RELEASE = ROOT / "samples" / "pressrelease.pdf"
-PRESS_RELEASE_ALT = ROOT / "samples" / "Press Release.pdf"
+
+
+def _sample_path(*candidates: str) -> Path:
+    for candidate in candidates:
+        path = ROOT / "samples" / candidate
+        if path.exists():
+            return path
+    return ROOT / "samples" / candidates[0]
+
+
+PRESS_RELEASE = _sample_path("pressrelease.pdf")
+PRESS_RELEASE_ALT = _sample_path("Press Release.pdf", "Press_Release.pdf")
 
 
 def test_cli_extract_writes_multiple_outputs(tmp_path: Path) -> None:

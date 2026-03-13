@@ -21,8 +21,18 @@ from likhit.models import DocumentType
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PRESS_RELEASE = ROOT / "samples" / "pressrelease.pdf"
-PRESS_RELEASE_ALT = ROOT / "samples" / "Press Release.pdf"
+
+
+def _sample_path(*candidates: str) -> Path:
+    for candidate in candidates:
+        path = ROOT / "samples" / candidate
+        if path.exists():
+            return path
+    return ROOT / "samples" / candidates[0]
+
+
+PRESS_RELEASE = _sample_path("pressrelease.pdf")
+PRESS_RELEASE_ALT = _sample_path("Press Release.pdf", "Press_Release.pdf")
 
 
 @pytest.mark.parametrize(
@@ -39,7 +49,7 @@ def test_extract_press_release_samples(sample_path: Path, expected_date: str) ->
     assert result.publication_date == expected_date
     assert result.title == "आरोपपत्र दायर गररएको"
     assert result.sections
-    assert "अख्तियार" not in result.sections[0].body
+    assert result.sections[0].body
 
 
 def test_render_markdown_includes_frontmatter_and_heading() -> None:
@@ -67,14 +77,15 @@ def test_handler_merges_continuation_lines_within_a_paragraph() -> None:
         paragraphs=[],
         raw_text="",
         fragments=[
-            TextFragment("मिति: २०८२।०१।१४", 1, 200, 100, 300, 120),
-            TextFragment("विषय: आरोपपत्र दायर गररएको ।", 1, 180, 130, 340, 150),
             TextFragment("पहिलो अनुच्छेदको पहिलो लाइन", 1, 45, 200, 400, 220),
             TextFragment("पहिलो अनुच्छेदको दोस्रो लाइन", 1, 45, 220, 420, 240),
         ],
     )
 
-    result = handler.build_result(raw_document, {})
+    result = handler.build_result(
+        raw_document,
+        {"title": "परीक्षण शीर्षक", "publication_date": "2082-01-14"},
+    )
 
     assert (
         result.sections[0].body == "पहिलो अनुच्छेदको पहिलो लाइन पहिलो अनुच्छेदको दोस्रो लाइन"
@@ -87,8 +98,6 @@ def test_handler_starts_new_paragraph_for_indented_fragments() -> None:
         paragraphs=[],
         raw_text="",
         fragments=[
-            TextFragment("मिति: २०८२।०१।१४", 1, 200, 100, 300, 120),
-            TextFragment("विषय: आरोपपत्र दायर गररएको ।", 1, 180, 130, 340, 150),
             TextFragment("पहिलो अनुच्छेदको पहिलो लाइन", 1, 45, 200, 400, 220),
             TextFragment("पहिलो अनुच्छेदको दोस्रो लाइन", 1, 45, 220, 420, 240),
             TextFragment("दोस्रो अनुच्छेदको पहिलो लाइन", 1, 81, 260, 420, 280),
@@ -96,7 +105,10 @@ def test_handler_starts_new_paragraph_for_indented_fragments() -> None:
         ],
     )
 
-    result = handler.build_result(raw_document, {})
+    result = handler.build_result(
+        raw_document,
+        {"title": "परीक्षण शीर्षक", "publication_date": "2082-01-14"},
+    )
 
     assert result.sections[0].body == (
         "पहिलो अनुच्छेदको पहिलो लाइन पहिलो अनुच्छेदको दोस्रो लाइन\n\n"
@@ -127,6 +139,31 @@ def test_handler_preserves_body_text_from_inline_subject_fragment() -> None:
 
     assert result.title == "आरोपपत्र दायर गररएको"
     assert "यो पहिलो अनुच्छेदको सुरुवात हो। अर्को वाक्य यहींबाट चल्छ।" in result.sections[0].body
+
+
+def test_handler_keeps_header_content_in_body() -> None:
+    handler = CIAAPressReleaseHandler()
+    raw_document = RawDocument(
+        paragraphs=[],
+        raw_text="",
+        fragments=[
+            TextFragment("कार्यालयको शीर्षक", 1, 180, 40, 420, 60),
+            TextFragment("मुख्य कार्यालय", 1, 210, 70, 390, 90),
+            TextFragment("मिति: २०८२।०१।१४", 1, 220, 100, 340, 120),
+            TextFragment("प्रेस विज्ञप्ति", 1, 230, 130, 360, 150),
+            TextFragment("विषय: परीक्षण शीर्षक ।", 1, 160, 160, 420, 180),
+            TextFragment("मुख्य विवरण", 1, 45, 220, 320, 240),
+        ],
+    )
+
+    result = handler.build_result(raw_document, {})
+
+    assert "कार्यालयको शीर्षक" in result.sections[0].body
+    assert "मुख्य कार्यालय" in result.sections[0].body
+    assert "मिति: २०८२।०१।१४" in result.sections[0].body
+    assert "प्रेस विज्ञप्ति" in result.sections[0].body
+    assert "विषय: परीक्षण शीर्षक" in result.sections[0].body
+    assert "मुख्य विवरण" in result.sections[0].body
 
 
 def test_handler_does_not_split_subject_on_plain_periods() -> None:
@@ -165,7 +202,7 @@ def test_handler_preserves_body_text_when_subject_body_has_no_space_after_punctu
     result = handler.build_result(raw_document, {})
 
     assert result.title == "आरोपपत्र दायर गररएको"
-    assert result.sections[0].body == "यो मुख्य भाग हो।"
+    assert "यो मुख्य भाग हो।" in result.sections[0].body
 
 
 def test_handler_starts_new_paragraph_for_large_line_gap_within_same_margin() -> None:
@@ -174,8 +211,6 @@ def test_handler_starts_new_paragraph_for_large_line_gap_within_same_margin() ->
         paragraphs=[],
         raw_text="",
         fragments=[
-            TextFragment("मिति: २०८२।०१।१४", 1, 200, 100, 300, 120),
-            TextFragment("विषय: आरोपपत्र दायर गररएको ।", 1, 180, 130, 340, 150),
             TextFragment(
                 "पहिलो अनुच्छेदको पहिलो लाइन",
                 1,
@@ -206,7 +241,10 @@ def test_handler_starts_new_paragraph_for_large_line_gap_within_same_margin() ->
         ],
     )
 
-    result = handler.build_result(raw_document, {})
+    result = handler.build_result(
+        raw_document,
+        {"title": "परीक्षण शीर्षक", "publication_date": "2082-01-14"},
+    )
 
     assert result.sections[0].body == (
         "पहिलो अनुच्छेदको पहिलो लाइन पहिलो अनुच्छेदको दोस्रो लाइन\n\n"
@@ -220,14 +258,15 @@ def test_handler_starts_new_paragraph_on_page_transition() -> None:
         paragraphs=[],
         raw_text="",
         fragments=[
-            TextFragment("मिति: २०८२।०१।१४", 1, 200, 100, 300, 120),
-            TextFragment("विषय: आरोपपत्र दायर गररएको ।", 1, 180, 130, 340, 150),
             TextFragment("पहिलो पेजको अन्तिम लाइन", 1, 45, 700, 400, 720),
             TextFragment("दोस्रो पेजको पहिलो लाइन", 2, 45, 120, 420, 140),
         ],
     )
 
-    result = handler.build_result(raw_document, {})
+    result = handler.build_result(
+        raw_document,
+        {"title": "परीक्षण शीर्षक", "publication_date": "2082-01-14"},
+    )
 
     assert result.sections[0].body == "पहिलो पेजको अन्तिम लाइन\n\nदोस्रो पेजको पहिलो लाइन"
 
@@ -313,18 +352,18 @@ def test_handler_keeps_table_content_after_numbered_prose() -> None:
         raw_text="",
         fragments=[
             TextFragment("मिति: २०८२।०१।१४", 1, 200, 100, 300, 120),
-            TextFragment("विषय: आरोपपत्र दायर गररएको ।", 1, 180, 130, 340, 150),
+            TextFragment("विषय: परीक्षण शीर्षक ।", 1, 180, 130, 340, 150),
             TextFragment("1. पहिलो बुँदा", 1, 45, 200, 400, 220),
             TextFragment("यसको व्याख्या", 1, 45, 220, 420, 240),
             TextFragment("देहाय:", 1, 250, 260, 320, 280),
-            TextFragment("सि.नं नामथर", 1, 45, 280, 420, 300),
+            TextFragment("सि.नं स्तम्भ", 1, 45, 280, 420, 300),
         ],
     )
 
     result = handler.build_result(raw_document, {})
 
     assert "1. पहिलो बुँदा यसको व्याख्या" in result.sections[0].body
-    assert "देहाय: सि.नं नामथर" in result.sections[0].body
+    assert "देहाय: सि.नं स्तम्भ" in result.sections[0].body
 
 
 def test_handler_keeps_footer_signature_in_body() -> None:
@@ -334,18 +373,20 @@ def test_handler_keeps_footer_signature_in_body() -> None:
         raw_text="",
         fragments=[
             TextFragment("मिति: २०८२।०१।१४", 1, 200, 100, 300, 120),
-            TextFragment("विषय: आरोपपत्र दायर गररएको ।", 1, 180, 130, 340, 150),
+            TextFragment("विषय: परीक्षण शीर्षक ।", 1, 180, 130, 340, 150),
             TextFragment("मुख्य अनुच्छेद", 1, 45, 200, 420, 220),
-            TextFragment("प्रवक्ता", 1, 300, 500, 360, 520),
-            TextFragment("राजेन्द्र कुमार पौडेल", 1, 260, 520, 420, 540),
+            TextFragment("हस्ताक्षरकर्ता", 1, 300, 500, 390, 520),
+            TextFragment("कुनै व्यक्ति", 1, 260, 520, 420, 540),
         ],
     )
 
     result = handler.build_result(raw_document, {})
 
-    assert result.sections[0].body == (
-        "मुख्य अनुच्छेद\n\nप्रवक्ता\n\nराजेन्द्र कुमार पौडेल"
-    )
+    assert "मिति: २०८२।०१।१४" in result.sections[0].body
+    assert "विषय: परीक्षण शीर्षक" in result.sections[0].body
+    assert "मुख्य अनुच्छेद" in result.sections[0].body
+    assert "हस्ताक्षरकर्ता" in result.sections[0].body
+    assert "कुनै व्यक्ति" in result.sections[0].body
 
 
 def test_handler_keeps_body_when_it_starts_with_table_content() -> None:
@@ -355,7 +396,7 @@ def test_handler_keeps_body_when_it_starts_with_table_content() -> None:
         raw_text="",
         fragments=[
             TextFragment("मिति: २०८२।०१।१४", 1, 200, 100, 300, 120),
-            TextFragment("विषय: आरोपपत्र दायर गररएको ।", 1, 180, 130, 340, 150),
+            TextFragment("विषय: परीक्षण शीर्षक ।", 1, 180, 130, 340, 150),
             TextFragment("देहाय:", 1, 250, 200, 320, 220),
             TextFragment("सि.नं", 1, 45, 220, 120, 240),
         ],
@@ -363,7 +404,9 @@ def test_handler_keeps_body_when_it_starts_with_table_content() -> None:
 
     result = handler.build_result(raw_document, {})
 
-    assert result.sections[0].body == "देहाय: सि.नं"
+    assert "मिति: २०८२।०१।१४" in result.sections[0].body
+    assert "विषय: परीक्षण शीर्षक" in result.sections[0].body
+    assert "देहाय: सि.नं" in result.sections[0].body
 
 
 def test_join_words_with_spacing_preserves_word_boundary() -> None:

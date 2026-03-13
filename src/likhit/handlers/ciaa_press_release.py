@@ -67,7 +67,7 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
             paragraphs
         )
 
-        body_fragments = self._strip_header(fragments)
+        body_fragments = fragments
         if not body_fragments:
             raise ExtractionError("No body text content found in document")
         body_paragraphs = self._merge_body_lines(body_fragments)
