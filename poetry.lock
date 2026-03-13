@@ -177,6 +177,18 @@ files = [
 ]
 
 [[package]]
+name = "npttf2utf"
+version = "0.3.7"
+description = "Python module/script to map Nepali ASCII font faces like Preeti, Sagarmatha, and more to devanagari unicode with direct mapping support for docx and txt files."
+optional = false
+python-versions = ">=3.0"
+groups = ["main"]
+files = [
+    {file = "npttf2utf-0.3.7-py3-none-any.whl", hash = "sha256:671e85626667dc81bbe3f78bd55ab2e2c468f91bd24da186838e836c94b395df"},
+    {file = "npttf2utf-0.3.7.tar.gz", hash = "sha256:d8b5d97a0c181fc9293e67dcb17a97d256c6246a0f30a0eae49273ec3eae608d"},
+]
+
+[[package]]
 name = "packaging"
 version = "26.0"
 description = "Core utilities for Python packages"
@@ -459,4 +471,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "639e3f0f614a9e621a65df2d5a444d2f4874859e457ab62cd46815fd83cece20"
+content-hash = "da3831f2aa5926f0623d6d19c62ddd1c5ef0a63f04c27096d8423c1a68708497"

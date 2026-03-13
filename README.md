@@ -2,7 +2,7 @@
 
 Extract Nepali official documents into structured Markdown.
 
-The current MVP supports CIAA press release PDFs and automatically detects the font strategy needed for extraction, including Kalimati broken-CMap repair and legacy Nepali font remapping.
+The current MVP supports CIAA press release PDFs and Kanun Patrika PDFs, and automatically detects the font strategy needed for extraction, including Kalimati broken-CMap repair and legacy Nepali font remapping.
 
 ## Installation
 
@@ -49,7 +49,7 @@ poetry run likhit extract path/to/pressrelease.pdf --type ciaa-press-release --p
 
 ## Current Scope
 
-- Supported document type: `ciaa-press-release`
+- Supported document types: `ciaa-press-release`, `kanun-patrika`
 - Supported input format: PDF
 - Current output format: Markdown
 - Current content scope: non-tabular press release body
@@ -102,7 +102,8 @@ Key test files:
 Current sample files:
 
 - `samples/pressrelease.pdf`
-- `samples/Press Release.pdf`
+- `samples/kanunpatrika.pdf`
+- `samples/Press_Release.pdf`
 - `samples/table.pdf`
 - `samples/my-table.pdf`
 - `samples/82.pdf`

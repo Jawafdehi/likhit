@@ -6,12 +6,13 @@ import re
 from pathlib import Path
 
 from likhit.errors import ValidationError
-from likhit.handlers import CIAAPressReleaseHandler
+from likhit.handlers import CIAAPressReleaseHandler, KanunPatrikaHandler
 from likhit.models import DocumentType, ExtractionResult
 from likhit.renderers import MarkdownRenderer
 
 DOC_TYPE_PREFIXES = {
     DocumentType.CIAA_PRESS_RELEASE: "pressrelease",
+    DocumentType.KANUN_PATRIKA: "kanunpatrika",
 }
 
 
@@ -27,9 +28,11 @@ def _metadata_from_options(
     }
 
 
-def _resolve_handler(doc_type: DocumentType) -> CIAAPressReleaseHandler:
+def _resolve_handler(doc_type: DocumentType) -> CIAAPressReleaseHandler | KanunPatrikaHandler:
     if doc_type is DocumentType.CIAA_PRESS_RELEASE:
         return CIAAPressReleaseHandler()
+    if doc_type is DocumentType.KANUN_PATRIKA:
+        return KanunPatrikaHandler()
     raise ValidationError(f"Unsupported document type: {doc_type.value}")
 
 

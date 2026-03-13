@@ -18,6 +18,7 @@ from likhit.extractors.font_based import (
     parse_page_range,
 )
 from likhit.handlers.ciaa_press_release import CIAAPressReleaseHandler
+from likhit.handlers.kanun_patrika import KanunPatrikaHandler
 from likhit.models import DocumentType
 
 
@@ -34,6 +35,7 @@ def _sample_path(*candidates: str) -> Path:
 
 PRESS_RELEASE = _sample_path("pressrelease.pdf")
 PRESS_RELEASE_ALT = _sample_path("Press Release.pdf", "Press_Release.pdf")
+KANUN_PATRIKA = _sample_path("kanunpatrika.pdf")
 
 
 @pytest.mark.parametrize(
@@ -70,6 +72,27 @@ def test_render_markdown_does_not_break_mid_paragraph_for_press_release_alt() ->
     markdown = render_markdown(result)
 
     assert "स्पष्ट\n\nआधार" not in markdown
+
+
+def test_extract_kanun_patrika_sample() -> None:
+    result = extract(str(KANUN_PATRIKA), DocumentType.KANUN_PATRIKA)
+
+    assert result.doc_type is DocumentType.KANUN_PATRIKA
+    assert result.title.startswith("नेपाल कानून पत्रिका")
+    assert result.sections
+    assert "निर्णय नं.७९७३" in result.sections[0].body
+    assert result.sections[0].body.index("सर्बोच्च अदालत विशेष इजलास") < result.sections[
+        0
+    ].body.index("जवर्जस्ती करणीको महलमा भएको")
+
+
+def test_render_markdown_for_kanun_patrika_includes_doc_type() -> None:
+    result = extract(str(KANUN_PATRIKA), DocumentType.KANUN_PATRIKA)
+
+    markdown = render_markdown(result)
+
+    assert "doc_type: kanun-patrika" in markdown
+    assert "नेपाल कानून पत्रिका" in markdown
 
 
 def test_handler_merges_continuation_lines_within_a_paragraph() -> None:
@@ -165,6 +188,44 @@ def test_handler_keeps_header_content_in_body() -> None:
     assert "प्रेस विज्ञप्ति" in result.sections[0].body
     assert "विषय: परीक्षण शीर्षक" in result.sections[0].body
     assert "मुख्य विवरण" in result.sections[0].body
+
+
+def test_kanun_patrika_handler_uses_first_non_noise_paragraph_as_title() -> None:
+    handler = KanunPatrikaHandler()
+    raw_document = RawDocument(
+        paragraphs=["123", "c+s ^", "नेपाल कानून पत्रिका", "मुख्य विवरण"],
+        raw_text="",
+        fragments=[],
+    )
+
+    result = handler.build_result(raw_document, {})
+
+    assert result.title == "नेपाल कानून पत्रिका"
+    assert result.sections[0].body == "123\n\nc+s ^\n\nनेपाल कानून पत्रिका\n\nमुख्य विवरण"
+
+
+def test_kanun_patrika_handler_orders_header_then_left_then_right_columns() -> None:
+    handler = KanunPatrikaHandler()
+    raw_document = RawDocument(
+        paragraphs=[],
+        raw_text="",
+        fragments=[
+            TextFragment("पृष्ठ शीर्षक", 1, 250, 50, 360, 65),
+            TextFragment("दायाँ १", 1, 360, 100, 450, 115),
+            TextFragment("बायाँ १", 1, 100, 100, 220, 115),
+            TextFragment("दायाँ २", 1, 360, 120, 450, 135),
+            TextFragment("बायाँ २", 1, 100, 120, 220, 135),
+            TextFragment("664", 1, 300, 630, 325, 645),
+        ],
+    )
+
+    result = handler.build_result(raw_document, {})
+
+    assert result.title == "पृष्ठ शीर्षक"
+    assert (
+        result.sections[0].body
+        == "पृष्ठ शीर्षक\n\nबायाँ १\n\nबायाँ २\n\nदायाँ १\n\nदायाँ २\n\n664"
+    )
 
 
 def test_handler_does_not_split_subject_on_plain_periods() -> None:
