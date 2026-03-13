@@ -28,7 +28,9 @@ def _metadata_from_options(
     }
 
 
-def _resolve_handler(doc_type: DocumentType) -> CIAAPressReleaseHandler | KanunPatrikaHandler:
+def _resolve_handler(
+    doc_type: DocumentType,
+) -> CIAAPressReleaseHandler | KanunPatrikaHandler:
     if doc_type is DocumentType.CIAA_PRESS_RELEASE:
         return CIAAPressReleaseHandler()
     if doc_type is DocumentType.KANUN_PATRIKA:

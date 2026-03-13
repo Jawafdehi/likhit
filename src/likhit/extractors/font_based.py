@@ -107,9 +107,7 @@ class FontBasedStrategy(ExtractionStrategy):
 
             for page_index in range(page_start, page_end + 1):
                 page = doc[page_index]
-                page_dict = page.get_text(
-                    "dict", flags=fitz.TEXT_PRESERVE_WHITESPACE
-                )
+                page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
                 lines_by_key: dict[
                     tuple[int, int], list[tuple[float, float, float, float, str]]
                 ] = defaultdict(list)

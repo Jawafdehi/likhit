@@ -143,7 +143,9 @@ class KanunPatrikaHandler(DocumentTypeHandler):
             y0 = min(fragment.y0 for fragment in ordered_line)
             y1 = max(fragment.y1 for fragment in ordered_line)
             text = " ".join(
-                _clean_paragraph(fragment.text) for fragment in ordered_line if _clean_paragraph(fragment.text)
+                _clean_paragraph(fragment.text)
+                for fragment in ordered_line
+                if _clean_paragraph(fragment.text)
             ).strip()
             if text:
                 merged_lines.append((y0, y1, text))
