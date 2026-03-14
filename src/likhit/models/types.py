@@ -14,6 +14,7 @@ class DocumentType(str, Enum):
     """Supported document types."""
 
     CIAA_PRESS_RELEASE = "ciaa-press-release"
+    KANUN_PATRIKA = "kanun-patrika"
 
     @classmethod
     def parse(cls, value: str) -> "DocumentType":

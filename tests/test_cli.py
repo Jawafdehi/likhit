@@ -7,8 +7,21 @@ from likhit.core import extract, derive_output_name
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PRESS_RELEASE = ROOT / "samples" / "pressrelease.pdf"
-PRESS_RELEASE_ALT = ROOT / "samples" / "Press Release.pdf"
+
+
+def _sample_path(*candidates: str) -> Path:
+    for candidate in candidates:
+        path = ROOT / "samples" / candidate
+        if path.exists():
+            return path
+    raise FileNotFoundError(
+        f"Missing sample PDF in {ROOT / 'samples'}. Tried: {', '.join(candidates)}"
+    )
+
+
+PRESS_RELEASE = _sample_path("pressrelease.pdf")
+PRESS_RELEASE_ALT = _sample_path("Press Release.pdf", "Press_Release.pdf")
+KANUN_PATRIKA = _sample_path("kanunpatrika.pdf")
 
 
 def test_cli_extract_writes_multiple_outputs(tmp_path: Path) -> None:
@@ -69,3 +82,28 @@ def test_cli_extract_avoids_existing_auto_named_output(tmp_path: Path) -> None:
     assert len(generated) == 2
     assert existing in generated
     assert any(name != existing for name in generated)
+
+
+def test_cli_extract_kanun_patrika_auto_names_output(tmp_path: Path) -> None:
+    exit_code = main(
+        [
+            "extract",
+            str(KANUN_PATRIKA),
+            "--type",
+            "kanun-patrika",
+            "--out-dir",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert (tmp_path / "kanunpatrika.md").exists()
+
+
+def test_derive_output_name_uses_kanun_patrika_prefix_with_publication_date() -> None:
+    result = extract(str(KANUN_PATRIKA), "kanun-patrika")
+    result.publication_date = "2082-01-14"
+
+    output_name = derive_output_name(result, "any-source-name.pdf", existing=set())
+
+    assert output_name == "kanunpatrika-2082-01-14.md"

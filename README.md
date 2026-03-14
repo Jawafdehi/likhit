@@ -2,7 +2,7 @@
 
 Extract Nepali official documents into structured Markdown.
 
-The current MVP supports CIAA press release PDFs and focuses on non-tabular text extraction with Kalimati font fixing.
+The current MVP supports CIAA press release PDFs and Kanun Patrika PDFs, and automatically detects the font strategy needed for extraction, including Kalimati broken-CMap repair and legacy Nepali font remapping.
 
 ## Installation
 
@@ -49,7 +49,7 @@ poetry run likhit extract path/to/pressrelease.pdf --type ciaa-press-release --p
 
 ## Current Scope
 
-- Supported document type: `ciaa-press-release`
+- Supported document types: `ciaa-press-release`, `kanun-patrika`
 - Supported input format: PDF
 - Current output format: Markdown
 - Current content scope: non-tabular press release body
@@ -60,13 +60,14 @@ poetry run likhit extract path/to/pressrelease.pdf --type ciaa-press-release --p
 The current pipeline is:
 
 1. Open the PDF with `pymupdf`.
-2. Repair Kalimati font mappings with `fonttools`.
-3. Extract positioned text lines from the PDF.
-4. Normalize Devanagari ordering and token-level spacing.
-5. Detect CIAA press release metadata such as title and publication date.
-6. Remove header noise and stop before tabular/list sections.
-7. Merge visual lines back into prose paragraphs.
-8. Render the result as Markdown with YAML frontmatter.
+2. Scan embedded fonts and choose the correct extraction strategy automatically.
+3. Repair broken Kalimati font mappings with `fonttools` when needed.
+4. Remap supported legacy Nepali fonts with `npttf2utf` when needed.
+5. Extract positioned text lines from the PDF.
+6. Normalize Devanagari ordering and token-level spacing for broken-CMap output.
+7. Detect CIAA press release metadata such as title and publication date.
+8. Merge visual lines back into prose paragraphs.
+9. Render the result as Markdown with YAML frontmatter.
 
 ## Project Layout
 
@@ -101,7 +102,8 @@ Key test files:
 Current sample files:
 
 - `samples/pressrelease.pdf`
-- `samples/Press Release.pdf`
+- `samples/kanunpatrika.pdf`
+- `samples/Press_Release.pdf`
 - `samples/table.pdf`
 - `samples/my-table.pdf`
 - `samples/82.pdf`
@@ -111,4 +113,5 @@ Current sample files:
 
 - `pymupdf` handles PDF parsing.
 - `fonttools` powers Kalimati font fixing.
+- `npttf2utf` powers legacy Nepali font remapping.
 - `pyyaml` renders Markdown frontmatter.

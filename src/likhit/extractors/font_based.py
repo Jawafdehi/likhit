@@ -10,15 +10,18 @@ import fitz
 
 from likhit.errors import ExtractionError, ValidationError
 from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
+from likhit.extractors.font_classifier import scan_pdf_fonts
 from likhit.extractors.kalimati import (
     fix_kalimati_cmap,
     normalize_devanagari_spacing,
     reorder_devanagari,
 )
+from likhit.extractors.legacy_maps import get_converter
 from likhit.models import Table
 
 
 PAGE_RANGE_PATTERN = re.compile(r"^\d+(?:-\d+)?$")
+SPAN_GAP_THRESHOLD = 0.75
 
 
 def parse_page_range(spec: str, total_pages: int) -> tuple[int, int]:
@@ -63,6 +66,33 @@ def join_words_with_spacing(words: list[str]) -> str:
     return " ".join(word.strip() for word in words if word.strip())
 
 
+def join_spans_with_layout(
+    spans: list[tuple[float, float, float, float, str]],
+) -> str:
+    """Reconstruct a line from positioned spans without forcing spaces inside words."""
+
+    if not spans:
+        return ""
+
+    parts: list[str] = []
+    previous_x1: float | None = None
+    for x0, _y0, x1, _y1, text in spans:
+        if not text:
+            continue
+        if (
+            previous_x1 is not None
+            and x0 - previous_x1 > SPAN_GAP_THRESHOLD
+            and parts
+            and not parts[-1].endswith((" ", "\t"))
+            and not text.startswith((" ", "\t"))
+        ):
+            parts.append(" ")
+        parts.append(text)
+        previous_x1 = x1
+
+    return "".join(parts)
+
+
 def normalize_extracted_word(text: str) -> str:
     """Normalize a single extracted token without touching inter-word spacing."""
 
@@ -93,27 +123,45 @@ class FontBasedStrategy(ExtractionStrategy):
             if pages:
                 page_start, page_end = parse_page_range(pages, doc.page_count)
 
-            doc, _needs_reorder = fix_kalimati_cmap(doc)
+            font_strategies = scan_pdf_fonts(doc)
+            has_broken_cmap = any(
+                strategy == "broken_cmap" for strategy in font_strategies.values()
+            )
+            needs_reorder = False
+            if has_broken_cmap:
+                doc, needs_reorder = fix_kalimati_cmap(doc)
             paragraphs: list[str] = []
             fragments: list[TextFragment] = []
 
             for page_index in range(page_start, page_end + 1):
-                words = doc[page_index].get_text("words")
+                page = doc[page_index]
+                page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
                 lines_by_key: dict[
-                    tuple[int, int], list[tuple[float, float, float, float, str, int]]
+                    tuple[int, int], list[tuple[float, float, float, float, str]]
                 ] = defaultdict(list)
-                for word in words:
-                    x0, y0, x1, y1, text, block_number, line_number, word_number = word
-                    lines_by_key[(int(block_number), int(line_number))].append(
-                        (
-                            float(x0),
-                            float(y0),
-                            float(x1),
-                            float(y1),
-                            str(text),
-                            int(word_number),
-                        )
-                    )
+                for block_number, block in enumerate(page_dict["blocks"]):
+                    if "lines" not in block:
+                        continue
+                    for line_number, line in enumerate(block["lines"]):
+                        for span in line["spans"]:
+                            text = self._convert_span_text(
+                                str(span["text"]),
+                                str(span["font"]),
+                                font_strategies,
+                                needs_reorder,
+                            )
+                            if not text:
+                                continue
+                            x0, y0, x1, y1 = span["bbox"]
+                            lines_by_key[(block_number, line_number)].append(
+                                (
+                                    float(x0),
+                                    float(y0),
+                                    float(x1),
+                                    float(y1),
+                                    text,
+                                )
+                            )
 
                 previous_y1: float | None = None
                 for (block_number, line_number), line_words in sorted(
@@ -123,10 +171,8 @@ class FontBasedStrategy(ExtractionStrategy):
                         min(piece[0] for piece in item[1]),
                     ),
                 ):
-                    ordered_words = sorted(line_words, key=lambda piece: piece[5])
-                    line_text = join_words_with_spacing(
-                        [normalize_extracted_word(piece[4]) for piece in ordered_words]
-                    )
+                    ordered_words = sorted(line_words, key=lambda piece: piece[0])
+                    line_text = join_spans_with_layout(ordered_words)
                     paragraph = normalize_press_release_paragraph(line_text)
                     if not paragraph:
                         previous_y1 = None
@@ -176,3 +222,24 @@ class FontBasedStrategy(ExtractionStrategy):
 
     def extract_tables(self, file_path: str) -> list[Table]:
         return []
+
+    def _convert_span_text(
+        self,
+        text: str,
+        font_name: str,
+        font_strategies: dict[str, str],
+        needs_reorder: bool,
+    ) -> str:
+        base = font_name.split("+", 1)[-1] if "+" in font_name else font_name
+        strategy = font_strategies.get(base, "correct")
+
+        if strategy == "legacy_remap":
+            converter = get_converter(font_name)
+            if converter is not None:
+                return converter(text)
+            return text
+
+        if strategy == "broken_cmap" and needs_reorder:
+            text = reorder_devanagari(text)
+            text = normalize_devanagari_spacing(text)
+        return text
