@@ -61,6 +61,8 @@ def _write_convert_outputs(args: argparse.Namespace) -> int:
             )
         destination.write_text(markdown, encoding="utf-8")
     return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)

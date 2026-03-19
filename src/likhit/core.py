@@ -58,7 +58,9 @@ def _normalize_detection_text(text: str) -> str:
 def _detect_document_type(raw_text: str) -> DocumentType | None:
     normalized = _normalize_detection_text(raw_text)
 
-    if any(_normalize_detection_text(marker) in normalized for marker in _KANUN_MARKERS):
+    if any(
+        _normalize_detection_text(marker) in normalized for marker in _KANUN_MARKERS
+    ):
         return DocumentType.KANUN_PATRIKA
     if any(_normalize_detection_text(marker) in normalized for marker in _CIAA_MARKERS):
         return DocumentType.CIAA_PRESS_RELEASE
