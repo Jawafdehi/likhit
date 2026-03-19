@@ -8,6 +8,8 @@ import fitz
 from markitdown import MarkItDown
 import pytest
 
+import likhit.cli as cli_module
+import likhit.core as core_module
 from likhit.cli import main
 from likhit.core import convert
 from likhit.errors import ExtractionError, ValidationError
@@ -67,7 +69,9 @@ def _copy_pdf_pages(source: Path, destination: Path, *, start: int, end: int) ->
     return destination
 
 
-def test_convert_plain_unicode_pdf_uses_default_markitdown_path(tmp_path: Path) -> None:
+def test_convert_plain_unicode_pdf_uses_default_markitdown_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     pdf_path = _create_unicode_pdf(
         tmp_path / "unicode.pdf",
         title="नेपाल सरकार",
@@ -76,10 +80,27 @@ def test_convert_plain_unicode_pdf_uses_default_markitdown_path(tmp_path: Path) 
 
     assert needs_nepali_pdf_repair(str(pdf_path)) is False
 
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        core_module, "_convert_with_detected_structure", lambda _path: None
+    )
+
+    def fake_convert_pdf_to_markdown(file_path: str) -> str:
+        calls.append(file_path)
+        return "नेपाल सरकार\n\nयो एउटा परीक्षण अनुच्छेद हो।"
+
+    monkeypatch.setattr(
+        core_module,
+        "convert_pdf_to_markdown",
+        fake_convert_pdf_to_markdown,
+    )
+
     markdown = convert(str(pdf_path))
 
     assert markdown == "नेपाल सरकार\n\nयो एउटा परीक्षण अनुच्छेद हो।"
     assert not markdown.startswith("---")
+    assert calls == [str(pdf_path)]
 
 
 def test_convert_repairs_broken_cmap_sample() -> None:
@@ -190,13 +211,18 @@ def test_convert_rejects_non_pdf_input(tmp_path: Path) -> None:
         convert(str(input_path))
 
 
-def test_cli_convert_single_file_with_out(tmp_path: Path) -> None:
-    pdf_path = _create_unicode_pdf(
-        tmp_path / "single.pdf",
-        title="नेपाल सरकार",
-        body="यो एउटा परीक्षण अनुच्छेद हो।",
-    )
+def test_cli_convert_single_file_with_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pdf_path = tmp_path / "single.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
     output_path = tmp_path / "single.md"
+
+    monkeypatch.setattr(
+        cli_module,
+        "convert_many",
+        lambda file_paths: [(file_paths[0], "नेपाल सरकार\n\nयो एउटा परीक्षण अनुच्छेद हो।")],
+    )
 
     exit_code = main(["convert", str(pdf_path), "--out", str(output_path)])
 
@@ -206,18 +232,23 @@ def test_cli_convert_single_file_with_out(tmp_path: Path) -> None:
     )
 
 
-def test_cli_convert_multiple_inputs_with_out_dir(tmp_path: Path) -> None:
-    first = _create_unicode_pdf(
-        tmp_path / "first.pdf",
-        title="पहिलो",
-        body="पहिलो अनुच्छेद।",
-    )
-    second = _create_unicode_pdf(
-        tmp_path / "second.pdf",
-        title="दोस्रो",
-        body="दोस्रो अनुच्छेद।",
-    )
+def test_cli_convert_multiple_inputs_with_out_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "first.pdf"
+    second = tmp_path / "second.pdf"
+    first.write_bytes(b"%PDF-1.4")
+    second.write_bytes(b"%PDF-1.4")
     output_dir = tmp_path / "out"
+
+    monkeypatch.setattr(
+        cli_module,
+        "convert_many",
+        lambda file_paths: [
+            (file_paths[0], "पहिलो\n\nपहिलो अनुच्छेद।"),
+            (file_paths[1], "दोस्रो\n\nदोस्रो अनुच्छेद।"),
+        ],
+    )
 
     exit_code = main(
         [
