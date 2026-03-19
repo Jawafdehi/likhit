@@ -12,7 +12,7 @@ dependencies = [
     "npttf2utf>=0.3.7,<1.0.0",
     "pymupdf>=1.27.2,<2.0.0",
     "pyyaml>=6.0,<7.0",
-    "markitdown[pdf] (==0.1.5)"
+    "markitdown[pdf]==0.1.5"
 ]
 
 [project.scripts]
