@@ -1,19 +1,32 @@
-"""Public extraction entry points."""
+"""Public conversion entry points."""
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
+import re
 
-from likhit.errors import ValidationError
+from likhit.errors import ExtractionError, ValidationError
 from likhit.handlers import CIAAPressReleaseHandler, KanunPatrikaHandler
+from likhit.markitdown_integration import convert_pdf_to_markdown
 from likhit.models import DocumentType, ExtractionResult
 from likhit.renderers import MarkdownRenderer
+from likhit.extractors.font_based import FontBasedStrategy
 
-DOC_TYPE_PREFIXES = {
-    DocumentType.CIAA_PRESS_RELEASE: "pressrelease",
-    DocumentType.KANUN_PATRIKA: "kanunpatrika",
-}
+_KANUN_MARKERS = (
+    "नेपालकानूनपत्रिका",
+    "नेपालकानुनपत्रिका",
+    "निर्णय नं",
+    "ने.का.प.",
+)
+_CIAA_MARKERS = (
+    "अख्तियार दुरुपयोग अनुसन्धान आयोग",
+    "प्रेस विज्ञ",
+    "प्रेस मिज्ञ",
+    "विषय:",
+    "मिषय:",
+    "आयोगकोनिर्णय",
+    "अनुसन्धानबाट पुष्टि भएको",
+)
 
 
 def _metadata_from_options(
@@ -38,75 +51,74 @@ def _resolve_handler(
     raise ValidationError(f"Unsupported document type: {doc_type.value}")
 
 
-def extract(
-    file_path: str,
-    doc_type: str | DocumentType,
-    *,
-    title: str | None = None,
-    publication_date: str | None = None,
-    source_url: str | None = None,
-    pages: str | None = None,
-) -> ExtractionResult:
-    resolved_doc_type = (
-        doc_type if isinstance(doc_type, DocumentType) else DocumentType.parse(doc_type)
-    )
-    handler = _resolve_handler(resolved_doc_type)
-    strategy = handler.get_extraction_strategy()
-    raw_document = strategy.extract_text(file_path, pages=pages)
-    return handler.build_result(
+def _normalize_detection_text(text: str) -> str:
+    return re.sub(r"\s+", "", text).casefold()
+
+
+def _detect_document_type(raw_text: str) -> DocumentType | None:
+    normalized = _normalize_detection_text(raw_text)
+
+    if any(_normalize_detection_text(marker) in normalized for marker in _KANUN_MARKERS):
+        return DocumentType.KANUN_PATRIKA
+    if any(_normalize_detection_text(marker) in normalized for marker in _CIAA_MARKERS):
+        return DocumentType.CIAA_PRESS_RELEASE
+    return None
+
+
+def _render_markdown_without_frontmatter(result: ExtractionResult) -> str:
+    markdown = MarkdownRenderer().render(result).lstrip()
+    if not markdown.startswith("---\n"):
+        return markdown.strip()
+
+    parts = markdown.split("\n---\n", 1)
+    if len(parts) != 2:
+        return markdown.strip()
+    return parts[1].strip()
+
+
+def _convert_with_detected_structure(file_path: str) -> str | None:
+    strategy = FontBasedStrategy()
+    try:
+        raw_document = strategy.extract_text(file_path)
+    except ExtractionError as exc:
+        if str(exc) == "No text content found in document":
+            return None
+        raise
+    doc_type = _detect_document_type(raw_document.raw_text)
+    if doc_type is None:
+        return None
+
+    handler = _resolve_handler(doc_type)
+    result = handler.build_result(
         raw_document,
-        _metadata_from_options(title, publication_date, source_url),
+        _metadata_from_options(None, None, None),
     )
+    return _render_markdown_without_frontmatter(result)
 
 
-def render_markdown(result: ExtractionResult) -> str:
-    return MarkdownRenderer().render(result)
+def convert(file_path: str) -> str:
+    path = Path(file_path)
+    if path.suffix.lower() != ".pdf":
+        raise ValidationError(
+            "Unsupported input format for convert. Only born-digital PDF files are supported."
+        )
+
+    structured_markdown = _convert_with_detected_structure(file_path)
+    if structured_markdown is not None:
+        return structured_markdown
+    return convert_pdf_to_markdown(file_path)
 
 
-def _slugify_for_filename(text: str) -> str:
-    slug = re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
-    return slug[:48] or "document"
-
-
-def derive_output_name(
-    result: ExtractionResult, source_path: str, existing: set[str]
-) -> str:
-    base_name = DOC_TYPE_PREFIXES.get(result.doc_type, "document")
-    if result.publication_date:
-        base_name = f"{base_name}-{result.publication_date}"
-    else:
-        base_name = Path(source_path).stem
-
+def derive_convert_output_name(source_path: str, existing: set[str]) -> str:
+    base_name = Path(source_path).stem or "document"
     candidate = f"{base_name}.md"
     counter = 2
-    title_slug = _slugify_for_filename(result.title)
     while candidate in existing:
-        candidate = f"{base_name}-{title_slug}-{counter}.md"
+        candidate = f"{base_name}-{counter}.md"
         counter += 1
     existing.add(candidate)
     return candidate
 
 
-def extract_many(
-    file_paths: list[str],
-    doc_type: str | DocumentType,
-    *,
-    title: str | None = None,
-    publication_date: str | None = None,
-    source_url: str | None = None,
-    pages: str | None = None,
-) -> list[tuple[str, ExtractionResult]]:
-    return [
-        (
-            file_path,
-            extract(
-                file_path,
-                doc_type,
-                title=title,
-                publication_date=publication_date,
-                source_url=source_url,
-                pages=pages,
-            ),
-        )
-        for file_path in file_paths
-    ]
+def convert_many(file_paths: list[str]) -> list[tuple[str, str]]:
+    return [(file_path, convert(file_path)) for file_path in file_paths]
