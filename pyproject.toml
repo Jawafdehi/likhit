@@ -1,7 +1,7 @@
 [project]
 name = "likhit"
 version = "0.1.0"
-description = "Document extraction pipeline for Nepali official documents"
+description = "Nepali PDF-to-Markdown converter powered by MarkItDown"
 authors = [
     { name = "notashwinii", email = "ashwinii.subedi@gmail.com" }
 ]
@@ -11,7 +11,8 @@ dependencies = [
     "fonttools>=4.47.0,<5.0.0",
     "npttf2utf>=0.3.7,<1.0.0",
     "pymupdf>=1.27.2,<2.0.0",
-    "pyyaml>=6.0,<7.0"
+    "pyyaml>=6.0,<7.0",
+    "markitdown[pdf] (==0.1.5)"
 ]
 
 [project.scripts]
