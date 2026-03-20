@@ -35,6 +35,7 @@ class Section:
     body: str
     level: int = 1
     subsections: list["Section"] = field(default_factory=list)
+    blocks: list["ContentBlock"] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not isinstance(self.body, str):
@@ -51,13 +52,59 @@ class Section:
 
 
 @dataclass(slots=True)
+class TableRegion:
+    """A per-page bounding box belonging to a table."""
+
+    page_number: int
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    page_height: float = 0.0
+
+
+@dataclass(slots=True)
+class TableCell:
+    """A single table cell anchored at its top-left position."""
+
+    row: int
+    col: int
+    text: str
+    rowspan: int = 1
+    colspan: int = 1
+
+
+@dataclass(slots=True)
 class Table:
     """Extracted table data."""
 
-    headers: list[str]
-    rows: list[list[str]]
+    row_count: int
+    col_count: int
+    cells: list[TableCell]
     caption: str | None = None
     index: int = 0
+    regions: list[TableRegion] = field(default_factory=list)
+
+    @property
+    def page_number(self) -> int:
+        return self.regions[0].page_number if self.regions else 1
+
+
+@dataclass(slots=True)
+class ParagraphBlock:
+    """A paragraph content block."""
+
+    text: str
+
+
+@dataclass(slots=True)
+class TableBlock:
+    """A table content block."""
+
+    table: Table
+
+
+ContentBlock = ParagraphBlock | TableBlock
 
 
 @dataclass(slots=True)

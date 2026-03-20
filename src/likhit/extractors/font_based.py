@@ -17,6 +17,7 @@ from likhit.extractors.kalimati import (
     reorder_devanagari,
 )
 from likhit.extractors.legacy_maps import get_converter
+from likhit.extractors.tables import detect_page_tables, merge_continuation_tables
 from likhit.models import Table
 
 
@@ -105,6 +106,16 @@ class FontBasedStrategy(ExtractionStrategy):
     """Extract text from CIAA PDFs using PyMuPDF blocks."""
 
     def extract_text(self, file_path: str, pages: str | None = None) -> RawDocument:
+        return self._extract_raw_document(file_path, pages=pages)
+
+    def extract_tables(self, file_path: str) -> list[Table]:
+        return self._extract_raw_document(file_path).tables
+
+    def _extract_raw_document(
+        self,
+        file_path: str,
+        pages: str | None = None,
+    ) -> RawDocument:
         path = Path(file_path)
         if path.suffix.lower() != ".pdf":
             raise ValidationError("Unsupported file format. Please upload a PDF file")
@@ -132,6 +143,8 @@ class FontBasedStrategy(ExtractionStrategy):
                 doc, needs_reorder = fix_kalimati_cmap(doc)
             paragraphs: list[str] = []
             fragments: list[TextFragment] = []
+            tables: list[Table] = []
+            table_index = 0
 
             for page_index in range(page_start, page_end + 1):
                 page = doc[page_index]
@@ -163,6 +176,7 @@ class FontBasedStrategy(ExtractionStrategy):
                                 )
                             )
 
+                page_fragments: list[TextFragment] = []
                 previous_y1: float | None = None
                 for (block_number, line_number), line_words in sorted(
                     lines_by_key.items(),
@@ -187,20 +201,24 @@ class FontBasedStrategy(ExtractionStrategy):
                         gap_before = y0 - previous_y1
                     previous_y1 = y1
 
-                    paragraphs.append(paragraph)
-                    fragments.append(
-                        TextFragment(
-                            text=paragraph,
-                            page_number=page_index + 1,
-                            x0=x0,
-                            y0=y0,
-                            x1=x1,
-                            y1=y1,
-                            block_number=block_number,
-                            line_number=line_number,
-                            gap_before=gap_before,
-                        )
+                    fragment = TextFragment(
+                        text=paragraph,
+                        page_number=page_index + 1,
+                        x0=x0,
+                        y0=y0,
+                        x1=x1,
+                        y1=y1,
+                        block_number=block_number,
+                        line_number=line_number,
+                        gap_before=gap_before,
                     )
+                    paragraphs.append(paragraph)
+                    page_fragments.append(fragment)
+
+                fragments.extend(page_fragments)
+                page_tables = detect_page_tables(page, page_fragments, table_index)
+                tables.extend(page_tables)
+                table_index += len(page_tables)
 
             raw_text = "\n\n".join(paragraphs).strip()
             if not raw_text:
@@ -210,6 +228,7 @@ class FontBasedStrategy(ExtractionStrategy):
                 paragraphs=paragraphs,
                 raw_text=raw_text,
                 fragments=fragments,
+                tables=merge_continuation_tables(tables),
             )
         except (ExtractionError, ValidationError):
             raise
@@ -219,9 +238,6 @@ class FontBasedStrategy(ExtractionStrategy):
             ) from exc
         finally:
             doc.close()
-
-    def extract_tables(self, file_path: str) -> list[Table]:
-        return []
 
     def _convert_span_text(
         self,

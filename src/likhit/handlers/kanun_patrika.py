@@ -9,7 +9,9 @@ from likhit.errors import ExtractionError
 from likhit.extractors.base import RawDocument, TextFragment
 from likhit.extractors.font_based import FontBasedStrategy
 from likhit.handlers.base import DocumentTypeHandler
-from likhit.models import DocumentType, ExtractionResult, Section
+from likhit.handlers.content_blocks import blocks_to_text, build_content_blocks
+from likhit.models import DocumentType, ExtractionResult, ParagraphBlock, Section
+from likhit.models.types import ContentBlock
 
 _NOISE_ONLY_PATTERN = re.compile(r"^(?:\d+|[A-Za-z+\-^&*/\\|=()]+)$")
 _HEADER_Y_MAX = 80.0
@@ -34,13 +36,16 @@ class KanunPatrikaHandler(DocumentTypeHandler):
     def build_result(
         self, raw_document: RawDocument, metadata: dict[str, str | None]
     ) -> ExtractionResult:
-        paragraphs = self._ordered_paragraphs(raw_document)
+        blocks = self._build_blocks(raw_document)
+        paragraphs = [
+            block.text for block in blocks if isinstance(block, ParagraphBlock)
+        ]
         if not paragraphs:
             raise ExtractionError("No text content found in document")
 
         title = metadata.get("title") or self._extract_title(paragraphs)
-        body = "\n\n".join(paragraphs).strip()
-        section = Section(heading=None, body=body, level=1)
+        body = blocks_to_text(blocks).strip()
+        section = Section(heading=None, body=body, level=1, blocks=blocks)
         return ExtractionResult(
             title=title,
             doc_type=DocumentType.KANUN_PATRIKA,
@@ -56,15 +61,15 @@ class KanunPatrikaHandler(DocumentTypeHandler):
                 return paragraph
         return "कानून पत्रिका"
 
-    def _ordered_paragraphs(self, raw_document: RawDocument) -> list[str]:
+    def _build_blocks(self, raw_document: RawDocument) -> list[ContentBlock]:
         if not raw_document.fragments:
             return [
-                _clean_paragraph(paragraph)
+                ParagraphBlock(text=cleaned)
                 for paragraph in raw_document.paragraphs
-                if _clean_paragraph(paragraph)
+                if (cleaned := _clean_paragraph(paragraph))
             ]
 
-        paragraphs: list[str] = []
+        ordered_fragments: list[TextFragment] = []
         by_page: dict[int, list[TextFragment]] = defaultdict(list)
         for fragment in raw_document.fragments:
             cleaned = _clean_paragraph(fragment.text)
@@ -74,10 +79,13 @@ class KanunPatrikaHandler(DocumentTypeHandler):
 
         for page_number in sorted(by_page):
             page_fragments = by_page[page_number]
-            ordered_fragments = self._order_page_fragments(page_fragments)
-            paragraphs.extend(self._merge_fragments_to_paragraphs(ordered_fragments))
+            ordered_fragments.extend(self._order_page_fragments(page_fragments))
 
-        return paragraphs
+        return build_content_blocks(
+            ordered_fragments,
+            raw_document.tables,
+            self._merge_fragments_to_paragraphs,
+        )
 
     def _order_page_fragments(
         self, fragments: list[TextFragment]
