@@ -28,17 +28,19 @@ Convert a single document to editable Markdown:
 # PDF
 poetry run likhit convert path/to/document.pdf --out path/to/document.md
 
-# DOCX
+# DOCX (all document types)
 poetry run likhit convert path/to/document.docx --out path/to/document.md
 
-# DOC (legacy Word format)
-poetry run likhit convert path/to/document.doc --out path/to/document.md
+# DOC (legacy Word format - CIAA documents only, Linux/Mac only)
+poetry run likhit convert path/to/ciaa-document.doc --out path/to/document.md
 ```
+
+**Note**: DOC files are only supported for CIAA press releases and require Linux/Mac. For other document types or Windows users, convert DOC to DOCX first.
 
 Convert multiple documents at once:
 
 ```bash
-poetry run likhit convert path/to/a.pdf path/to/b.docx path/to/c.doc --out-dir path/to/output-dir
+poetry run likhit convert path/to/a.pdf path/to/b.docx --out-dir path/to/output-dir
 ```
 
 If `--out` or `--out-dir` is omitted, `likhit` writes Markdown files in the current directory using the input filename stem.
@@ -74,8 +76,8 @@ This keeps the public product story simple: `likhit` is the tool users call, whi
 
 - Supported input formats: 
   - PDF (born-digital, with Nepali text repair)
-  - DOCX (Microsoft Word 2007+, text extraction only)
-  - DOC (legacy Microsoft Word, text extraction only via CIAA handler)
+  - DOCX (Microsoft Word 2007+, text extraction only, all document types)
+  - DOC (legacy Microsoft Word, CIAA documents only, Linux/Mac only)
 - Supported output: Markdown only
 - Supported document types: CIAA press releases, Kanun Patrika journals
 - Unsupported in this branch: OCR, scanned/image-only PDFs, image inputs
@@ -83,9 +85,14 @@ This keeps the public product story simple: `likhit` is the tool users call, whi
 ### DOCX/DOC Support Notes
 
 - Text-first extraction approach (no table structure preservation)
-- DOCX files supported for both CIAA and Kanun Patrika document types
-- DOC files supported only for CIAA press releases (Kanun Patrika rejects legacy format)
-- **Windows limitation**: DOC file extraction may not work on Windows due to antiword binary compatibility. Please convert DOC files to DOCX format on Windows, or use Linux/Mac systems for DOC support.
+- **DOCX files**: Supported for all document types (CIAA, Kanun Patrika, generic)
+- **DOC files**: Only supported for CIAA press releases
+  - Kanun Patrika documents in DOC format are not supported (convert to DOCX or PDF)
+  - Generic/unknown DOC documents may work but are not officially supported
+- **Windows limitation**: DOC file extraction does not work on Windows due to antiword binary compatibility
+  - Windows users must convert DOC files to DOCX format first
+  - Use Microsoft Word, LibreOffice, or online converters
+  - Linux/Mac users can process DOC files directly
 - Tables are extracted as plain text
 - No formatting preservation (bold, italic, etc.)
 
