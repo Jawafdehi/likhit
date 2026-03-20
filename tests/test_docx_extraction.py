@@ -131,3 +131,78 @@ class TestKanunPatrikaHandlerDocxRouting:
 
         # Should not be DocxBasedStrategy
         assert not isinstance(strategy, DocxBasedStrategy)
+
+
+class TestDocxDocumentTypeDetection:
+    """Test that DOCX/DOC files are auto-detected for document type."""
+
+    def test_ciaa_docx_detected_and_routed_correctly(self):
+        """Test that CIAA DOCX files are detected and use CIAA handler."""
+        from likhit.core import convert
+        from unittest.mock import patch
+
+        # Mock the extraction to return CIAA-like content
+        with patch("docx2txt2.process") as mock_process:
+            mock_process.return_value = (
+                "विषय: परीक्षण\n\nअख्तियार दुरुपयोग अनुसन्धान आयोग\n\nयो एउटा परीक्षण हो।"
+            )
+
+            # This should detect CIAA and use CIAA handler
+            result = convert("test.docx")
+
+            # Should contain the text
+            assert "परीक्षण" in result
+            # Should be processed (not just raw text)
+            assert result.strip() != mock_process.return_value
+
+    def test_kanun_patrika_docx_detected_and_routed_correctly(self):
+        """Test that Kanun Patrika DOCX files are detected and use Kanun Patrika handler."""
+        from likhit.core import convert
+        from unittest.mock import patch
+
+        # Mock the extraction to return Kanun Patrika-like content
+        with patch("docx2txt2.process") as mock_process:
+            mock_process.return_value = (
+                "नेपाल कानून पत्रिका\n\nनिर्णय नं १२३\n\nयो एउटा परीक्षण हो।"
+            )
+
+            # This should detect Kanun Patrika and use Kanun Patrika handler
+            result = convert("test.docx")
+
+            # Should contain the text
+            assert "परीक्षण" in result
+
+    def test_unknown_docx_returns_plain_text(self):
+        """Test that unknown DOCX files return plain text."""
+        from likhit.core import convert
+        from unittest.mock import patch
+
+        # Mock the extraction to return generic content (no markers)
+        with patch("docx2txt2.process") as mock_process:
+            mock_process.return_value = "This is just plain text with no markers."
+
+            # This should not detect any document type and return plain text
+            result = convert("test.docx")
+
+            # Should return the raw text
+            assert result == "This is just plain text with no markers."
+
+    def test_kanun_patrika_doc_rejected_gracefully(self):
+        """Test that Kanun Patrika DOC files are rejected but fallback to plain text."""
+        from likhit.core import convert
+        from unittest.mock import patch
+
+        # Mock the extraction to return Kanun Patrika-like content from DOC
+        with patch(
+            "pyantiword.antiword_wrapper.extract_text_with_antiword"
+        ) as mock_extract:
+            mock_extract.return_value = (
+                "नेपाल कानून पत्रिका\n\nनिर्णय नं १२३\n\nयो एउटा परीक्षण हो।"
+            )
+
+            # This should detect Kanun Patrika, try to use Kanun Patrika handler,
+            # but that handler rejects DOC files, so it should fallback to plain text
+            result = convert("test.doc")
+
+            # Should return the raw text as fallback
+            assert "नेपाल कानून पत्रिका" in result
