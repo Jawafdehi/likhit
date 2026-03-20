@@ -22,16 +22,25 @@ poetry run black --check .
 
 ## Recommended Usage
 
-Convert a single PDF to editable Markdown:
+Convert a single document to editable Markdown:
 
 ```bash
+# PDF
 poetry run likhit convert path/to/document.pdf --out path/to/document.md
+
+# DOCX (all document types)
+poetry run likhit convert path/to/document.docx --out path/to/document.md
+
+# DOC (legacy Word format - CIAA documents only, Linux/Mac only)
+poetry run likhit convert path/to/ciaa-document.doc --out path/to/document.md
 ```
 
-Convert multiple PDFs at once:
+**Note**: DOC files are only supported for CIAA press releases and require Linux/Mac. For other document types or Windows users, convert DOC to DOCX first.
+
+Convert multiple documents at once:
 
 ```bash
-poetry run likhit convert path/to/a.pdf path/to/b.pdf --out-dir path/to/output-dir
+poetry run likhit convert path/to/a.pdf path/to/b.docx --out-dir path/to/output-dir
 ```
 
 If `--out` or `--out-dir` is omitted, `likhit` writes Markdown files in the current directory using the input filename stem.
@@ -65,10 +74,27 @@ This keeps the public product story simple: `likhit` is the tool users call, whi
 
 ## Current Scope
 
-- Supported default input: PDF only
-- Supported default output: Markdown only
-- Supported default document class: born-digital PDFs
-- Unsupported in this branch: OCR, scanned/image-only PDFs, `.doc`, `.docx`, and image inputs
+- Supported input formats: 
+  - PDF (born-digital, with Nepali text repair)
+  - DOCX (Microsoft Word 2007+, text extraction only, all document types)
+  - DOC (legacy Microsoft Word, CIAA documents only, Linux/Mac only)
+- Supported output: Markdown only
+- Supported document types: CIAA press releases, Kanun Patrika journals
+- Unsupported in this branch: OCR, scanned/image-only PDFs, image inputs
+
+### DOCX/DOC Support Notes
+
+- Text-first extraction approach (no table structure preservation)
+- **DOCX files**: Supported for all document types (CIAA, Kanun Patrika, generic)
+- **DOC files**: Only supported for CIAA press releases
+  - Kanun Patrika documents in DOC format are not supported (convert to DOCX or PDF)
+  - Generic/unknown DOC documents may work but are not officially supported
+- **Windows limitation**: DOC file extraction does not work on Windows due to antiword binary compatibility
+  - Windows users must convert DOC files to DOCX format first
+  - Use Microsoft Word, LibreOffice, or online converters
+  - Linux/Mac users can process DOC files directly
+- Tables are extracted as plain text
+- No formatting preservation (bold, italic, etc.)
 
 ## Project Layout
 
@@ -76,7 +102,11 @@ This keeps the public product story simple: `likhit` is the tool users call, whi
 - `src/likhit/markitdown_integration.py`: MarkItDown instance setup and custom PDF converter
 - `src/likhit/nepali_pdf_repair.py`: reusable Nepal-specific PDF repair layer
 - `src/likhit/markdown_assembly.py`: generic Markdown assembly for the default conversion path
-- `src/likhit/extractors/`, `src/likhit/handlers/`, `src/likhit/renderers/`: internal Nepali PDF repair and legacy extraction internals
+- `src/likhit/extractors/`: extraction strategies (PDF, DOCX, DOC)
+  - `font_based.py`: PDF extraction with Nepali font repair
+  - `docx_based.py`: DOCX/DOC text extraction
+- `src/likhit/handlers/`: document type handlers (CIAA, Kanun Patrika)
+- `src/likhit/renderers/`: Markdown rendering
 - `tests/`: conversion, extraction, and CLI coverage
 
 ## References

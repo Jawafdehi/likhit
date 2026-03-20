@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import Path
 import re
 from statistics import median
 from typing import Iterable
 
 from likhit.errors import ExtractionError
-from likhit.extractors.base import RawDocument, TextFragment
+from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
+from likhit.extractors.docx_based import DocxBasedStrategy
 from likhit.extractors.font_based import FontBasedStrategy
 from likhit.handlers.base import DocumentTypeHandler
 from likhit.handlers.content_blocks import blocks_to_text, build_content_blocks
@@ -38,8 +40,16 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
 
     def __init__(self) -> None:
         self._strategy = FontBasedStrategy()
+        self._docx_strategy = DocxBasedStrategy()
 
     def get_extraction_strategy(self) -> FontBasedStrategy:
+        return self._strategy
+
+    def get_extraction_strategy_for_file(self, file_path: str) -> ExtractionStrategy:
+        """Route to appropriate strategy based on file extension."""
+        suffix = Path(file_path).suffix.lower()
+        if suffix in {".docx", ".doc"}:
+            return self._docx_strategy
         return self._strategy
 
     def build_result(

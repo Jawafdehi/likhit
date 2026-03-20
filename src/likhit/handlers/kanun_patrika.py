@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from pathlib import Path
 import re
 
 from likhit.errors import ExtractionError
-from likhit.extractors.base import RawDocument, TextFragment
+from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
+from likhit.extractors.docx_based import DocxBasedStrategy
 from likhit.extractors.font_based import FontBasedStrategy
 from likhit.handlers.base import DocumentTypeHandler
 from likhit.handlers.content_blocks import blocks_to_text, build_content_blocks
@@ -29,8 +31,24 @@ class KanunPatrikaHandler(DocumentTypeHandler):
 
     def __init__(self) -> None:
         self._strategy = FontBasedStrategy()
+        self._docx_strategy = DocxBasedStrategy()
 
     def get_extraction_strategy(self) -> FontBasedStrategy:
+        return self._strategy
+
+    def get_extraction_strategy_for_file(self, file_path: str) -> ExtractionStrategy:
+        """Route to appropriate strategy based on file extension.
+
+        Note: Legacy .doc files are not supported for Kanun Patrika.
+        """
+        suffix = Path(file_path).suffix.lower()
+        if suffix == ".docx":
+            return self._docx_strategy
+        if suffix == ".doc":
+            raise ExtractionError(
+                "Legacy .doc format is not supported for Kanun Patrika. "
+                "Please convert to .docx or PDF format."
+            )
         return self._strategy
 
     def build_result(
