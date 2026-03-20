@@ -99,16 +99,38 @@ def _convert_with_detected_structure(file_path: str) -> str | None:
 
 
 def convert(file_path: str) -> str:
-    path = Path(file_path)
-    if path.suffix.lower() != ".pdf":
-        raise ValidationError(
-            "Unsupported input format for convert. Only born-digital PDF files are supported."
-        )
+    """Convert a document (PDF, DOCX, or DOC) to Markdown.
 
-    structured_markdown = _convert_with_detected_structure(file_path)
-    if structured_markdown is not None:
-        return structured_markdown
-    return convert_pdf_to_markdown(file_path)
+    For PDFs, attempts structure-aware extraction first, then falls back to MarkItDown.
+    For DOCX/DOC, uses the extract API with CIAA press release handler by default.
+    """
+    path = Path(file_path)
+    suffix = path.suffix.lower()
+
+    # Handle DOCX/DOC files
+    if suffix in {".docx", ".doc"}:
+        # Use CIAA handler by default for DOCX/DOC files
+        # (could be enhanced to auto-detect document type from content)
+        handler = CIAAPressReleaseHandler()
+        strategy = handler.get_extraction_strategy_for_file(file_path)
+        raw_document = strategy.extract_text(file_path)
+        result = handler.build_result(
+            raw_document,
+            _metadata_from_options(None, None, None),
+        )
+        return _render_markdown_without_frontmatter(result)
+
+    # Handle PDF files
+    if suffix == ".pdf":
+        structured_markdown = _convert_with_detected_structure(file_path)
+        if structured_markdown is not None:
+            return structured_markdown
+        return convert_pdf_to_markdown(file_path)
+
+    # Unsupported format
+    raise ValidationError(
+        f"Unsupported input format: {suffix}. Supported formats: .pdf, .docx, .doc"
+    )
 
 
 def derive_convert_output_name(source_path: str, existing: set[str]) -> str:

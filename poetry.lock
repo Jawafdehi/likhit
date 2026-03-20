@@ -455,6 +455,21 @@ files = [
 ]
 
 [[package]]
+name = "docx2txt2"
+version = "1.0.4"
+description = "Extract text from .docx and .odt files to strings in pure python."
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "docx2txt2-1.0.4-py3-none-any.whl", hash = "sha256:59c3ea13eaf15613224b7912c241fca455ba16abe93e493e6c9e05c8e59d17fa"},
+    {file = "docx2txt2-1.0.4.tar.gz", hash = "sha256:62e3c508726f668a21bc2cfa4c376714c9074edced492a9b9760ed0dafb20db5"},
+]
+
+[package.extras]
+dev = ["black (>=24.2.0)", "build (>=1.1.1)", "docx2txt (>=0.8)", "mypy (>=1.9.0)", "pre-commit (>=3.5.0)", "pytest (>=8.1.1)", "pytest-benchmark (>=4.0.0)", "pytest-cov (>=4.1.0)", "ruff (>=0.3.2)", "setuptools-scm (>=8.0.4)"]
+
+[[package]]
 name = "flatbuffers"
 version = "25.12.19"
 description = "The FlatBuffers serialization format for Python"
@@ -1086,6 +1101,18 @@ files = [
 ]
 
 [[package]]
+name = "pyantiword"
+version = "0.1.2"
+description = "Python wrapper for antiword with bundled binary and data files"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "pyantiword-0.1.2-py3-none-any.whl", hash = "sha256:da2f8810f14b4f48ca7fd95e8580cb057b0a30147b4f33bb48d12f0a97069b6b"},
+    {file = "pyantiword-0.1.2.tar.gz", hash = "sha256:4e64b1994b4e059ed8bbf25b49880df4d761e515a3b6fa0934023d325cb33eb3"},
+]
+
+[[package]]
 name = "pycparser"
 version = "3.0"
 description = "C parser in Python"
@@ -1480,4 +1507,4 @@ zstd = ["backports-zstd (>=1.0.0) ; python_version < \"3.14\""]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "747fac4c0eaa7e864cfb6034d9d2463b64048d99d3632e069750a6e6e0f2f6ee"
+content-hash = "341f2f38d5eed474fb7d54d5151e9132a09ac6c0eb68fe5ed67244763414fbd6"
