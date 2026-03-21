@@ -13,15 +13,17 @@ from likhit.errors import LikhitError, ValidationError
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="likhit",
-        description="Convert born-digital PDFs to editable Markdown.",
+        description="Convert documents (PDF, DOCX, DOC) to editable Markdown.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
     convert_parser = subparsers.add_parser(
         "convert",
-        help="Convert PDFs to editable Markdown",
+        help="Convert documents to editable Markdown",
     )
-    convert_parser.add_argument("inputs", nargs="+", help="One or more input PDF files")
+    convert_parser.add_argument(
+        "inputs", nargs="+", help="One or more input files (PDF, DOCX, or DOC)"
+    )
     convert_parser.add_argument("--out", help="Output path for a single input file")
     convert_parser.add_argument(
         "--out-dir",
@@ -34,11 +36,14 @@ def _write_convert_outputs(args: argparse.Namespace) -> int:
     if len(args.inputs) > 1 and args.out:
         raise ValidationError("--out can only be used with a single input file")
 
+    # Validate file extensions
+    supported_extensions = {".pdf", ".docx", ".doc"}
     for input_path in args.inputs:
         path = Path(input_path)
-        if path.suffix.lower() != ".pdf":
+        if path.suffix.lower() not in supported_extensions:
             raise ValidationError(
-                "Unsupported input format for convert. Only born-digital PDF files are supported."
+                f"Unsupported input format: {path.suffix}. "
+                f"Supported formats: {', '.join(sorted(supported_extensions))}"
             )
 
     output_dir = Path(args.out_dir or ".")

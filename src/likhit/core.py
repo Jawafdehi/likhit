@@ -99,16 +99,58 @@ def _convert_with_detected_structure(file_path: str) -> str | None:
 
 
 def convert(file_path: str) -> str:
-    path = Path(file_path)
-    if path.suffix.lower() != ".pdf":
-        raise ValidationError(
-            "Unsupported input format for convert. Only born-digital PDF files are supported."
-        )
+    """Convert a document (PDF, DOCX, or DOC) to Markdown.
 
-    structured_markdown = _convert_with_detected_structure(file_path)
-    if structured_markdown is not None:
-        return structured_markdown
-    return convert_pdf_to_markdown(file_path)
+    For PDFs, attempts structure-aware extraction first, then falls back to MarkItDown.
+    For DOCX/DOC, extracts text and auto-detects document type (CIAA, Kanun Patrika, etc.).
+    """
+    path = Path(file_path)
+    suffix = path.suffix.lower()
+
+    # Handle DOCX/DOC files
+    if suffix in {".docx", ".doc"}:
+        # First, extract raw text using a temporary handler to get the strategy
+        # We use CIAA handler initially just to get the extraction strategy
+        temp_handler = CIAAPressReleaseHandler()
+        strategy = temp_handler.get_extraction_strategy_for_file(file_path)
+        raw_document = strategy.extract_text(file_path)
+
+        # Detect document type from content (same logic as PDFs)
+        doc_type = _detect_document_type(raw_document.raw_text)
+
+        if doc_type is not None:
+            # Use the detected handler
+            handler = _resolve_handler(doc_type)
+            # Re-get the strategy from the correct handler (handles DOC rejection for Kanun Patrika)
+            try:
+                strategy = handler.get_extraction_strategy_for_file(file_path)
+                # Re-extract if needed (in case handler has different logic)
+                raw_document = strategy.extract_text(file_path)
+            except ExtractionError:
+                # If the detected handler rejects the file (e.g., Kanun Patrika rejects DOC),
+                # fall back to generic text rendering
+                return raw_document.raw_text
+
+            result = handler.build_result(
+                raw_document,
+                _metadata_from_options(None, None, None),
+            )
+            return _render_markdown_without_frontmatter(result)
+        else:
+            # No known layout detected, return plain text as markdown
+            return raw_document.raw_text
+
+    # Handle PDF files
+    if suffix == ".pdf":
+        structured_markdown = _convert_with_detected_structure(file_path)
+        if structured_markdown is not None:
+            return structured_markdown
+        return convert_pdf_to_markdown(file_path)
+
+    # Unsupported format
+    raise ValidationError(
+        f"Unsupported input format: {suffix}. Supported formats: .pdf, .docx, .doc"
+    )
 
 
 def derive_convert_output_name(source_path: str, existing: set[str]) -> str:
