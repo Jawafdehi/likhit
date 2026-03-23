@@ -142,10 +142,6 @@ class TestCoreAPIConversion:
             marker in markdown for marker in ["निर्णय नं", "कानून पत्रिका"]
         ), "Kanun Patrika markers not found in output"
 
-    @pytest.mark.skipif(
-        IS_WINDOWS,
-        reason="DOCX integration is skipped on Windows in this test suite",
-    )
     def test_ciaa_docx_contains_expected_markers(self) -> None:
         """Test that CIAA DOCX contains expected markers."""
         ciaa_docx = TEST_DATA_DIR / "ciaa_pressrelease_sample.docx"
