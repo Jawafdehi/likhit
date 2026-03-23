@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import platform
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -21,9 +23,42 @@ from .conftest import (
 
 # Platform detection for DOC tests
 IS_WINDOWS = platform.system() == "Windows"
-SKIP_DOC_ON_WINDOWS = pytest.mark.skipif(
-    IS_WINDOWS,
-    reason="DOC extraction requires antiword and is unsupported on Windows",
+
+
+def _has_working_doc_runtime() -> bool:
+    """Return True when at least one DOC extractor runtime is available."""
+    # macOS ships textutil, which we support as a DOC fallback extractor.
+    if shutil.which("textutil"):
+        return True
+
+    antiword_bin = shutil.which("antiword")
+    if antiword_bin:
+        return True
+
+    try:
+        import pyantiword
+
+        bundled = Path(pyantiword.__file__).resolve().parent / "antiword"
+        if not bundled.exists():
+            return False
+        subprocess.run(
+            [str(bundled), "-h"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return True
+    except (OSError, ImportError):
+        return False
+
+
+DOC_EXTRACTION_AVAILABLE = (not IS_WINDOWS) and _has_working_doc_runtime()
+SKIP_DOC_WHEN_UNAVAILABLE = pytest.mark.skipif(
+    not DOC_EXTRACTION_AVAILABLE,
+    reason=(
+        "DOC extraction requires a working runtime (antiword or macOS textutil). "
+        "On macOS you can also install antiword with: brew install antiword"
+    ),
 )
 
 
@@ -67,10 +102,10 @@ class TestCoreAPIConversion:
     @pytest.mark.parametrize("fixture_path", discover_all_fixtures())
     def test_convert_produces_nonempty_output(self, fixture_path: Path) -> None:
         """Test that convert() produces non-empty output for all fixtures."""
-        # Skip DOC files on Windows
-        if fixture_path.suffix.lower() == ".doc" and IS_WINDOWS:
+        # Skip DOC files when antiword runtime is unavailable on this host
+        if fixture_path.suffix.lower() == ".doc" and not DOC_EXTRACTION_AVAILABLE:
             pytest.skip(
-                "DOC extraction requires antiword and is unsupported on Windows"
+                "DOC extraction requires a working runtime (antiword or macOS textutil)"
             )
 
         markdown = convert(str(fixture_path))
@@ -107,7 +142,10 @@ class TestCoreAPIConversion:
             marker in markdown for marker in ["निर्णय नं", "कानून पत्रिका"]
         ), "Kanun Patrika markers not found in output"
 
-    @SKIP_DOC_ON_WINDOWS
+    @pytest.mark.skipif(
+        IS_WINDOWS,
+        reason="DOCX integration is skipped on Windows in this test suite",
+    )
     def test_ciaa_docx_contains_expected_markers(self) -> None:
         """Test that CIAA DOCX contains expected markers."""
         ciaa_docx = TEST_DATA_DIR / "ciaa_pressrelease_sample.docx"
@@ -121,7 +159,7 @@ class TestCoreAPIConversion:
             marker in markdown for marker in ["अख्तियार", "प्रेस", "विषय"]
         ), "CIAA markers not found in DOCX output"
 
-    @SKIP_DOC_ON_WINDOWS
+    @SKIP_DOC_WHEN_UNAVAILABLE
     def test_ciaa_doc_contains_expected_markers(self) -> None:
         """Test that CIAA DOC contains expected markers."""
         ciaa_doc = TEST_DATA_DIR / "ciaa_legacy_sample.doc"
@@ -166,8 +204,8 @@ class TestCLIConversion:
 
         output_dir = tmp_path / "output"
 
-        # Skip DOC on Windows for batch test
-        if IS_WINDOWS:
+        # Include DOC only when a working DOC runtime is available
+        if not DOC_EXTRACTION_AVAILABLE:
             exit_code = main(
                 [
                     "convert",
@@ -195,7 +233,7 @@ class TestCLIConversion:
 
         # Check that output files were created
         output_files = list(output_dir.glob("*.md"))
-        expected_count = 2 if IS_WINDOWS else 3
+        expected_count = 2 if not DOC_EXTRACTION_AVAILABLE else 3
         assert (
             len(output_files) == expected_count
         ), f"Expected {expected_count} output files, found {len(output_files)}"
@@ -212,8 +250,8 @@ class TestCLIConversion:
         if len(fixtures) < 2:
             pytest.skip("Not enough fixtures for batch test")
 
-        # Filter out DOC on Windows
-        if IS_WINDOWS:
+        # Filter out DOC when a working DOC runtime is unavailable
+        if not DOC_EXTRACTION_AVAILABLE:
             fixtures = [f for f in fixtures if f.suffix.lower() != ".doc"]
 
         output_dir = tmp_path / "batch_output"
