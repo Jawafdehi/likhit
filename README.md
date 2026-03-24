@@ -129,6 +129,36 @@ This keeps the public product story simple: `likhit` is the tool users call, whi
 - `src/likhit/handlers/`: document type handlers (CIAA, Kanun Patrika)
 - `src/likhit/renderers/`: Markdown rendering
 - `tests/`: conversion, extraction, and CLI coverage
+  - `tests/integration/`: end-to-end integration tests with real document fixtures
+  - `tests/integration/test_data/`: committed test fixtures (PDF, DOCX, DOC samples)
+
+## Testing
+
+### Running Tests
+
+Run all tests (unit + integration):
+```bash
+poetry run pytest
+```
+
+Run only integration tests:
+```bash
+poetry run pytest tests/integration -v
+```
+
+Run with coverage:
+```bash
+poetry run pytest --cov=likhit
+```
+
+### Integration Test Fixtures
+
+Integration tests use real document fixtures stored in `tests/integration/test_data/`:
+- **Size policy**: Total fixture size kept under 50 MB (currently ~2.35 MB)
+- **Formats**: PDF, DOCX, DOC samples covering CIAA and Kanun Patrika documents
+- **Platform notes**: DOC tests automatically skip on Windows (requires antiword)
+
+See `tests/integration/README.md` for fixture governance and how to add new samples.
 
 ## References
 
