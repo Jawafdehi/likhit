@@ -1,6 +1,6 @@
 [project]
 name = "likhit"
-version = "0.1.0"
+version = "0.1.1"
 description = "Nepali PDF-to-Markdown converter powered by MarkItDown"
 authors = [
     { name = "notashwinii", email = "ashwinii.subedi@gmail.com" }
