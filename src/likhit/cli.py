@@ -13,7 +13,7 @@ from likhit.errors import LikhitError, ValidationError
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="likhit",
-        description="Convert documents (PDF, DOCX, DOC) to editable Markdown.",
+        description="Convert documents (PDF, DOCX, DOC) to editable Markdown or text.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -27,9 +27,29 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument("--out", help="Output path for a single input file")
     convert_parser.add_argument(
         "--out-dir",
-        help="Directory for generated Markdown files; defaults to current directory",
+        help="Directory for generated output files; defaults to current directory",
+    )
+    convert_parser.add_argument(
+        "--format",
+        choices=("md", "txt"),
+        default=None,
+        help="Output format. Defaults to md, or inferred from --out for single files.",
     )
     return parser
+
+
+def _resolve_output_format(args: argparse.Namespace) -> str:
+    if args.format:
+        return args.format
+
+    if args.out:
+        suffix = Path(args.out).suffix.lower()
+        if suffix == ".txt":
+            return "txt"
+        if suffix == ".md":
+            return "md"
+
+    return "md"
 
 
 def _write_convert_outputs(args: argparse.Namespace) -> int:
@@ -46,9 +66,10 @@ def _write_convert_outputs(args: argparse.Namespace) -> int:
                 f"Supported formats: {', '.join(sorted(supported_extensions))}"
             )
 
+    output_format = _resolve_output_format(args)
     output_dir = Path(args.out_dir or ".")
     output_dir.mkdir(parents=True, exist_ok=True)
-    results = convert_many(args.inputs)
+    results = convert_many(args.inputs, output_format=output_format)
 
     existing_names: set[str] = {
         path.name for path in output_dir.iterdir() if path.is_file()
@@ -63,6 +84,7 @@ def _write_convert_outputs(args: argparse.Namespace) -> int:
             destination = output_dir / derive_convert_output_name(
                 source_path,
                 existing_names,
+                output_format=output_format,
             )
         destination.write_text(markdown, encoding="utf-8")
     return 0

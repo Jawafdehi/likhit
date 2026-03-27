@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from typing import Literal
 
 from likhit.errors import ExtractionError, ValidationError
 from likhit.document_types import CIAAPressReleaseHandler, KanunPatrikaHandler
 from likhit.markitdown_integration import convert_pdf_to_markdown
 from likhit.models import DocumentType, ExtractionResult
 from likhit.markdown import MarkdownRenderer
+from likhit.document_types.content_blocks import blocks_to_text
 from likhit.extraction.pdf.font_based import FontBasedStrategy
 
 _KANUN_MARKERS = (
@@ -27,6 +29,7 @@ _CIAA_MARKERS = (
     "आयोगकोनिर्णय",
     "अनुसन्धानबाट पुष्टि भएको",
 )
+OutputFormat = Literal["md", "txt"]
 
 
 def _metadata_from_options(
@@ -78,7 +81,69 @@ def _render_markdown_without_frontmatter(result: ExtractionResult) -> str:
     return parts[1].strip()
 
 
-def _convert_with_detected_structure(file_path: str) -> str | None:
+def _strip_markdown_frontmatter(markdown: str) -> str:
+    markdown = markdown.lstrip()
+    if not markdown.startswith("---\n"):
+        return markdown
+
+    parts = markdown.split("\n---\n", 1)
+    if len(parts) != 2:
+        return markdown
+    return parts[1]
+
+
+def _markdown_to_text(markdown: str) -> str:
+    text = _strip_markdown_frontmatter(markdown).strip()
+    if not text:
+        return ""
+
+    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", text)
+    text = re.sub(r"(?m)^\s*[-*+]\s+", "", text)
+    text = re.sub(r"(?m)^\s*>\s?", "", text)
+    text = re.sub(r"(?m)^\s*```[^\n]*\n?", "", text)
+    text = re.sub(r"(?m)^\s*```$", "", text)
+    text = re.sub(r"(?<!\*)\*\*(.+?)\*\*(?!\*)", r"\1", text)
+    text = re.sub(r"(?<!_)__(.+?)__(?!_)", r"\1", text)
+    text = re.sub(r"(?<!\*)\*(.+?)\*(?!\*)", r"\1", text)
+    text = re.sub(r"(?<!_)_(.+?)_(?!_)", r"\1", text)
+    text = re.sub(r"\[(.*?)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _render_text_output(result: ExtractionResult) -> str:
+    parts: list[str] = [result.title.strip()]
+    for section in result.sections:
+        if section.heading and section.heading.strip() != result.title.strip():
+            parts.append(section.heading.strip())
+        if section.blocks:
+            body = blocks_to_text(section.blocks).strip()
+        else:
+            body = section.body.strip()
+        if body:
+            parts.append(body)
+    return "\n\n".join(part for part in parts if part).strip()
+
+
+def _render_output(result: ExtractionResult, output_format: OutputFormat) -> str:
+    if output_format == "txt":
+        return _render_text_output(result)
+    return _render_markdown_without_frontmatter(result)
+
+
+def _normalize_output_format(output_format: str) -> OutputFormat:
+    normalized = output_format.lower()
+    if normalized not in {"md", "txt"}:
+        raise ValidationError(
+            f"Unsupported output format: {output_format}. Supported formats: md, txt"
+        )
+    return normalized
+
+
+def _convert_with_detected_structure(
+    file_path: str, output_format: OutputFormat = "md"
+) -> str | None:
     strategy = FontBasedStrategy()
     try:
         raw_document = strategy.extract_text(file_path)
@@ -95,15 +160,16 @@ def _convert_with_detected_structure(file_path: str) -> str | None:
         raw_document,
         _metadata_from_options(None, None, None),
     )
-    return _render_markdown_without_frontmatter(result)
+    return _render_output(result, output_format)
 
 
-def convert(file_path: str) -> str:
+def convert(file_path: str, output_format: str = "md") -> str:
     """Convert a document (PDF, DOCX, or DOC) to Markdown.
 
     For PDFs, attempts structure-aware extraction first, then falls back to MarkItDown.
     For DOCX/DOC, extracts text and auto-detects document type (CIAA, Kanun Patrika, etc.).
     """
+    normalized_output_format = _normalize_output_format(output_format)
     path = Path(file_path)
     suffix = path.suffix.lower()
 
@@ -126,30 +192,43 @@ def convert(file_path: str) -> str:
                 raw_document,
                 _metadata_from_options(None, None, None),
             )
-            return _render_markdown_without_frontmatter(result)
+            return _render_output(result, normalized_output_format)
         return raw_document.raw_text
 
     if suffix == ".pdf":
-        structured_markdown = _convert_with_detected_structure(file_path)
-        if structured_markdown is not None:
-            return structured_markdown
-        return convert_pdf_to_markdown(file_path)
+        structured_output = _convert_with_detected_structure(
+            file_path, normalized_output_format
+        )
+        if structured_output is not None:
+            return structured_output
+        markdown = convert_pdf_to_markdown(file_path)
+        if normalized_output_format == "txt":
+            return _markdown_to_text(markdown)
+        return markdown
 
     raise ValidationError(
         f"Unsupported input format: {suffix}. Supported formats: .pdf, .docx, .doc"
     )
 
 
-def derive_convert_output_name(source_path: str, existing: set[str]) -> str:
+def derive_convert_output_name(
+    source_path: str, existing: set[str], output_format: str = "md"
+) -> str:
+    normalized_output_format = _normalize_output_format(output_format)
     base_name = Path(source_path).stem or "document"
-    candidate = f"{base_name}.md"
+    candidate = f"{base_name}.{normalized_output_format}"
     counter = 2
     while candidate in existing:
-        candidate = f"{base_name}-{counter}.md"
+        candidate = f"{base_name}-{counter}.{normalized_output_format}"
         counter += 1
     existing.add(candidate)
     return candidate
 
 
-def convert_many(file_paths: list[str]) -> list[tuple[str, str]]:
-    return [(file_path, convert(file_path)) for file_path in file_paths]
+def convert_many(
+    file_paths: list[str], output_format: str = "md"
+) -> list[tuple[str, str]]:
+    return [
+        (file_path, convert(file_path, output_format=output_format))
+        for file_path in file_paths
+    ]
