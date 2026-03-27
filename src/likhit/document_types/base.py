@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from likhit.extractors.base import ExtractionStrategy, RawDocument
+from likhit.extraction.base import ExtractionStrategy, RawDocument
 from likhit.models import ExtractionResult
 
 

@@ -15,8 +15,8 @@ from markitdown import (
 from markitdown.converters._pdf_converter import PdfConverter
 
 from likhit.errors import ExtractionError, ValidationError
-from likhit.markdown_assembly import assemble_markdown, derive_markdown_title
-from likhit.nepali_pdf_repair import (
+from likhit.markdown.assembly import assemble_markdown, derive_markdown_title
+from likhit.extraction.pdf.repair import (
     extract_repaired_text_blocks,
     is_pdf_stream,
     needs_nepali_pdf_repair,

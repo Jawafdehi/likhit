@@ -9,15 +9,15 @@ from pathlib import Path
 import fitz
 
 from likhit.errors import ExtractionError, ValidationError
-from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
-from likhit.extractors.font_classifier import scan_pdf_fonts
-from likhit.extractors.kalimati import (
+from likhit.extraction.base import ExtractionStrategy, RawDocument, TextFragment
+from likhit.extraction.pdf.font_classifier import scan_pdf_fonts
+from likhit.extraction.pdf.kalimati import (
     fix_kalimati_cmap,
     normalize_devanagari_spacing,
     reorder_devanagari,
 )
-from likhit.extractors.legacy_maps import get_converter
-from likhit.extractors.tables import detect_page_tables, merge_continuation_tables
+from likhit.extraction.pdf.legacy_maps import get_converter
+from likhit.extraction.pdf.tables import detect_page_tables, merge_continuation_tables
 from likhit.models import Table
 
 

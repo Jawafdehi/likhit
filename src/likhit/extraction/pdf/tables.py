@@ -6,7 +6,7 @@ from contextlib import redirect_stdout
 import io
 import re
 
-from likhit.extractors.base import TextFragment
+from likhit.extraction.base import TextFragment
 from likhit.models import Table, TableCell, TableRegion
 
 _EDGE_TOLERANCE = 1.5

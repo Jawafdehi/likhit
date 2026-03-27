@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from likhit.core import convert_many, derive_convert_output_name
+from likhit.application.convert import convert_many, derive_convert_output_name
 from likhit.errors import LikhitError, ValidationError
 
 
