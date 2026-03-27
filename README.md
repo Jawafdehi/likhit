@@ -43,16 +43,19 @@ The publish workflow verifies that the git tag matches the version in `pyproject
 
 ## Recommended Usage
 
-Convert a single document to editable Markdown:
+Convert a single document to editable Markdown or plain text:
 
 ```bash
-# PDF
+# PDF -> Markdown
 poetry run likhit convert path/to/document.pdf --out path/to/document.md
 
-# DOCX (all document types)
+# DOCX -> Markdown (all document types)
 poetry run likhit convert path/to/document.docx --out path/to/document.md
 
-# DOC (legacy Word format - CIAA documents only, Linux/Mac only)
+# PDF -> plain text
+poetry run likhit convert path/to/document.pdf --out path/to/document.txt
+
+# DOC (legacy Word format - CIAA documents only, Linux/Mac only) -> Markdown
 poetry run likhit convert path/to/ciaa-document.doc --out path/to/document.md
 ```
 
@@ -62,9 +65,12 @@ Convert multiple documents at once:
 
 ```bash
 poetry run likhit convert path/to/a.pdf path/to/b.docx --out-dir path/to/output-dir
+
+# Generate .txt files instead of .md files
+poetry run likhit convert path/to/a.pdf path/to/b.docx --out-dir path/to/output-dir --format txt
 ```
 
-If `--out` or `--out-dir` is omitted, `likhit` writes Markdown files in the current directory using the input filename stem.
+If `--out` or `--out-dir` is omitted, `likhit` writes output files in the current directory using the input filename stem. Markdown is the default, and `.txt` output can be selected with `--format txt` or by passing a `.txt` path to `--out`.
 
 ## Usage
 
@@ -99,7 +105,9 @@ This keeps the public product story simple: `likhit` is the tool users call, whi
   - PDF (born-digital, with Nepali text repair)
   - DOCX (Microsoft Word 2007+, text extraction only, all document types)
   - DOC (legacy Microsoft Word, CIAA documents only, Linux/Mac only)
-- Supported output: Markdown only
+- Supported output:
+  - Markdown (`.md`)
+  - Plain text (`.txt`)
 - Supported document types: CIAA press releases, Kanun Patrika journals
 - Unsupported in this branch: OCR, scanned/image-only PDFs, image inputs
 

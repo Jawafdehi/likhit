@@ -102,7 +102,9 @@ def test_convert_plain_unicode_pdf_uses_default_markitdown_path(
     calls: list[str] = []
 
     monkeypatch.setattr(
-        core_module, "_convert_with_detected_structure", lambda _path: None
+        core_module,
+        "_convert_with_detected_structure",
+        lambda _path, _format="md": None,
     )
 
     def fake_convert_pdf_to_markdown(file_path: str) -> str:
@@ -120,6 +122,28 @@ def test_convert_plain_unicode_pdf_uses_default_markitdown_path(
     assert markdown == "नेपाल सरकार\n\nयो एउटा परीक्षण अनुच्छेद हो।"
     assert not markdown.startswith("---")
     assert calls == [str(pdf_path)]
+
+
+def test_convert_pdf_txt_output_strips_basic_markdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pdf_path = tmp_path / "unicode.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+
+    monkeypatch.setattr(
+        core_module,
+        "_convert_with_detected_structure",
+        lambda _path, _format="md": None,
+    )
+    monkeypatch.setattr(
+        core_module,
+        "convert_pdf_to_markdown",
+        lambda _path: "# नेपाल सरकार\n\n- **सूचना:** विवरण",
+    )
+
+    text = convert(str(pdf_path), output_format="txt")
+
+    assert text == "नेपाल सरकार\nसूचना: विवरण"
 
 
 def test_convert_repairs_broken_cmap_sample() -> None:
@@ -241,7 +265,9 @@ def test_cli_convert_single_file_with_out(
     monkeypatch.setattr(
         cli_module,
         "convert_many",
-        lambda file_paths: [(file_paths[0], "नेपाल सरकार\n\nयो एउटा परीक्षण अनुच्छेद हो।")],
+        lambda file_paths, output_format="md": [
+            (file_paths[0], "नेपाल सरकार\n\nयो एउटा परीक्षण अनुच्छेद हो।")
+        ],
     )
 
     exit_code = main(["convert", str(pdf_path), "--out", str(output_path)])
@@ -264,7 +290,7 @@ def test_cli_convert_multiple_inputs_with_out_dir(
     monkeypatch.setattr(
         cli_module,
         "convert_many",
-        lambda file_paths: [
+        lambda file_paths, output_format="md": [
             (file_paths[0], "पहिलो\n\nपहिलो अनुच्छेद।"),
             (file_paths[1], "दोस्रो\n\nदोस्रो अनुच्छेद।"),
         ],
@@ -299,6 +325,62 @@ def test_cli_convert_rejects_unsupported_extension(
     assert exit_code == 1
     assert "Unsupported input format" in captured.err
     assert ".txt" in captured.err
+
+
+def test_cli_convert_single_file_infers_txt_output_from_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pdf_path = tmp_path / "single.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    output_path = tmp_path / "single.txt"
+
+    monkeypatch.setattr(
+        cli_module,
+        "convert_many",
+        lambda file_paths, output_format="md": [
+            (file_paths[0], f"format={output_format}\nनेपाल सरकार")
+        ],
+    )
+
+    exit_code = main(["convert", str(pdf_path), "--out", str(output_path)])
+
+    assert exit_code == 0
+    assert output_path.read_text(encoding="utf-8") == "format=txt\nनेपाल सरकार"
+
+
+def test_cli_convert_multiple_inputs_with_txt_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "first.pdf"
+    second = tmp_path / "second.pdf"
+    first.write_bytes(b"%PDF-1.4")
+    second.write_bytes(b"%PDF-1.4")
+    output_dir = tmp_path / "out"
+
+    monkeypatch.setattr(
+        cli_module,
+        "convert_many",
+        lambda file_paths, output_format="md": [
+            (file_paths[0], f"{output_format}-first"),
+            (file_paths[1], f"{output_format}-second"),
+        ],
+    )
+
+    exit_code = main(
+        [
+            "convert",
+            str(first),
+            str(second),
+            "--out-dir",
+            str(output_dir),
+            "--format",
+            "txt",
+        ]
+    )
+
+    assert exit_code == 0
+    assert (output_dir / "first.txt").read_text(encoding="utf-8") == "txt-first"
+    assert (output_dir / "second.txt").read_text(encoding="utf-8") == "txt-second"
 
 
 def test_cli_convert_reports_blank_pdf(
