@@ -6,18 +6,18 @@ from pathlib import Path
 import pytest
 
 from likhit.errors import ExtractionError, ValidationError
-from likhit.extractors.base import RawDocument, TextFragment
-from likhit.extractors.font_classifier import classify_font
-import likhit.extractors.font_based as font_based_module
-from likhit.extractors.font_based import (
+from likhit.document_types.ciaa_press_release import CIAAPressReleaseHandler
+from likhit.extraction.base import RawDocument, TextFragment
+from likhit.extraction.pdf.font_based import (
     FontBasedStrategy,
     join_spans_with_layout,
     join_words_with_spacing,
     normalize_extracted_word,
     parse_page_range,
 )
-from likhit.extractors.kalimati import _get_font_correction_map
-from likhit.handlers.ciaa_press_release import CIAAPressReleaseHandler
+from likhit.extraction.pdf.font_classifier import classify_font
+from likhit.extraction.pdf.kalimati import _get_font_correction_map
+import likhit.extraction.pdf.font_based as font_based_module
 
 
 ROOT = Path(__file__).resolve().parents[1]
