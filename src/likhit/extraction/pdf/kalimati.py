@@ -118,7 +118,16 @@ def _build_cmap_stream(mapping: dict[int, str]) -> bytes:
 def _analyze_gsub(
     font, glyph_order: list[str], gid_to_correct: dict[int, str]
 ) -> dict[int, str]:
+    if "GSUB" not in font:
+        return {}
+
     gsub = font["GSUB"]
+    if (
+        getattr(gsub.table, "FeatureList", None) is None
+        or getattr(gsub.table, "LookupList", None) is None
+    ):
+        return {}
+
     lookup_features: dict[int, set[str]] = {}
 
     for feature_record in gsub.table.FeatureList.FeatureRecord:
