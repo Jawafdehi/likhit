@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from likhit.errors import ExtractionError
-from likhit.extractors.docx_based import DocxBasedStrategy
-from likhit.handlers.ciaa_press_release import CIAAPressReleaseHandler
-from likhit.handlers.kanun_patrika import KanunPatrikaHandler
+from likhit.document_types.ciaa_press_release import CIAAPressReleaseHandler
+from likhit.document_types.kanun_patrika import KanunPatrikaHandler
+from likhit.extraction.word.docx_based import DocxBasedStrategy
 
 
 class TestDocxBasedStrategy:
@@ -146,7 +146,7 @@ class TestDocxDocumentTypeDetection:
         from unittest.mock import patch
 
         # Mock MarkItDown to return CIAA-like content
-        with patch("likhit.extractors.docx_based.MarkItDown") as mock_md_class:
+        with patch("likhit.extraction.word.docx_based.MarkItDown") as mock_md_class:
             mock_md = MagicMock()
             mock_result = MagicMock()
             mock_result.text_content = (
@@ -169,7 +169,7 @@ class TestDocxDocumentTypeDetection:
         from unittest.mock import patch
 
         # Mock MarkItDown to return Kanun Patrika-like content
-        with patch("likhit.extractors.docx_based.MarkItDown") as mock_md_class:
+        with patch("likhit.extraction.word.docx_based.MarkItDown") as mock_md_class:
             mock_md = MagicMock()
             mock_result = MagicMock()
             mock_result.text_content = (
@@ -190,7 +190,7 @@ class TestDocxDocumentTypeDetection:
         from unittest.mock import patch
 
         # Mock MarkItDown to return generic content (no markers)
-        with patch("likhit.extractors.docx_based.MarkItDown") as mock_md_class:
+        with patch("likhit.extraction.word.docx_based.MarkItDown") as mock_md_class:
             mock_md = MagicMock()
             mock_result = MagicMock()
             mock_result.text_content = "This is just plain text with no markers."

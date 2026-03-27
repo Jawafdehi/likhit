@@ -8,7 +8,7 @@ import re
 import yaml
 
 from likhit.models import ExtractionResult, ParagraphBlock, Section, Table, TableBlock
-from likhit.renderers.base import OutputRenderer
+from likhit.markdown.base import OutputRenderer
 
 _SERIAL_PATTERN = re.compile(r"^[०-९0-9]+(?:[.)।])?$")
 

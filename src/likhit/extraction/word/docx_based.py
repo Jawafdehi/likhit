@@ -8,7 +8,7 @@ import subprocess
 from markitdown import MarkItDown
 
 from likhit.errors import ExtractionError
-from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
+from likhit.extraction.base import ExtractionStrategy, RawDocument, TextFragment
 
 
 class DocxBasedStrategy(ExtractionStrategy):

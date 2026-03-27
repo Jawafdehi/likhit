@@ -7,11 +7,11 @@ from pathlib import Path
 import re
 
 from likhit.errors import ExtractionError
-from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
-from likhit.extractors.docx_based import DocxBasedStrategy
-from likhit.extractors.font_based import FontBasedStrategy
-from likhit.handlers.base import DocumentTypeHandler
-from likhit.handlers.content_blocks import blocks_to_text, build_content_blocks
+from likhit.document_types.base import DocumentTypeHandler
+from likhit.document_types.content_blocks import blocks_to_text, build_content_blocks
+from likhit.extraction.base import ExtractionStrategy, RawDocument, TextFragment
+from likhit.extraction.pdf.font_based import FontBasedStrategy
+from likhit.extraction.word.docx_based import DocxBasedStrategy
 from likhit.models import DocumentType, ExtractionResult, ParagraphBlock, Section
 from likhit.models.types import ContentBlock
 

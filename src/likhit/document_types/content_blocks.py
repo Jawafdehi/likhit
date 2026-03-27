@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Callable
 
-from likhit.extractors.base import TextFragment
+from likhit.extraction.base import TextFragment
 from likhit.models import ParagraphBlock, Table, TableBlock, TableRegion
 from likhit.models.types import ContentBlock
 

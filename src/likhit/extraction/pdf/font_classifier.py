@@ -6,7 +6,7 @@ import logging
 
 import fitz
 
-from . import legacy_maps
+from likhit.extraction.pdf import legacy_maps
 
 logger = logging.getLogger(__name__)
 
