@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from likhit.converters.nepali_docx import NepaliDocxConverter
 from likhit.errors import ExtractionError
 from likhit.extractors.docx_based import DocxBasedStrategy
-from likhit.handlers.ciaa_press_release import CIAAPressReleaseHandler
-from likhit.handlers.kanun_patrika import KanunPatrikaHandler
+from likhit.handlers.single_column_notice import SingleColumnNoticeHandler
+from likhit.handlers.two_column_layout import TwoColumnLayoutHandler
 
 
 class TestDocxBasedStrategy:
@@ -19,7 +21,6 @@ class TestDocxBasedStrategy:
         """Test that DOCX extraction creates proper text fragments."""
         strategy = DocxBasedStrategy()
 
-        # Mock MarkItDown.convert to return sample text
         with patch.object(strategy._markitdown, "convert") as mock_convert:
             mock_result = MagicMock()
             mock_result.text_content = "विषय: परीक्षण\n\nयो एउटा परीक्षण हो।"
@@ -28,7 +29,7 @@ class TestDocxBasedStrategy:
             result = strategy.extract_text("test.docx")
 
             assert result.raw_text == "विषय: परीक्षण\n\nयो एउटा परीक्षण हो।"
-            assert len(result.fragments) == 2  # Two non-empty paragraphs
+            assert len(result.fragments) == 2
             assert result.fragments[0].text == "विषय: परीक्षण"
             assert result.fragments[1].text == "यो एउटा परीक्षण हो।"
             assert result.paragraphs == ["विषय: परीक्षण", "यो एउटा परीक्षण हो।"]
@@ -37,7 +38,6 @@ class TestDocxBasedStrategy:
         """Test that DOC extraction creates proper text fragments."""
         strategy = DocxBasedStrategy()
 
-        # Mock pyantiword.extract_text_with_antiword to return sample text
         with patch(
             "pyantiword.antiword_wrapper.extract_text_with_antiword"
         ) as mock_extract:
@@ -73,123 +73,98 @@ class TestDocxBasedStrategy:
         """Test that extract_tables returns empty list (no table support)."""
         strategy = DocxBasedStrategy()
 
-        tables = strategy.extract_tables("test.docx")
-
-        assert tables == []
+        assert strategy.extract_tables("test.docx") == []
 
 
-class TestCIAAHandlerDocxRouting:
-    """Test CIAA handler routes DOCX/DOC files correctly."""
+class TestSingleColumnNoticeDocxRouting:
+    """Test single-column notice handler routes word files correctly."""
 
     def test_get_extraction_strategy_for_docx(self):
-        """Test that DOCX files are routed to DocxBasedStrategy."""
-        handler = CIAAPressReleaseHandler()
-
-        strategy = handler.get_extraction_strategy_for_file("test.docx")
-
-        assert isinstance(strategy, DocxBasedStrategy)
+        handler = SingleColumnNoticeHandler()
+        assert isinstance(
+            handler.get_extraction_strategy_for_file("test.docx"),
+            DocxBasedStrategy,
+        )
 
     def test_get_extraction_strategy_for_doc(self):
-        """Test that DOC files are routed to DocxBasedStrategy."""
-        handler = CIAAPressReleaseHandler()
-
-        strategy = handler.get_extraction_strategy_for_file("test.doc")
-
-        assert isinstance(strategy, DocxBasedStrategy)
+        handler = SingleColumnNoticeHandler()
+        assert isinstance(
+            handler.get_extraction_strategy_for_file("test.doc"),
+            DocxBasedStrategy,
+        )
 
     def test_get_extraction_strategy_for_pdf(self):
-        """Test that PDF files are routed to FontBasedStrategy."""
-        handler = CIAAPressReleaseHandler()
-
-        strategy = handler.get_extraction_strategy_for_file("test.pdf")
-
-        # Should not be DocxBasedStrategy
-        assert not isinstance(strategy, DocxBasedStrategy)
+        handler = SingleColumnNoticeHandler()
+        assert not isinstance(
+            handler.get_extraction_strategy_for_file("test.pdf"),
+            DocxBasedStrategy,
+        )
 
 
-class TestKanunPatrikaHandlerDocxRouting:
-    """Test Kanun Patrika handler routes DOCX correctly and rejects DOC."""
+class TestTwoColumnLayoutDocxRouting:
+    """Test two-column layout handler routes word files generically."""
 
     def test_get_extraction_strategy_for_docx(self):
-        """Test that DOCX files are routed to DocxBasedStrategy."""
-        handler = KanunPatrikaHandler()
+        handler = TwoColumnLayoutHandler()
+        assert isinstance(
+            handler.get_extraction_strategy_for_file("test.docx"),
+            DocxBasedStrategy,
+        )
 
-        strategy = handler.get_extraction_strategy_for_file("test.docx")
-
-        assert isinstance(strategy, DocxBasedStrategy)
-
-    def test_get_extraction_strategy_for_doc_raises_error(self):
-        """Test that DOC files are rejected for Kanun Patrika."""
-        handler = KanunPatrikaHandler()
-
-        with pytest.raises(
-            ExtractionError, match="Legacy .doc format is not supported"
-        ):
-            handler.get_extraction_strategy_for_file("test.doc")
+    def test_get_extraction_strategy_for_doc(self):
+        handler = TwoColumnLayoutHandler()
+        assert isinstance(
+            handler.get_extraction_strategy_for_file("test.doc"),
+            DocxBasedStrategy,
+        )
 
     def test_get_extraction_strategy_for_pdf(self):
-        """Test that PDF files are routed to FontBasedStrategy."""
-        handler = KanunPatrikaHandler()
-
-        strategy = handler.get_extraction_strategy_for_file("test.pdf")
-
-        # Should not be DocxBasedStrategy
-        assert not isinstance(strategy, DocxBasedStrategy)
+        handler = TwoColumnLayoutHandler()
+        assert not isinstance(
+            handler.get_extraction_strategy_for_file("test.pdf"),
+            DocxBasedStrategy,
+        )
 
 
-class TestDocxDocumentTypeDetection:
-    """Test that DOCX/DOC files are auto-detected for document type."""
+class TestDocxStructureDetection:
+    """Test that DOCX/DOC files are routed by structure cues."""
 
-    def test_ciaa_docx_detected_and_routed_correctly(self):
-        """Test that CIAA DOCX files are detected and use CIAA handler."""
-        from likhit.core import convert
-        from unittest.mock import patch
-
-        # Mock MarkItDown to return CIAA-like content
+    def test_notice_style_docx_detected_and_routed_correctly(self):
         with patch("likhit.extractors.docx_based.MarkItDown") as mock_md_class:
             mock_md = MagicMock()
             mock_result = MagicMock()
             mock_result.text_content = (
-                "विषय: परीक्षण\n\nअख्तियार दुरुपयोग अनुसन्धान आयोग\n\nयो एउटा परीक्षण हो।"
+                "विषय: परीक्षण\n\nमिति: २०८२।०१।१४\n\nयो एउटा परीक्षण हो।"
             )
             mock_md.convert.return_value = mock_result
             mock_md_class.return_value = mock_md
 
-            # This should detect CIAA and use CIAA handler
-            result = convert("test.docx")
+            result = NepaliDocxConverter().convert(
+                file_stream=MagicMock(read=lambda: b"fake-docx"),
+                stream_info=SimpleNamespace(extension=".docx", mimetype=""),
+            )
 
-            # Should contain the text
-            assert "परीक्षण" in result
-            # Should be processed (not just raw text)
-            assert result.strip() != mock_result.text_content
+            assert result.text_content.startswith("# परीक्षण")
+            assert "मिति: २०८२।०१।१४" in result.text_content
 
-    def test_kanun_patrika_docx_detected_and_routed_correctly(self):
-        """Test that Kanun Patrika DOCX files are detected and use Kanun Patrika handler."""
-        from likhit.core import convert
-        from unittest.mock import patch
-
-        # Mock MarkItDown to return Kanun Patrika-like content
+    def test_dense_docx_without_notice_cues_falls_back_to_plain_text(self):
         with patch("likhit.extractors.docx_based.MarkItDown") as mock_md_class:
             mock_md = MagicMock()
             mock_result = MagicMock()
             mock_result.text_content = (
-                "नेपाल कानून पत्रिका\n\nनिर्णय नं १२३\n\nयो एउटा परीक्षण हो।"
+                "अनुच्छेद १\n\nअनुच्छेद २\n\nअनुच्छेद ३"
             )
             mock_md.convert.return_value = mock_result
             mock_md_class.return_value = mock_md
 
-            # This should detect Kanun Patrika and use Kanun Patrika handler
-            result = convert("test.docx")
+            result = NepaliDocxConverter().convert(
+                file_stream=MagicMock(read=lambda: b"fake-docx"),
+                stream_info=SimpleNamespace(extension=".docx", mimetype=""),
+            )
 
-            # Should contain the text
-            assert "परीक्षण" in result
+            assert result.text_content == mock_result.text_content
 
     def test_unknown_docx_returns_plain_text(self):
-        """Test that unknown DOCX files return plain text."""
-        from likhit.core import convert
-        from unittest.mock import patch
-
-        # Mock MarkItDown to return generic content (no markers)
         with patch("likhit.extractors.docx_based.MarkItDown") as mock_md_class:
             mock_md = MagicMock()
             mock_result = MagicMock()
@@ -197,28 +172,24 @@ class TestDocxDocumentTypeDetection:
             mock_md.convert.return_value = mock_result
             mock_md_class.return_value = mock_md
 
-            # This should not detect any document type and return plain text
-            result = convert("test.docx")
+            result = NepaliDocxConverter().convert(
+                file_stream=MagicMock(read=lambda: b"fake-docx"),
+                stream_info=SimpleNamespace(extension=".docx", mimetype=""),
+            )
 
-            # Should return the raw text
-            assert result == "This is just plain text with no markers."
+            assert result.text_content == "This is just plain text with no markers."
 
-    def test_kanun_patrika_doc_rejected_gracefully(self):
-        """Test that Kanun Patrika DOC files are rejected but fallback to plain text."""
-        from likhit.core import convert
-        from unittest.mock import patch
-
-        # Mock the extraction to return Kanun Patrika-like content from DOC
+    def test_notice_style_doc_is_processed(self):
         with patch(
             "pyantiword.antiword_wrapper.extract_text_with_antiword"
         ) as mock_extract:
             mock_extract.return_value = (
-                "नेपाल कानून पत्रिका\n\nनिर्णय नं १२३\n\nयो एउटा परीक्षण हो।"
+                "विषय: परीक्षण\n\nमिति: २०८२।०१।१४\n\nयो एउटा परीक्षण हो।"
             )
 
-            # This should detect Kanun Patrika, try to use Kanun Patrika handler,
-            # but that handler rejects DOC files, so it should fallback to plain text
-            result = convert("test.doc")
+            result = NepaliDocxConverter().convert(
+                file_stream=MagicMock(read=lambda: b"fake-doc"),
+                stream_info=SimpleNamespace(extension=".doc", mimetype="application/msword"),
+            )
 
-            # Should return the raw text as fallback
-            assert "नेपाल कानून पत्रिका" in result
+            assert "विषय: परीक्षण" in result.text_content

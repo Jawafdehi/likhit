@@ -17,7 +17,7 @@ from likhit.extractors.font_based import (
     parse_page_range,
 )
 from likhit.extractors.kalimati import _get_font_correction_map
-from likhit.handlers.ciaa_press_release import CIAAPressReleaseHandler
+from likhit.handlers.single_column_notice import SingleColumnNoticeHandler
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -155,7 +155,7 @@ def test_kalimati_fix_requires_fonttools(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_handler_keeps_table_content_after_numbered_prose() -> None:
-    handler = CIAAPressReleaseHandler()
+    handler = SingleColumnNoticeHandler()
     raw_document = RawDocument(
         paragraphs=[],
         raw_text="",
@@ -176,7 +176,7 @@ def test_handler_keeps_table_content_after_numbered_prose() -> None:
 
 
 def test_handler_keeps_footer_signature_in_body() -> None:
-    handler = CIAAPressReleaseHandler()
+    handler = SingleColumnNoticeHandler()
     raw_document = RawDocument(
         paragraphs=[],
         raw_text="",
@@ -199,7 +199,7 @@ def test_handler_keeps_footer_signature_in_body() -> None:
 
 
 def test_handler_keeps_body_when_it_starts_with_table_content() -> None:
-    handler = CIAAPressReleaseHandler()
+    handler = SingleColumnNoticeHandler()
     raw_document = RawDocument(
         paragraphs=[],
         raw_text="",

@@ -17,17 +17,17 @@ This directory contains integration test fixtures for validating end-to-end extr
 ### Naming Convention
 Fixtures should follow intent-based naming to make test purposes obvious:
 
-- `ciaa_pressrelease_sample.pdf` - CIAA press release PDF
-- `kanun_patrika_sample.pdf` - Kanun Patrika PDF
-- `ciaa_pressrelease_sample.docx` - CIAA press release DOCX
-- `ciaa_legacy_sample.doc` - Legacy CIAA document in DOC format
+- `notice_layout_sample.pdf` - single-column notice style PDF
+- `two_column_layout_sample.pdf` - two-column PDF
+- `notice_layout_sample.docx` - notice style DOCX
+- `notice_layout_sample.doc` - legacy DOC with notice-style structure
 - `generic_<type>_sample.<ext>` - Generic documents without specific structure
 
 ### Content Guidelines
 1. **Public domain only**: Use only redistributable public samples
 2. **No sensitive data**: Avoid copyrighted or sensitive content
 3. **Minimal size**: Trim to essential pages/content for testing
-4. **Representative**: Include key markers for document type detection
+4. **Representative**: Include key layout markers for structure detection
 
 ## Platform Caveats
 
@@ -51,7 +51,7 @@ SKIP_DOC_ON_WINDOWS = pytest.mark.skipif(
 ### Step 1: Prepare the File
 1. Ensure file is public domain or has clear redistribution rights
 2. Trim to minimal size (remove unnecessary pages/content)
-3. Verify file contains representative markers for its document type
+3. Verify file contains representative markers for its layout structure
 
 ### Step 2: Add to test_data/
 ```bash
@@ -72,10 +72,10 @@ poetry run pytest tests/integration -v
 
 | Filename | Format | Size | Purpose | Source |
 |----------|--------|------|---------|--------|
-| `ciaa_pressrelease_sample.pdf` | PDF | ~1.2 MB | CIAA press release extraction | `samples/pressrelease.pdf` |
-| `kanun_patrika_sample.pdf` | PDF | ~1.1 MB | Kanun Patrika structured extraction | `samples/kanunpatrika.pdf` |
-| `ciaa_pressrelease_sample.docx` | DOCX | ~10 KB | DOCX extraction with Nepali text | Generated |
-| `ciaa_legacy_sample.doc` | DOC | ~1 KB | Legacy DOC extraction | Generated |
+| `ciaa_pressrelease_sample.pdf` | PDF | ~1.2 MB | Single-column notice extraction | `samples/pressrelease.pdf` |
+| `kanun_patrika_sample.pdf` | PDF | ~1.1 MB | Two-column structured extraction | `samples/kanunpatrika.pdf` |
+| `ciaa_pressrelease_sample.docx` | DOCX | ~10 KB | Notice-style DOCX extraction | Generated |
+| `ciaa_legacy_sample.doc` | DOC | ~1 KB | Legacy DOC notice extraction | Generated |
 
 **Total**: ~2.35 MB (well under 10 MB target)
 
@@ -88,7 +88,7 @@ poetry run pytest tests/integration -v
 
 ### Run specific test class
 ```bash
-poetry run pytest tests/integration::TestCoreAPIConversion -v
+poetry run pytest tests/integration::TestPluginConversion -v
 ```
 
 ### Run with fixture size check
@@ -104,7 +104,7 @@ poetry run pytest tests/integration -q
 ## Maintenance
 
 ### When to Add Fixtures
-- New document type support added
+- New structure support added
 - Edge case discovered that needs coverage
 - Regression test needed for specific issue
 
