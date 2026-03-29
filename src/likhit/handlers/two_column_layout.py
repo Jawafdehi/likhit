@@ -1,4 +1,4 @@
-"""Kanun Patrika document handler."""
+"""Two-column article and journal style handler."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from likhit.errors import ExtractionError
 from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
 from likhit.extractors.docx_based import DocxBasedStrategy
 from likhit.extractors.font_based import FontBasedStrategy
-from likhit.handlers.base import DocumentTypeHandler
+from likhit.handlers.base import StructureHandler
 from likhit.handlers.content_blocks import blocks_to_text, build_content_blocks
 from likhit.models import DocumentType, ExtractionResult, ParagraphBlock, Section
 from likhit.models.types import ContentBlock
@@ -26,8 +26,8 @@ def _clean_paragraph(text: str) -> str:
     return cleaned
 
 
-class KanunPatrikaHandler(DocumentTypeHandler):
-    """Handle Kanun Patrika journal-style documents."""
+class TwoColumnLayoutHandler(StructureHandler):
+    """Handle dense two-column document layouts."""
 
     def __init__(self) -> None:
         self._strategy = FontBasedStrategy()
@@ -37,18 +37,9 @@ class KanunPatrikaHandler(DocumentTypeHandler):
         return self._strategy
 
     def get_extraction_strategy_for_file(self, file_path: str) -> ExtractionStrategy:
-        """Route to appropriate strategy based on file extension.
-
-        Note: Legacy .doc files are not supported for Kanun Patrika.
-        """
         suffix = Path(file_path).suffix.lower()
-        if suffix == ".docx":
+        if suffix in {".docx", ".doc"}:
             return self._docx_strategy
-        if suffix == ".doc":
-            raise ExtractionError(
-                "Legacy .doc format is not supported for Kanun Patrika. "
-                "Please convert to .docx or PDF format."
-            )
         return self._strategy
 
     def build_result(
@@ -66,18 +57,18 @@ class KanunPatrikaHandler(DocumentTypeHandler):
         section = Section(heading=None, body=body, level=1, blocks=blocks)
         return ExtractionResult(
             title=title,
-            doc_type=DocumentType.KANUN_PATRIKA,
+            doc_type=DocumentType.TWO_COLUMN_LAYOUT,
             source_url=metadata.get("source_url"),
             publication_date=metadata.get("publication_date"),
             sections=[section],
-            metadata={"source_name": "Kanun Patrika"},
+            metadata={"layout_type": DocumentType.TWO_COLUMN_LAYOUT.value},
         )
 
     def _extract_title(self, paragraphs: list[str]) -> str:
         for paragraph in paragraphs:
             if not self._is_noise_only(paragraph):
                 return paragraph
-        return "कानून पत्रिका"
+        return "दुई-स्तम्भ दस्तावेज"
 
     def _build_blocks(self, raw_document: RawDocument) -> list[ContentBlock]:
         if not raw_document.fragments:
@@ -96,8 +87,7 @@ class KanunPatrikaHandler(DocumentTypeHandler):
             by_page[fragment.page_number].append(fragment)
 
         for page_number in sorted(by_page):
-            page_fragments = by_page[page_number]
-            ordered_fragments.extend(self._order_page_fragments(page_fragments))
+            ordered_fragments.extend(self._order_page_fragments(by_page[page_number]))
 
         return build_content_blocks(
             ordered_fragments,
@@ -105,9 +95,7 @@ class KanunPatrikaHandler(DocumentTypeHandler):
             self._merge_fragments_to_paragraphs,
         )
 
-    def _order_page_fragments(
-        self, fragments: list[TextFragment]
-    ) -> list[TextFragment]:
+    def _order_page_fragments(self, fragments: list[TextFragment]) -> list[TextFragment]:
         if not fragments:
             return []
 
@@ -149,11 +137,9 @@ class KanunPatrikaHandler(DocumentTypeHandler):
             return []
 
         typical_line_height = min(
-            (
-                sorted(fragment.y1 - fragment.y0 for fragment in fragments)[
-                    len(fragments) // 2
-                ]
-            ),
+            sorted(fragment.y1 - fragment.y0 for fragment in fragments)[
+                len(fragments) // 2
+            ],
             24.0,
         )
         line_merge_threshold = max(1.5, typical_line_height * 0.18)
@@ -214,6 +200,4 @@ class KanunPatrikaHandler(DocumentTypeHandler):
 
     def _is_noise_only(self, text: str) -> bool:
         compact = text.replace(" ", "")
-        if _NOISE_ONLY_PATTERN.fullmatch(compact):
-            return True
-        return False
+        return bool(_NOISE_ONLY_PATTERN.fullmatch(compact))

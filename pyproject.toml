@@ -1,5 +1,5 @@
 [project]
-name = "likhit"
+name = "markitdown-likhit"
 version = "0.1.1"
 description = "Nepali PDF-to-Markdown converter powered by MarkItDown"
 authors = [
@@ -7,23 +7,36 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
+keywords = ["markitdown-plugin", "nepali", "devanagari", "pdf", "docx", "nepali-nlp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Markup :: Markdown",
+    "Natural Language :: Nepali",
+]
 dependencies = [
     "fonttools>=4.47.0,<5.0.0",
     "npttf2utf>=0.3.7,<1.0.0",
     "pymupdf==1.27.2",
     "pyyaml>=6.0,<7.0",
-    "markitdown[pdf,docx]==0.1.5",
+    "markitdown[pdf,docx]>=0.1.0,<1.0.0",
     "pyantiword>=0.1.2,<1.0.0"
 ]
 
+[project.entry-points."markitdown.plugin"]
+likhit = "likhit._plugin"
+
 [project.scripts]
-likhit = "likhit.cli:main"
+likhit-save = "likhit.save_cli:main"
 
 [tool.poetry]
 packages = [{ include = "likhit", from = "src" }]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
+pytest-cov = "^6.0.0"
 ruff = "^0.11.0"
 black = "^25.0.0"
 

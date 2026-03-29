@@ -1,4 +1,4 @@
-"""Font-based extraction for CIAA documents."""
+"""Font-based extraction for Nepali PDFs."""
 
 from __future__ import annotations
 
@@ -103,7 +103,7 @@ def normalize_extracted_word(text: str) -> str:
 
 
 class FontBasedStrategy(ExtractionStrategy):
-    """Extract text from CIAA PDFs using PyMuPDF blocks."""
+    """Extract text from Nepali PDFs using PyMuPDF blocks."""
 
     def extract_text(self, file_path: str, pages: str | None = None) -> RawDocument:
         return self._extract_raw_document(file_path, pages=pages)

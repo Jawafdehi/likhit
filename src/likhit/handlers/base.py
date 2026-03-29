@@ -1,4 +1,4 @@
-"""Document type handler abstractions."""
+"""Document structure handler abstractions."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from likhit.extractors.base import ExtractionStrategy, RawDocument
 from likhit.models import ExtractionResult
 
 
-class DocumentTypeHandler(ABC):
-    """Coordinates extraction and document-specific normalization."""
+class StructureHandler(ABC):
+    """Coordinates extraction and structure-specific normalization."""
 
     @abstractmethod
     def get_extraction_strategy(self) -> ExtractionStrategy:

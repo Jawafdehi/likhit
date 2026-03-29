@@ -1,4 +1,4 @@
-"""CIAA press release document handler."""
+"""Single-column notice style handler."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from likhit.errors import ExtractionError
 from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
 from likhit.extractors.docx_based import DocxBasedStrategy
 from likhit.extractors.font_based import FontBasedStrategy
-from likhit.handlers.base import DocumentTypeHandler
+from likhit.handlers.base import StructureHandler
 from likhit.handlers.content_blocks import blocks_to_text, build_content_blocks
 from likhit.models import DocumentType, ExtractionResult, Section
 
@@ -21,7 +21,8 @@ NEPALI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 
 def normalize_nepali_date(text: str) -> str | None:
     match = re.search(
-        r"([०-९0-9]{4})[।./-]\s*([०-९0-9]{1,2})[।./-]\s*([०-९0-9]{1,2})", text
+        r"([०-९0-9]{4})[।./-]\s*([०-९0-9]{1,2})[।./-]\s*([०-९0-9]{1,2})",
+        text,
     )
     if not match:
         return None
@@ -35,8 +36,8 @@ def _clean_line(line: str) -> str:
     return re.sub(r"\s+", " ", line).strip()
 
 
-class CIAAPressReleaseHandler(DocumentTypeHandler):
-    """Handle CIAA press release structure and metadata extraction."""
+class SingleColumnNoticeHandler(StructureHandler):
+    """Handle notices and press-release style single-column layouts."""
 
     def __init__(self) -> None:
         self._strategy = FontBasedStrategy()
@@ -46,7 +47,6 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
         return self._strategy
 
     def get_extraction_strategy_for_file(self, file_path: str) -> ExtractionStrategy:
-        """Route to appropriate strategy based on file extension."""
         suffix = Path(file_path).suffix.lower()
         if suffix in {".docx", ".doc"}:
             return self._docx_strategy
@@ -78,19 +78,19 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
             paragraphs
         )
 
-        body_fragments = fragments
-        if not body_fragments:
+        if not fragments:
             raise ExtractionError("No body text content found in document")
+
         blocks = build_content_blocks(
-            body_fragments,
+            fragments,
             raw_document.tables,
             self._merge_body_lines,
         )
         body = blocks_to_text(blocks).strip()
-        section_heading = title if title != "प्रेस विज्ञप्ति" else None
+        section_heading = title if title != "सूचना" else None
 
         result_metadata = {
-            "source_name": "CIAA",
+            "layout_type": DocumentType.SINGLE_COLUMN_NOTICE.value,
             "raw_publication_date": self._extract_raw_date(paragraphs),
         }
         if metadata.get("source_url"):
@@ -99,7 +99,7 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
         section = Section(heading=section_heading, body=body, level=1, blocks=blocks)
         return ExtractionResult(
             title=title,
-            doc_type=DocumentType.CIAA_PRESS_RELEASE,
+            doc_type=DocumentType.SINGLE_COLUMN_NOTICE,
             source_url=metadata.get("source_url"),
             publication_date=publication_date,
             sections=[section],
@@ -114,7 +114,11 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
                     subject_match.group(1).strip()
                 )
                 return title_text.strip(" ।")
-        return "प्रेस विज्ञप्ति"
+        for paragraph in paragraphs:
+            cleaned = paragraph.strip()
+            if cleaned and not self._is_date_line(cleaned):
+                return cleaned[:120]
+        return "सूचना"
 
     def _extract_raw_date(self, paragraphs: Iterable[str]) -> str | None:
         for paragraph in paragraphs:
@@ -141,79 +145,6 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
 
     def _is_date_line(self, text: str) -> bool:
         return bool(re.search(r"(?:मिति|मिमि)\s*:", text))
-
-    def _is_press_release_line(self, text: str) -> bool:
-        return "प्रेस विज्ञ" in text or "प्रेस मिज्ञ" in text
-
-    def _looks_centered(
-        self,
-        fragment: TextFragment,
-        page_left: float,
-        page_right: float,
-    ) -> bool:
-        page_center = (page_left + page_right) / 2
-        line_center = (fragment.x0 + fragment.x1) / 2
-        page_width = max(page_right - page_left, 1.0)
-        line_width = fragment.x1 - fragment.x0
-        return (
-            line_width <= page_width * 0.75
-            and abs(line_center - page_center) <= page_width * 0.12
-        )
-
-    def _strip_header(self, fragments: list[TextFragment]) -> list[TextFragment]:
-        if not fragments:
-            return fragments
-
-        first_page = fragments[0].page_number
-        first_page_fragments = [
-            fragment for fragment in fragments if fragment.page_number == first_page
-        ]
-        page_left = min((fragment.x0 for fragment in first_page_fragments), default=0.0)
-        page_right = max(
-            (fragment.x1 for fragment in first_page_fragments), default=0.0
-        )
-
-        subject_index = next(
-            (
-                index
-                for index, fragment in enumerate(fragments)
-                if fragment.page_number == first_page
-                and self._is_subject_line(fragment.text)
-            ),
-            None,
-        )
-        if subject_index is not None:
-            kept = [
-                fragment
-                for fragment in fragments[subject_index + 1 :]
-                if not self._is_press_release_line(fragment.text)
-            ]
-            return kept or fragments
-
-        kept: list[TextFragment] = []
-        body_started = False
-        for fragment in fragments:
-            if fragment.page_number != first_page:
-                kept.append(fragment)
-                continue
-
-            if body_started:
-                kept.append(fragment)
-                continue
-
-            text = fragment.text.strip()
-            is_header_meta = fragment.y0 <= 220 and (
-                self._is_date_line(text)
-                or self._is_press_release_line(text)
-                or self._looks_centered(fragment, page_left, page_right)
-            )
-            if is_header_meta:
-                continue
-
-            body_started = True
-            kept.append(fragment)
-
-        return kept or fragments
 
     def _split_subject_remainder(self, remainder: str) -> tuple[str, str]:
         title_text = remainder.strip()
@@ -316,9 +247,7 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
             nearest_indent = candidate_margins[0]
             return base_margin + max(8.0, (nearest_indent - base_margin) / 2)
 
-        typical_line_height = median(
-            fragment.y1 - fragment.y0 for fragment in fragments
-        )
+        typical_line_height = median(fragment.y1 - fragment.y0 for fragment in fragments)
         indent_threshold = paragraph_indent_threshold()
 
         def starts_indented_paragraph(fragment: TextFragment) -> bool:
@@ -349,10 +278,7 @@ class CIAAPressReleaseHandler(DocumentTypeHandler):
                 previous_fragment = fragment
                 continue
 
-            if (
-                previous_fragment
-                and fragment.page_number != previous_fragment.page_number
-            ):
+            if previous_fragment and fragment.page_number != previous_fragment.page_number:
                 flush()
                 current.append(text)
                 previous_fragment = fragment
