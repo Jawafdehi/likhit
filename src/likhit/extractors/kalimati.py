@@ -1,4 +1,4 @@
-"""Helpers for repairing Kalimati-encoded CIAA PDFs."""
+"""Helpers for repairing Kalimati-encoded Nepali PDFs."""
 
 from __future__ import annotations
 
@@ -118,6 +118,9 @@ def _build_cmap_stream(mapping: dict[int, str]) -> bytes:
 def _analyze_gsub(
     font, glyph_order: list[str], gid_to_correct: dict[int, str]
 ) -> dict[int, str]:
+    if "GSUB" not in font:
+        return {}
+
     gsub = font["GSUB"]
     lookup_features: dict[int, set[str]] = {}
 
