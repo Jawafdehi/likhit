@@ -28,6 +28,9 @@ _PREFIX_IKAR_PATTERN = re.compile(r"(?:(?<=^)|(?<=[\s(]))ि(?=[\u0915-\u0939])"
 _INVALID_IKAR_PATTERN = re.compile(r"ि(?=[ािीुूृॄेैोौंःँ])")
 _HALANT_IKAR_PATTERN = re.compile(r"्ि")
 _DUPLICATE_CONSONANT_PATTERN = re.compile(r"([क-ह])\1")
+_SUSPICIOUS_ARTIFACT_PATTERN = re.compile(
+    r"(ख्ज|अधध|धिरूद्ध|धिरुद्ध|प्रविधध|राविय|नम्िर|िडा|ितन|उज्वल|उज्जवल)"
+)
 
 
 def parse_page_range(spec: str, total_pages: int) -> tuple[int, int]:
@@ -61,6 +64,7 @@ def normalize_press_release_paragraph(text: str) -> str:
         return ""
 
     normalized = text
+    normalized = re.sub(r"^\ufffd(?=\s)", "-", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     normalized = re.sub(r"\s+([।,:;])", r"\1", normalized)
     return normalized
@@ -123,6 +127,7 @@ def _text_quality_penalty(text: str) -> int:
         + len(_INVALID_IKAR_PATTERN.findall(text)) * 6
         + len(_HALANT_IKAR_PATTERN.findall(text)) * 4
         + len(_DUPLICATE_CONSONANT_PATTERN.findall(text)) * 3
+        + len(_SUSPICIOUS_ARTIFACT_PATTERN.findall(text)) * 8
     )
 
 

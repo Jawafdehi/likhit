@@ -15,6 +15,7 @@ from likhit.extractors.font_based import (
     join_spans_with_layout,
     join_words_with_spacing,
     normalize_extracted_word,
+    normalize_press_release_paragraph,
     parse_page_range,
 )
 from likhit.extractors.kalimati import _get_font_correction_map
@@ -268,6 +269,13 @@ def test_normalize_extracted_word_keeps_space_before_prebase_marker_word() -> No
     )
 
     assert line == "सञ्चालक विशाल"
+
+
+def test_normalize_press_release_paragraph_turns_leading_replacement_char_into_bullet() -> None:
+    assert (
+        normalize_press_release_paragraph("� अपराध गर्ने व्यक्तिको पीडितसंगको")
+        == "- अपराध गर्ने व्यक्तिको पीडितसंगको"
+    )
 
 
 def test_choose_fragment_text_prefers_original_when_repair_introduces_noise() -> None:

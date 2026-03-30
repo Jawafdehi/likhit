@@ -9,6 +9,7 @@ emitting Markdown.
 from __future__ import annotations
 
 import io
+from collections import defaultdict
 from pathlib import Path
 from statistics import median
 from tempfile import NamedTemporaryFile
@@ -21,7 +22,9 @@ from likhit.extractors.base import RawDocument, TextFragment
 from likhit.extractors.font_based import FontBasedStrategy
 from likhit.font_classifier import classify_fonts_from_stream
 from likhit.handlers.content_blocks import build_content_blocks, table_to_plain_text
-from likhit.models import ParagraphBlock, TableBlock
+from likhit.handlers.structure_detection import detect_structure
+from likhit.handlers.two_column_layout import TwoColumnLayoutHandler
+from likhit.models import DocumentType, ParagraphBlock, TableBlock
 
 
 class NepaliPdfConverter(DocumentConverter):
@@ -67,7 +70,7 @@ class NepaliPdfConverter(DocumentConverter):
 
         try:
             raw_document = FontBasedStrategy().extract_text(str(tmp_path))
-            markdown = _render_layout_preserving_markdown(raw_document)
+            markdown = _render_structure_aware_markdown(raw_document)
             if not markdown.strip():
                 raise ExtractionError(
                     "No extractable text found in PDF. Scanned or image-only PDFs are not supported."
@@ -78,11 +81,16 @@ class NepaliPdfConverter(DocumentConverter):
 
 
 def _render_layout_preserving_markdown(raw_document: RawDocument) -> str:
-    blocks = build_content_blocks(
-        raw_document.fragments,
-        raw_document.tables,
-        _build_layout_paragraphs,
+    return _render_markdown_from_blocks(
+        build_content_blocks(
+            raw_document.fragments,
+            raw_document.tables,
+            _build_layout_paragraphs,
+        )
     )
+
+
+def _render_markdown_from_blocks(blocks: list[ParagraphBlock | TableBlock]) -> str:
     rendered: list[str] = []
     for block in blocks:
         if isinstance(block, ParagraphBlock):
@@ -92,40 +100,122 @@ def _render_layout_preserving_markdown(raw_document: RawDocument) -> str:
     return "\n\n".join(part for part in rendered if part).strip()
 
 
+def _render_two_column_markdown(
+    raw_document: RawDocument,
+    handler: TwoColumnLayoutHandler,
+    ordered_fragments: list[TextFragment],
+) -> str:
+    blocks = build_content_blocks(
+        ordered_fragments,
+        raw_document.tables,
+        handler._merge_fragments_to_paragraphs,
+    )
+    return _render_markdown_from_blocks(blocks)
+
+
+def _render_structure_aware_markdown(raw_document: RawDocument) -> str:
+    if detect_structure(raw_document) is not DocumentType.TWO_COLUMN_LAYOUT:
+        return _render_layout_preserving_markdown(raw_document)
+
+    handler = TwoColumnLayoutHandler()
+    fragments_by_page: dict[int, list[TextFragment]] = defaultdict(list)
+    for fragment in raw_document.fragments:
+        if fragment.text.strip():
+            fragments_by_page[fragment.page_number].append(fragment)
+
+    ordered_fragments: list[TextFragment] = []
+    for page_number in sorted(fragments_by_page):
+        ordered_fragments.extend(
+            handler._order_page_fragments(fragments_by_page[page_number])
+        )
+
+    reordered_document = RawDocument(
+        paragraphs=raw_document.paragraphs,
+        raw_text=raw_document.raw_text,
+        fragments=ordered_fragments,
+        tables=raw_document.tables,
+    )
+    return _render_two_column_markdown(reordered_document, handler, ordered_fragments)
+
+
 def _build_layout_paragraphs(fragments: list[TextFragment]) -> list[str]:
     if not fragments:
         return []
 
-    line_heights = [fragment.y1 - fragment.y0 for fragment in fragments]
-    typical_line_height = median(line_heights) if line_heights else 12.0
-    paragraph_gap_threshold = max(8.0, typical_line_height * 0.65)
+    typical_line_height = min(
+        median(fragment.y1 - fragment.y0 for fragment in fragments),
+        24.0,
+    )
+    line_merge_threshold = max(1.5, typical_line_height * 0.18)
+    paragraph_gap_threshold = max(8.0, typical_line_height * 0.7)
 
-    paragraphs: list[str] = []
-    current_lines: list[str] = []
-    previous_page: int | None = None
+    merged_lines: list[tuple[int, float, float, str, float | None]] = []
+    current_line: list[TextFragment] = []
 
-    def flush() -> None:
-        if current_lines:
-            paragraphs.append("\n".join(current_lines).strip())
-            current_lines.clear()
+    def flush_line() -> None:
+        if not current_line:
+            return
+        ordered_line = sorted(current_line, key=lambda fragment: fragment.x0)
+        y0 = min(fragment.y0 for fragment in ordered_line)
+        y1 = max(fragment.y1 for fragment in ordered_line)
+        page_number = ordered_line[0].page_number
+        gap_before = next(
+            (
+                fragment.gap_before
+                for fragment in ordered_line
+                if fragment.gap_before is not None
+            ),
+            None,
+        )
+        text = " ".join(fragment.text.strip() for fragment in ordered_line if fragment.text.strip()).strip()
+        if text:
+            merged_lines.append((page_number, y0, y1, text, gap_before))
+        current_line.clear()
 
     for fragment in fragments:
-        text = fragment.text.strip()
-        if not text:
+        if not fragment.text.strip():
+            continue
+        if not current_line:
+            current_line.append(fragment)
             continue
 
-        starts_new_paragraph = (
-            previous_page is not None
-            and fragment.page_number != previous_page
-        ) or (
-            fragment.gap_before is not None
-            and fragment.gap_before >= paragraph_gap_threshold
-        )
+        current_page = current_line[0].page_number
+        current_y0 = min(item.y0 for item in current_line)
+        if (
+            fragment.page_number == current_page
+            and abs(fragment.y0 - current_y0) <= line_merge_threshold
+        ):
+            current_line.append(fragment)
+            continue
+
+        flush_line()
+        current_line.append(fragment)
+
+    flush_line()
+
+    paragraphs: list[str] = []
+    current_paragraph: list[str] = []
+    previous_page: int | None = None
+    previous_y1: float | None = None
+
+    def flush_paragraph() -> None:
+        if current_paragraph:
+            paragraphs.append("\n".join(current_paragraph).strip())
+            current_paragraph.clear()
+
+    for page_number, y0, y1, text, gap_before in merged_lines:
+        starts_new_paragraph = False
+        if previous_page is not None and page_number != previous_page:
+            starts_new_paragraph = True
+        elif gap_before is not None:
+            starts_new_paragraph = gap_before >= paragraph_gap_threshold
+
         if starts_new_paragraph:
-            flush()
+            flush_paragraph()
 
-        current_lines.append(text)
-        previous_page = fragment.page_number
+        current_paragraph.append(text)
+        previous_page = page_number
+        previous_y1 = y1
 
-    flush()
+    flush_paragraph()
     return paragraphs

@@ -151,10 +151,50 @@ def test_convert_preserves_two_column_reading_order() -> None:
     assert "निर्णय नं.७९७३" in markdown
     assert "सर्बोच्च अदालत विशेष इजलास" in markdown
     assert "जवर्जस्ती करणीको महलमा भएको" in markdown
-    assert markdown.index("जवर्जस्ती करणीको महलमा भएको") < markdown.index(
-        "सर्बोच्च अदालत विशेष इजलास"
+    assert markdown.index("सर्बोच्च अदालत विशेष इजलास") < markdown.index(
+        "जवर्जस्ती करणीको महलमा भएको"
     )
     assert not markdown.startswith("---")
+
+
+def test_converter_reorders_two_column_fragments_before_rendering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sample = ROOT / "samples" / "pressrelease.pdf"
+    converter = NepaliPdfConverter()
+    stream_info = SimpleNamespace(extension=".pdf", mimetype="application/pdf")
+
+    import likhit.converters.nepali_pdf as nepali_pdf_module
+    from likhit.extractors.base import RawDocument, TextFragment
+    from likhit.models import DocumentType
+
+    fragments = [
+        TextFragment("HEADER", 1, 50, 50, 120, 60),
+        TextFragment("LEFT", 1, 50, 120, 120, 130),
+        TextFragment("RIGHT", 1, 300, 220, 360, 230),
+    ]
+    raw_document = RawDocument(
+        paragraphs=[fragment.text for fragment in fragments],
+        raw_text="\n".join(fragment.text for fragment in fragments),
+        fragments=fragments,
+        tables=[],
+    )
+
+    monkeypatch.setattr(
+        nepali_pdf_module.FontBasedStrategy,
+        "extract_text",
+        lambda self, path: raw_document,
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "detect_structure",
+        lambda seen_raw_document: DocumentType.TWO_COLUMN_LAYOUT,
+    )
+
+    with sample.open("rb") as stream:
+        result = converter.convert(stream, stream_info)
+
+    assert result.markdown.splitlines() == ["HEADER", "", "LEFT", "", "RIGHT"]
 
 
 def test_convert_preserves_table_layout_as_plain_text_lines() -> None:
@@ -166,6 +206,15 @@ def test_convert_preserves_table_layout_as_plain_text_lines() -> None:
     assert "ि.सां.\tउजुरीको व्यहोरा" in markdown
     assert "आयोगको तनणतय" in markdown
     assert "प्रतिवादीको नाि, पद र कायातलय" in markdown
+
+
+def test_convert_normalizes_replacement_char_bullets_in_two_column_output() -> None:
+    sample = ROOT / "samples" / "kanunpatrika.pdf"
+
+    markdown = _convert_text(sample)
+
+    assert "� अपराध" not in markdown
+    assert "- अपराध" in markdown
 
 
 def test_convert_keeps_aarop_patra_title_lines_readable() -> None:

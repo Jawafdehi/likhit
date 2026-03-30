@@ -194,6 +194,68 @@ def _analyze_gsub(
     return derived
 
 
+def _glyph_feature(font, glyph_name: str) -> tuple[int, int, int, int, int, int, int]:
+    glyph = font["glyf"][glyph_name]
+    advance_width, left_side_bearing = font["hmtx"][glyph_name]
+    glyph.recalcBounds(font["glyf"])
+    return (
+        advance_width,
+        left_side_bearing,
+        glyph.numberOfContours,
+        glyph.xMin,
+        glyph.yMin,
+        glyph.xMax,
+        glyph.yMax,
+    )
+
+
+def _infer_mark_variants(
+    font,
+    glyph_order: list[str],
+    gid_to_correct: dict[int, str],
+) -> dict[int, str]:
+    candidate_codepoints = {
+        ord(_IKAR),
+        0x0941,  # ु
+        0x0942,  # ू
+        0x0947,  # े
+        0x0948,  # ै
+    }
+
+    best_cmap = font["cmap"].getBestCmap()
+    candidate_features: list[tuple[str, tuple[int, int, int, int, int, int, int]]] = []
+    for codepoint, glyph_name in best_cmap.items():
+        if codepoint not in candidate_codepoints:
+            continue
+        candidate_features.append((chr(codepoint), _glyph_feature(font, glyph_name)))
+
+    if not candidate_features:
+        return {}
+
+    inferred: dict[int, str] = {}
+    for gid, glyph_name in enumerate(glyph_order):
+        if gid in gid_to_correct:
+            continue
+        if not glyph_name.startswith("glyph"):
+            continue
+
+        current = _glyph_feature(font, glyph_name)
+        best_match: str | None = None
+        best_distance: int | None = None
+        for candidate, feature in candidate_features:
+            distance = sum(abs(left - right) for left, right in zip(current, feature))
+            if best_distance is None or distance < best_distance:
+                best_distance = distance
+                best_match = candidate
+
+        if best_match is None or best_distance is None:
+            continue
+        if best_distance <= 350:
+            inferred[gid] = best_match
+
+    return inferred
+
+
 def _is_ra_virama_swap(old_value: str, new_value: str) -> bool:
     if len(old_value) != len(new_value) or len(old_value) < 2:
         return False
@@ -275,6 +337,8 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
             if glyph_name in name_to_unicode:
                 gid_to_correct[gid] = chr(name_to_unicode[glyph_name])
 
+        gid_to_correct.update(_infer_mark_variants(font, glyph_order, gid_to_correct))
+
         derived = _analyze_gsub(font, glyph_order, gid_to_correct)
         full_map = dict(derived)
         full_map.update(gid_to_correct)
@@ -320,6 +384,47 @@ def _get_fontfile_xref(doc: fitz.Document, type0_xref: int) -> Optional[int]:
         return int(fontfile_match.group(1))
     except Exception:
         return None
+
+
+def _collect_trace_fallback_map(
+    doc: fitz.Document,
+    font_name: str,
+) -> dict[int, str]:
+    counts: dict[int, dict[str, int]] = {}
+
+    for page_index in range(doc.page_count):
+        for trace in doc[page_index].get_texttrace():
+            if trace.get("font") != font_name:
+                continue
+
+            current_gid: int | None = None
+            current_chars: list[str] = []
+            for codepoint, gid, *_rest in trace.get("chars", ()):
+                char = chr(codepoint)
+
+                if gid >= 0:
+                    if current_gid is not None and current_chars:
+                        text = "".join(current_chars)
+                        if "\ufffd" not in text:
+                            bucket = counts.setdefault(current_gid, {})
+                            bucket[text] = bucket.get(text, 0) + 1
+                    current_gid = gid
+                    current_chars = [char]
+                    continue
+
+                if current_gid is not None:
+                    current_chars.append(char)
+
+            if current_gid is not None and current_chars:
+                text = "".join(current_chars)
+                if "\ufffd" not in text:
+                    bucket = counts.setdefault(current_gid, {})
+                    bucket[text] = bucket.get(text, 0) + 1
+
+    fallback: dict[int, str] = {}
+    for gid, text_counts in counts.items():
+        fallback[gid] = max(text_counts.items(), key=lambda item: item[1])[0]
+    return fallback
 
 
 def _patch_single_cmap(
@@ -369,6 +474,8 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
     kalimati_fonts: dict[int, int] = {}
     fontfile_maps: dict[int, dict[int, str]] = {}
     to_unicode_maps: dict[int, dict[int, str]] = {}
+    font_names: dict[int, str] = {}
+    trace_maps: dict[str, dict[int, str]] = {}
 
     for page_index in range(doc.page_count):
         for font_info in doc[page_index].get_fonts(full=True):
@@ -383,19 +490,33 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
             match = re.search(r"/ToUnicode\s+(\d+)\s+\d+\s+R", font_dict)
             if match:
                 kalimati_fonts[int(match.group(1))] = xref
+                font_names[xref] = base_name
 
     if not kalimati_fonts:
         return doc, False
 
     for to_unicode_xref, type0_xref in kalimati_fonts.items():
         fontfile_xref = _get_fontfile_xref(doc, type0_xref)
+        font_name = font_names.get(type0_xref, "Kalimati")
+        if font_name not in trace_maps:
+            trace_maps[font_name] = _collect_trace_fallback_map(doc, font_name)
+        pdf_map = _parse_tounicode_cmap(doc.xref_stream(to_unicode_xref))
+        trace_map = {
+            gid: value
+            for gid, value in trace_maps[font_name].items()
+            if gid not in pdf_map
+        }
         if fontfile_xref is not None and fontfile_xref in fontfile_maps:
-            to_unicode_maps[to_unicode_xref] = fontfile_maps[fontfile_xref]
+            combined_map = dict(trace_map)
+            combined_map.update(fontfile_maps[fontfile_xref])
+            to_unicode_maps[to_unicode_xref] = combined_map
             continue
         correction_map = _get_font_correction_map(doc, type0_xref)
         if not correction_map:
             continue
-        to_unicode_maps[to_unicode_xref] = correction_map
+        combined_map = dict(trace_map)
+        combined_map.update(correction_map)
+        to_unicode_maps[to_unicode_xref] = combined_map
         if fontfile_xref is not None:
             fontfile_maps[fontfile_xref] = correction_map
 
