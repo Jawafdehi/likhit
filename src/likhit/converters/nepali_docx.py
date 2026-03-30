@@ -1,8 +1,8 @@
 """
-NepaliDocxConverter — markitdown DocumentConverter for Nepali DOCX/DOC files.
+LegacyWordConverter — MarkItDown DocumentConverter for legacy `.doc` files.
 
-Always intercepts .docx and .doc files and routes them through likhit's
-existing extraction pipeline.
+MarkItDown already handles `.docx`, so likhit only intercepts legacy `.doc`
+inputs where it adds support that MarkItDown does not provide.
 """
 
 from __future__ import annotations
@@ -15,12 +15,11 @@ from markitdown import DocumentConverter, DocumentConverterResult, StreamInfo
 
 from likhit.handlers import convert_with_detected_structure
 
-_DOCX_EXTENSIONS = {".docx", ".doc"}
-_DOCX_MIMETYPES = {
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/msword",
-}
-class NepaliDocxConverter(DocumentConverter):
+_DOC_EXTENSIONS = {".doc"}
+_DOC_MIMETYPES = {"application/msword"}
+
+
+class LegacyWordConverter(DocumentConverter):
     def accepts(
         self,
         file_stream: BinaryIO,
@@ -30,7 +29,9 @@ class NepaliDocxConverter(DocumentConverter):
         del file_stream, kwargs
         ext = (stream_info.extension or "").lower()
         mime = (stream_info.mimetype or "").lower()
-        return ext in _DOCX_EXTENSIONS or mime in _DOCX_MIMETYPES
+        if ext:
+            return ext in _DOC_EXTENSIONS
+        return mime in _DOC_MIMETYPES
 
     def convert(
         self,
@@ -40,7 +41,7 @@ class NepaliDocxConverter(DocumentConverter):
     ) -> DocumentConverterResult:
         del kwargs
         ext = (stream_info.extension or "").lower()
-        suffix = ext if ext in _DOCX_EXTENSIONS else ".docx"
+        suffix = ext if ext in _DOC_EXTENSIONS else ".doc"
         raw = file_stream.read()
 
         with NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -62,3 +63,7 @@ def _convert_word_document(file_path: str) -> str:
     from likhit.extractors.docx_based import DocxBasedStrategy
 
     return DocxBasedStrategy().extract_text(file_path).raw_text
+
+
+# Backwards-compatible import path for earlier releases.
+NepaliDocxConverter = LegacyWordConverter

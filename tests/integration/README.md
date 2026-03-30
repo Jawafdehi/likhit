@@ -74,7 +74,7 @@ poetry run pytest tests/integration -v
 |----------|--------|------|---------|--------|
 | `ciaa_pressrelease_sample.pdf` | PDF | ~1.2 MB | Single-column notice extraction | `samples/pressrelease.pdf` |
 | `kanun_patrika_sample.pdf` | PDF | ~1.1 MB | Two-column structured extraction | `samples/kanunpatrika.pdf` |
-| `ciaa_pressrelease_sample.docx` | DOCX | ~10 KB | Notice-style DOCX extraction | Generated |
+| `ciaa_pressrelease_sample.docx` | DOCX | ~10 KB | DOCX passthrough coverage alongside enabled plugins | Generated |
 | `ciaa_legacy_sample.doc` | DOC | ~1 KB | Legacy DOC notice extraction | Generated |
 
 **Total**: ~2.35 MB (well under 10 MB target)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 import re
 from pathlib import Path
 
@@ -23,6 +24,10 @@ from likhit.models import Table
 
 PAGE_RANGE_PATTERN = re.compile(r"^\d+(?:-\d+)?$")
 SPAN_GAP_THRESHOLD = 0.75
+_PREFIX_IKAR_PATTERN = re.compile(r"(?:(?<=^)|(?<=[\s(]))ि(?=[\u0915-\u0939])")
+_INVALID_IKAR_PATTERN = re.compile(r"ि(?=[ािीुूृॄेैोौंःँ])")
+_HALANT_IKAR_PATTERN = re.compile(r"्ि")
+_DUPLICATE_CONSONANT_PATTERN = re.compile(r"([क-ह])\1")
 
 
 def parse_page_range(spec: str, total_pages: int) -> tuple[int, int]:
@@ -102,6 +107,126 @@ def normalize_extracted_word(text: str) -> str:
     return normalized.strip()
 
 
+def _line_key(fragment: TextFragment) -> tuple[int, int, int]:
+    return fragment.page_number, fragment.block_number, fragment.line_number
+
+
+def _private_use_count(text: str) -> int:
+    return sum(1 for char in text if 0xE000 <= ord(char) <= 0xF8FF)
+
+
+def _text_quality_penalty(text: str) -> int:
+    return (
+        text.count("\ufffd") * 12
+        + _private_use_count(text) * 12
+        + len(_PREFIX_IKAR_PATTERN.findall(text)) * 6
+        + len(_INVALID_IKAR_PATTERN.findall(text)) * 6
+        + len(_HALANT_IKAR_PATTERN.findall(text)) * 4
+        + len(_DUPLICATE_CONSONANT_PATTERN.findall(text)) * 3
+    )
+
+
+def _has_severe_noise(text: str) -> bool:
+    return any(
+        (
+            "\ufffd" in text,
+            _private_use_count(text) > 0,
+            bool(_PREFIX_IKAR_PATTERN.search(text)),
+            bool(_INVALID_IKAR_PATTERN.search(text)),
+            bool(_HALANT_IKAR_PATTERN.search(text)),
+        )
+    )
+
+
+def _choose_token_text(original: str, repaired: str) -> str:
+    if repaired == original:
+        return original
+
+    original_penalty = _text_quality_penalty(original)
+    repaired_penalty = _text_quality_penalty(repaired)
+    if repaired_penalty < original_penalty:
+        return repaired
+    if original_penalty < repaired_penalty:
+        return original
+
+    return original if len(original) >= len(repaired) else repaired
+
+
+def _merge_tokenwise(original: str, repaired: str) -> str | None:
+    original_tokens = original.split()
+    repaired_tokens = repaired.split()
+    if len(original_tokens) != len(repaired_tokens):
+        return None
+
+    merged_tokens = [
+        _choose_token_text(original_token, repaired_token)
+        for original_token, repaired_token in zip(original_tokens, repaired_tokens)
+    ]
+    return " ".join(merged_tokens)
+
+
+def _choose_fragment_text(original: str, repaired: str | None) -> str:
+    if repaired is None or repaired == original:
+        return original
+
+    candidates: list[tuple[str, int, int]] = [
+        (repaired, 1, len(repaired.strip())),
+        (original, 2, len(original.strip())),
+    ]
+    merged = None
+    if _has_severe_noise(original) or _has_severe_noise(repaired):
+        merged = _merge_tokenwise(original, repaired)
+    if merged and merged not in {original, repaired}:
+        candidates.append((merged, 0, len(merged.strip())))
+
+    best_text, _rank, _length = min(
+        candidates,
+        key=lambda item: (_text_quality_penalty(item[0]), item[1], -item[2]),
+    )
+    return best_text
+
+
+def _merge_fragment_variants(
+    original_fragments: list[TextFragment],
+    repaired_fragments: list[TextFragment],
+) -> list[TextFragment]:
+    repaired_by_key = {
+        _line_key(fragment): fragment for fragment in repaired_fragments
+    }
+    merged: list[TextFragment] = []
+
+    for fragment in original_fragments:
+        repaired = repaired_by_key.pop(_line_key(fragment), None)
+        merged.append(
+            replace(
+                fragment,
+                text=_choose_fragment_text(
+                    fragment.text,
+                    repaired.text if repaired is not None else None,
+                ),
+            )
+        )
+
+    merged.extend(
+        repaired_by_key[key]
+        for key in sorted(repaired_by_key)
+    )
+    return merged
+
+
+def _raw_document_from_fragments(
+    fragments: list[TextFragment],
+    tables: list[Table],
+) -> RawDocument:
+    paragraphs = [fragment.text for fragment in fragments if fragment.text.strip()]
+    return RawDocument(
+        paragraphs=paragraphs,
+        raw_text="\n\n".join(paragraphs).strip(),
+        fragments=fragments,
+        tables=merge_continuation_tables(tables),
+    )
+
+
 class FontBasedStrategy(ExtractionStrategy):
     """Extract text from Nepali PDFs using PyMuPDF blocks."""
 
@@ -138,98 +263,35 @@ class FontBasedStrategy(ExtractionStrategy):
             has_broken_cmap = any(
                 strategy == "broken_cmap" for strategy in font_strategies.values()
             )
-            needs_reorder = False
+            repaired_doc: fitz.Document | None = None
+            raw_document = self._extract_from_document(
+                doc,
+                font_strategies,
+                page_start=page_start,
+                page_end=page_end,
+                needs_reorder=False,
+            )
             if has_broken_cmap:
-                doc, needs_reorder = fix_kalimati_cmap(doc)
-            paragraphs: list[str] = []
-            fragments: list[TextFragment] = []
-            tables: list[Table] = []
-            table_index = 0
-
-            for page_index in range(page_start, page_end + 1):
-                page = doc[page_index]
-                page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
-                lines_by_key: dict[
-                    tuple[int, int], list[tuple[float, float, float, float, str]]
-                ] = defaultdict(list)
-                for block_number, block in enumerate(page_dict["blocks"]):
-                    if "lines" not in block:
-                        continue
-                    for line_number, line in enumerate(block["lines"]):
-                        for span in line["spans"]:
-                            text = self._convert_span_text(
-                                str(span["text"]),
-                                str(span["font"]),
-                                font_strategies,
-                                needs_reorder,
-                            )
-                            if not text:
-                                continue
-                            x0, y0, x1, y1 = span["bbox"]
-                            lines_by_key[(block_number, line_number)].append(
-                                (
-                                    float(x0),
-                                    float(y0),
-                                    float(x1),
-                                    float(y1),
-                                    text,
-                                )
-                            )
-
-                page_fragments: list[TextFragment] = []
-                previous_y1: float | None = None
-                for (block_number, line_number), line_words in sorted(
-                    lines_by_key.items(),
-                    key=lambda item: (
-                        round(min(piece[1] for piece in item[1]), 2),
-                        min(piece[0] for piece in item[1]),
+                repaired_doc, needs_reorder = fix_kalimati_cmap(fitz.open(path))
+                repaired_document = self._extract_from_document(
+                    repaired_doc,
+                    font_strategies,
+                    page_start=page_start,
+                    page_end=page_end,
+                    needs_reorder=needs_reorder,
+                )
+                raw_document = _raw_document_from_fragments(
+                    _merge_fragment_variants(
+                        raw_document.fragments,
+                        repaired_document.fragments,
                     ),
-                ):
-                    ordered_words = sorted(line_words, key=lambda piece: piece[0])
-                    line_text = join_spans_with_layout(ordered_words)
-                    paragraph = normalize_press_release_paragraph(line_text)
-                    if not paragraph:
-                        previous_y1 = None
-                        continue
+                    raw_document.tables,
+                )
 
-                    x0 = min(piece[0] for piece in ordered_words)
-                    y0 = min(piece[1] for piece in ordered_words)
-                    x1 = max(piece[2] for piece in ordered_words)
-                    y1 = max(piece[3] for piece in ordered_words)
-                    gap_before = None
-                    if previous_y1 is not None:
-                        gap_before = y0 - previous_y1
-                    previous_y1 = y1
-
-                    fragment = TextFragment(
-                        text=paragraph,
-                        page_number=page_index + 1,
-                        x0=x0,
-                        y0=y0,
-                        x1=x1,
-                        y1=y1,
-                        block_number=block_number,
-                        line_number=line_number,
-                        gap_before=gap_before,
-                    )
-                    paragraphs.append(paragraph)
-                    page_fragments.append(fragment)
-
-                fragments.extend(page_fragments)
-                page_tables = detect_page_tables(page, page_fragments, table_index)
-                tables.extend(page_tables)
-                table_index += len(page_tables)
-
-            raw_text = "\n\n".join(paragraphs).strip()
-            if not raw_text:
+            if not raw_document.raw_text:
                 raise ExtractionError("No text content found in document")
 
-            return RawDocument(
-                paragraphs=paragraphs,
-                raw_text=raw_text,
-                fragments=fragments,
-                tables=merge_continuation_tables(tables),
-            )
+            return raw_document
         except (ExtractionError, ValidationError):
             raise
         except Exception as exc:
@@ -237,7 +299,104 @@ class FontBasedStrategy(ExtractionStrategy):
                 f"Failed to extract text from PDF: {path.name}"
             ) from exc
         finally:
+            if repaired_doc is not None:
+                repaired_doc.close()
             doc.close()
+
+    def _extract_from_document(
+        self,
+        doc: fitz.Document,
+        font_strategies: dict[str, str],
+        *,
+        page_start: int,
+        page_end: int,
+        needs_reorder: bool,
+    ) -> RawDocument:
+        paragraphs: list[str] = []
+        fragments: list[TextFragment] = []
+        tables: list[Table] = []
+        table_index = 0
+
+        for page_index in range(page_start, page_end + 1):
+            page = doc[page_index]
+            page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+            lines_by_key: dict[
+                tuple[int, int], list[tuple[float, float, float, float, str]]
+            ] = defaultdict(list)
+            for block_number, block in enumerate(page_dict["blocks"]):
+                if "lines" not in block:
+                    continue
+                for line_number, line in enumerate(block["lines"]):
+                    for span in line["spans"]:
+                        text = self._convert_span_text(
+                            str(span["text"]),
+                            str(span["font"]),
+                            font_strategies,
+                            needs_reorder,
+                        )
+                        if not text:
+                            continue
+                        x0, y0, x1, y1 = span["bbox"]
+                        lines_by_key[(block_number, line_number)].append(
+                            (
+                                float(x0),
+                                float(y0),
+                                float(x1),
+                                float(y1),
+                                text,
+                            )
+                        )
+
+            page_fragments: list[TextFragment] = []
+            previous_y1: float | None = None
+            for (block_number, line_number), line_words in sorted(
+                lines_by_key.items(),
+                key=lambda item: (
+                    round(min(piece[1] for piece in item[1]), 2),
+                    min(piece[0] for piece in item[1]),
+                ),
+            ):
+                ordered_words = sorted(line_words, key=lambda piece: piece[0])
+                line_text = join_spans_with_layout(ordered_words)
+                paragraph = normalize_press_release_paragraph(line_text)
+                if not paragraph:
+                    previous_y1 = None
+                    continue
+
+                x0 = min(piece[0] for piece in ordered_words)
+                y0 = min(piece[1] for piece in ordered_words)
+                x1 = max(piece[2] for piece in ordered_words)
+                y1 = max(piece[3] for piece in ordered_words)
+                gap_before = None
+                if previous_y1 is not None:
+                    gap_before = y0 - previous_y1
+                previous_y1 = y1
+
+                fragment = TextFragment(
+                    text=paragraph,
+                    page_number=page_index + 1,
+                    x0=x0,
+                    y0=y0,
+                    x1=x1,
+                    y1=y1,
+                    block_number=block_number,
+                    line_number=line_number,
+                    gap_before=gap_before,
+                )
+                paragraphs.append(paragraph)
+                page_fragments.append(fragment)
+
+            fragments.extend(page_fragments)
+            page_tables = detect_page_tables(page, page_fragments, table_index)
+            tables.extend(page_tables)
+            table_index += len(page_tables)
+
+        return RawDocument(
+            paragraphs=paragraphs,
+            raw_text="\n\n".join(paragraphs).strip(),
+            fragments=fragments,
+            tables=merge_continuation_tables(tables),
+        )
 
     def _convert_span_text(
         self,

@@ -118,7 +118,14 @@ def test_convert_repairs_broken_cmap_sample() -> None:
     assert "प्रष्ट्रिधध" in raw_markitdown
     assert "प्रष्ट्रिधध" not in repaired
     assert not repaired.startswith("---")
-    assert "आरोपपत्र दायर गररएको" in repaired
+    assert repaired.splitlines()[:6] == [
+        "अख्तियार दुरुपयोग अनुसन्धान आयोग",
+        "टङ्गाल, काठमाडौं",
+        "मिमि: २०८१।१०। २४ गिे।",
+        "प्रेस विज्ञवि",
+        "विषय: आरोपपत्र दायर गररएको।",
+        "",
+    ]
 
 
 def test_convert_repairs_legacy_font_sample(tmp_path: Path) -> None:
@@ -144,21 +151,39 @@ def test_convert_preserves_two_column_reading_order() -> None:
     assert "निर्णय नं.७९७३" in markdown
     assert "सर्बोच्च अदालत विशेष इजलास" in markdown
     assert "जवर्जस्ती करणीको महलमा भएको" in markdown
-    assert markdown.index("सर्बोच्च अदालत विशेष इजलास") < markdown.index(
-        "जवर्जस्ती करणीको महलमा भएको"
+    assert markdown.index("जवर्जस्ती करणीको महलमा भएको") < markdown.index(
+        "सर्बोच्च अदालत विशेष इजलास"
     )
     assert not markdown.startswith("---")
 
 
-def test_convert_uses_structured_renderer_for_recognized_table_layout() -> None:
+def test_convert_preserves_table_layout_as_plain_text_lines() -> None:
     sample = ROOT / "samples" / "my-table.pdf"
 
     markdown = _convert_text(sample)
 
     assert "तालिका २.१९" in markdown
-    assert "**1**" in markdown or "**1.**" in markdown
-    assert "- **आयोगको निर्णय:**" in markdown
-    assert "- **प्रतिवादीको नाम, पद र कार्यालय:**" in markdown
+    assert "ि.सां.\tउजुरीको व्यहोरा" in markdown
+    assert "आयोगको तनणतय" in markdown
+    assert "प्रतिवादीको नाि, पद र कायातलय" in markdown
+
+
+def test_convert_keeps_aarop_patra_title_lines_readable() -> None:
+    sample = ROOT / "samples" / "aarop-patra.pdf"
+    if not sample.exists():
+        pytest.skip("aarop-patra sample not available")
+
+    markdown = _convert_text(sample)
+
+    assert "श्री विशेष अदालत, काठमाडौं समक्ष पेस गरेको" in markdown
+    assert "आरोप-पत्र" in markdown
+    assert "श्री ववशेष अदालत, काठमाड� समक्ष पेस गरेको" not in markdown
+    assert markdown.splitlines()[:4] == [
+        "(महाशाखा नं. ९)",
+        "श्री विशेष अदालत, काठमाडौं समक्ष पेस गरेको",
+        "आरोप-पत्र",
+        "२०८१/08२ सालको नम्वर .................",
+    ]
 
 
 def test_assemble_markdown_preserves_headings_lists_and_tables() -> None:
@@ -210,17 +235,17 @@ def test_convert_rejects_empty_pdf(tmp_path: Path) -> None:
     assert _convert_text(pdf_path) == ""
 
 
-def test_docx_converter_accepts_docx_and_doc() -> None:
+def test_docx_converter_accepts_only_doc() -> None:
     converter = NepaliDocxConverter()
 
+    assert converter.accepts(
+        io.BytesIO(b""),
+        SimpleNamespace(extension=".doc", mimetype="application/msword"),
+    )
     assert converter.accepts(
         io.BytesIO(b""),
         SimpleNamespace(
             extension=".docx",
             mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ),
-    )
-    assert converter.accepts(
-        io.BytesIO(b""),
-        SimpleNamespace(extension=".doc", mimetype="application/msword"),
-    )
+    ) is False

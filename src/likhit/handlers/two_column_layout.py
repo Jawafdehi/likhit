@@ -38,7 +38,7 @@ class TwoColumnLayoutHandler(StructureHandler):
 
     def get_extraction_strategy_for_file(self, file_path: str) -> ExtractionStrategy:
         suffix = Path(file_path).suffix.lower()
-        if suffix in {".docx", ".doc"}:
+        if suffix == ".doc":
             return self._docx_strategy
         return self._strategy
 

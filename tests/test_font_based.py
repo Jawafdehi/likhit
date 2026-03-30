@@ -11,6 +11,7 @@ from likhit.extractors.font_classifier import classify_font
 import likhit.extractors.font_based as font_based_module
 from likhit.extractors.font_based import (
     FontBasedStrategy,
+    _choose_fragment_text,
     join_spans_with_layout,
     join_words_with_spacing,
     normalize_extracted_word,
@@ -267,3 +268,23 @@ def test_normalize_extracted_word_keeps_space_before_prebase_marker_word() -> No
     )
 
     assert line == "सञ्चालक विशाल"
+
+
+def test_choose_fragment_text_prefers_original_when_repair_introduces_noise() -> None:
+    assert (
+        _choose_fragment_text(
+            "श्री विशेष अदालत, काठमाडौं समक्ष पेस गरेको",
+            "श्री ववशेष अदालत, काठमाड� समक्ष पेस गरेको",
+        )
+        == "श्री विशेष अदालत, काठमाडौं समक्ष पेस गरेको"
+    )
+
+
+def test_choose_fragment_text_can_merge_best_tokens_from_both_candidates() -> None:
+    assert (
+        _choose_fragment_text(
+            "मुद्दाको िेहोरा:-",
+            "मु�ाको बेहोरा:-",
+        )
+        == "मुद्दाको बेहोरा:-"
+    )

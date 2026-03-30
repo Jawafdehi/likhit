@@ -1,28 +1,23 @@
-"""Simple text extraction from DOCX and DOC files."""
+"""Legacy Microsoft Word `.doc` extraction."""
 
 from __future__ import annotations
 
 import shutil
 import subprocess
 
-from markitdown import MarkItDown
-
 from likhit.errors import ExtractionError
 from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
 
 
 class DocxBasedStrategy(ExtractionStrategy):
-    """Extract plain text from DOCX and DOC files."""
-
-    def __init__(self):
-        self._markitdown = MarkItDown()
+    """Extract plain text from legacy `.doc` files."""
 
     def extract_text(self, file_path: str, pages: str | None = None) -> RawDocument:
-        """Extract text from DOCX or DOC file.
+        """Extract text from a legacy `.doc` file.
 
         Args:
-            file_path: Path to the DOCX or DOC file
-            pages: Ignored for DOCX/DOC files (no page concept)
+            file_path: Path to the DOC file
+            pages: Ignored for DOC files (no page concept)
 
         Returns:
             RawDocument with extracted text fragments
@@ -35,13 +30,11 @@ class DocxBasedStrategy(ExtractionStrategy):
         path = Path(file_path)
         suffix = path.suffix.lower()
 
-        if suffix == ".docx":
-            text = self._extract_docx(file_path)
-        elif suffix == ".doc":
+        if suffix == ".doc":
             text = self._extract_doc(file_path)
         else:
             raise ExtractionError(
-                f"Unsupported file format: {suffix}. Only .docx and .doc are supported."
+                f"Unsupported file format: {suffix}. Only .doc is supported."
             )
 
         if not text or not text.strip():
@@ -60,22 +53,12 @@ class DocxBasedStrategy(ExtractionStrategy):
         )
 
     def extract_tables(self, file_path: str) -> list:
-        """Extract tables from DOCX or DOC file.
+        """Extract tables from a DOC file.
 
-        Note: Simple text extraction doesn't preserve table structure.
+        Note: Plain-text DOC extraction doesn't preserve table structure.
         Returns empty list as tables are extracted as plain text.
         """
         return []
-
-    def _extract_docx(self, file_path: str) -> str:
-        """Extract plain text from DOCX file using MarkItDown."""
-        try:
-            # MarkItDown converts DOCX to markdown, we extract the text content
-            result = self._markitdown.convert(file_path)
-            text = result.text_content
-            return text if text else ""
-        except Exception as e:
-            raise ExtractionError(f"Failed to extract text from DOCX: {e}") from e
 
     def _extract_doc(self, file_path: str) -> str:
         """Extract plain text from legacy DOC file using antiword.
@@ -163,7 +146,7 @@ class DocxBasedStrategy(ExtractionStrategy):
                 fragments.append(
                     TextFragment(
                         text=para,
-                        page_number=0,  # No page concept in DOCX/DOC
+                        page_number=0,  # No page concept in legacy DOC extraction
                         x0=0.0,
                         y0=float(idx * 20),  # Simulate vertical positioning
                         x1=100.0,

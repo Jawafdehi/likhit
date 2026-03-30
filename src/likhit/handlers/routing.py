@@ -46,7 +46,7 @@ def render_markdown_without_frontmatter(result: ExtractionResult) -> str:
 
 
 def _strategy_for_suffix(suffix: str) -> FontBasedStrategy | DocxBasedStrategy:
-    if suffix in {".docx", ".doc"}:
+    if suffix == ".doc":
         return DocxBasedStrategy()
     return FontBasedStrategy()
 

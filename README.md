@@ -1,6 +1,6 @@
 # likhit
 
-`likhit` is a public PDF-to-Markdown tool for Nepali government documents.
+`likhit` is a public MarkItDown plugin that adds Nepal-specific document support.
 
 The default path is powered by [MarkItDown](https://github.com/microsoft/markitdown), with `likhit` intercepting born-digital Nepali PDFs that need Nepal-specific repair before Markdown is emitted. That repair layer handles Kalimati broken-CMap fixes, Devanagari reordering and spacing normalization, and legacy Nepali font remapping where applicable.
 
@@ -60,19 +60,21 @@ You should see `likhit` in the output.
 
 ### What likhit does
 
-likhit intercepts PDFs and DOCX/DOC files that contain Nepali text requiring repair:
+likhit intercepts only the formats where it adds behavior beyond MarkItDown:
 
 - **PDF**: Detected automatically by scanning embedded fonts. If any font is classified
   as `broken_cmap` (Kalimati variants) or `legacy_remap` (Preeti, Kantipur, PCS Nepali,
   Sagarmatha, Himali), likhit's repair pipeline runs. All other PDFs fall through to
   markitdown's built-in converter.
-- **DOCX/DOC**: Always handled by likhit's extraction pipeline.
+- **DOC**: Legacy Microsoft Word `.doc` files are handled by likhit's extraction pipeline.
+- **DOCX**: Left to MarkItDown's built-in Word converter.
 
 ### Supported document types
 
 - Single-column notice and press-release style layouts
 - Dense two-column article and journal style layouts
-- Generic Nepali born-digital PDFs and DOCX files
+- Generic Nepali born-digital PDFs
+- Legacy `.doc` files
 
 ### Not supported
 
@@ -99,18 +101,16 @@ This keeps the public product story simple: `likhit` is the tool users call, whi
 
 ## Current Scope
 
-- Supported input formats: 
+- Supported input formats:
   - PDF (born-digital, with Nepali text repair)
-  - DOCX (Microsoft Word 2007+, text extraction only, all document types)
   - DOC (legacy Microsoft Word, text extraction only, Linux/Mac only)
 - Supported output: Markdown only
 - Supported structures: single-column notice layouts, two-column layouts
 - Unsupported in this branch: OCR, scanned/image-only PDFs, image inputs
 
-### DOCX/DOC Support Notes
+### DOC Support Notes
 
 - Text-first extraction approach (no table structure preservation)
-- **DOCX files**: Supported for all structures that likhit can detect
 - **DOC files**: Supported for generic extraction and notice-style structure detection
 - **Windows limitation**: DOC file extraction does not work on Windows due to antiword binary compatibility
   - Windows users must convert DOC files to DOCX format first
@@ -122,12 +122,12 @@ This keeps the public product story simple: `likhit` is the tool users call, whi
 ## Project Layout
 
 - `src/likhit/_plugin.py`: MarkItDown plugin entry point and converter registration
-- `src/likhit/converters/`: plugin converters for Nepali PDF and DOCX/DOC inputs
+- `src/likhit/converters/`: plugin converters for Nepali PDF and legacy DOC inputs
 - `src/likhit/nepali_pdf_repair.py`: reusable Nepal-specific PDF repair layer
 - `src/likhit/markdown_assembly.py`: generic Markdown assembly for the default conversion path
-- `src/likhit/extractors/`: extraction strategies (PDF, DOCX, DOC)
+- `src/likhit/extractors/`: extraction strategies (PDF, DOC)
   - `font_based.py`: PDF extraction with Nepali font repair
-  - `docx_based.py`: DOCX/DOC text extraction
+  - `docx_based.py`: legacy DOC text extraction
 - `src/likhit/handlers/`: structure-aware handlers and detection logic
 - `src/likhit/renderers/`: Markdown rendering
 - `tests/`: conversion, extraction, and plugin coverage

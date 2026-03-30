@@ -18,7 +18,8 @@ class StructureHandler(ABC):
     def get_extraction_strategy_for_file(self, file_path: str) -> ExtractionStrategy:
         """Return the appropriate strategy based on file extension.
 
-        Override this method to support multiple file formats (PDF, DOCX, DOC).
+        Override this method to support multiple file formats (for example PDF
+        and legacy DOC).
         Default implementation returns get_extraction_strategy().
         """
         return self.get_extraction_strategy()
