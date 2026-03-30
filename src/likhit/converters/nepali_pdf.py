@@ -11,11 +11,13 @@ from __future__ import annotations
 import io
 from collections import defaultdict
 from pathlib import Path
+import re
 from statistics import median
 from tempfile import NamedTemporaryFile
 from typing import Any, BinaryIO
 
 from markitdown import DocumentConverter, DocumentConverterResult, StreamInfo
+from markitdown.converters._pdf_converter import PdfConverter
 
 from likhit.errors import ExtractionError
 from likhit.extractors.base import RawDocument, TextFragment
@@ -25,6 +27,13 @@ from likhit.handlers.content_blocks import build_content_blocks, table_to_plain_
 from likhit.handlers.structure_detection import detect_structure
 from likhit.handlers.two_column_layout import TwoColumnLayoutHandler
 from likhit.models import DocumentType, ParagraphBlock, TableBlock
+
+_TOKEN_PATTERN = re.compile(r"\S+")
+_DEVANAGARI_PATTERN = re.compile(r"[\u0900-\u097F]")
+_LATIN_PATTERN = re.compile(r"[A-Za-z]")
+_SUSPICIOUS_LATIN_TOKEN_PATTERN = re.compile(
+    r"""[\\\[\]\{\}\$^&*_+=<>]|[A-Za-z]\d|\d[A-Za-z]"""
+)
 
 
 class NepaliPdfConverter(DocumentConverter):
@@ -45,11 +54,7 @@ class NepaliPdfConverter(DocumentConverter):
         if not raw:
             return False
 
-        classifications = classify_fonts_from_stream(io.BytesIO(raw))
-        return any(
-            strategy in {"broken_cmap", "legacy_remap"}
-            for strategy in classifications.values()
-        )
+        return True
 
     def convert(
         self,
@@ -57,27 +62,122 @@ class NepaliPdfConverter(DocumentConverter):
         stream_info: StreamInfo,
         **kwargs: Any,
     ) -> DocumentConverterResult:
-        del stream_info, kwargs
+        del kwargs
         raw = file_stream.read()
         if not raw:
             raise ExtractionError(
                 "No extractable text found in PDF. Scanned or image-only PDFs are not supported."
             )
 
-        with NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(raw)
-            tmp_path = Path(tmp.name)
+        classifications = classify_fonts_from_stream(io.BytesIO(raw))
+        if _has_known_nepali_repair_font(classifications):
+            return _convert_with_likhit(raw)
 
-        try:
-            raw_document = FontBasedStrategy().extract_text(str(tmp_path))
-            markdown = _render_structure_aware_markdown(raw_document)
-            if not markdown.strip():
-                raise ExtractionError(
-                    "No extractable text found in PDF. Scanned or image-only PDFs are not supported."
-                )
-            return DocumentConverterResult(markdown=markdown)
-        finally:
-            tmp_path.unlink(missing_ok=True)
+        default_result = _run_default_pdf_converter(raw, stream_info)
+        if not _default_pdf_result_needs_likhit(default_result.markdown):
+            return default_result
+
+        likhit_result = _convert_with_likhit(raw)
+        if _markdown_quality_score(likhit_result.markdown) >= _markdown_quality_score(
+            default_result.markdown
+        ):
+            return likhit_result
+        return default_result
+
+
+def _has_known_nepali_repair_font(classifications: dict[str, str]) -> bool:
+    return any(
+        strategy in {"broken_cmap", "legacy_remap"}
+        for strategy in classifications.values()
+    )
+
+
+def _run_default_pdf_converter(
+    raw: bytes,
+    stream_info: StreamInfo,
+) -> DocumentConverterResult:
+    converter = PdfConverter()
+    return converter.convert(io.BytesIO(raw), stream_info)
+
+
+def _convert_with_likhit(raw: bytes) -> DocumentConverterResult:
+    with NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(raw)
+        tmp_path = Path(tmp.name)
+
+    try:
+        raw_document = FontBasedStrategy().extract_text(str(tmp_path))
+        markdown = _render_structure_aware_markdown(raw_document)
+        if not markdown.strip():
+            raise ExtractionError(
+                "No extractable text found in PDF. Scanned or image-only PDFs are not supported."
+            )
+        return DocumentConverterResult(markdown=markdown)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _default_pdf_result_needs_likhit(markdown: str) -> bool:
+    if not markdown.strip():
+        return True
+
+    tokens = _TOKEN_PATTERN.findall(markdown)
+    if not tokens:
+        return True
+
+    devanagari_chars = len(_DEVANAGARI_PATTERN.findall(markdown))
+    latin_tokens = [token for token in tokens if _LATIN_PATTERN.search(token)]
+    if devanagari_chars >= 20 or len(latin_tokens) < 12:
+        return False
+
+    suspicious_tokens = [
+        token for token in latin_tokens if _SUSPICIOUS_LATIN_TOKEN_PATTERN.search(token)
+    ]
+    vowel_poor_tokens = [
+        token
+        for token in latin_tokens
+        if _is_vowel_poor_latin_token(token)
+    ]
+    pipe_heavy_lines = sum(
+        1 for line in markdown.splitlines() if line.count("|") >= 2
+    )
+
+    suspicious_ratio = len(suspicious_tokens) / len(latin_tokens)
+    vowel_poor_ratio = len(vowel_poor_tokens) / len(latin_tokens)
+    return (
+        suspicious_ratio >= 0.12
+        or (suspicious_ratio >= 0.06 and vowel_poor_ratio >= 0.45)
+        or (pipe_heavy_lines >= 4 and suspicious_ratio >= 0.05)
+    )
+
+
+def _is_vowel_poor_latin_token(token: str) -> bool:
+    letters = [char for char in token if char.isalpha()]
+    if len(letters) < 4:
+        return False
+    vowels = sum(char in "aeiouAEIOU" for char in letters)
+    return vowels / len(letters) < 0.2
+
+
+def _markdown_quality_score(markdown: str) -> int:
+    tokens = _TOKEN_PATTERN.findall(markdown)
+    latin_tokens = [token for token in tokens if _LATIN_PATTERN.search(token)]
+    suspicious_tokens = [
+        token for token in latin_tokens if _SUSPICIOUS_LATIN_TOKEN_PATTERN.search(token)
+    ]
+    vowel_poor_tokens = [
+        token for token in latin_tokens if _is_vowel_poor_latin_token(token)
+    ]
+    pipe_heavy_lines = sum(1 for line in markdown.splitlines() if line.count("|") >= 2)
+    devanagari_chars = len(_DEVANAGARI_PATTERN.findall(markdown))
+    return (
+        devanagari_chars * 3
+        + len(tokens)
+        - len(suspicious_tokens) * 8
+        - len(vowel_poor_tokens) * 3
+        - pipe_heavy_lines * 4
+        - markdown.count("\ufffd") * 12
+    )
 
 
 def _render_layout_preserving_markdown(raw_document: RawDocument) -> str:

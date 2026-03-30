@@ -98,13 +98,51 @@ def test_plain_unicode_pdf_falls_through_plugin_accepts_check(tmp_path: Path) ->
     stream_info = SimpleNamespace(extension=".pdf", mimetype="application/pdf")
 
     with pdf_path.open("rb") as stream:
-        assert converter.accepts(stream, stream_info) is False
+        assert converter.accepts(stream, stream_info) is True
 
     markdown = _convert_text(pdf_path)
 
     assert "नेपाल सरकार" in markdown
     assert "यो एउटा परीक्षण अनुच्छेद हो।" in markdown
     assert needs_nepali_pdf_repair(str(pdf_path)) is False
+
+
+def test_converter_escalates_bad_default_pdf_output_to_likhit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sample = ROOT / "samples" / "pressrelease.pdf"
+    converter = NepaliPdfConverter()
+    stream_info = SimpleNamespace(extension=".pdf", mimetype="application/pdf")
+
+    import likhit.converters.nepali_pdf as nepali_pdf_module
+    from markitdown import DocumentConverterResult
+
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "classify_fonts_from_stream",
+        lambda _raw: {"Helvetica": "correct"},
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_run_default_pdf_converter",
+        lambda raw, info: DocumentConverterResult(
+            markdown=(
+                "t\\,&H\nuoo5 hrD SD\n| --- | --- |\nI),lhlD UaXl\n"
+                "ptunlh nu\"r rgt\nhnl+UD Udtl\nerhealq\nerg$t+ P\".t\n"
+                "hBrbharehl qcrrh)F.pglrrtr"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_convert_with_likhit",
+        lambda raw: DocumentConverterResult(markdown="नेपाल सरकार"),
+    )
+
+    with sample.open("rb") as stream:
+        result = converter.convert(stream, stream_info)
+
+    assert result.markdown == "नेपाल सरकार"
 
 
 def test_convert_repairs_broken_cmap_sample() -> None:
