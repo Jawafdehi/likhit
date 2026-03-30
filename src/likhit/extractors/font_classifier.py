@@ -45,6 +45,6 @@ def scan_pdf_fonts(doc: fitz.Document) -> dict[str, str]:
                 continue
             strategy = classify_font(name, font_type)
             font_strategies[base] = strategy
-            logger.info("Font '%s' (type=%s) -> %s", base, font_type, strategy)
+            logger.debug("Font '%s' (type=%s) -> %s", base, font_type, strategy)
 
     return font_strategies

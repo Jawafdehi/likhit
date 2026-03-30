@@ -18,5 +18,5 @@ __plugin_interface_version__ = 1
 def register_converters(markitdown: MarkItDown, **kwargs: Any) -> None:
     """Called once per MarkItDown instance when plugins are enabled."""
     del kwargs
-    markitdown.register_converter(NepaliPdfConverter())
-    markitdown.register_converter(LegacyWordConverter())
+    markitdown.register_converter(NepaliPdfConverter(), priority=-2.0)
+    markitdown.register_converter(LegacyWordConverter(), priority=-2.0)

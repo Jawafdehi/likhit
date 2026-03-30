@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 import io
+import logging
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from likhit.errors import ExtractionError
 from likhit.markdown_assembly import assemble_markdown
 from likhit.models import RepairedBlock, Table, TableCell, TableRegion
 from likhit.nepali_pdf_repair import needs_nepali_pdf_repair
+from likhit.pdf_page_analysis import analyze_pdf_pages, pdf_likely_needs_ocr
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -105,6 +107,7 @@ def test_plain_unicode_pdf_falls_through_plugin_accepts_check(tmp_path: Path) ->
     assert "नेपाल सरकार" in markdown
     assert "यो एउटा परीक्षण अनुच्छेद हो।" in markdown
     assert needs_nepali_pdf_repair(str(pdf_path)) is False
+    assert pdf_likely_needs_ocr(str(pdf_path)) is False
 
 
 def test_converter_escalates_bad_default_pdf_output_to_likhit(
@@ -143,6 +146,94 @@ def test_converter_escalates_bad_default_pdf_output_to_likhit(
         result = converter.convert(stream, stream_info)
 
     assert result.markdown == "नेपाल सरकार"
+
+
+def test_converter_prefers_ocr_for_image_dominant_bad_text_pdf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sample = ROOT / "samples" / "pressrelease.pdf"
+    converter = NepaliPdfConverter()
+    stream_info = SimpleNamespace(extension=".pdf", mimetype="application/pdf")
+
+    import likhit.converters.nepali_pdf as nepali_pdf_module
+    from markitdown import DocumentConverterResult
+
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "classify_fonts_from_stream",
+        lambda _raw: {"Helvetica": "correct"},
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "pdf_likely_needs_ocr",
+        lambda _raw: True,
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_run_default_pdf_converter",
+        lambda raw, info: DocumentConverterResult(
+            markdown="t\\,&H\nuoo5 hrD SD\nI),lhlD UaXl"
+        ),
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_run_ocr_pdf_converter",
+        lambda raw, info: DocumentConverterResult(markdown="ओसीआर नतिजा"),
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_convert_with_likhit",
+        lambda raw: DocumentConverterResult(markdown='t+ "Ut"U U^'),
+    )
+
+    with sample.open("rb") as stream:
+        result = converter.convert(stream, stream_info)
+
+    assert result.markdown == "ओसीआर नतिजा"
+
+
+def test_converter_logs_when_ocr_is_needed_but_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sample = ROOT / "samples" / "pressrelease.pdf"
+    converter = NepaliPdfConverter()
+    stream_info = SimpleNamespace(extension=".pdf", mimetype="application/pdf")
+
+    import likhit.converters.nepali_pdf as nepali_pdf_module
+    from markitdown import DocumentConverterResult
+
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "classify_fonts_from_stream",
+        lambda _raw: {"Helvetica": "correct"},
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "pdf_likely_needs_ocr",
+        lambda _raw: True,
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_run_default_pdf_converter",
+        lambda raw, info: DocumentConverterResult(markdown="t\\,&H\nuoo5 hrD SD"),
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_run_ocr_pdf_converter",
+        lambda raw, info: None,
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_try_convert_with_likhit",
+        lambda raw: None,
+    )
+
+    with caplog.at_level(logging.INFO):
+        with sample.open("rb") as stream:
+            converter.convert(stream, stream_info)
+
+    assert "OCR appears necessary, but OCR is not configured" in caplog.text
 
 
 def test_convert_repairs_broken_cmap_sample() -> None:
@@ -271,6 +362,17 @@ def test_convert_keeps_aarop_patra_title_lines_readable() -> None:
         "आरोप-पत्र",
         "२०८१/08२ सालको नम्वर .................",
     ]
+
+
+def test_nirnaya_pages_are_detected_as_image_dominant_bad_text_layers() -> None:
+    sample = ROOT / "samples" / "nirnaya.pdf"
+
+    analyses = analyze_pdf_pages(str(sample))
+
+    assert analyses
+    assert all(analysis.is_image_dominant for analysis in analyses)
+    assert all(analysis.likely_needs_ocr for analysis in analyses)
+    assert pdf_likely_needs_ocr(str(sample)) is True
 
 
 def test_assemble_markdown_preserves_headings_lists_and_tables() -> None:

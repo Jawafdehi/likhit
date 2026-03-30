@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import io
 from collections import defaultdict
+import logging
+import os
 from pathlib import Path
 import re
 from statistics import median
@@ -18,6 +20,8 @@ from typing import Any, BinaryIO
 
 from markitdown import DocumentConverter, DocumentConverterResult, StreamInfo
 from markitdown.converters._pdf_converter import PdfConverter
+from markitdown_ocr import LLMVisionOCRService
+from markitdown_ocr import PdfConverterWithOCR
 
 from likhit.errors import ExtractionError
 from likhit.extractors.base import RawDocument, TextFragment
@@ -27,7 +31,9 @@ from likhit.handlers.content_blocks import build_content_blocks, table_to_plain_
 from likhit.handlers.structure_detection import detect_structure
 from likhit.handlers.two_column_layout import TwoColumnLayoutHandler
 from likhit.models import DocumentType, ParagraphBlock, TableBlock
+from likhit.pdf_page_analysis import pdf_likely_needs_ocr
 
+logger = logging.getLogger(__name__)
 _TOKEN_PATTERN = re.compile(r"\S+")
 _DEVANAGARI_PATTERN = re.compile(r"[\u0900-\u097F]")
 _LATIN_PATTERN = re.compile(r"[A-Za-z]")
@@ -71,18 +77,60 @@ class NepaliPdfConverter(DocumentConverter):
 
         classifications = classify_fonts_from_stream(io.BytesIO(raw))
         if _has_known_nepali_repair_font(classifications):
+            logger.info(
+                "PDF converter: known Nepali repair fonts detected; using likhit extraction directly."
+            )
             return _convert_with_likhit(raw)
 
+        logger.info("PDF converter: running default MarkItDown PDF extraction first.")
         default_result = _run_default_pdf_converter(raw, stream_info)
-        if not _default_pdf_result_needs_likhit(default_result.markdown):
+        candidates = [default_result]
+
+        needs_ocr = pdf_likely_needs_ocr(raw)
+        if needs_ocr:
+            logger.info(
+                "PDF converter: page analysis suggests OCR is needed because the PDF looks image-dominant with a suspicious text layer."
+            )
+            ocr_result = _run_ocr_pdf_converter(raw, stream_info)
+            if ocr_result is not None:
+                logger.info("PDF converter: OCR candidate extracted successfully.")
+                candidates.append(ocr_result)
+            else:
+                logger.warning(
+                    "PDF converter: OCR appears necessary, but OCR is not configured. Set OPENAI_API_KEY and MARKITDOWN_OCR_MODEL to enable markitdown-ocr."
+                )
+
+        if _default_pdf_result_needs_likhit(default_result.markdown):
+            logger.info(
+                "PDF converter: default extraction looks suspicious for Nepali text; retrying with likhit extraction."
+            )
+            likhit_result = _try_convert_with_likhit(raw)
+            if likhit_result is not None:
+                logger.info("PDF converter: likhit re-extraction produced a candidate.")
+                candidates.append(likhit_result)
+            else:
+                logger.warning(
+                    "PDF converter: likhit re-extraction did not produce usable text; keeping the existing candidates."
+                )
+        else:
+            logger.info(
+                "PDF converter: default MarkItDown extraction looks usable; no Nepali re-extraction needed."
+            )
+
+        if len(candidates) == 1:
+            logger.info("PDF converter: returning the only available extraction result.")
             return default_result
 
-        likhit_result = _convert_with_likhit(raw)
-        if _markdown_quality_score(likhit_result.markdown) >= _markdown_quality_score(
-            default_result.markdown
-        ):
-            return likhit_result
-        return default_result
+        scored_candidates = [
+            (result, _markdown_quality_score(result.markdown)) for result in candidates
+        ]
+        best_result, best_score = max(scored_candidates, key=lambda item: item[1])
+        logger.info(
+            "PDF converter: selected best candidate after comparison (candidates=%d, score=%d).",
+            len(scored_candidates),
+            best_score,
+        )
+        return best_result
 
 
 def _has_known_nepali_repair_font(classifications: dict[str, str]) -> bool:
@@ -100,6 +148,36 @@ def _run_default_pdf_converter(
     return converter.convert(io.BytesIO(raw), stream_info)
 
 
+def _run_ocr_pdf_converter(
+    raw: bytes,
+    stream_info: StreamInfo,
+) -> DocumentConverterResult | None:
+    ocr_service = _build_ocr_service_from_env()
+    if ocr_service is None:
+        return None
+
+    converter = PdfConverterWithOCR(ocr_service=ocr_service)
+    return converter.convert(io.BytesIO(raw), stream_info)
+
+
+def _build_ocr_service_from_env() -> LLMVisionOCRService | None:
+    api_key = os.getenv("OPENAI_API_KEY")
+    model = os.getenv("MARKITDOWN_OCR_MODEL") or os.getenv("OPENAI_MODEL")
+    if not api_key or not model:
+        return None
+
+    from openai import OpenAI
+
+    base_url = os.getenv("OPENAI_BASE_URL")
+    client_kwargs: dict[str, str] = {"api_key": api_key}
+    if base_url:
+        client_kwargs["base_url"] = base_url
+
+    client = OpenAI(**client_kwargs)
+    prompt = os.getenv("MARKITDOWN_OCR_PROMPT")
+    return LLMVisionOCRService(client=client, model=model, default_prompt=prompt)
+
+
 def _convert_with_likhit(raw: bytes) -> DocumentConverterResult:
     with NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(raw)
@@ -115,6 +193,14 @@ def _convert_with_likhit(raw: bytes) -> DocumentConverterResult:
         return DocumentConverterResult(markdown=markdown)
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+def _try_convert_with_likhit(raw: bytes) -> DocumentConverterResult | None:
+    try:
+        return _convert_with_likhit(raw)
+    except ExtractionError as exc:
+        logger.debug("PDF converter: likhit extraction failed: %s", exc)
+        return None
 
 
 def _default_pdf_result_needs_likhit(markdown: str) -> bool:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 from markitdown import MarkItDown
@@ -43,6 +44,7 @@ def _derive_output_name(source_path: str, existing: set[str]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="[likhit] %(message)s")
 
     if len(args.inputs) > 1 and args.out:
         parser.error("--out can only be used with a single input file")
