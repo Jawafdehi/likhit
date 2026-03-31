@@ -178,7 +178,7 @@ def test_converter_prefers_ocr_for_image_dominant_bad_text_pdf(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_run_ocr_pdf_converter",
-        lambda raw, info: DocumentConverterResult(markdown="ओसीआर नतिजा"),
+        lambda raw, info, **kwargs: DocumentConverterResult(markdown="ओसीआर नतिजा"),
     )
     monkeypatch.setattr(
         nepali_pdf_module,
@@ -221,7 +221,7 @@ def test_converter_logs_when_ocr_is_needed_but_not_configured(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_run_ocr_pdf_converter",
-        lambda raw, info: None,
+        lambda raw, info, **kwargs: None,
     )
     monkeypatch.setattr(
         nepali_pdf_module,

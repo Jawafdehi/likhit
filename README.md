@@ -78,12 +78,12 @@ likhit intercepts only the formats where it adds behavior beyond MarkItDown:
 
 ### Not supported
 
-- Scanned or image-only PDFs (no OCR)
+- Scanned or image-only PDFs without OCR configuration
 - DOC files on Windows (requires antiword — Linux/Mac only)
 
 ## Architecture
 
-The new default pipeline is:
+The pipeline is:
 
 1. MarkItDown loads the plugin when `enable_plugins=True` or `--use-plugins` is used.
 2. For PDFs that need Nepali repair, likhit scans fonts and runs its repair pipeline.
@@ -106,7 +106,8 @@ This keeps the public product story simple: `likhit` is the tool users call, whi
   - DOC (legacy Microsoft Word, text extraction only, Linux/Mac only)
 - Supported output: Markdown only
 - Supported structures: single-column notice layouts, two-column layouts
-- Unsupported in this branch: OCR, scanned/image-only PDFs, image inputs
+- Optional in this branch: OCR for image-dominant PDFs when `markitdown-ocr` is configured
+- Unsupported in this branch: image inputs
 
 ### DOC Support Notes
 
@@ -131,36 +132,18 @@ This keeps the public product story simple: `likhit` is the tool users call, whi
 - `src/likhit/handlers/`: structure-aware handlers and detection logic
 - `src/likhit/renderers/`: Markdown rendering
 - `tests/`: conversion, extraction, and plugin coverage
-  - `tests/integration/`: end-to-end integration tests with real document fixtures
+  - `tests/integration/`: end-to-end integration tests 
   - `tests/integration/test_data/`: committed test fixtures (PDF, DOCX, DOC samples)
 
 ## Testing
 
 ### Running Tests
 
-Run all tests (unit + integration):
+Run all tests:
 ```bash
 poetry run pytest
 ```
 
-Run only integration tests:
-```bash
-poetry run pytest tests/integration -v
-```
-
-Run with coverage:
-```bash
-poetry run pytest --cov=likhit
-```
-
-### Integration Test Fixtures
-
-Integration tests use real document fixtures stored in `tests/integration/test_data/`:
-- **Size policy**: Total fixture size kept under 50 MB (currently ~2.35 MB)
-- **Formats**: PDF, DOCX, DOC samples covering notice-style and two-column layouts
-- **Platform notes**: DOC tests automatically skip on Windows (requires antiword)
-
-See `tests/integration/README.md` for fixture governance and how to add new samples.
 
 ## References
 
