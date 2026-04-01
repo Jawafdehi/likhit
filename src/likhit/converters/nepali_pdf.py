@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 _TOKEN_PATTERN = re.compile(r"\S+")
 _DEVANAGARI_PATTERN = re.compile(r"[\u0900-\u097F]")
 _LATIN_PATTERN = re.compile(r"[A-Za-z]")
+_CID_GARBAGE_PATTERN = re.compile(r"\(cid:\d+\)")
 _SUSPICIOUS_LATIN_TOKEN_PATTERN = re.compile(
     r"""[\\\[\]\{\}\$^&*_+=<>]|[A-Za-z]\d|\d[A-Za-z]"""
 )
@@ -543,6 +544,10 @@ def _default_pdf_result_needs_likhit(markdown: str) -> bool:
     if not markdown.strip():
         return True
 
+    cid_garbage_count = len(_CID_GARBAGE_PATTERN.findall(markdown))
+    if cid_garbage_count >= 2:
+        return True
+
     tokens = _TOKEN_PATTERN.findall(markdown)
     if not tokens:
         return True
@@ -588,12 +593,14 @@ def _markdown_quality_score(markdown: str) -> int:
     ]
     pipe_heavy_lines = sum(1 for line in markdown.splitlines() if line.count("|") >= 2)
     devanagari_chars = len(_DEVANAGARI_PATTERN.findall(markdown))
+    cid_garbage_count = len(_CID_GARBAGE_PATTERN.findall(markdown))
     return (
         devanagari_chars * 3
         + len(tokens)
         - len(suspicious_tokens) * 8
         - len(vowel_poor_tokens) * 3
         - pipe_heavy_lines * 4
+        - cid_garbage_count * 12
         - markdown.count("\ufffd") * 12
     )
 

@@ -147,6 +147,40 @@ def test_converter_escalates_bad_default_pdf_output_to_likhit(
     assert result.markdown == "नेपाल सरकार"
 
 
+def test_converter_escalates_cid_garbage_default_pdf_output_to_likhit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sample = ROOT / "samples" / "pressrelease.pdf"
+    converter = NepaliPdfConverter()
+    stream_info = SimpleNamespace(extension=".pdf", mimetype="application/pdf")
+
+    import likhit.converters.nepali_pdf as nepali_pdf_module
+    from markitdown import DocumentConverterResult
+
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "classify_fonts_from_stream",
+        lambda _raw: {"Helvetica": "correct"},
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_run_default_pdf_converter",
+        lambda raw, info: DocumentConverterResult(
+            markdown="(cid:0)(cid:0)(cid:0) (cid:0)(cid:0)\n\n(cid:0)(cid:0)"
+        ),
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_convert_with_likhit",
+        lambda raw: DocumentConverterResult(markdown="नेपाल सरकार"),
+    )
+
+    with sample.open("rb") as stream:
+        result = converter.convert(stream, stream_info)
+
+    assert result.markdown == "नेपाल सरकार"
+
+
 def test_converter_prefers_ocr_for_image_dominant_bad_text_pdf(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
