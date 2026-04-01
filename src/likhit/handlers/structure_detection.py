@@ -59,7 +59,10 @@ def _looks_like_two_column_layout(fragments: list[TextFragment]) -> bool:
 
 
 def _looks_like_single_column_notice(fragments: list[TextFragment]) -> bool:
-    first_page = fragments[0].page_number
+    if not fragments:
+        return False
+
+    first_page = min(fragment.page_number for fragment in fragments)
     page_fragments = [
         fragment for fragment in fragments if fragment.page_number == first_page
     ]

@@ -126,6 +126,11 @@ def test_converter_escalates_bad_default_pdf_output_to_likhit(
     )
     monkeypatch.setattr(
         nepali_pdf_module,
+        "pdf_likely_needs_ocr",
+        lambda _raw: False,
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
         "_run_default_pdf_converter",
         lambda raw, info: DocumentConverterResult(
             markdown=(
@@ -161,6 +166,11 @@ def test_converter_escalates_cid_garbage_default_pdf_output_to_likhit(
         nepali_pdf_module,
         "classify_fonts_from_stream",
         lambda _raw: {"Helvetica": "correct"},
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "pdf_likely_needs_ocr",
+        lambda _raw: False,
     )
     monkeypatch.setattr(
         nepali_pdf_module,

@@ -47,7 +47,9 @@ class PdfPageAnalysis:
 
     @property
     def likely_needs_ocr(self) -> bool:
-        return self.is_image_dominant and self.has_suspicious_text_layer
+        return self.is_image_dominant and (
+            self.token_count == 0 or self.has_suspicious_text_layer
+        )
 
 
 def analyze_pdf_pages(source: bytes | str | Path) -> list[PdfPageAnalysis]:
@@ -99,7 +101,7 @@ def pdf_likely_needs_ocr(source: bytes | str | Path) -> bool:
     if not analyses:
         return False
     suspicious_pages = sum(1 for analysis in analyses if analysis.likely_needs_ocr)
-    return suspicious_pages >= max(1, len(analyses) // 2)
+    return suspicious_pages >= max(1, (len(analyses) + 1) // 2)
 
 
 def _analyze_text_quality(text: str) -> tuple[int, int, float, float]:
