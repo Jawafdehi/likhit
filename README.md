@@ -10,31 +10,13 @@ The default path is powered by [MarkItDown](https://github.com/microsoft/markitd
 pip install markitdown-likhit
 ```
 
-## Release Process
-
-`likhit` uses a tag-driven PyPI release flow with GitHub Actions Trusted Publishing.
-
-1. Update the package version in `pyproject.toml`.
-2. Commit that change.
-3. Create a matching git tag such as `v0.1.1`.
-4. Push the commit and tag to GitHub.
-
-Example:
-
-```bash
-poetry version patch
-git add pyproject.toml poetry.lock
-git commit -m "Bump version to 0.1.1"
-git tag v0.1.1
-git push origin main --follow-tags
-```
-
-The publish workflow verifies that the git tag matches the version in `pyproject.toml` before uploading to PyPI.
-
 ## Usage
 
-likhit is a [markitdown](https://github.com/microsoft/markitdown) plugin. Once installed,
-enable it when creating a MarkItDown instance:
+`likhit` is primarily used as a [MarkItDown](https://github.com/microsoft/markitdown) plugin.
+
+### Python
+
+Once installed, enable plugins when creating a `MarkItDown` instance:
 
 ```python
 from markitdown import MarkItDown
@@ -44,10 +26,18 @@ result = md.convert("path/to/nepali-document.pdf")
 print(result.text_content)
 ```
 
-Or from the markitdown CLI:
+### MarkItDown CLI
+
+You can also use `likhit` through the standard MarkItDown CLI:
 
 ```bash
 markitdown --use-plugins path/to/nepali-document.pdf
+```
+
+To write the output to a file:
+
+```bash
+markitdown --use-plugins path/to/nepali-document.pdf -o output.md
 ```
 
 To verify the plugin is registered:
@@ -57,6 +47,20 @@ markitdown --list-plugins
 ```
 
 You should see `likhit` in the output.
+
+### `likhit-save` CLI
+
+This package also installs a small helper CLI that runs MarkItDown with the `likhit` plugin enabled and writes Markdown files for you:
+
+```bash
+likhit-save path/to/nepali-document.pdf --out output.md
+```
+
+Convert multiple files into a directory:
+
+```bash
+likhit-save samples/pressrelease.pdf samples/kanunpatrika.pdf --out-dir converted/
+```
 
 ### What likhit does
 
@@ -70,16 +74,52 @@ likhit intercepts only the formats where it adds behavior beyond MarkItDown:
 - **DOCX**: Left to MarkItDown's built-in Word converter.
 
 ### Supported document types
-
-- Single-column notice and press-release style layouts
-- Dense two-column article and journal style layouts
 - Generic Nepali born-digital PDFs
 - Legacy `.doc` files
 
-### Not supported
 
-- Scanned or image-only PDFs without OCR configuration
-- DOC files on Windows (requires antiword — Linux/Mac only)
+### OCR Configuration
+
+For image-dominant or scanned PDFs, `likhit` can use `markitdown-ocr` when OCR is configured.
+
+Required model configuration:
+
+```bash
+export MARKITDOWN_OCR_MODEL="your-model-name"
+```
+
+You can also provide the model through `OPENAI_MODEL` or `GEMINI_MODEL`.
+
+Authentication options:
+
+1. OpenAI-compatible provider with a standard OpenAI key:
+
+```bash
+export OPENAI_API_KEY="your-api-key"
+```
+
+2. OpenAI-compatible provider with a custom base URL:
+
+```bash
+export OPENAI_API_KEY="your-api-key"
+export OPENAI_BASE_URL="https://your-provider.example/v1/"
+export MARKITDOWN_OCR_MODEL="your-model-name"
+```
+
+3. Gemini using the OpenAI compatibility endpoint:
+
+```bash
+export GEMINI_API_KEY="your-gemini-api-key"
+export GEMINI_MODEL="gemini-2.5-flash"
+```
+
+When `GEMINI_API_KEY` is set, `likhit` automatically uses Gemini's OpenAI-compatible base URL unless you explicitly override `OPENAI_BASE_URL`.
+
+Optional variables:
+
+```bash
+export MARKITDOWN_OCR_PROMPT="Custom OCR instructions"
+```
 
 ## Architecture
 
@@ -97,28 +137,8 @@ The pipeline is:
    - Legacy-font remapping through `npttf2utf`
 7. `likhit` assembles repaired text blocks into Markdown.
 
-This keeps the public product story simple: `likhit` is the tool users call, while MarkItDown is embedded infrastructure.
 
-## Current Scope
 
-- Supported input formats:
-  - PDF (born-digital, with Nepali text repair)
-  - DOC (legacy Microsoft Word, text extraction only, Linux/Mac only)
-- Supported output: Markdown only
-- Supported structures: single-column notice layouts, two-column layouts
-- Optional in this branch: OCR for image-dominant PDFs when `markitdown-ocr` is configured
-- Unsupported in this branch: image inputs
-
-### DOC Support Notes
-
-- Text-first extraction approach (no table structure preservation)
-- **DOC files**: Supported for generic extraction and notice-style structure detection
-- **Windows limitation**: DOC file extraction does not work on Windows due to antiword binary compatibility
-  - Windows users must convert DOC files to DOCX format first
-  - Use Microsoft Word, LibreOffice, or online converters
-  - Linux/Mac users can process DOC files directly
-- Tables are extracted as plain text
-- No formatting preservation (bold, italic, etc.)
 
 ## Project Layout
 
