@@ -210,8 +210,17 @@ def _merge_fragment_variants(
             )
         )
 
-    merged.extend(repaired_by_key[key] for key in sorted(repaired_by_key))
-    return merged
+    merged.extend(repaired_by_key.values())
+    return sorted(
+        merged,
+        key=lambda fragment: (
+            fragment.page_number,
+            round(fragment.y0, 2),
+            fragment.x0,
+            fragment.block_number,
+            fragment.line_number,
+        ),
+    )
 
 
 def _raw_document_from_fragments(
@@ -272,7 +281,15 @@ class FontBasedStrategy(ExtractionStrategy):
                 needs_reorder=False,
             )
             if has_broken_cmap:
-                repaired_doc, needs_reorder = fix_kalimati_cmap(fitz.open(path))
+                repaired_source = fitz.open(path)
+                try:
+                    repaired_doc, needs_reorder = fix_kalimati_cmap(repaired_source)
+                finally:
+                    if repaired_source is not repaired_doc:
+                        try:
+                            repaired_source.close()
+                        except ValueError:
+                            pass
                 repaired_document = self._extract_from_document(
                     repaired_doc,
                     font_strategies,

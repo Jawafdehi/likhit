@@ -20,7 +20,7 @@ from typing import Any, BinaryIO
 
 import fitz
 from markitdown import DocumentConverter, DocumentConverterResult, StreamInfo
-from markitdown.converters._pdf_converter import PdfConverter
+from markitdown.converters import PdfConverter
 from markitdown_ocr import LLMVisionOCRService
 from markitdown_ocr import PdfConverterWithOCR
 
@@ -86,7 +86,12 @@ class NepaliPdfConverter(DocumentConverter):
             logger.info(
                 "PDF converter: known Nepali repair fonts detected; using likhit extraction directly."
             )
-            return _convert_with_likhit(raw)
+            likhit_result = _try_convert_with_likhit(raw)
+            if likhit_result is not None:
+                return likhit_result
+            logger.warning(
+                "PDF converter: likhit extraction failed after repair-font detection; falling back to default extraction."
+            )
 
         logger.info("PDF converter: running default MarkItDown PDF extraction first.")
         default_result = _run_default_pdf_converter(raw, stream_info)
@@ -503,14 +508,15 @@ def _build_ocr_service_from_env() -> LLMVisionOCRService | None:
 
 def _resolve_ocr_env() -> tuple[str | None, str | None, str | None]:
     gemini_api_key = os.getenv("GEMINI_API_KEY")
-    api_key = os.getenv("OPENAI_API_KEY") or gemini_api_key
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    api_key = openai_api_key or gemini_api_key
     model = (
         os.getenv("MARKITDOWN_OCR_MODEL")
         or os.getenv("OPENAI_MODEL")
         or os.getenv("GEMINI_MODEL")
     )
     base_url = os.getenv("OPENAI_BASE_URL")
-    if not base_url and gemini_api_key:
+    if not base_url and gemini_api_key and not openai_api_key:
         base_url = _GEMINI_OPENAI_COMPAT_BASE_URL
     return api_key, model, base_url
 
@@ -535,7 +541,7 @@ def _convert_with_likhit(raw: bytes) -> DocumentConverterResult:
 def _try_convert_with_likhit(raw: bytes) -> DocumentConverterResult | None:
     try:
         return _convert_with_likhit(raw)
-    except ExtractionError as exc:
+    except Exception as exc:
         logger.debug("PDF converter: likhit extraction failed: %s", exc)
         return None
 
