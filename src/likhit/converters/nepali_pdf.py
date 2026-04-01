@@ -718,14 +718,13 @@ def _build_layout_paragraphs(fragments: list[TextFragment]) -> list[str]:
     paragraphs: list[str] = []
     current_paragraph: list[str] = []
     previous_page: int | None = None
-    previous_y1: float | None = None
 
     def flush_paragraph() -> None:
         if current_paragraph:
             paragraphs.append("\n".join(current_paragraph).strip())
             current_paragraph.clear()
 
-    for page_number, y0, y1, text, gap_before in merged_lines:
+    for page_number, y0, _y1, text, gap_before in merged_lines:
         starts_new_paragraph = False
         if previous_page is not None and page_number != previous_page:
             starts_new_paragraph = True
@@ -737,7 +736,6 @@ def _build_layout_paragraphs(fragments: list[TextFragment]) -> list[str]:
 
         current_paragraph.append(text)
         previous_page = page_number
-        previous_y1 = y1
 
     flush_paragraph()
     return paragraphs

@@ -13,7 +13,6 @@ import pytest
 
 from likhit.converters.nepali_docx import NepaliDocxConverter
 from likhit.converters.nepali_pdf import NepaliPdfConverter
-from likhit.errors import ExtractionError
 from likhit.markdown_assembly import assemble_markdown
 from likhit.models import RepairedBlock, Table, TableCell, TableRegion
 from likhit.nepali_pdf_repair import needs_nepali_pdf_repair
