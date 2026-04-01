@@ -51,7 +51,9 @@ def _strategy_for_suffix(suffix: str) -> FontBasedStrategy | DocxBasedStrategy:
     return FontBasedStrategy()
 
 
-def _resolve_handler(doc_type: DocumentType) -> SingleColumnNoticeHandler | TwoColumnLayoutHandler:
+def _resolve_handler(
+    doc_type: DocumentType,
+) -> SingleColumnNoticeHandler | TwoColumnLayoutHandler:
     if doc_type is DocumentType.SINGLE_COLUMN_NOTICE:
         return SingleColumnNoticeHandler()
     if doc_type is DocumentType.TWO_COLUMN_LAYOUT:

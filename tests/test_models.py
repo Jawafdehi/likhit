@@ -8,8 +8,7 @@ from likhit.models import DocumentType, ExtractionResult, Section
 
 def test_document_type_parse_accepts_single_column_notice() -> None:
     assert (
-        DocumentType.parse("single-column-notice")
-        is DocumentType.SINGLE_COLUMN_NOTICE
+        DocumentType.parse("single-column-notice") is DocumentType.SINGLE_COLUMN_NOTICE
     )
 
 

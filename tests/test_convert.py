@@ -130,7 +130,7 @@ def test_converter_escalates_bad_default_pdf_output_to_likhit(
         lambda raw, info: DocumentConverterResult(
             markdown=(
                 "t\\,&H\nuoo5 hrD SD\n| --- | --- |\nI),lhlD UaXl\n"
-                "ptunlh nu\"r rgt\nhnl+UD Udtl\nerhealq\nerg$t+ P\".t\n"
+                'ptunlh nu"r rgt\nhnl+UD Udtl\nerhealq\nerg$t+ P".t\n'
                 "hBrbharehl qcrrh)F.pglrrtr"
             )
         ),
@@ -430,10 +430,13 @@ def test_docx_converter_accepts_only_doc() -> None:
         io.BytesIO(b""),
         SimpleNamespace(extension=".doc", mimetype="application/msword"),
     )
-    assert converter.accepts(
-        io.BytesIO(b""),
-        SimpleNamespace(
-            extension=".docx",
-            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ),
-    ) is False
+    assert (
+        converter.accepts(
+            io.BytesIO(b""),
+            SimpleNamespace(
+                extension=".docx",
+                mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+        )
+        is False
+    )

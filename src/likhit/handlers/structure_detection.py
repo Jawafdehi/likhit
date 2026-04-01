@@ -15,7 +15,9 @@ _COLUMN_GUTTER = 20.0
 def detect_structure(raw_document: RawDocument) -> DocumentType | None:
     """Infer a supported structure type from extracted layout signals."""
 
-    fragments = [fragment for fragment in raw_document.fragments if fragment.text.strip()]
+    fragments = [
+        fragment for fragment in raw_document.fragments if fragment.text.strip()
+    ]
     if not fragments:
         return None
 
@@ -58,7 +60,9 @@ def _looks_like_two_column_layout(fragments: list[TextFragment]) -> bool:
 
 def _looks_like_single_column_notice(fragments: list[TextFragment]) -> bool:
     first_page = fragments[0].page_number
-    page_fragments = [fragment for fragment in fragments if fragment.page_number == first_page]
+    page_fragments = [
+        fragment for fragment in fragments if fragment.page_number == first_page
+    ]
     if len(page_fragments) < 3:
         return False
 
@@ -67,7 +71,9 @@ def _looks_like_single_column_notice(fragments: list[TextFragment]) -> bool:
     top_fragments = [fragment for fragment in page_fragments if fragment.y0 <= 220]
 
     centered_top_lines = sum(
-        1 for fragment in top_fragments if _looks_centered(fragment, page_left, page_right)
+        1
+        for fragment in top_fragments
+        if _looks_centered(fragment, page_left, page_right)
     )
     has_subject = any(_is_subject_line(fragment.text) for fragment in page_fragments)
     has_date = any(_is_date_line(fragment.text) for fragment in page_fragments)
@@ -85,12 +91,16 @@ def _looks_like_single_column_notice(fragments: list[TextFragment]) -> bool:
         for fragment in body_fragments
     )
 
-    return has_subject or (has_date and centered_top_lines >= 2) or (
-        centered_top_lines >= 3 and has_paragraph_gap
+    return (
+        has_subject
+        or (has_date and centered_top_lines >= 2)
+        or (centered_top_lines >= 3 and has_paragraph_gap)
     )
 
 
-def _looks_centered(fragment: TextFragment, page_left: float, page_right: float) -> bool:
+def _looks_centered(
+    fragment: TextFragment, page_left: float, page_right: float
+) -> bool:
     page_center = (page_left + page_right) / 2
     line_center = (fragment.x0 + fragment.x1) / 2
     page_width = max(page_right - page_left, 1.0)

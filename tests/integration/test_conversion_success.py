@@ -87,7 +87,9 @@ class TestFixtureGovernance:
 
     def test_fixture_directory_exists(self) -> None:
         assert TEST_DATA_DIR.exists(), f"Test data directory not found: {TEST_DATA_DIR}"
-        assert TEST_DATA_DIR.is_dir(), f"Test data path is not a directory: {TEST_DATA_DIR}"
+        assert (
+            TEST_DATA_DIR.is_dir()
+        ), f"Test data path is not a directory: {TEST_DATA_DIR}"
 
     def test_fixture_size_under_threshold(self) -> None:
         assert_fixture_size_under_threshold(threshold_mb=50)
@@ -124,7 +126,9 @@ class TestPluginConversion:
 
         assert markdown, f"Empty output for {fixture_path.name}"
         assert len(markdown) > 0, f"Zero-length output for {fixture_path.name}"
-        assert isinstance(markdown, str), f"Output is not a string for {fixture_path.name}"
+        assert isinstance(
+            markdown, str
+        ), f"Output is not a string for {fixture_path.name}"
 
     def test_notice_style_pdf_output_matches_expected_structure(self) -> None:
         notice_pdf = TEST_DATA_DIR / "ciaa_pressrelease_sample.pdf"
@@ -241,7 +245,9 @@ class TestPluginConversion:
         )
         _assert_markers_absent(markdown, ["---", "काठमाड�", "प्रष्ट्रिधध"])
 
-    def test_save_cli_writes_markdown_file_with_expected_output(self, tmp_path: Path) -> None:
+    def test_save_cli_writes_markdown_file_with_expected_output(
+        self, tmp_path: Path
+    ) -> None:
         notice_pdf = TEST_DATA_DIR / "ciaa_pressrelease_sample.pdf"
         if not notice_pdf.exists():
             pytest.skip("Notice-style PDF sample not found")

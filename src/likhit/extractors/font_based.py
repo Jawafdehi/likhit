@@ -195,9 +195,7 @@ def _merge_fragment_variants(
     original_fragments: list[TextFragment],
     repaired_fragments: list[TextFragment],
 ) -> list[TextFragment]:
-    repaired_by_key = {
-        _line_key(fragment): fragment for fragment in repaired_fragments
-    }
+    repaired_by_key = {_line_key(fragment): fragment for fragment in repaired_fragments}
     merged: list[TextFragment] = []
 
     for fragment in original_fragments:
@@ -212,10 +210,7 @@ def _merge_fragment_variants(
             )
         )
 
-    merged.extend(
-        repaired_by_key[key]
-        for key in sorted(repaired_by_key)
-    )
+    merged.extend(repaired_by_key[key] for key in sorted(repaired_by_key))
     return merged
 
 

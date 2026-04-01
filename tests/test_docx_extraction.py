@@ -108,7 +108,9 @@ class TestDocxStructureDetection:
 
             result = NepaliDocxConverter().convert(
                 file_stream=MagicMock(read=lambda: b"fake-doc"),
-                stream_info=SimpleNamespace(extension=".doc", mimetype="application/msword"),
+                stream_info=SimpleNamespace(
+                    extension=".doc", mimetype="application/msword"
+                ),
             )
 
             assert "विषय: परीक्षण" in result.text_content

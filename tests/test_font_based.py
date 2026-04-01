@@ -271,7 +271,9 @@ def test_normalize_extracted_word_keeps_space_before_prebase_marker_word() -> No
     assert line == "सञ्चालक विशाल"
 
 
-def test_normalize_press_release_paragraph_turns_leading_replacement_char_into_bullet() -> None:
+def test_normalize_press_release_paragraph_turns_leading_replacement_char_into_bullet() -> (
+    None
+):
     assert (
         normalize_press_release_paragraph("� अपराध गर्ने व्यक्तिको पीडितसंगको")
         == "- अपराध गर्ने व्यक्तिको पीडितसंगको"

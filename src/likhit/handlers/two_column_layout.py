@@ -95,7 +95,9 @@ class TwoColumnLayoutHandler(StructureHandler):
             self._merge_fragments_to_paragraphs,
         )
 
-    def _order_page_fragments(self, fragments: list[TextFragment]) -> list[TextFragment]:
+    def _order_page_fragments(
+        self, fragments: list[TextFragment]
+    ) -> list[TextFragment]:
         if not fragments:
             return []
 

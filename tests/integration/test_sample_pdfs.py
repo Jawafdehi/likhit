@@ -336,7 +336,10 @@ def _assert_ordered_markers(sample: ConvertedSample) -> None:
     cursor = 0
     for marker in expectation.ordered_markers:
         normalized_marker = _normalize_text(marker)
-        while cursor < len(normalized_lines) and normalized_marker not in normalized_lines[cursor]:
+        while (
+            cursor < len(normalized_lines)
+            and normalized_marker not in normalized_lines[cursor]
+        ):
             cursor += 1
         assert cursor < len(normalized_lines), (
             f"Ordered marker not found in sequence for {expectation.file_name}: {marker!r}\n"

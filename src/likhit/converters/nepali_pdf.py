@@ -127,7 +127,9 @@ class NepaliPdfConverter(DocumentConverter):
             )
 
         if len(candidates) == 1:
-            logger.info("PDF converter: returning the only available extraction result.")
+            logger.info(
+                "PDF converter: returning the only available extraction result."
+            )
             return default_result
 
         scored_candidates = [
@@ -478,9 +480,7 @@ def _render_ocr_decision_table(
     )
     for serial, ministry, decision in rows:
         clean_serial = serial.replace(")", ".").strip()
-        parts.append(
-            f"| {clean_serial} | {ministry.strip()} | {decision.strip()} |"
-        )
+        parts.append(f"| {clean_serial} | {ministry.strip()} | {decision.strip()} |")
     return "\n".join(parts).strip()
 
 
@@ -556,13 +556,9 @@ def _default_pdf_result_needs_likhit(markdown: str) -> bool:
         token for token in latin_tokens if _SUSPICIOUS_LATIN_TOKEN_PATTERN.search(token)
     ]
     vowel_poor_tokens = [
-        token
-        for token in latin_tokens
-        if _is_vowel_poor_latin_token(token)
+        token for token in latin_tokens if _is_vowel_poor_latin_token(token)
     ]
-    pipe_heavy_lines = sum(
-        1 for line in markdown.splitlines() if line.count("|") >= 2
-    )
+    pipe_heavy_lines = sum(1 for line in markdown.splitlines() if line.count("|") >= 2)
 
     suspicious_ratio = len(suspicious_tokens) / len(latin_tokens)
     vowel_poor_ratio = len(vowel_poor_tokens) / len(latin_tokens)
@@ -689,7 +685,9 @@ def _build_layout_paragraphs(fragments: list[TextFragment]) -> list[str]:
             ),
             None,
         )
-        text = " ".join(fragment.text.strip() for fragment in ordered_line if fragment.text.strip()).strip()
+        text = " ".join(
+            fragment.text.strip() for fragment in ordered_line if fragment.text.strip()
+        ).strip()
         if text:
             merged_lines.append((page_number, y0, y1, text, gap_before))
         current_line.clear()

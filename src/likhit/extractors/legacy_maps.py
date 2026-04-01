@@ -50,6 +50,7 @@ def _get_mapper():
     _mapper = FontMapper(map_json)
     return _mapper
 
+
 def get_converter(font_name: str) -> Callable[[str], str] | None:
     map_key = _match_font(font_name)
     if map_key is None:

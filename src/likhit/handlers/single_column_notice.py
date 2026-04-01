@@ -247,7 +247,9 @@ class SingleColumnNoticeHandler(StructureHandler):
             nearest_indent = candidate_margins[0]
             return base_margin + max(8.0, (nearest_indent - base_margin) / 2)
 
-        typical_line_height = median(fragment.y1 - fragment.y0 for fragment in fragments)
+        typical_line_height = median(
+            fragment.y1 - fragment.y0 for fragment in fragments
+        )
         indent_threshold = paragraph_indent_threshold()
 
         def starts_indented_paragraph(fragment: TextFragment) -> bool:
@@ -278,7 +280,10 @@ class SingleColumnNoticeHandler(StructureHandler):
                 previous_fragment = fragment
                 continue
 
-            if previous_fragment and fragment.page_number != previous_fragment.page_number:
+            if (
+                previous_fragment
+                and fragment.page_number != previous_fragment.page_number
+            ):
                 flush()
                 current.append(text)
                 previous_fragment = fragment
