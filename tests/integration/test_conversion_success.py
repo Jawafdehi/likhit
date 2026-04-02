@@ -141,9 +141,9 @@ class TestPluginConversion:
         assert first_lines == [
             "अख्तियार दुरुपयोग अनुसन्धान आयोग",
             "टङ्गाल, काठमाडौं",
-            "मिमि: २०८१।१०। २४ गिे।",
-            "प्रेस विज्ञवि",
-            "विषय: आरोपपत्र दायर गररएको।",
+            "मिति: २०८१।१०। २४ गते।",
+            "प्रेस विज्ञप्ति",
+            "विषय: आरोपपत्र दायर गरिएको।",
             "",
             "राष्ट्रिय सूचना प्रविधि केन्द्रद्वारा आ.व. २०७४/७५ मा आह्वान गरिएको बोलपत्र NITC/G/NCB-7-",
         ]
@@ -261,5 +261,5 @@ class TestPluginConversion:
 
         markdown = output_path.read_text(encoding="utf-8")
         assert markdown == expected_markdown
-        assert "विषय: आरोपपत्र दायर गररएको।" in markdown
+        assert "विषय: आरोपपत्र दायर गरिएको।" in markdown
         assert "राष्ट्रिय सूचना प्रविधि केन्द्रद्वारा" in markdown

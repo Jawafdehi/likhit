@@ -294,9 +294,9 @@ def test_convert_repairs_broken_cmap_sample() -> None:
     assert repaired.splitlines()[:6] == [
         "अख्तियार दुरुपयोग अनुसन्धान आयोग",
         "टङ्गाल, काठमाडौं",
-        "मिमि: २०८१।१०। २४ गिे।",
-        "प्रेस विज्ञवि",
-        "विषय: आरोपपत्र दायर गररएको।",
+        "मिति: २०८१।१०। २४ गते।",
+        "प्रेस विज्ञप्ति",
+        "विषय: आरोपपत्र दायर गरिएको।",
         "",
     ]
 
@@ -376,9 +376,10 @@ def test_convert_preserves_table_layout_as_plain_text_lines() -> None:
     markdown = _convert_text(sample)
 
     assert "तालिका २.१९" in markdown
-    assert "ि.सां.\tउजुरीको व्यहोरा" in markdown
-    assert "आयोगको तनणतय" in markdown
-    assert "प्रतिवादीको नाि, पद र कायातलय" in markdown
+    assert "क्र.सं.\tउजुरीको व्यहोरा" in markdown
+    assert "आयोगको निर्णय" in markdown
+    assert "प्रतिवादीको नाम, पद र कार्यालय" in markdown
+    assert "गैरकानुनी लाभ लिई नेपाल सरकारलाई हानि नोक्सानी गरी भ्रष्टाचार गरेका मुद्दाहरू" in markdown
 
 
 def test_convert_normalizes_replacement_char_bullets_in_two_column_output() -> None:
