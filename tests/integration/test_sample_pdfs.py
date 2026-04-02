@@ -119,7 +119,7 @@ STABLE_SAMPLE_CASES = (
             required_markers=(
                 "अख्तियार दुरुपयोग अनुसन्धान आयोग",
                 "टङ्गाल, काठमाडौं",
-                "विषय: आरोपपत्र दायर गररएको।",
+                "विषय: आरोपपत्र दायर गरिएको।",
                 "राष्ट्रिय सूचना प्रविधि केन्द्रद्वारा",
                 "आह्वान गरिएको बोलपत्र",
                 "प्रवक्ता",
@@ -132,20 +132,13 @@ STABLE_SAMPLE_CASES = (
             ordered_markers=(
                 "अख्तियार दुरुपयोग अनुसन्धान आयोग",
                 "टङ्गाल, काठमाडौं",
-                "विषय: आरोपपत्र दायर गररएको।",
+                "विषय: आरोपपत्र दायर गरिएको।",
                 "राष्ट्रिय सूचना प्रविधि केन्द्रद्वारा",
             ),
             min_nonempty_lines=15,
             min_characters=2000,
         )
     ),
-)
-
-# Known-broken samples:
-# - should still convert to non-empty output unless otherwise noted
-# - are expected to fail one or more quality assertions until extraction improves
-# - should be moved into the stable set once all regression checks pass reliably
-KNOWN_BROKEN_SAMPLE_CASES = (
     SampleCase(
         expectation=SamplePdfExpectation(
             file_name="Press Release.pdf",
@@ -156,12 +149,23 @@ KNOWN_BROKEN_SAMPLE_CASES = (
                 "विषय: आरोपपत्र दायर गरिएको।",
                 "मधेस प्रदेश, धनुषा जिल्ला प्रदेश जनस्वास्थ्य प्रयोगशाला, जनकपुरधामबाट",
             ),
+            ordered_markers=(
+                "अख्तियार दुरुपयोग अनुसन्धान आयोग",
+                "टङ्गाल, काठमाडौं",
+                "प्रेस विज्ञप्ति",
+                "विषय: आरोपपत्र दायर गरिएको।",
+            ),
             min_nonempty_lines=12,
             min_characters=1500,
-        ),
-        known_broken=True,
-        xfail_reason="Current extraction still misreads the heading and subject lines in this sample.",
+        )
     ),
+)
+
+# Known-broken samples:
+# - should still convert to non-empty output unless otherwise noted
+# - are expected to fail one or more quality assertions until extraction improves
+# - should be moved into the stable set once all regression checks pass reliably
+KNOWN_BROKEN_SAMPLE_CASES = (
     SampleCase(
         expectation=SamplePdfExpectation(
             file_name="aarop-patra.pdf",
