@@ -140,14 +140,14 @@ def _extract_caption(
         return None
 
     header_bbox = getattr(header, "bbox", None)
-    if header_bbox is None:
-        return None
+    if header_bbox is not None:
+        caption = _extract_cell_text(page_fragments, header_bbox)
+        if caption:
+            return caption
 
-    caption = _extract_cell_text(page_fragments, header_bbox)
-    if caption:
-        return caption
-
-    caption_parts = [part.strip() for part in header.names if part and part.strip()]
+    caption_parts = [
+        part.strip() for part in getattr(header, "names", []) if part and part.strip()
+    ]
     if not caption_parts:
         return None
     return " ".join(dict.fromkeys(caption_parts))

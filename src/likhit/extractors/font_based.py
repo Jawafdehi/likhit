@@ -11,7 +11,7 @@ import fitz
 
 from likhit.errors import ExtractionError, ValidationError
 from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
-from likhit.extractors.font_classifier import scan_pdf_fonts, scan_pdf_fonts_by_page
+from likhit.extractors.font_classifier import scan_pdf_fonts_by_page
 from likhit.extractors.kalimati import (
     fix_kalimati_cmap,
     normalize_devanagari_spacing,
@@ -274,10 +274,11 @@ class FontBasedStrategy(ExtractionStrategy):
             if pages:
                 page_start, page_end = parse_page_range(pages, doc.page_count)
 
-            font_strategies = scan_pdf_fonts(doc)
             font_strategies_by_page = scan_pdf_fonts_by_page(doc)
             has_broken_cmap = any(
-                strategy == "broken_cmap" for strategy in font_strategies.values()
+                strategy == "broken_cmap"
+                for page_strategies in font_strategies_by_page.values()
+                for strategy in page_strategies.values()
             )
             repaired_doc: fitz.Document | None = None
             raw_document = self._extract_from_document(

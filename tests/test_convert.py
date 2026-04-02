@@ -21,8 +21,8 @@ from likhit.pdf_page_analysis import analyze_pdf_pages, pdf_likely_needs_ocr
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _md() -> MarkItDown:
-    return MarkItDown(enable_plugins=True)
+def _md(*, enable_plugins: bool = True) -> MarkItDown:
+    return MarkItDown(enable_plugins=enable_plugins)
 
 
 def _convert_text(path: Path) -> str:
@@ -283,7 +283,7 @@ def test_converter_logs_when_ocr_is_needed_but_not_configured(
 def test_convert_repairs_broken_cmap_sample() -> None:
     sample = ROOT / "samples" / "pressrelease.pdf"
 
-    raw_markitdown = MarkItDown().convert(str(sample)).text_content
+    raw_markitdown = _md(enable_plugins=False).convert(str(sample)).text_content
     repaired = _convert_text(sample)
 
     assert "राष्ट्रिय सूचना प्रविधि केन्द्रद्वारा" not in raw_markitdown
@@ -309,7 +309,7 @@ def test_convert_repairs_legacy_font_sample(tmp_path: Path) -> None:
         end=0,
     )
 
-    raw_markitdown = MarkItDown().convert(str(sample)).text_content
+    raw_markitdown = _md(enable_plugins=False).convert(str(sample)).text_content
     repaired = _convert_text(sample)
 
     assert "नेपाल कानून पत्रिका" not in raw_markitdown
@@ -343,8 +343,9 @@ def test_converter_reorders_two_column_fragments_before_rendering(
 
     fragments = [
         TextFragment("HEADER", 1, 50, 50, 120, 60),
-        TextFragment("LEFT", 1, 50, 120, 120, 130),
-        TextFragment("RIGHT", 1, 300, 220, 360, 230),
+        TextFragment("LEFT_TOP", 1, 50, 120, 120, 130),
+        TextFragment("RIGHT_TOP", 1, 300, 140, 360, 150),
+        TextFragment("LEFT_BOTTOM", 1, 50, 220, 140, 230),
     ]
     raw_document = RawDocument(
         paragraphs=[fragment.text for fragment in fragments],
@@ -353,6 +354,11 @@ def test_converter_reorders_two_column_fragments_before_rendering(
         tables=[],
     )
 
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "pdf_likely_needs_ocr",
+        lambda _raw: False,
+    )
     monkeypatch.setattr(
         nepali_pdf_module.FontBasedStrategy,
         "extract_text",
@@ -367,7 +373,15 @@ def test_converter_reorders_two_column_fragments_before_rendering(
     with sample.open("rb") as stream:
         result = converter.convert(stream, stream_info)
 
-    assert result.markdown.splitlines() == ["HEADER", "", "LEFT", "", "RIGHT"]
+    assert result.markdown.splitlines() == [
+        "HEADER",
+        "",
+        "LEFT_TOP",
+        "",
+        "LEFT_BOTTOM",
+        "",
+        "RIGHT_TOP",
+    ]
 
 
 def test_convert_renders_tables_as_raw_pipe_separated_rows() -> None:
