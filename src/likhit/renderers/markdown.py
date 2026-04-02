@@ -11,6 +11,7 @@ from likhit.models import ExtractionResult, ParagraphBlock, Section, Table, Tabl
 from likhit.renderers.base import OutputRenderer
 
 _SERIAL_PATTERN = re.compile(r"^[०-९0-9]+(?:[.)।])?$")
+_DATE_CASE_PATTERN = re.compile(r"(?:/.*(?:CR-|२०८|208)|(?:CR-|२०८|208).*/)")
 
 
 def _clean_text(text: str) -> str:

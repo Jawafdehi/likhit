@@ -9,7 +9,6 @@ emitting Markdown.
 from __future__ import annotations
 
 import io
-from collections import defaultdict
 import logging
 import os
 from pathlib import Path
@@ -28,7 +27,7 @@ from likhit.errors import ExtractionError
 from likhit.extractors.base import RawDocument, TextFragment
 from likhit.extractors.font_based import FontBasedStrategy
 from likhit.font_classifier import classify_fonts_from_stream
-from likhit.handlers.content_blocks import build_content_blocks, table_to_plain_text
+from likhit.handlers.content_blocks import build_content_blocks
 from likhit.handlers.structure_detection import detect_structure
 from likhit.handlers.two_column_layout import TwoColumnLayoutHandler
 from likhit.models import DocumentType, ParagraphBlock, TableBlock
