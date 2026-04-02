@@ -6,9 +6,18 @@ from typing import BinaryIO
 
 import fitz
 
-from likhit.extractors.font_classifier import classify_font, scan_pdf_fonts
+from likhit.extractors.font_classifier import (
+    classify_font,
+    scan_pdf_fonts,
+    scan_pdf_fonts_by_page,
+)
 
-__all__ = ["classify_font", "scan_pdf_fonts", "classify_fonts_from_stream"]
+__all__ = [
+    "classify_font",
+    "scan_pdf_fonts",
+    "scan_pdf_fonts_by_page",
+    "classify_fonts_from_stream",
+]
 
 
 def classify_fonts_from_stream(stream: BinaryIO) -> dict[str, str]:
