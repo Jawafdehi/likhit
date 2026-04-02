@@ -11,6 +11,7 @@ from . import legacy_maps
 logger = logging.getLogger(__name__)
 
 _KNOWN_BROKEN_CMAP = {"kalimati"}
+_STRATEGY_PRIORITY = {"correct": 0, "broken_cmap": 1, "legacy_remap": 2}
 
 
 def classify_font(font_name: str, font_type: str) -> str:
@@ -48,3 +49,30 @@ def scan_pdf_fonts(doc: fitz.Document) -> dict[str, str]:
             logger.debug("Font '%s' (type=%s) -> %s", base, font_type, strategy)
 
     return font_strategies
+
+
+def scan_pdf_fonts_by_page(doc: fitz.Document) -> dict[int, dict[str, str]]:
+    """Scan PDF fonts page by page and keep the strongest strategy per base font."""
+
+    strategies_by_page: dict[int, dict[str, str]] = {}
+
+    for page_index in range(doc.page_count):
+        page = doc[page_index]
+        page_strategies: dict[str, str] = {}
+        for font_info in page.get_fonts(full=True):
+            _xref, _ext, font_type, name, _encoding = font_info[:5]
+            base = name.split("+", 1)[-1] if "+" in name else name
+            strategy = classify_font(name, font_type)
+            current = page_strategies.get(base)
+            if current is None or _STRATEGY_PRIORITY[strategy] > _STRATEGY_PRIORITY[current]:
+                page_strategies[base] = strategy
+                logger.debug(
+                    "Page %s font '%s' (type=%s) -> %s",
+                    page_index + 1,
+                    base,
+                    font_type,
+                    strategy,
+                )
+        strategies_by_page[page_index + 1] = page_strategies
+
+    return strategies_by_page
