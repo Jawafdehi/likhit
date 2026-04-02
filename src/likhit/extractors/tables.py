@@ -116,7 +116,7 @@ def _build_table(
         row_count=fitz_table.row_count,
         col_count=fitz_table.col_count,
         cells=cells,
-        caption=_extract_caption(fitz_table),
+        caption=_extract_caption(fitz_table, page_fragments),
         index=index,
         regions=[
             TableRegion(
@@ -131,12 +131,23 @@ def _build_table(
     )
 
 
-def _extract_caption(fitz_table: object) -> str | None:
+def _extract_caption(
+    fitz_table: object,
+    page_fragments: list[TextFragment],
+) -> str | None:
     header = getattr(fitz_table, "header", None)
     if header is None or not getattr(header, "external", False):
         return None
 
-    caption_parts = [part.strip() for part in header.names if part and part.strip()]
+    header_bbox = getattr(header, "bbox", None)
+    if header_bbox is not None:
+        caption = _extract_cell_text(page_fragments, header_bbox)
+        if caption:
+            return caption
+
+    caption_parts = [
+        part.strip() for part in getattr(header, "names", []) if part and part.strip()
+    ]
     if not caption_parts:
         return None
     return " ".join(dict.fromkeys(caption_parts))

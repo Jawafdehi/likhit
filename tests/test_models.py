@@ -6,8 +6,10 @@ from likhit.errors import ValidationError
 from likhit.models import DocumentType, ExtractionResult, Section
 
 
-def test_document_type_parse_accepts_ciaa_press_release() -> None:
-    assert DocumentType.parse("ciaa-press-release") is DocumentType.CIAA_PRESS_RELEASE
+def test_document_type_parse_accepts_single_column_notice() -> None:
+    assert (
+        DocumentType.parse("single-column-notice") is DocumentType.SINGLE_COLUMN_NOTICE
+    )
 
 
 def test_document_type_parse_rejects_unknown_values() -> None:
@@ -18,7 +20,7 @@ def test_document_type_parse_rejects_unknown_values() -> None:
 def test_extraction_result_requires_sections() -> None:
     with pytest.raises(ValidationError):
         ExtractionResult(
-            title="x", doc_type=DocumentType.CIAA_PRESS_RELEASE, sections=[]
+            title="x", doc_type=DocumentType.SINGLE_COLUMN_NOTICE, sections=[]
         )
 
 
@@ -45,6 +47,6 @@ def test_extraction_result_rejects_non_string_title() -> None:
     ):
         ExtractionResult(
             title=1,  # type: ignore[arg-type]
-            doc_type=DocumentType.CIAA_PRESS_RELEASE,
+            doc_type=DocumentType.SINGLE_COLUMN_NOTICE,
             sections=[Section(heading=None, body="Body")],
         )

@@ -1,4 +1,4 @@
-"""Helpers for repairing Kalimati-encoded CIAA PDFs."""
+"""Helpers for repairing Kalimati-encoded Nepali PDFs."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ _PUA_IKAR = "\uf001"
 _VIRAMA = "\u094d"
 _RA = "\u0930"
 _IKAR = "\u093f"
+_DEVANAGARI_PATTERN = re.compile(r"[\u0900-\u097F]")
 
 
 def _is_devanagari_consonant(char: str) -> bool:
@@ -28,6 +29,22 @@ def _is_devanagari_consonant(char: str) -> bool:
 
 def _is_devanagari_matra(char: str) -> bool:
     return "\u093e" <= char <= "\u094c" or char in {"\u0962", "\u0963"}
+
+
+def _contains_devanagari_or_marker(text: str) -> bool:
+    return bool(_DEVANAGARI_PATTERN.search(text)) or any(
+        marker in text for marker in (_PUA_REPH, _PUA_IKAR)
+    )
+
+
+def _trace_value_is_better(pdf_value: str, trace_value: str) -> bool:
+    if trace_value == pdf_value:
+        return False
+    if len(trace_value) > len(pdf_value):
+        return True
+    if _VIRAMA in trace_value and _VIRAMA not in pdf_value:
+        return True
+    return False
 
 
 def _parse_tounicode_cmap(cmap_bytes: bytes) -> dict[int, str]:
@@ -118,6 +135,9 @@ def _build_cmap_stream(mapping: dict[int, str]) -> bytes:
 def _analyze_gsub(
     font, glyph_order: list[str], gid_to_correct: dict[int, str]
 ) -> dict[int, str]:
+    if "GSUB" not in font:
+        return {}
+
     gsub = font["GSUB"]
     lookup_features: dict[int, set[str]] = {}
 
@@ -126,16 +146,19 @@ def _analyze_gsub(
         for lookup_index in feature_record.Feature.LookupListIndex:
             lookup_features.setdefault(lookup_index, set()).add(tag)
 
+    glyph_to_gid = {glyph_name: gid for gid, glyph_name in enumerate(glyph_order)}
+
     derived: dict[int, str] = {}
+    ligature_rules: list[tuple[set[str], str, list[str], int]] = []
     for lookup_index, lookup in enumerate(gsub.table.LookupList.Lookup):
         features = lookup_features.get(lookup_index, set())
         for subtable in lookup.SubTable:
             if lookup.LookupType == 1 and hasattr(subtable, "mapping"):
                 for from_name, to_name in subtable.mapping.items():
-                    if from_name not in glyph_order or to_name not in glyph_order:
+                    from_gid = glyph_to_gid.get(from_name)
+                    to_gid = glyph_to_gid.get(to_name)
+                    if from_gid is None or to_gid is None:
                         continue
-                    from_gid = glyph_order.index(from_name)
-                    to_gid = glyph_order.index(to_name)
                     from_unicode = gid_to_correct.get(from_gid)
                     if from_unicode is None:
                         continue
@@ -153,29 +176,52 @@ def _analyze_gsub(
 
             elif lookup.LookupType == 4 and hasattr(subtable, "ligatures"):
                 for first_name, ligatures in subtable.ligatures.items():
-                    if first_name not in glyph_order:
+                    if first_name not in glyph_to_gid:
                         continue
                     for ligature in ligatures:
-                        output_name = ligature.LigGlyph
-                        if output_name not in glyph_order:
+                        output_gid = glyph_to_gid.get(ligature.LigGlyph)
+                        if output_gid is None:
                             continue
-                        component_names = [first_name] + list(ligature.Component)
-                        pieces: list[str] = []
-                        resolved = True
-                        for component_name in component_names:
-                            if component_name not in glyph_order:
-                                resolved = False
-                                break
-                            component_gid = glyph_order.index(component_name)
-                            value = gid_to_correct.get(component_gid) or derived.get(
-                                component_gid
-                            )
-                            if value is None:
-                                resolved = False
-                                break
-                            pieces.append(value)
-                        if resolved:
-                            derived[glyph_order.index(output_name)] = "".join(pieces)
+                        ligature_rules.append(
+                            (features, first_name, list(ligature.Component), output_gid)
+                        )
+
+    changed = True
+    while changed:
+        changed = False
+        for features, first_name, component_names, output_gid in ligature_rules:
+            component_gids: list[int] = []
+            for component_name in [first_name] + component_names:
+                component_gid = glyph_to_gid.get(component_name)
+                if component_gid is None:
+                    component_gids = []
+                    break
+                component_gids.append(component_gid)
+            if not component_gids:
+                continue
+
+            pieces: list[str] = []
+            for component_index, component_gid in enumerate(component_gids):
+                value = gid_to_correct.get(component_gid) or derived.get(component_gid)
+                if (
+                    value is None
+                    and component_index > 0
+                    and features & {"half", "haln"}
+                    and len(component_gids) == 2
+                ):
+                    value = _VIRAMA
+                if value is None:
+                    pieces = []
+                    break
+                pieces.append(value)
+            if not pieces:
+                continue
+
+            resolved = "".join(pieces)
+            if derived.get(output_gid) == resolved:
+                continue
+            derived[output_gid] = resolved
+            changed = True
 
     for gid, value in list(derived.items()):
         for index in range(len(value) - 2):
@@ -189,6 +235,68 @@ def _analyze_gsub(
                 break
 
     return derived
+
+
+def _glyph_feature(font, glyph_name: str) -> tuple[int, int, int, int, int, int, int]:
+    glyph = font["glyf"][glyph_name]
+    advance_width, left_side_bearing = font["hmtx"][glyph_name]
+    glyph.recalcBounds(font["glyf"])
+    return (
+        advance_width,
+        left_side_bearing,
+        glyph.numberOfContours,
+        glyph.xMin,
+        glyph.yMin,
+        glyph.xMax,
+        glyph.yMax,
+    )
+
+
+def _infer_mark_variants(
+    font,
+    glyph_order: list[str],
+    gid_to_correct: dict[int, str],
+) -> dict[int, str]:
+    candidate_codepoints = {
+        ord(_IKAR),
+        0x0941,  # ु
+        0x0942,  # ू
+        0x0947,  # े
+        0x0948,  # ै
+    }
+
+    best_cmap = font["cmap"].getBestCmap()
+    candidate_features: list[tuple[str, tuple[int, int, int, int, int, int, int]]] = []
+    for codepoint, glyph_name in best_cmap.items():
+        if codepoint not in candidate_codepoints:
+            continue
+        candidate_features.append((chr(codepoint), _glyph_feature(font, glyph_name)))
+
+    if not candidate_features:
+        return {}
+
+    inferred: dict[int, str] = {}
+    for gid, glyph_name in enumerate(glyph_order):
+        if gid in gid_to_correct:
+            continue
+        if not glyph_name.startswith("glyph"):
+            continue
+
+        current = _glyph_feature(font, glyph_name)
+        best_match: str | None = None
+        best_distance: int | None = None
+        for candidate, feature in candidate_features:
+            distance = sum(abs(left - right) for left, right in zip(current, feature))
+            if best_distance is None or distance < best_distance:
+                best_distance = distance
+                best_match = candidate
+
+        if best_match is None or best_distance is None:
+            continue
+        if best_distance <= 350:
+            inferred[gid] = best_match
+
+    return inferred
 
 
 def _is_ra_virama_swap(old_value: str, new_value: str) -> bool:
@@ -272,6 +380,8 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
             if glyph_name in name_to_unicode:
                 gid_to_correct[gid] = chr(name_to_unicode[glyph_name])
 
+        gid_to_correct.update(_infer_mark_variants(font, glyph_order, gid_to_correct))
+
         derived = _analyze_gsub(font, glyph_order, gid_to_correct)
         full_map = dict(derived)
         full_map.update(gid_to_correct)
@@ -319,6 +429,47 @@ def _get_fontfile_xref(doc: fitz.Document, type0_xref: int) -> Optional[int]:
         return None
 
 
+def _collect_trace_fallback_map(
+    doc: fitz.Document,
+    font_name: str,
+) -> dict[int, str]:
+    counts: dict[int, dict[str, int]] = {}
+
+    for page_index in range(doc.page_count):
+        for trace in doc[page_index].get_texttrace():
+            if trace.get("font") != font_name:
+                continue
+
+            current_gid: int | None = None
+            current_chars: list[str] = []
+            for codepoint, gid, *_rest in trace.get("chars", ()):
+                char = chr(codepoint)
+
+                if gid >= 0:
+                    if current_gid is not None and current_chars:
+                        text = "".join(current_chars)
+                        if "\ufffd" not in text:
+                            bucket = counts.setdefault(current_gid, {})
+                            bucket[text] = bucket.get(text, 0) + 1
+                    current_gid = gid
+                    current_chars = [char]
+                    continue
+
+                if current_gid is not None:
+                    current_chars.append(char)
+
+            if current_gid is not None and current_chars:
+                text = "".join(current_chars)
+                if "\ufffd" not in text:
+                    bucket = counts.setdefault(current_gid, {})
+                    bucket[text] = bucket.get(text, 0) + 1
+
+    fallback: dict[int, str] = {}
+    for gid, text_counts in counts.items():
+        fallback[gid] = max(text_counts.items(), key=lambda item: item[1])[0]
+    return fallback
+
+
 def _patch_single_cmap(
     doc: fitz.Document, to_unicode_xref: int, correction_map: dict[int, str]
 ) -> int:
@@ -362,10 +513,32 @@ def _patch_single_cmap(
     return corrections
 
 
+def _meaningful_cmap_diff_count(
+    pdf_map: dict[int, str],
+    correction_map: dict[int, str],
+) -> int:
+    count = 0
+    for gid, correct_value in correction_map.items():
+        pdf_value = pdf_map.get(gid)
+        if pdf_value is None:
+            continue
+        if pdf_value == correct_value or _is_ra_virama_swap(pdf_value, correct_value):
+            continue
+        if not (
+            _contains_devanagari_or_marker(pdf_value)
+            or _contains_devanagari_or_marker(correct_value)
+        ):
+            continue
+        count += 1
+    return count
+
+
 def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
-    kalimati_fonts: dict[int, int] = {}
+    candidate_fonts: dict[int, int] = {}
     fontfile_maps: dict[int, dict[int, str]] = {}
     to_unicode_maps: dict[int, dict[int, str]] = {}
+    font_names: dict[int, str] = {}
+    trace_maps: dict[str, dict[int, str]] = {}
 
     for page_index in range(doc.page_count):
         for font_info in doc[page_index].get_fonts(full=True):
@@ -373,26 +546,40 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
             if font_type != "Type0":
                 continue
             base_name = name.split("+", 1)[-1] if "+" in name else name
-            if "kalimati" not in base_name.lower():
-                continue
-
             font_dict = doc.xref_object(xref, compressed=False)
             match = re.search(r"/ToUnicode\s+(\d+)\s+\d+\s+R", font_dict)
             if match:
-                kalimati_fonts[int(match.group(1))] = xref
+                candidate_fonts[int(match.group(1))] = xref
+                font_names[xref] = base_name
 
-    if not kalimati_fonts:
+    if not candidate_fonts:
         return doc, False
 
-    for to_unicode_xref, type0_xref in kalimati_fonts.items():
+    for to_unicode_xref, type0_xref in candidate_fonts.items():
         fontfile_xref = _get_fontfile_xref(doc, type0_xref)
+        font_name = font_names.get(type0_xref, "Kalimati")
+        if font_name not in trace_maps:
+            trace_maps[font_name] = _collect_trace_fallback_map(doc, font_name)
+        pdf_map = _parse_tounicode_cmap(doc.xref_stream(to_unicode_xref))
+        trace_map = {}
+        for gid, value in trace_maps[font_name].items():
+            pdf_value = pdf_map.get(gid)
+            if pdf_value is None or _trace_value_is_better(pdf_value, value):
+                trace_map[gid] = value
         if fontfile_xref is not None and fontfile_xref in fontfile_maps:
-            to_unicode_maps[to_unicode_xref] = fontfile_maps[fontfile_xref]
+            combined_map = dict(trace_map)
+            combined_map.update(fontfile_maps[fontfile_xref])
+            to_unicode_maps[to_unicode_xref] = combined_map
             continue
         correction_map = _get_font_correction_map(doc, type0_xref)
         if not correction_map:
             continue
-        to_unicode_maps[to_unicode_xref] = correction_map
+        meaningful_diffs = _meaningful_cmap_diff_count(pdf_map, correction_map)
+        if meaningful_diffs < 3 and "kalimati" not in font_name.lower():
+            continue
+        combined_map = dict(trace_map)
+        combined_map.update(correction_map)
+        to_unicode_maps[to_unicode_xref] = combined_map
         if fontfile_xref is not None:
             fontfile_maps[fontfile_xref] = correction_map
 

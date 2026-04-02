@@ -11,6 +11,7 @@ from likhit.models import ExtractionResult, ParagraphBlock, Section, Table, Tabl
 from likhit.renderers.base import OutputRenderer
 
 _SERIAL_PATTERN = re.compile(r"^[०-९0-9]+(?:[.)।])?$")
+_DATE_CASE_PATTERN = re.compile(r"(?:/.*(?:CR-|२०८|208)|(?:CR-|२०८|208).*/)")
 
 
 def _clean_text(text: str) -> str:
@@ -370,6 +371,183 @@ def _should_render_as_list(header: str, values: list[str]) -> bool:
     return False
 
 
+def _looks_like_sparse_continuation_table(table: Table) -> bool:
+    if table.caption:
+        return False
+
+    anchor = _anchor_grid(table)
+    if not anchor:
+        return False
+
+    nonempty_rows = [row for row in anchor if any(cell.strip() for cell in row)]
+    if len(nonempty_rows) < 3:
+        return False
+
+    key_hits = sum(
+        1 for row in nonempty_rows[:6] for cell in row if _looks_like_data_key(cell)
+    )
+    populated_cells = sum(1 for row in anchor for cell in row if cell.strip())
+    total_cells = max(table.row_count * table.col_count, 1)
+    density = populated_cells / total_cells
+    return density < 0.33 and key_hits <= 1
+
+
+def _iter_sparse_group_texts(rows: list[list[str]]) -> list[str]:
+    texts: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for cell in row:
+            value = _clean_text(cell)
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            texts.append(value)
+    return texts
+
+
+def _is_decision_fragment(value: str) -> bool:
+    compact = value.replace(" ", "")
+    return bool(_DATE_CASE_PATTERN.search(compact)) or (
+        len(compact) <= 3 and compact.isdigit()
+    )
+
+
+def _is_law_fragment(value: str) -> bool:
+    return "दफा" in value or "रु." in value or "रु" in value
+
+
+def _is_investigation_fragment(value: str) -> bool:
+    markers = (
+        "मिलेमतोमा",
+        "मूल्याङ्कन",
+        "भुक्तानी",
+        "वास्तविक",
+        "कार्यसम्पन्न",
+        "कामभन्दा",
+        "छनोट गरी",
+        "खरिद",
+    )
+    return any(marker in value for marker in markers)
+
+
+def _is_complaint_fragment(value: str) -> bool:
+    markers = (
+        "भन्नेसमेत",
+        "अनियमितता गरेको",
+        "गुणस्तरहीन कार्य",
+    )
+    return any(marker in value for marker in markers)
+
+
+def _classify_sparse_group_values(
+    values: list[str],
+) -> OrderedDict[str, list[str]]:
+    fields: OrderedDict[str, list[str]] = OrderedDict(
+        (
+            ("उजुरीको व्यहोरा", []),
+            ("अनुसन्धानबाट पुष्टि भएको व्यहोरा", []),
+            ("आयोगको निर्णय", []),
+            ("प्रतिवादीको नाम, पद र कार्यालय", []),
+            ("भ्रष्टाचारनिवारण ऐन, २०५९ बमोजिम कसुर/सजाय मागदाबी/बिगो", []),
+        )
+    )
+
+    for value in values:
+        if _is_law_fragment(value):
+            fields["भ्रष्टाचारनिवारण ऐन, २०५९ बमोजिम कसुर/सजाय मागदाबी/बिगो"].append(value)
+            continue
+        if _is_decision_fragment(value):
+            fields["आयोगको निर्णय"].append(value)
+            continue
+        if _is_investigation_fragment(value):
+            fields["अनुसन्धानबाट पुष्टि भएको व्यहोरा"].append(value)
+            continue
+        if _is_complaint_fragment(value):
+            fields["उजुरीको व्यहोरा"].append(value)
+            continue
+        if _is_person_value(value) or "," in value:
+            fields["प्रतिवादीको नाम, पद र कार्यालय"].append(value)
+            continue
+        if fields["प्रतिवादीको नाम, पद र कार्यालय"] and len(value) <= 80:
+            fields["प्रतिवादीको नाम, पद र कार्यालय"].append(value)
+            continue
+        if not fields["उजुरीको व्यहोरा"]:
+            fields["उजुरीको व्यहोरा"].append(value)
+            continue
+        if not fields["अनुसन्धानबाट पुष्टि भएको व्यहोरा"]:
+            fields["अनुसन्धानबाट पुष्टि भएको व्यहोरा"].append(value)
+            continue
+        fields["प्रतिवादीको नाम, पद र कार्यालय"].append(value)
+
+    return OrderedDict(
+        (header, _dedupe_overlapping_values(values))
+        for header, values in fields.items()
+        if values
+    )
+
+
+def _render_sparse_continuation_records(
+    table: Table,
+    *,
+    include_caption: bool = True,
+    continuation_key: str | None = None,
+) -> tuple[str, str | None]:
+    anchor = _anchor_grid(table)
+    nonempty_rows = [row for row in anchor if any(cell.strip() for cell in row)]
+    if not nonempty_rows:
+        return "", continuation_key
+
+    groups: list[tuple[str, list[list[str]], bool]] = []
+    current_key = continuation_key
+    current_rows: list[list[str]] = []
+    current_is_continuation = continuation_key is not None
+
+    for row in nonempty_rows:
+        row_first = _first_nonempty_cell(row)
+        serial = row_first if _looks_like_data_key(row_first) else None
+        cleaned_row = ["" if cell.strip() == serial else cell for cell in row]
+        if serial is not None:
+            if current_rows:
+                groups.append(
+                    (
+                        current_key or str(len(groups) + 1),
+                        current_rows,
+                        current_is_continuation,
+                    )
+                )
+            current_key = serial.rstrip(".।)")
+            current_rows = [cleaned_row]
+            current_is_continuation = False
+            continue
+
+        if current_key is None:
+            current_key = str(len(groups) + 1)
+            current_is_continuation = False
+        current_rows.append(cleaned_row)
+
+    if current_rows:
+        groups.append(
+            (current_key or str(len(groups) + 1), current_rows, current_is_continuation)
+        )
+
+    lines: list[str] = []
+    if include_caption and table.caption:
+        lines.append(table.caption)
+        lines.append("")
+
+    last_key = continuation_key
+    for record_key, rows, is_continuation in groups:
+        heading = f"{record_key} (जारी)" if is_continuation else record_key
+        lines.append(f"**{heading}**")
+        grouped_fields = _classify_sparse_group_values(_iter_sparse_group_texts(rows))
+        for main_header, values in grouped_fields.items():
+            _render_field(lines, [main_header], values)
+        lines.append("")
+        last_key = record_key
+
+    return "\n".join(lines).strip(), last_key
+
+
 def _assign_values_to_subheaders(
     subheaders: list[str],
     values: list[str],
@@ -548,24 +726,103 @@ def _merge_continuation_rows(
     return merged
 
 
+def _render_raw_table_lines(
+    table: Table,
+    *,
+    include_caption: bool = True,
+) -> tuple[str, str | None]:
+    grid = [["" for _ in range(table.col_count)] for _ in range(table.row_count)]
+    for cell in table.cells:
+        grid[cell.row][cell.col] = cell.text
+    lines: list[str] = []
+
+    if include_caption and table.caption:
+        lines.append(table.caption)
+        lines.append("")
+
+    for row in grid:
+        cell_lines = [
+            [_clean_text(part) for part in cell.splitlines() if _clean_text(part)]
+            for cell in row
+        ]
+        max_line_count = max((len(parts) for parts in cell_lines), default=0)
+        if max_line_count == 0:
+            continue
+        for line_index in range(max_line_count):
+            values = [
+                parts[line_index]
+                for parts in cell_lines
+                if line_index < len(parts) and parts[line_index]
+            ]
+            if values:
+                lines.append(" | ".join(values))
+
+    return "\n".join(lines).strip(), None
+
+
 def _render_table(
     table: Table,
     *,
     include_caption: bool = True,
     continuation_key: str | None = None,
 ) -> tuple[str, str | None]:
-    if any(cell.rowspan > 1 or cell.colspan > 1 for cell in table.cells):
-        return _render_grouped_records(
-            table,
-            include_caption=include_caption,
-            continuation_key=continuation_key,
-        )
-    return _render_simple_records(table, include_caption=include_caption)
+    del continuation_key
+    return _render_raw_table_lines(
+        table,
+        include_caption=include_caption,
+    )
+
+
+def render_table_markdown(
+    table: Table,
+    *,
+    include_caption: bool = True,
+    continuation_key: str | None = None,
+) -> str:
+    rendered, _continuation_key = _render_table(
+        table,
+        include_caption=include_caption,
+        continuation_key=continuation_key,
+    )
+    return rendered
+
+
+def render_table_preformatted_markdown(
+    table: Table,
+    *,
+    include_caption: bool = True,
+    continuation_key: str | None = None,
+) -> str:
+    rendered = render_table_markdown(
+        table,
+        include_caption=include_caption,
+        continuation_key=continuation_key,
+    )
+    if not rendered.strip():
+        return ""
+    return f"```text\n{rendered}\n```"
 
 
 def _looks_like_page_furniture(text: str) -> bool:
     compact = re.sub(r"\s+", "", text)
-    return bool(re.match(r"^\d+\s*परिच्छेद", text)) or "वार्षिकप्रतिवेदन" in compact
+    stripped = text.strip()
+    return (
+        bool(re.match(r"^\d+\s*परिच्छेद", text))
+        or "वार्षिकप्रतिवेदन" in compact
+        or (stripped.isdigit() and len(stripped) <= 3)
+    )
+
+
+def _render_paragraph_markdown(text: str) -> str:
+    lines = [line.rstrip() for line in text.splitlines()]
+    return "  \n".join(line for line in lines if line.strip()).strip()
+
+
+def _paragraph_ends_with_caption(text: str, caption: str) -> bool:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    return _caption_key(lines[-1]) == _caption_key(caption)
 
 
 def _render_section(section: Section) -> list[str]:
@@ -591,7 +848,7 @@ def _render_section(section: Section) -> list[str]:
             if index:
                 parts.append("")
             if isinstance(block, ParagraphBlock):
-                parts.append(block.text)
+                parts.append(_render_paragraph_markdown(block.text))
                 previous_table_key = None
             elif isinstance(block, TableBlock):
                 include_caption = True
@@ -599,8 +856,10 @@ def _render_section(section: Section) -> list[str]:
                     index > 0
                     and isinstance(section.blocks[index - 1], ParagraphBlock)
                     and block.table.caption
-                    and _caption_key(section.blocks[index - 1].text)
-                    == _caption_key(block.table.caption)
+                    and _paragraph_ends_with_caption(
+                        section.blocks[index - 1].text,
+                        block.table.caption,
+                    )
                 ):
                     include_caption = False
                 rendered, previous_table_key = _render_table(
@@ -608,7 +867,8 @@ def _render_section(section: Section) -> list[str]:
                     include_caption=include_caption,
                     continuation_key=previous_table_key,
                 )
-                parts.append(rendered)
+                if rendered.strip():
+                    parts.append(f"```text\n{rendered}\n```")
     else:
         parts.append(section.body)
     for subsection in section.subsections:

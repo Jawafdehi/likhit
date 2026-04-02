@@ -11,10 +11,10 @@ from likhit.version import __version__
 
 
 class DocumentType(str, Enum):
-    """Supported document types."""
+    """Supported document structure types."""
 
-    CIAA_PRESS_RELEASE = "ciaa-press-release"
-    KANUN_PATRIKA = "kanun-patrika"
+    SINGLE_COLUMN_NOTICE = "single-column-notice"
+    TWO_COLUMN_LAYOUT = "two-column-layout"
 
     @classmethod
     def parse(cls, value: str) -> "DocumentType":

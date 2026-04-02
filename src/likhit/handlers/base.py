@@ -1,4 +1,4 @@
-"""Document type handler abstractions."""
+"""Document structure handler abstractions."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from likhit.extractors.base import ExtractionStrategy, RawDocument
 from likhit.models import ExtractionResult
 
 
-class DocumentTypeHandler(ABC):
-    """Coordinates extraction and document-specific normalization."""
+class StructureHandler(ABC):
+    """Coordinates extraction and structure-specific normalization."""
 
     @abstractmethod
     def get_extraction_strategy(self) -> ExtractionStrategy:
@@ -18,7 +18,8 @@ class DocumentTypeHandler(ABC):
     def get_extraction_strategy_for_file(self, file_path: str) -> ExtractionStrategy:
         """Return the appropriate strategy based on file extension.
 
-        Override this method to support multiple file formats (PDF, DOCX, DOC).
+        Override this method to support multiple file formats (for example PDF
+        and legacy DOC).
         Default implementation returns get_extraction_strategy().
         """
         return self.get_extraction_strategy()
