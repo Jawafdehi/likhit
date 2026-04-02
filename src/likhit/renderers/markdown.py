@@ -734,7 +734,9 @@ def _render_raw_table_lines(
     *,
     include_caption: bool = True,
 ) -> tuple[str, str | None]:
-    grid = _anchor_grid(table)
+    grid = [["" for _ in range(table.col_count)] for _ in range(table.row_count)]
+    for cell in table.cells:
+        grid[cell.row][cell.col] = cell.text
     lines: list[str] = []
 
     if include_caption and table.caption:
@@ -742,10 +744,21 @@ def _render_raw_table_lines(
         lines.append("")
 
     for row in grid:
-        values = [_clean_text(cell) for cell in row if _clean_text(cell)]
-        if not values:
+        cell_lines = [
+            [_clean_text(part) for part in cell.splitlines() if _clean_text(part)]
+            for cell in row
+        ]
+        max_line_count = max((len(parts) for parts in cell_lines), default=0)
+        if max_line_count == 0:
             continue
-        lines.append(" | ".join(values))
+        for line_index in range(max_line_count):
+            values = [
+                parts[line_index]
+                for parts in cell_lines
+                if line_index < len(parts) and parts[line_index]
+            ]
+            if values:
+                lines.append(" | ".join(values))
 
     return "\n".join(lines).strip(), None
 
@@ -777,6 +790,22 @@ def render_table_markdown(
     return rendered
 
 
+def render_table_preformatted_markdown(
+    table: Table,
+    *,
+    include_caption: bool = True,
+    continuation_key: str | None = None,
+) -> str:
+    rendered = render_table_markdown(
+        table,
+        include_caption=include_caption,
+        continuation_key=continuation_key,
+    )
+    if not rendered.strip():
+        return ""
+    return f"```text\n{rendered}\n```"
+
+
 def _looks_like_page_furniture(text: str) -> bool:
     compact = re.sub(r"\s+", "", text)
     stripped = text.strip()
@@ -785,6 +814,18 @@ def _looks_like_page_furniture(text: str) -> bool:
         or "वार्षिकप्रतिवेदन" in compact
         or (stripped.isdigit() and len(stripped) <= 3)
     )
+
+
+def _render_paragraph_markdown(text: str) -> str:
+    lines = [line.rstrip() for line in text.splitlines()]
+    return "  \n".join(line for line in lines if line.strip()).strip()
+
+
+def _paragraph_ends_with_caption(text: str, caption: str) -> bool:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    return _caption_key(lines[-1]) == _caption_key(caption)
 
 
 def _render_section(section: Section) -> list[str]:
@@ -810,7 +851,7 @@ def _render_section(section: Section) -> list[str]:
             if index:
                 parts.append("")
             if isinstance(block, ParagraphBlock):
-                parts.append(block.text)
+                parts.append(_render_paragraph_markdown(block.text))
                 previous_table_key = None
             elif isinstance(block, TableBlock):
                 include_caption = True
@@ -818,8 +859,10 @@ def _render_section(section: Section) -> list[str]:
                     index > 0
                     and isinstance(section.blocks[index - 1], ParagraphBlock)
                     and block.table.caption
-                    and _caption_key(section.blocks[index - 1].text)
-                    == _caption_key(block.table.caption)
+                    and _paragraph_ends_with_caption(
+                        section.blocks[index - 1].text,
+                        block.table.caption,
+                    )
                 ):
                     include_caption = False
                 rendered, previous_table_key = _render_table(
@@ -827,7 +870,8 @@ def _render_section(section: Section) -> list[str]:
                     include_caption=include_caption,
                     continuation_key=previous_table_key,
                 )
-                parts.append(rendered)
+                if rendered.strip():
+                    parts.append(f"```text\n{rendered}\n```")
     else:
         parts.append(section.body)
     for subsection in section.subsections:

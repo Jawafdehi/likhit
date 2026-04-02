@@ -632,7 +632,7 @@ def _render_markdown_from_blocks(blocks: list[ParagraphBlock | TableBlock]) -> s
                 or (index + 1 < len(blocks) and isinstance(blocks[index + 1], TableBlock))
             ):
                 continue
-            rendered.append(block.text.strip())
+            rendered.append(_render_paragraph_markdown(block.text))
             previous_table_key = None
         elif isinstance(block, TableBlock):
             include_caption = True
@@ -640,8 +640,10 @@ def _render_markdown_from_blocks(blocks: list[ParagraphBlock | TableBlock]) -> s
                 index > 0
                 and isinstance(blocks[index - 1], ParagraphBlock)
                 and block.table.caption
-                and _caption_key(blocks[index - 1].text)
-                == _caption_key(block.table.caption)
+                and _paragraph_ends_with_caption(
+                    blocks[index - 1].text,
+                    block.table.caption,
+                )
             ):
                 include_caption = False
             rendered_table, previous_table_key = _render_table(
@@ -649,7 +651,8 @@ def _render_markdown_from_blocks(blocks: list[ParagraphBlock | TableBlock]) -> s
                 include_caption=include_caption,
                 continuation_key=previous_table_key,
             )
-            rendered.append(rendered_table)
+            if rendered_table.strip():
+                rendered.append(f"```text\n{rendered_table}\n```")
     return "\n\n".join(part for part in rendered if part).strip()
 
 
@@ -663,16 +666,25 @@ def _looks_like_page_furniture(text: str) -> bool:
     )
 
 
+def _render_paragraph_markdown(text: str) -> str:
+    lines = [line.rstrip() for line in text.splitlines()]
+    return "  \n".join(line for line in lines if line.strip()).strip()
+
+
+def _paragraph_ends_with_caption(text: str, caption: str) -> bool:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    return _caption_key(lines[-1]) == _caption_key(caption)
+
+
 def _render_two_column_markdown(
     raw_document: RawDocument,
     handler: TwoColumnLayoutHandler,
     ordered_fragments: list[TextFragment],
 ) -> str:
-    blocks = build_content_blocks(
-        ordered_fragments,
-        raw_document.tables,
-        handler._merge_fragments_to_paragraphs,
-    )
+    del ordered_fragments
+    blocks = handler._build_blocks(raw_document)
     return _render_markdown_from_blocks(blocks)
 
 
@@ -681,24 +693,7 @@ def _render_structure_aware_markdown(raw_document: RawDocument) -> str:
         return _render_layout_preserving_markdown(raw_document)
 
     handler = TwoColumnLayoutHandler()
-    fragments_by_page: dict[int, list[TextFragment]] = defaultdict(list)
-    for fragment in raw_document.fragments:
-        if fragment.text.strip():
-            fragments_by_page[fragment.page_number].append(fragment)
-
-    ordered_fragments: list[TextFragment] = []
-    for page_number in sorted(fragments_by_page):
-        ordered_fragments.extend(
-            handler._order_page_fragments(fragments_by_page[page_number])
-        )
-
-    reordered_document = RawDocument(
-        paragraphs=raw_document.paragraphs,
-        raw_text=raw_document.raw_text,
-        fragments=ordered_fragments,
-        tables=raw_document.tables,
-    )
-    return _render_two_column_markdown(reordered_document, handler, ordered_fragments)
+    return _render_two_column_markdown(raw_document, handler, raw_document.fragments)
 
 
 def _build_layout_paragraphs(fragments: list[TextFragment]) -> list[str]:

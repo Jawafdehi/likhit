@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for source_path in args.inputs:
         result = md.convert(source_path)
-        markdown = result.text_content
+        markdown = result.markdown or result.text_content
 
         if args.out:
             destination = Path(args.out)

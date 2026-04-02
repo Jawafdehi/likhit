@@ -80,14 +80,33 @@ class TwoColumnLayoutHandler(StructureHandler):
 
         ordered_fragments: list[TextFragment] = []
         by_page: dict[int, list[TextFragment]] = defaultdict(list)
+        table_top_by_page: dict[int, float] = {}
         for fragment in raw_document.fragments:
             cleaned = _clean_paragraph(fragment.text)
             if not cleaned:
                 continue
             by_page[fragment.page_number].append(fragment)
+        for table in raw_document.tables:
+            for region in table.regions:
+                current_top = table_top_by_page.get(region.page_number)
+                if current_top is None or region.y0 < current_top:
+                    table_top_by_page[region.page_number] = region.y0
 
         for page_number in sorted(by_page):
-            ordered_fragments.extend(self._order_page_fragments(by_page[page_number]))
+            page_fragments = by_page[page_number]
+            first_table_y0 = table_top_by_page.get(page_number)
+            if first_table_y0 is None:
+                ordered_fragments.extend(self._order_page_fragments(page_fragments))
+                continue
+
+            pre_table = [
+                fragment for fragment in page_fragments if fragment.y0 < first_table_y0
+            ]
+            post_table = [
+                fragment for fragment in page_fragments if fragment.y0 >= first_table_y0
+            ]
+            ordered_fragments.extend(sorted(pre_table, key=lambda fragment: (fragment.y0, fragment.x0)))
+            ordered_fragments.extend(self._order_page_fragments(post_table))
 
         return build_content_blocks(
             ordered_fragments,
@@ -117,7 +136,13 @@ class TwoColumnLayoutHandler(StructureHandler):
 
         for fragment in body:
             center_x = (fragment.x0 + fragment.x1) / 2
-            if center_x <= split_x - _COLUMN_GUTTER:
+            spans_center = (
+                fragment.x0 < split_x - _COLUMN_GUTTER
+                and fragment.x1 > split_x + _COLUMN_GUTTER
+            )
+            if spans_center:
+                centered.append(fragment)
+            elif center_x <= split_x - _COLUMN_GUTTER:
                 left.append(fragment)
             elif center_x >= split_x + _COLUMN_GUTTER:
                 right.append(fragment)
@@ -130,7 +155,16 @@ class TwoColumnLayoutHandler(StructureHandler):
         left = sorted(left, key=lambda fragment: (fragment.y0, fragment.x0))
         right = sorted(right, key=lambda fragment: (fragment.y0, fragment.x0))
         centered = sorted(centered, key=lambda fragment: (fragment.y0, fragment.x0))
-        return header + left + right + centered
+        first_column_y0 = min(
+            fragment.y0 for fragment in left + right if fragment.y0 > _HEADER_Y_MAX
+        )
+        preamble_centered = [
+            fragment for fragment in centered if fragment.y0 < first_column_y0
+        ]
+        remaining_centered = [
+            fragment for fragment in centered if fragment.y0 >= first_column_y0
+        ]
+        return header + preamble_centered + left + right + remaining_centered
 
     def _merge_fragments_to_paragraphs(
         self, fragments: list[TextFragment]
