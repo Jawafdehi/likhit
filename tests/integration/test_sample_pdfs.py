@@ -148,22 +148,6 @@ STABLE_SAMPLE_CASES = (
 KNOWN_BROKEN_SAMPLE_CASES = (
     SampleCase(
         expectation=SamplePdfExpectation(
-            file_name="82.pdf",
-            required_markers=(
-                "अख्तियार दुरुपयोग अनुसन्धान आयोगको",
-                "पैँ तिसौँ वार्षिक प्रतिवेदन",
-                "आतथिक वषि २०८१/८२",
-                "अख्तियार दुरुपयोग अनुसन्धान आयोग",
-                "टङ्गाल, काठमाडौं",
-            ),
-            min_nonempty_lines=20,
-            min_characters=400,
-        ),
-        known_broken=True,
-        xfail_reason="Current extraction of the 446-page annual report is not accurate enough yet.",
-    ),
-    SampleCase(
-        expectation=SamplePdfExpectation(
             file_name="Press Release.pdf",
             required_markers=(
                 "अख्तियार दुरुपयोग अनुसन्धान आयोग",
