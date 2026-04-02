@@ -64,7 +64,10 @@ def scan_pdf_fonts_by_page(doc: fitz.Document) -> dict[int, dict[str, str]]:
             base = name.split("+", 1)[-1] if "+" in name else name
             strategy = classify_font(name, font_type)
             current = page_strategies.get(base)
-            if current is None or _STRATEGY_PRIORITY[strategy] > _STRATEGY_PRIORITY[current]:
+            if (
+                current is None
+                or _STRATEGY_PRIORITY[strategy] > _STRATEGY_PRIORITY[current]
+            ):
                 page_strategies[base] = strategy
                 logger.debug(
                     "Page %s font '%s' (type=%s) -> %s",

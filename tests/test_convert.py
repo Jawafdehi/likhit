@@ -390,7 +390,9 @@ def test_convert_preserves_pre_table_line_breaks_in_markdown() -> None:
     result = _md().convert(str(sample))
 
     assert "विवरण देहायबमोजिम\nरहेको छः\nतालिका २.१९" in result.markdown
-    assert result.markdown.index("विवरण देहायबमोजिम") < result.markdown.index("तालिका २.१९")
+    assert result.markdown.index("विवरण देहायबमोजिम") < result.markdown.index(
+        "तालिका २.१९"
+    )
     assert result.markdown.count("तालिका २.१९") >= 1
 
 

@@ -105,7 +105,9 @@ class TwoColumnLayoutHandler(StructureHandler):
             post_table = [
                 fragment for fragment in page_fragments if fragment.y0 >= first_table_y0
             ]
-            ordered_fragments.extend(sorted(pre_table, key=lambda fragment: (fragment.y0, fragment.x0)))
+            ordered_fragments.extend(
+                sorted(pre_table, key=lambda fragment: (fragment.y0, fragment.x0))
+            )
             ordered_fragments.extend(self._order_page_fragments(post_table))
 
         return build_content_blocks(

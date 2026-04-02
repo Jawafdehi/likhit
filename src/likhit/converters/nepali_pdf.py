@@ -628,7 +628,10 @@ def _render_markdown_from_blocks(blocks: list[ParagraphBlock | TableBlock]) -> s
         if isinstance(block, ParagraphBlock):
             if _looks_like_page_furniture(block.text) and (
                 (index > 0 and isinstance(blocks[index - 1], TableBlock))
-                or (index + 1 < len(blocks) and isinstance(blocks[index + 1], TableBlock))
+                or (
+                    index + 1 < len(blocks)
+                    and isinstance(blocks[index + 1], TableBlock)
+                )
             ):
                 continue
             rendered.append(_render_paragraph_markdown(block.text))

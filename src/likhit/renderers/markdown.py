@@ -384,10 +384,7 @@ def _looks_like_sparse_continuation_table(table: Table) -> bool:
         return False
 
     key_hits = sum(
-        1
-        for row in nonempty_rows[:6]
-        for cell in row
-        if _looks_like_data_key(cell)
+        1 for row in nonempty_rows[:6] for cell in row if _looks_like_data_key(cell)
     )
     populated_cells = sum(1 for row in anchor for cell in row if cell.strip())
     total_cells = max(table.row_count * table.col_count, 1)
@@ -457,9 +454,7 @@ def _classify_sparse_group_values(
 
     for value in values:
         if _is_law_fragment(value):
-            fields["भ्रष्टाचारनिवारण ऐन, २०५९ बमोजिम कसुर/सजाय मागदाबी/बिगो"].append(
-                value
-            )
+            fields["भ्रष्टाचारनिवारण ऐन, २०५९ बमोजिम कसुर/सजाय मागदाबी/बिगो"].append(value)
             continue
         if _is_decision_fragment(value):
             fields["आयोगको निर्णय"].append(value)
@@ -510,16 +505,15 @@ def _render_sparse_continuation_records(
     for row in nonempty_rows:
         row_first = _first_nonempty_cell(row)
         serial = row_first if _looks_like_data_key(row_first) else None
-        cleaned_row = [
-            ""
-            if cell.strip() == serial
-            else cell
-            for cell in row
-        ]
+        cleaned_row = ["" if cell.strip() == serial else cell for cell in row]
         if serial is not None:
             if current_rows:
                 groups.append(
-                    (current_key or str(len(groups) + 1), current_rows, current_is_continuation)
+                    (
+                        current_key or str(len(groups) + 1),
+                        current_rows,
+                        current_is_continuation,
+                    )
                 )
             current_key = serial.rstrip(".।)")
             current_rows = [cleaned_row]
@@ -532,7 +526,9 @@ def _render_sparse_continuation_records(
         current_rows.append(cleaned_row)
 
     if current_rows:
-        groups.append((current_key or str(len(groups) + 1), current_rows, current_is_continuation))
+        groups.append(
+            (current_key or str(len(groups) + 1), current_rows, current_is_continuation)
+        )
 
     lines: list[str] = []
     if include_caption and table.caption:
