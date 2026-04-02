@@ -11,7 +11,7 @@ import fitz
 
 from likhit.errors import ExtractionError, ValidationError
 from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
-from likhit.extractors.font_classifier import scan_pdf_fonts
+from likhit.extractors.font_classifier import scan_pdf_fonts, scan_pdf_fonts_by_page
 from likhit.extractors.kalimati import (
     fix_kalimati_cmap,
     normalize_devanagari_spacing,
@@ -67,6 +67,8 @@ def normalize_press_release_paragraph(text: str) -> str:
     normalized = re.sub(r"^\ufffd(?=\s)", "-", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     normalized = re.sub(r"\s+([।,:;])", r"\1", normalized)
+    if re.fullmatch(r"प्रेस\s+विज्ञ\S*", normalized):
+        return "प्रेस विज्ञप्ति"
     return normalized
 
 
@@ -119,6 +121,10 @@ def _private_use_count(text: str) -> int:
     return sum(1 for char in text if 0xE000 <= ord(char) <= 0xF8FF)
 
 
+def _contains_private_use_marker(text: str) -> bool:
+    return _private_use_count(text) > 0
+
+
 def _text_quality_penalty(text: str) -> int:
     return (
         text.count("\ufffd") * 12
@@ -154,7 +160,7 @@ def _choose_token_text(original: str, repaired: str) -> str:
     if original_penalty < repaired_penalty:
         return original
 
-    return original if len(original) >= len(repaired) else repaired
+    return repaired
 
 
 def _merge_tokenwise(original: str, repaired: str) -> str | None:
@@ -269,13 +275,14 @@ class FontBasedStrategy(ExtractionStrategy):
                 page_start, page_end = parse_page_range(pages, doc.page_count)
 
             font_strategies = scan_pdf_fonts(doc)
+            font_strategies_by_page = scan_pdf_fonts_by_page(doc)
             has_broken_cmap = any(
                 strategy == "broken_cmap" for strategy in font_strategies.values()
             )
             repaired_doc: fitz.Document | None = None
             raw_document = self._extract_from_document(
                 doc,
-                font_strategies,
+                font_strategies_by_page,
                 page_start=page_start,
                 page_end=page_end,
                 needs_reorder=False,
@@ -292,7 +299,7 @@ class FontBasedStrategy(ExtractionStrategy):
                             pass
                 repaired_document = self._extract_from_document(
                     repaired_doc,
-                    font_strategies,
+                    font_strategies_by_page,
                     page_start=page_start,
                     page_end=page_end,
                     needs_reorder=needs_reorder,
@@ -302,7 +309,7 @@ class FontBasedStrategy(ExtractionStrategy):
                         raw_document.fragments,
                         repaired_document.fragments,
                     ),
-                    raw_document.tables,
+                    repaired_document.tables or raw_document.tables,
                 )
 
             if not raw_document.raw_text:
@@ -323,7 +330,7 @@ class FontBasedStrategy(ExtractionStrategy):
     def _extract_from_document(
         self,
         doc: fitz.Document,
-        font_strategies: dict[str, str],
+        font_strategies_by_page: dict[int, dict[str, str]],
         *,
         page_start: int,
         page_end: int,
@@ -336,6 +343,7 @@ class FontBasedStrategy(ExtractionStrategy):
 
         for page_index in range(page_start, page_end + 1):
             page = doc[page_index]
+            page_font_strategies = font_strategies_by_page.get(page_index + 1, {})
             page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
             lines_by_key: dict[
                 tuple[int, int], list[tuple[float, float, float, float, str]]
@@ -348,7 +356,7 @@ class FontBasedStrategy(ExtractionStrategy):
                         text = self._convert_span_text(
                             str(span["text"]),
                             str(span["font"]),
-                            font_strategies,
+                            page_font_strategies,
                             needs_reorder,
                         )
                         if not text:
@@ -431,7 +439,9 @@ class FontBasedStrategy(ExtractionStrategy):
                 return converter(text)
             return text
 
-        if strategy == "broken_cmap" and needs_reorder:
+        if needs_reorder and (
+            strategy == "broken_cmap" or _contains_private_use_marker(text)
+        ):
             text = reorder_devanagari(text)
             text = normalize_devanagari_spacing(text)
         return text
