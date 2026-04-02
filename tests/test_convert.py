@@ -370,16 +370,16 @@ def test_converter_reorders_two_column_fragments_before_rendering(
     assert result.markdown.splitlines() == ["HEADER", "", "LEFT", "", "RIGHT"]
 
 
-def test_convert_preserves_table_layout_as_plain_text_lines() -> None:
+def test_convert_renders_tables_as_raw_pipe_separated_rows() -> None:
     sample = ROOT / "samples" / "my-table.pdf"
 
     markdown = _convert_text(sample)
 
     assert "तालिका २.१९" in markdown
-    assert "क्र.सं.\tउजुरीको व्यहोरा" in markdown
-    assert "आयोगको निर्णय" in markdown
-    assert "प्रतिवादीको नाम, पद र कार्यालय" in markdown
-    assert "गैरकानुनी लाभ लिई नेपाल सरकारलाई हानि नोक्सानी गरी भ्रष्टाचार गरेका मुद्दाहरू" in markdown
+    assert "क्र.सं. | उजुरीको व्यहोरा | अनुसन्धानबाट पुष्टि भएको व्यहोरा" in markdown
+    assert "1 | आन्तरिक मामिला तथा" in markdown
+    assert "**1**" not in markdown
+    assert "- **उजुरीको व्यहोरा:**" not in markdown
 
 
 def test_convert_normalizes_replacement_char_bullets_in_two_column_output() -> None:

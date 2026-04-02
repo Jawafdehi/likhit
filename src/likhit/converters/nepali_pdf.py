@@ -33,6 +33,7 @@ from likhit.handlers.structure_detection import detect_structure
 from likhit.handlers.two_column_layout import TwoColumnLayoutHandler
 from likhit.models import DocumentType, ParagraphBlock, TableBlock
 from likhit.pdf_page_analysis import pdf_likely_needs_ocr
+from likhit.renderers.markdown import _caption_key, _render_table
 
 logger = logging.getLogger(__name__)
 _TOKEN_PATTERN = re.compile(r"\S+")
@@ -623,12 +624,43 @@ def _render_layout_preserving_markdown(raw_document: RawDocument) -> str:
 
 def _render_markdown_from_blocks(blocks: list[ParagraphBlock | TableBlock]) -> str:
     rendered: list[str] = []
-    for block in blocks:
+    previous_table_key: str | None = None
+    for index, block in enumerate(blocks):
         if isinstance(block, ParagraphBlock):
+            if _looks_like_page_furniture(block.text) and (
+                (index > 0 and isinstance(blocks[index - 1], TableBlock))
+                or (index + 1 < len(blocks) and isinstance(blocks[index + 1], TableBlock))
+            ):
+                continue
             rendered.append(block.text.strip())
+            previous_table_key = None
         elif isinstance(block, TableBlock):
-            rendered.append(table_to_plain_text(block.table))
+            include_caption = True
+            if (
+                index > 0
+                and isinstance(blocks[index - 1], ParagraphBlock)
+                and block.table.caption
+                and _caption_key(blocks[index - 1].text)
+                == _caption_key(block.table.caption)
+            ):
+                include_caption = False
+            rendered_table, previous_table_key = _render_table(
+                block.table,
+                include_caption=include_caption,
+                continuation_key=previous_table_key,
+            )
+            rendered.append(rendered_table)
     return "\n\n".join(part for part in rendered if part).strip()
+
+
+def _looks_like_page_furniture(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text)
+    stripped = text.strip()
+    return (
+        bool(re.match(r"^\d+\s*परिच्छेद", text))
+        or "वार्षिकप्रतिवेदन" in compact
+        or (stripped.isdigit() and len(stripped) <= 3)
+    )
 
 
 def _render_two_column_markdown(

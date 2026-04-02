@@ -8,6 +8,7 @@ from typing import Callable
 from likhit.extractors.base import TextFragment
 from likhit.models import ParagraphBlock, Table, TableBlock, TableRegion
 from likhit.models.types import ContentBlock
+from likhit.renderers.markdown import render_table_markdown
 
 ParagraphBuilder = Callable[[list[TextFragment]], list[str]]
 
@@ -91,19 +92,7 @@ def blocks_to_text(blocks: list[ContentBlock]) -> str:
 
 def table_to_plain_text(table: Table) -> str:
     """Flatten a table to plain text for non-rendered use."""
-
-    lines: list[str] = []
-    if table.caption:
-        lines.append(table.caption)
-
-    grid = [["" for _ in range(table.col_count)] for _ in range(table.row_count)]
-    for cell in table.cells:
-        grid[cell.row][cell.col] = cell.text.replace("\n", " ").strip()
-
-    for row in grid:
-        if any(cell for cell in row):
-            lines.append("\t".join(row).rstrip())
-    return "\n".join(line for line in lines if line.strip())
+    return render_table_markdown(table)
 
 
 def _flush_paragraph_chunk(
