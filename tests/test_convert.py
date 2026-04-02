@@ -376,10 +376,22 @@ def test_convert_renders_tables_as_raw_pipe_separated_rows() -> None:
     markdown = _convert_text(sample)
 
     assert "तालिका २.१९" in markdown
-    assert "क्र.सं. | उजुरीको व्यहोरा | अनुसन्धानबाट पुष्टि भएको व्यहोरा" in markdown
-    assert "1 | आन्तरिक मामिला तथा" in markdown
+    assert "क्र.सं. | उजुरीको व्यहोरा | अनुसन्धानबाट पुष्टि भएको | आयोगको निर्णय" in markdown
+    assert "व्यहोरा | बमोजिम कसुर/सजाय" in markdown
+    assert "1 | आन्तरिक | प्रतिवादीहरूको | 2081/04/24," in markdown
+    assert "मामिला | मिलेमतोमा | 2081/04/31," in markdown
     assert "**1**" not in markdown
     assert "- **उजुरीको व्यहोरा:**" not in markdown
+
+
+def test_convert_preserves_pre_table_line_breaks_in_markdown() -> None:
+    sample = ROOT / "samples" / "my-table.pdf"
+
+    result = _md().convert(str(sample))
+
+    assert "विवरण देहायबमोजिम\nरहेको छः\nतालिका २.१९" in result.markdown
+    assert result.markdown.index("विवरण देहायबमोजिम") < result.markdown.index("तालिका २.१९")
+    assert result.markdown.count("तालिका २.१९") >= 1
 
 
 def test_convert_normalizes_replacement_char_bullets_in_two_column_output() -> None:

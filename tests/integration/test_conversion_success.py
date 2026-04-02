@@ -254,7 +254,7 @@ class TestPluginConversion:
 
         output_path = tmp_path / "notice.md"
         exit_code = save_cli_main([str(notice_pdf), "--out", str(output_path)])
-        expected_markdown = _md().convert(str(notice_pdf)).text_content
+        expected_markdown = _md().convert(str(notice_pdf)).markdown
 
         assert exit_code == 0
         assert output_path.exists()
