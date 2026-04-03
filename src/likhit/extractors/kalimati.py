@@ -47,6 +47,16 @@ def _trace_value_is_better(pdf_value: str, trace_value: str) -> bool:
     return False
 
 
+def _safe_get_best_cmap(font) -> dict[int, str]:
+    try:
+        if "cmap" not in font:
+            return {}
+        best_cmap = font["cmap"].getBestCmap()
+    except Exception:
+        return {}
+    return best_cmap or {}
+
+
 def _parse_tounicode_cmap(cmap_bytes: bytes) -> dict[int, str]:
     text = cmap_bytes.decode("utf-8", errors="replace")
     mapping: dict[int, str] = {}
@@ -265,7 +275,7 @@ def _infer_mark_variants(
         0x0948,  # ै
     }
 
-    best_cmap = font["cmap"].getBestCmap()
+    best_cmap = _safe_get_best_cmap(font)
     candidate_features: list[tuple[str, tuple[int, int, int, int, int, int, int]]] = []
     for codepoint, glyph_name in best_cmap.items():
         if codepoint not in candidate_codepoints:
@@ -372,7 +382,10 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
                 os.unlink(temp_path)
 
         glyph_order = font.getGlyphOrder()
-        best_cmap = font["cmap"].getBestCmap()
+        best_cmap = _safe_get_best_cmap(font)
+        if not best_cmap:
+            font.close()
+            return {}
         name_to_unicode = {name: codepoint for codepoint, name in best_cmap.items()}
 
         gid_to_correct: dict[int, str] = {}
@@ -573,9 +586,13 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
             continue
         correction_map = _get_font_correction_map(doc, type0_xref)
         if not correction_map:
+            if trace_map:
+                to_unicode_maps[to_unicode_xref] = trace_map
             continue
         meaningful_diffs = _meaningful_cmap_diff_count(pdf_map, correction_map)
         if meaningful_diffs < 3 and "kalimati" not in font_name.lower():
+            if trace_map:
+                to_unicode_maps[to_unicode_xref] = trace_map
             continue
         combined_map = dict(trace_map)
         combined_map.update(correction_map)

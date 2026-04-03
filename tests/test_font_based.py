@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import builtins
 from pathlib import Path
+import sys
+import types
 
 import pytest
 
@@ -9,6 +11,7 @@ from likhit.errors import ExtractionError, ValidationError
 from likhit.extractors.base import RawDocument, TextFragment
 from likhit.extractors.font_classifier import classify_font
 import likhit.extractors.font_based as font_based_module
+import likhit.extractors.kalimati as kalimati_module
 from likhit.extractors.font_based import (
     FontBasedStrategy,
     _choose_fragment_text,
@@ -154,6 +157,117 @@ def test_kalimati_fix_requires_fonttools(monkeypatch: pytest.MonkeyPatch) -> Non
 
     with pytest.raises(ExtractionError, match="fonttools is required"):
         _get_font_correction_map(None, 1)  # type: ignore[arg-type]
+
+
+def test_get_font_correction_map_returns_empty_when_font_has_no_cmap(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class FakeFont:
+        def getGlyphOrder(self) -> list[str]:
+            return ["glyph0"]
+
+        def __contains__(self, key: str) -> bool:
+            return key != "cmap"
+
+        def close(self) -> None:
+            return None
+
+    class FakeDoc:
+        def xref_object(self, xref: int, compressed: bool = False) -> str:
+            del compressed
+            mapping = {
+                1: "<< /DescendantFonts [2 0 R] >>",
+                2: "<< /FontDescriptor 3 0 R >>",
+                3: "<< /FontFile2 4 0 R >>",
+            }
+            return mapping[xref]
+
+        def xref_stream(self, xref: int) -> bytes:
+            assert xref == 4
+            return b"font-data"
+
+    fake_fonttools = types.ModuleType("fontTools")
+    fake_ttlib = types.ModuleType("fontTools.ttLib")
+    fake_ttlib.TTFont = lambda _path: FakeFont()
+    fake_fonttools.ttLib = fake_ttlib
+    monkeypatch.setitem(sys.modules, "fontTools", fake_fonttools)
+    monkeypatch.setitem(sys.modules, "fontTools.ttLib", fake_ttlib)
+
+    with caplog.at_level("WARNING"):
+        result = _get_font_correction_map(FakeDoc(), 1)  # type: ignore[arg-type]
+
+    assert result == {}
+    assert "Failed to build Kalimati correction map" not in caplog.text
+
+
+def test_fix_kalimati_cmap_uses_trace_fallback_when_font_map_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patched_maps: list[tuple[int, dict[int, str]]] = []
+
+    class FakePage:
+        def get_fonts(self, full: bool = True) -> list[tuple[object, ...]]:
+            del full
+            return [(11, "ttf", "Type0", "ABCDEF+Kalimati", "Identity-H")]
+
+    class FakeDoc:
+        page_count = 1
+
+        def __getitem__(self, index: int) -> FakePage:
+            assert index == 0
+            return FakePage()
+
+        def xref_object(self, xref: int, compressed: bool = False) -> str:
+            del compressed
+            assert xref == 11
+            return "<< /ToUnicode 12 0 R >>"
+
+        def xref_stream(self, xref: int) -> bytes:
+            assert xref == 12
+            return b"unused"
+
+        def save(self, buffer) -> None:
+            buffer.write(b"%PDF-1.4")
+
+        def close(self) -> None:
+            return None
+
+    reopened_doc = object()
+    monkeypatch.setattr(
+        kalimati_module,
+        "_collect_trace_fallback_map",
+        lambda doc, font_name: {7: "का"},
+    )
+    monkeypatch.setattr(kalimati_module, "_get_fontfile_xref", lambda doc, xref: None)
+    monkeypatch.setattr(
+        kalimati_module,
+        "_parse_tounicode_cmap",
+        lambda cmap_bytes: {7: "x"},
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_get_font_correction_map",
+        lambda doc, xref: {},
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_patch_single_cmap",
+        lambda doc, to_unicode_xref, correction_map: patched_maps.append(
+            (to_unicode_xref, dict(correction_map))
+        ),
+    )
+    monkeypatch.setattr(
+        kalimati_module.fitz,
+        "open",
+        lambda *args, **kwargs: reopened_doc,
+    )
+
+    repaired_doc, needs_reorder = kalimati_module.fix_kalimati_cmap(FakeDoc())  # type: ignore[arg-type]
+
+    assert repaired_doc is reopened_doc
+    assert needs_reorder is True
+    assert patched_maps == [(12, {7: "का"})]
 
 
 def test_handler_keeps_table_content_after_numbered_prose() -> None:
