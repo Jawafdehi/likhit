@@ -263,3 +263,18 @@ class TestPluginConversion:
         assert markdown == expected_markdown
         assert "विषय: आरोपपत्र दायर गरिएको।" in markdown
         assert "राष्ट्रिय सूचना प्रविधि केन्द्रद्वारा" in markdown
+
+    def test_save_cli_honors_pages_option_for_pdf(self, tmp_path: Path) -> None:
+        notice_pdf = TEST_DATA_DIR / "ciaa_pressrelease_sample.pdf"
+        if not notice_pdf.exists():
+            pytest.skip("Notice-style PDF sample not found")
+
+        output_path = tmp_path / "notice-page-1.md"
+        exit_code = save_cli_main(
+            [str(notice_pdf), "--pages", "1", "--out", str(output_path)]
+        )
+        expected_markdown = _md().convert(str(notice_pdf), pages="1").markdown
+
+        assert exit_code == 0
+        assert output_path.exists()
+        assert output_path.read_text(encoding="utf-8") == expected_markdown

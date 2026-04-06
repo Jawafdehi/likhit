@@ -316,6 +316,37 @@ def test_convert_repairs_legacy_font_sample(tmp_path: Path) -> None:
     assert "नेपाल कानून पत्रिका" in repaired
 
 
+def test_convert_honors_single_page_selection_for_pdf(tmp_path: Path) -> None:
+    sample = ROOT / "samples" / "pressrelease.pdf"
+    expected = _copy_pdf_pages(
+        sample,
+        tmp_path / "pressrelease-page-1.pdf",
+        start=0,
+        end=0,
+    )
+
+    selected_markdown = _md().convert(str(sample), pages="1").text_content
+    expected_markdown = _md().convert(str(expected)).text_content
+
+    assert selected_markdown == expected_markdown
+    assert "प्रेस विज्ञप्ति" in selected_markdown
+
+
+def test_convert_honors_page_range_selection_for_pdf(tmp_path: Path) -> None:
+    sample = ROOT / "samples" / "kanunpatrika.pdf"
+    expected = _copy_pdf_pages(
+        sample,
+        tmp_path / "kanunpatrika-pages-1-2.pdf",
+        start=0,
+        end=1,
+    )
+
+    selected_markdown = _md().convert(str(sample), pages="1-2").text_content
+    expected_markdown = _md().convert(str(expected)).text_content
+
+    assert selected_markdown == expected_markdown
+
+
 def test_convert_preserves_two_column_reading_order() -> None:
     sample = ROOT / "samples" / "kanunpatrika.pdf"
 

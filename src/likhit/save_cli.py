@@ -27,6 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--out-dir",
         help="Directory for generated Markdown files. Defaults to the current directory.",
     )
+    parser.add_argument(
+        "--pages",
+        help="Optional 1-based page selection for PDFs, like '5' or '2-4'.",
+    )
     return parser
 
 
@@ -56,7 +60,10 @@ def main(argv: list[str] | None = None) -> int:
     md = MarkItDown(enable_plugins=True)
 
     for source_path in args.inputs:
-        result = md.convert(source_path)
+        convert_kwargs: dict[str, str] = {}
+        if args.pages:
+            convert_kwargs["pages"] = args.pages
+        result = md.convert(source_path, **convert_kwargs)
         markdown = result.markdown or result.text_content
 
         if args.out:
