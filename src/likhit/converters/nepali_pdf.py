@@ -25,7 +25,7 @@ from markitdown_ocr import PdfConverterWithOCR
 
 from likhit.errors import ExtractionError
 from likhit.extractors.base import RawDocument, TextFragment
-from likhit.extractors.font_based import FontBasedStrategy
+from likhit.extractors.font_based import FontBasedStrategy, parse_page_range
 from likhit.font_classifier import classify_fonts_from_stream
 from likhit.handlers.content_blocks import build_content_blocks
 from likhit.handlers.structure_detection import detect_structure
@@ -74,12 +74,20 @@ class NepaliPdfConverter(DocumentConverter):
         stream_info: StreamInfo,
         **kwargs: Any,
     ) -> DocumentConverterResult:
-        del kwargs
+        pages = kwargs.pop("pages", None)
         raw = file_stream.read()
         if not raw:
             raise ExtractionError(
                 "No extractable text found in PDF. Scanned or image-only PDFs are not supported."
             )
+        if kwargs:
+            logger.debug(
+                "PDF converter: ignoring unsupported convert kwargs: %s",
+                ", ".join(sorted(kwargs)),
+            )
+
+        if isinstance(pages, str) and pages.strip():
+            raw = _slice_pdf_to_requested_pages(raw, pages)
 
         classifications = classify_fonts_from_stream(io.BytesIO(raw))
         if _has_known_nepali_repair_font(classifications):
@@ -209,6 +217,19 @@ def _run_full_page_ocr(
         doc.close()
 
     return DocumentConverterResult(markdown="\n".join(markdown_parts).strip())
+
+
+def _slice_pdf_to_requested_pages(raw: bytes, pages: str) -> bytes:
+    source_doc = fitz.open(stream=raw, filetype="pdf")
+    sliced_doc = fitz.open()
+
+    try:
+        page_start, page_end = parse_page_range(pages, source_doc.page_count)
+        sliced_doc.insert_pdf(source_doc, from_page=page_start, to_page=page_end)
+        return sliced_doc.tobytes()
+    finally:
+        sliced_doc.close()
+        source_doc.close()
 
 
 def _format_full_page_ocr_text(text: str) -> str:
