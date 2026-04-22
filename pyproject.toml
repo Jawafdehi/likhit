@@ -37,7 +37,7 @@ Homepage = "https://jawafdehi.org/"
 Repository = "https://github.com/Jawafdehi/likhit/"
 Issues = "https://github.com/Jawafdehi/likhit/issues"
 Documentation = "https://github.com/Jawafdehi/likhit/#readme"
-Contact = "mailto:inquiry@jawafdehi.org"
+Contact = "inquiry@jawafdehi.org"
 
 [project.entry-points."markitdown.plugin"]
 likhit = "likhit._plugin"
