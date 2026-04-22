@@ -7,7 +7,7 @@
 1. Update the package version in `pyproject.toml`.
 2. Commit that change.
 3. Create a matching git tag such as `v0.1.1`.
-4. Push the commit and tag to GitHub.
+4. Push the commit and tag to GitHub (`https://github.com/Jawafdehi/likhit/`).
 
 Example:
 

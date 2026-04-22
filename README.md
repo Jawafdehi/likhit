@@ -1,14 +1,22 @@
 # likhit
 
-`likhit` is a public MarkItDown plugin that adds Nepal-specific document support.
+`likhit` is Jawafdehi's public MarkItDown plugin for Nepal-specific document support.
 
 It extends [MarkItDown](https://github.com/microsoft/markitdown) with Nepal-specific PDF repair, layout-aware Markdown assembly, optional OCR fallback for image-dominant PDFs, and legacy `.doc` support. For PDFs, `likhit` now evaluates multiple extraction paths and returns the best result instead of relying on a single fixed pipeline.
+
+Owned and maintained by [Jawafdehi](https://jawafdehi.org/).
 
 ## Installation
 
 ```bash
 pip install markitdown-likhit
 ```
+
+## Project Links
+
+- Website: https://jawafdehi.org/
+- GitHub: https://github.com/Jawafdehi/likhit/
+- Contact: inquiry@jawafdehi.org
 
 ## Usage
 
@@ -177,3 +185,12 @@ poetry run pytest
 
 - MarkItDown: https://github.com/microsoft/markitdown
 - MarkItDown sample plugin: https://github.com/microsoft/markitdown/tree/main/packages/markitdown-sample-plugin
+
+## Ownership
+
+`likhit` is owned and maintained by Jawafdehi.
+
+- Organization: Jawafdehi
+- Website: https://jawafdehi.org/
+- GitHub: https://github.com/Jawafdehi/likhit/
+- Contact: inquiry@jawafdehi.org
