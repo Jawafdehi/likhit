@@ -2,7 +2,7 @@
 
 `likhit` is a public MarkItDown plugin that adds Nepal-specific document support.
 
-The default path is powered by [MarkItDown](https://github.com/microsoft/markitdown), with `likhit` intercepting born-digital Nepali PDFs that need Nepal-specific repair before Markdown is emitted. That repair layer handles Kalimati broken-CMap fixes, Devanagari reordering and spacing normalization, and legacy Nepali font remapping where applicable.
+It extends [MarkItDown](https://github.com/microsoft/markitdown) with Nepal-specific PDF repair, layout-aware Markdown assembly, optional OCR fallback for image-dominant PDFs, and legacy `.doc` support. For PDFs, `likhit` now evaluates multiple extraction paths and returns the best result instead of relying on a single fixed pipeline.
 
 ## Installation
 
@@ -62,25 +62,30 @@ Convert multiple files into a directory:
 likhit-save samples/pressrelease.pdf samples/kanunpatrika.pdf --out-dir converted/
 ```
 
+Extract only one page or a page range from a PDF:
+
+```bash
+likhit-save path/to/nepali-document.pdf --pages 5 --out page-5.md
+likhit-save path/to/nepali-document.pdf --pages 2-4 --out pages-2-4.md
+```
+
 ### What likhit does
 
-likhit intercepts only the formats where it adds behavior beyond MarkItDown:
+`likhit` adds behavior beyond MarkItDown in these places:
 
-- **PDF**: Detected automatically by scanning embedded fonts. If any font is classified
-  as `broken_cmap` (Kalimati variants) or `legacy_remap` (Preeti, Kantipur, PCS Nepali,
-  Sagarmatha, Himali), likhit's repair pipeline runs. All other PDFs fall through to
-  markitdown's built-in converter.
-- **DOC**: Legacy Microsoft Word `.doc` files are handled by likhit's extraction pipeline.
-- **DOCX**: Left to MarkItDown's built-in Word converter.
+- **PDF**: `likhit` intercepts PDF inputs, runs the default MarkItDown PDF converter first, and then decides whether to keep that result, retry with Nepal-specific extraction, or add an OCR candidate for image-dominant pages. It prefers direct `likhit` extraction immediately when known Nepali repair fonts are detected.
+- **DOC**: Legacy Microsoft Word `.doc` files are handled by `likhit`'s own extraction pipeline.
+- **DOCX**: `.docx` files are still handled by MarkItDown's built-in Word converter, even when plugins are enabled.
 
 ### Supported document types
-- Generic Nepali born-digital PDFs
+- PDFs, including Nepal-specific born-digital PDFs and image-dominant PDFs that may need OCR
 - Legacy `.doc` files
+- `.docx` passthrough via MarkItDown
 
 
 ### OCR Configuration
 
-For image-dominant or scanned PDFs, `likhit` can use `markitdown-ocr` when OCR is configured.
+For image-dominant or scanned PDFs, `likhit` can add an OCR extraction candidate through `markitdown-ocr` when OCR is configured.
 
 Required model configuration:
 
@@ -123,19 +128,22 @@ export MARKITDOWN_OCR_PROMPT="Custom OCR instructions"
 
 ## Architecture
 
-The pipeline is:
+The high-level PDF pipeline is:
 
 1. MarkItDown loads the plugin when `enable_plugins=True` or `--use-plugins` is used.
-2. For PDFs that need Nepali repair, likhit scans fonts and runs its repair pipeline.
-3. After extraction, likhit checks whether the document matches a known structure such as a single-column notice or a dense two-column layout.
-4. If a known structure is detected, likhit applies its structure-aware ordering and paragraph assembly.
-5. Otherwise, MarkItDown handles the default conversion path.
-6. When the PDF needs Nepali repair, `likhit` repairs the text first:
+2. For PDF inputs, `likhit` reads the file and optionally slices it to the requested page range.
+3. `likhit` scans embedded fonts. If it detects known Nepali repair fonts such as Kalimati broken-CMap fonts or legacy remap fonts, it tries the Nepal-specific extraction pipeline immediately.
+4. `likhit` also runs the default MarkItDown PDF converter and keeps that result as a candidate.
+5. `likhit` analyzes the PDF pages. If the file looks image-dominant with a suspicious text layer and OCR is configured, it adds an OCR candidate.
+6. If the default Markdown output looks suspicious for Nepali text, `likhit` retries extraction with its own PDF pipeline.
+7. The Nepal-specific PDF pipeline can apply:
    - Kalimati broken-CMap repair
    - Devanagari reordering
    - Devanagari spacing normalization
    - Legacy-font remapping through `npttf2utf`
-7. `likhit` assembles repaired text blocks into Markdown.
+8. After extraction, `likhit` checks whether the document matches a known structure such as a single-column notice or a dense two-column layout.
+9. If a known structure is detected, `likhit` applies structure-aware ordering, block assembly, and Markdown rendering.
+10. If multiple candidate outputs exist, `likhit` scores them and returns the best one.
 
 
 
@@ -143,7 +151,7 @@ The pipeline is:
 ## Project Layout
 
 - `src/likhit/_plugin.py`: MarkItDown plugin entry point and converter registration
-- `src/likhit/converters/`: plugin converters for Nepali PDF and legacy DOC inputs
+- `src/likhit/converters/`: plugin converters for PDF and legacy DOC inputs
 - `src/likhit/nepali_pdf_repair.py`: reusable Nepal-specific PDF repair layer
 - `src/likhit/markdown_assembly.py`: generic Markdown assembly for the default conversion path
 - `src/likhit/extractors/`: extraction strategies (PDF, DOC)
