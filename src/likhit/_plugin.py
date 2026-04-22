@@ -1,5 +1,5 @@
 """
-markitdown-likhit plugin entry point.
+likhit plugin entry point.
 
 Registers Nepal-specific converters with every MarkItDown instance when
 enable_plugins=True.

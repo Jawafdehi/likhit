@@ -17,7 +17,7 @@ def _read_pyproject_version() -> str:
 
 def _resolve_version() -> str:
     try:
-        return version("markitdown-likhit")
+        return version("likhit")
     except PackageNotFoundError:
         # Fall back to local project metadata when running from a source checkout.
         return _read_pyproject_version()

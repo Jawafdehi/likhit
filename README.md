@@ -9,7 +9,7 @@ Owned and maintained by [Jawafdehi](https://jawafdehi.org/).
 ## Installation
 
 ```bash
-pip install markitdown-likhit
+pip install likhit
 ```
 
 ## Project Links

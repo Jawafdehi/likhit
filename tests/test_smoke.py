@@ -4,4 +4,4 @@ import likhit
 
 
 def test_package_import_exposes_version() -> None:
-    assert version("markitdown-likhit") == likhit.__version__
+    assert version("likhit") == likhit.__version__
