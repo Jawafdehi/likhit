@@ -28,8 +28,8 @@ dependencies = [
     "pyyaml>=6.0,<7.0",
     "markitdown[pdf,docx]>=0.1.0,<1.0.0",
     "pyantiword>=0.1.2,<1.0.0",
-    "markitdown-ocr (>=0.1.0,<0.2.0)",
-    "openai (>=2.30.0,<3.0.0)"
+    "markitdown-ocr>=0.1.0,<0.2.0",
+    "openai>=2.30.0,<3.0.0"
 ]
 
 [project.urls]
