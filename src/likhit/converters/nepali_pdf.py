@@ -28,9 +28,8 @@ from likhit.extractors.base import RawDocument, TextFragment
 from likhit.extractors.font_based import FontBasedStrategy, parse_page_range
 from likhit.font_classifier import classify_fonts_from_stream
 from likhit.handlers.content_blocks import build_content_blocks
-from likhit.handlers.structure_detection import detect_structure
 from likhit.handlers.two_column_layout import TwoColumnLayoutHandler
-from likhit.models import DocumentType, ParagraphBlock, TableBlock
+from likhit.models import ParagraphBlock, TableBlock
 from likhit.pdf_page_analysis import pdf_likely_needs_ocr
 from likhit.renderers.markdown import _caption_key, _render_table
 
@@ -712,9 +711,6 @@ def _render_two_column_markdown(
 
 
 def _render_structure_aware_markdown(raw_document: RawDocument) -> str:
-    if detect_structure(raw_document) is not DocumentType.TWO_COLUMN_LAYOUT:
-        return _render_layout_preserving_markdown(raw_document)
-
     handler = TwoColumnLayoutHandler()
     return _render_two_column_markdown(raw_document, handler, raw_document.fragments)
 

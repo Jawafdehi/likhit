@@ -13,7 +13,7 @@ _COLUMN_GUTTER = 20.0
 
 
 def detect_structure(raw_document: RawDocument) -> DocumentType | None:
-    """Infer a supported structure type from extracted layout signals."""
+    """Infer supported whole-document structures from extracted signals."""
 
     fragments = [
         fragment for fragment in raw_document.fragments if fragment.text.strip()
@@ -21,11 +21,11 @@ def detect_structure(raw_document: RawDocument) -> DocumentType | None:
     if not fragments:
         return None
 
-    if _looks_like_two_column_layout(fragments):
-        return DocumentType.TWO_COLUMN_LAYOUT
-
     if _looks_like_single_column_notice(fragments):
         return DocumentType.SINGLE_COLUMN_NOTICE
+
+    if _looks_like_two_column_layout(fragments):
+        return DocumentType.TWO_COLUMN_LAYOUT
 
     return None
 
