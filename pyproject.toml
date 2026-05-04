@@ -1,6 +1,6 @@
 [project]
 name = "likhit"
-version = "0.1.6"
+version = "0.1.7"
 description = "MarkItDown plugin for Nepali PDFs and legacy DOC files"
 authors = [
     { name = "Jawafdehi", email = "inquiry@jawafdehi.org" }
