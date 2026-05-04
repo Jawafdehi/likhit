@@ -163,9 +163,7 @@ class TwoColumnLayoutHandler(StructureHandler):
 
             current_block.append(fragment)
             previous_y1 = (
-                fragment.y1
-                if previous_y1 is None
-                else max(previous_y1, fragment.y1)
+                fragment.y1 if previous_y1 is None else max(previous_y1, fragment.y1)
             )
 
         if current_block:
@@ -182,9 +180,10 @@ class TwoColumnLayoutHandler(StructureHandler):
             for group in line_groups
             if len(group) >= 3 and self._has_separated_columns(group)
         ]
-        return len(multi_column_rows) >= 3 and len(multi_column_rows) >= len(
-            line_groups
-        ) * 0.35
+        return (
+            len(multi_column_rows) >= 3
+            and len(multi_column_rows) >= len(line_groups) * 0.35
+        )
 
     def _looks_like_two_column_block(self, fragments: list[TextFragment]) -> bool:
         body = [fragment for fragment in fragments if fragment.y0 > _HEADER_Y_MAX]
@@ -320,7 +319,7 @@ class TwoColumnLayoutHandler(StructureHandler):
         line_merge_threshold = max(1.5, typical_line_height * 0.18)
         paragraph_gap_threshold = max(8.0, typical_line_height * 0.7)
 
-        merged_lines: list[tuple[float, float, str]] = []
+        merged_lines: list[tuple[int, float, float, str, float | None]] = []
         current_line: list[TextFragment] = []
 
         def flush_line() -> None:
@@ -329,13 +328,22 @@ class TwoColumnLayoutHandler(StructureHandler):
             ordered_line = sorted(current_line, key=lambda fragment: fragment.x0)
             y0 = min(fragment.y0 for fragment in ordered_line)
             y1 = max(fragment.y1 for fragment in ordered_line)
+            page_number = ordered_line[0].page_number
+            gap_before = next(
+                (
+                    fragment.gap_before
+                    for fragment in ordered_line
+                    if fragment.gap_before is not None
+                ),
+                None,
+            )
             text = " ".join(
                 _clean_paragraph(fragment.text)
                 for fragment in ordered_line
                 if _clean_paragraph(fragment.text)
             ).strip()
             if text:
-                merged_lines.append((y0, y1, text))
+                merged_lines.append((page_number, y0, y1, text, gap_before))
             current_line.clear()
 
         for fragment in fragments:
@@ -355,6 +363,7 @@ class TwoColumnLayoutHandler(StructureHandler):
 
         paragraphs: list[str] = []
         current_paragraph: list[str] = []
+        previous_page: int | None = None
         previous_y1: float | None = None
 
         def flush_paragraph() -> None:
@@ -362,12 +371,18 @@ class TwoColumnLayoutHandler(StructureHandler):
                 paragraphs.append("\n".join(current_paragraph).strip())
                 current_paragraph.clear()
 
-        for y0, y1, text in merged_lines:
-            if previous_y1 is not None:
+        for page_number, y0, y1, text, gap_before in merged_lines:
+            if previous_page is not None and page_number != previous_page:
+                flush_paragraph()
+            elif previous_y1 is not None:
                 gap = y0 - previous_y1
-                if gap > paragraph_gap_threshold or gap < -line_merge_threshold:
+                starts_gap_paragraph = (
+                    gap_before is not None and gap_before > paragraph_gap_threshold
+                )
+                if starts_gap_paragraph or gap < -line_merge_threshold:
                     flush_paragraph()
             current_paragraph.append(text)
+            previous_page = page_number
             previous_y1 = y1
 
         flush_paragraph()
