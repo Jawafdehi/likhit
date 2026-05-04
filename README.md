@@ -149,8 +149,8 @@ The high-level PDF pipeline is:
    - Devanagari reordering
    - Devanagari spacing normalization
    - Legacy-font remapping through `npttf2utf`
-8. After extraction, `likhit` checks whether the document matches a known structure such as a single-column notice or a dense two-column layout.
-9. If a known structure is detected, `likhit` applies structure-aware ordering, block assembly, and Markdown rendering.
+8. After extraction, `likhit` checks whether the document matches a whole-document semantic structure such as a single-column notice.
+9. PDF layout ordering is assigned locally while assembling content blocks, so single-column, row-aligned, and two-column regions can coexist in one file.
 10. If multiple candidate outputs exist, `likhit` scores them and returns the best one.
 
 

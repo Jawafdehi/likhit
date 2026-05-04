@@ -370,13 +370,21 @@ def test_converter_reorders_two_column_fragments_before_rendering(
 
     import likhit.converters.nepali_pdf as nepali_pdf_module
     from likhit.extractors.base import RawDocument, TextFragment
-    from likhit.models import DocumentType
 
     fragments = [
         TextFragment("HEADER", 1, 50, 50, 120, 60),
-        TextFragment("LEFT_TOP", 1, 50, 120, 120, 130),
-        TextFragment("RIGHT_TOP", 1, 300, 140, 360, 150),
-        TextFragment("LEFT_BOTTOM", 1, 50, 220, 140, 230),
+        TextFragment("LEFT_1", 1, 50, 120, 120, 130),
+        TextFragment("RIGHT_1", 1, 300, 120, 360, 130),
+        TextFragment("LEFT_2", 1, 50, 140, 120, 150),
+        TextFragment("RIGHT_2", 1, 300, 140, 360, 150),
+        TextFragment("LEFT_3", 1, 50, 160, 120, 170),
+        TextFragment("RIGHT_3", 1, 300, 160, 360, 170),
+        TextFragment("LEFT_4", 1, 50, 180, 120, 190),
+        TextFragment("RIGHT_4", 1, 300, 180, 360, 190),
+        TextFragment("LEFT_5", 1, 50, 200, 120, 210),
+        TextFragment("RIGHT_5", 1, 300, 200, 360, 210),
+        TextFragment("LEFT_6", 1, 50, 220, 120, 230),
+        TextFragment("RIGHT_6", 1, 300, 220, 360, 230),
     ]
     raw_document = RawDocument(
         paragraphs=[fragment.text for fragment in fragments],
@@ -395,24 +403,13 @@ def test_converter_reorders_two_column_fragments_before_rendering(
         "extract_text",
         lambda self, path: raw_document,
     )
-    monkeypatch.setattr(
-        nepali_pdf_module,
-        "detect_structure",
-        lambda seen_raw_document: DocumentType.TWO_COLUMN_LAYOUT,
-    )
 
     with sample.open("rb") as stream:
         result = converter.convert(stream, stream_info)
 
-    assert result.markdown.splitlines() == [
-        "HEADER",
-        "",
-        "LEFT_TOP",
-        "",
-        "LEFT_BOTTOM",
-        "",
-        "RIGHT_TOP",
-    ]
+    assert result.markdown.index("LEFT_1") < result.markdown.index("LEFT_6")
+    assert result.markdown.index("LEFT_6") < result.markdown.index("RIGHT_1")
+    assert result.markdown.index("RIGHT_1") < result.markdown.index("RIGHT_6")
 
 
 def test_convert_renders_tables_as_raw_pipe_separated_rows() -> None:
