@@ -25,6 +25,32 @@ def test_detect_structure_uses_earliest_page_for_notice_detection() -> None:
     assert detect_structure(raw_document) is DocumentType.SINGLE_COLUMN_NOTICE
 
 
+def test_detect_structure_preserves_two_column_routing() -> None:
+    fragments = [
+        TextFragment("Header", 1, 220, 40, 360, 55),
+        TextFragment("Left 1", 1, 50, 120, 120, 135),
+        TextFragment("Right 1", 1, 320, 120, 400, 135),
+        TextFragment("Left 2", 1, 50, 145, 120, 160),
+        TextFragment("Right 2", 1, 320, 145, 400, 160),
+        TextFragment("Left 3", 1, 50, 170, 120, 185),
+        TextFragment("Right 3", 1, 320, 170, 400, 185),
+        TextFragment("Left 4", 1, 50, 195, 120, 210),
+        TextFragment("Right 4", 1, 320, 195, 400, 210),
+        TextFragment("Left 5", 1, 50, 220, 120, 235),
+        TextFragment("Right 5", 1, 320, 220, 400, 235),
+        TextFragment("Left 6", 1, 50, 245, 120, 260),
+        TextFragment("Right 6", 1, 320, 245, 400, 260),
+    ]
+    raw_document = RawDocument(
+        paragraphs=[fragment.text for fragment in fragments],
+        raw_text="\n".join(fragment.text for fragment in fragments),
+        fragments=fragments,
+        tables=[],
+    )
+
+    assert detect_structure(raw_document) is DocumentType.TWO_COLUMN_LAYOUT
+
+
 def test_two_column_handler_assigns_layout_per_block_not_file() -> None:
     fragments = [
         TextFragment("Document title", 1, 160, 40, 360, 55),

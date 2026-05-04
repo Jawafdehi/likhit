@@ -8,6 +8,9 @@ from statistics import median
 from likhit.extractors.base import RawDocument, TextFragment
 from likhit.models import DocumentType
 
+_HEADER_Y_MAX = 80.0
+_COLUMN_GUTTER = 20.0
+
 
 def detect_structure(raw_document: RawDocument) -> DocumentType | None:
     """Infer supported whole-document structures from extracted signals."""
@@ -21,7 +24,38 @@ def detect_structure(raw_document: RawDocument) -> DocumentType | None:
     if _looks_like_single_column_notice(fragments):
         return DocumentType.SINGLE_COLUMN_NOTICE
 
+    if _looks_like_two_column_layout(fragments):
+        return DocumentType.TWO_COLUMN_LAYOUT
+
     return None
+
+
+def _looks_like_two_column_layout(fragments: list[TextFragment]) -> bool:
+    body = [fragment for fragment in fragments if fragment.y0 > _HEADER_Y_MAX]
+    if len(body) < 12:
+        return False
+
+    page_left = min(fragment.x0 for fragment in body)
+    page_right = max(fragment.x1 for fragment in body)
+    split_x = (page_left + page_right) / 2
+
+    left = 0
+    right = 0
+    centered = 0
+    for fragment in body:
+        center_x = (fragment.x0 + fragment.x1) / 2
+        if center_x <= split_x - _COLUMN_GUTTER:
+            left += 1
+        elif center_x >= split_x + _COLUMN_GUTTER:
+            right += 1
+        else:
+            centered += 1
+
+    if left < 4 or right < 4:
+        return False
+
+    paired_density = (left + right) / max(len(body), 1)
+    return paired_density >= 0.6 and centered <= max(6, len(body) // 3)
 
 
 def _looks_like_single_column_notice(fragments: list[TextFragment]) -> bool:
