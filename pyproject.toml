@@ -29,7 +29,10 @@ dependencies = [
     "markitdown[pdf,docx]>=0.1.0,<1.0.0",
     "pyantiword>=0.1.2,<1.0.0",
     "markitdown-ocr>=0.1.0,<0.2.0",
-    "openai>=2.30.0,<3.0.0"
+    "openai>=2.30.0,<3.0.0",
+    "fastapi>=0.110.0,<1.0.0",
+    "uvicorn>=0.27.0,<1.0.0",
+    "python-multipart>=0.0.9,<1.0.0"
 ]
 
 [project.urls]
