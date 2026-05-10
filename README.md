@@ -186,6 +186,10 @@ poetry run pytest
 - MarkItDown: https://github.com/microsoft/markitdown
 - MarkItDown sample plugin: https://github.com/microsoft/markitdown/tree/main/packages/markitdown-sample-plugin
 
+## License
+
+Licensed under the [Hippocratic License 3.0](./LICENSE), an [Ethical Source](https://ethicalsource.dev) license. See [LICENSING.md](./LICENSING.md) for details.
+
 ## Ownership
 
 `likhit` is owned and maintained by Jawafdehi.

@@ -1,0 +1,112 @@
+name: SPDX License Header Check
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  spdx-check:
+    name: Check SPDX License Headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Check LICENSE file
+        run: |
+          if [ ! -f LICENSE ]; then
+            echo "::error::LICENSE file is missing"
+            exit 1
+          fi
+          if ! grep -q "Hippocratic License Version 3.0" LICENSE; then
+            echo "::error::LICENSE does not contain Hippocratic License 3.0"
+            exit 1
+          fi
+          echo "LICENSE file OK (Hippocratic License 3.0)"
+
+      - name: Check SPDX headers in source files
+        run: |
+          HEADER_FILES=$(git ls-files \
+            '*.py' '*.js' '*.ts' '*.tsx' '*.rs' '*.go' '*.java' '*.rb' \
+            '*.sh' '*.bash' '*.yml' '*.yaml' '*.css' '*.scss' \
+            '*.html' '*.sql' '*.tf' 'Dockerfile*' \
+            2>/dev/null || true)
+
+          if [ -z "$HEADER_FILES" ]; then
+            echo "No source files found to check."
+            exit 0
+          fi
+
+          MISSING=0
+          TOTAL=0
+          while IFS= read -r file; do
+            TOTAL=$((TOTAL + 1))
+            if head -20 "$file" 2>/dev/null | grep -qi "SPDX-License-Identifier"; then
+              continue
+            else
+              echo "::warning title=Missing SPDX header::$file"
+              MISSING=$((MISSING + 1))
+            fi
+          done <<< "$HEADER_FILES"
+
+          echo "---"
+          echo "Files checked: $TOTAL"
+          echo "Files with SPDX header: $((TOTAL - MISSING))"
+          echo "Files missing SPDX header: $MISSING"
+
+          if [ "$MISSING" -gt 0 ]; then
+            echo "::warning:: $MISSING source files are missing SPDX license headers"
+          fi
+          echo "SPDX header scan complete."
+
+      - name: Verify SPDX identifier is Hippocratic-3.0
+        run: |
+          IDENTIFIER_FILES=$(git ls-files \
+            '*.py' '*.js' '*.ts' '*.tsx' '*.rs' '*.go' '*.java' '*.rb' \
+            '*.sh' '*.bash' '*.yml' '*.yaml' '*.css' '*.scss' \
+            '*.html' '*.sql' '*.tf' 'Dockerfile*' \
+            2>/dev/null || true)
+
+          if [ -z "$IDENTIFIER_FILES" ]; then
+            echo "No source files to verify SPDX identifier against."
+            exit 0
+          fi
+
+          MISMATCH=0
+          TOTAL=0
+          while IFS= read -r file; do
+            LINE=$(head -20 "$file" 2>/dev/null | grep -i "SPDX-License-Identifier" | head -1 || true)
+            if [ -n "$LINE" ]; then
+              TOTAL=$((TOTAL + 1))
+              if ! echo "$LINE" | grep -qi "Hippocratic-3.0"; then
+                echo "::warning title=Non-HL3 SPDX identifier::$file"
+                echo "  Found: $(echo "$LINE" | sed 's/^[[:space:]]*//')"
+                MISMATCH=$((MISMATCH + 1))
+              fi
+            fi
+          done <<< "$IDENTIFIER_FILES"
+
+          echo "---"
+          echo "Files with SPDX identifiers checked: $TOTAL"
+          echo "Non-HL3 identifiers found: $MISMATCH"
+          if [ "$MISMATCH" -gt 0 ]; then
+            echo "::warning:: $MISMATCH file(s) use a non-Hippocratic-3.0 SPDX identifier"
+          fi
+
+      - name: Verify governance files exist
+        run: |
+          MISSING_GOV=0
+          for f in SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md; do
+            if [ ! -f "$f" ]; then
+              echo "::warning::$f is missing"
+              MISSING_GOV=$((MISSING_GOV + 1))
+            else
+              echo "$f present"
+            fi
+          done
+          if [ "$MISSING_GOV" -gt 0 ]; then
+            echo "::warning:: $MISSING_GOV governance file(s) missing"
+          fi
