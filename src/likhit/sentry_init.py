@@ -1,6 +1,6 @@
 import sentry_sdk
 
-SENTRY_DSN = "https://examplePublicKey@o0.ingest.sentry.io/0"
+SENTRY_DSN = "https://7a523fc5dfd40de79932c1f00a9bc6f9@o4511364048027648.ingest.de.sentry.io/4511374818672720"
 
 sentry_sdk.init(
     dsn=SENTRY_DSN,
