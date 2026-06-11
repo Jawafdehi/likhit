@@ -15,6 +15,10 @@ import likhit.extractors.kalimati as kalimati_module
 from likhit.extractors.font_based import (
     FontBasedStrategy,
     _choose_fragment_text,
+    _has_severe_noise,
+    _is_garbled_orphan,
+    _merge_fragment_variants,
+    _text_quality_penalty,
     join_spans_with_layout,
     join_words_with_spacing,
     normalize_extracted_word,
@@ -412,3 +416,84 @@ def test_choose_fragment_text_can_merge_best_tokens_from_both_candidates() -> No
         )
         == "मुद्दाको बेहोरा:-"
     )
+
+
+# --- legacy-font "invalid sign" garble (the appended clean+garble artifact) ---
+
+# Real Nepali text and its legacy-font mis-map twin (carrying the invalid signs
+# ॊ U+094A / ऩ U+0929 / ॉ U+0949 that a Preeti-as-WinAnsi read produces).
+_CLEAN_LINE = "तथा विभिन्न संस्था र सहकारी संस्थाहरूमा"
+_GARBLED_LINE = "तथा विख्िम सॊस्था य सहकायी सॊस्थाहरुभा"
+
+
+def test_text_quality_penalty_flags_invalid_devanagari_signs() -> None:
+    # The garbled twin must score a higher penalty than the clean line so the
+    # variant-merge prefers clean text.
+    assert _text_quality_penalty(_GARBLED_LINE) > _text_quality_penalty(_CLEAN_LINE)
+    assert _text_quality_penalty(_CLEAN_LINE) == 0
+
+
+def test_has_severe_noise_detects_invalid_signs() -> None:
+    assert _has_severe_noise(_GARBLED_LINE)
+    assert not _has_severe_noise(_CLEAN_LINE)
+
+
+def test_is_garbled_orphan_only_fires_on_garble() -> None:
+    assert _is_garbled_orphan(_GARBLED_LINE)
+    # A real legacy-only orphan line (two short-O signs) from a CIAA verdict PDF.
+    assert _is_garbled_orphan("तथा वििीम सॊस्था य सहकायी सॊस्थाहरुफाट")
+    assert not _is_garbled_orphan(_CLEAN_LINE)
+    assert not _is_garbled_orphan("अख्तियार दुरुपयोग अनुसन्धान आयोग")
+    assert not _is_garbled_orphan("Kathmandu, June 20")  # latin is not garble
+    assert _is_garbled_orphan("   ")  # empty/whitespace orphan
+
+
+def test_candra_o_loanwords_are_not_treated_as_garble() -> None:
+    # candra-O (U+0949 ॉ) is valid in Nepali/Hindi loanwords and must NOT be
+    # flagged — otherwise clean text like "डॉलर"/"कॉल" would be penalised/dropped.
+    for word in ("डॉलर", "कॉल", "डॉक्टर", "कॉलेज"):
+        assert _text_quality_penalty(word) == 0, word
+        assert not _has_severe_noise(word), word
+        assert not _is_garbled_orphan(word), word
+    # A clean sentence carrying a loanword is still clean.
+    assert not _is_garbled_orphan("निजले एक करोड डॉलर बराबरको सम्पत्ति आर्जन गरे")
+
+
+def test_choose_fragment_text_prefers_clean_over_invalid_sign_garble() -> None:
+    # Same line, clean vs garbled twin — whichever side it arrives on, the
+    # chosen text must be free of the invalid-sign garble (no ॊ/ऩ/ॉ leaking
+    # through the token-wise merge).
+    for chosen in (
+        _choose_fragment_text(_GARBLED_LINE, _CLEAN_LINE),
+        _choose_fragment_text(_CLEAN_LINE, _GARBLED_LINE),
+    ):
+        assert not _has_severe_noise(chosen)
+        assert not any(sign in chosen for sign in "ॊॉऩऱऴ")
+
+
+def test_merge_fragment_variants_drops_unpaired_garbled_fragment() -> None:
+    # A clean fragment paired across both variants, plus an original-only
+    # garbled fragment (no repaired counterpart) on its own line — the classic
+    # "clean line + appended garble tail" source. The garbled orphan is dropped;
+    # the clean fragment survives.
+    clean = TextFragment(_CLEAN_LINE, 1, 45.0, 100.0, 400.0, 120.0, 0, 0)
+    garbled_orphan = TextFragment(_GARBLED_LINE, 1, 45.0, 122.0, 400.0, 142.0, 0, 1)
+
+    merged = _merge_fragment_variants([clean, garbled_orphan], [clean])
+    texts = [fragment.text for fragment in merged]
+
+    assert _CLEAN_LINE in texts
+    assert _GARBLED_LINE not in texts
+
+
+def test_merge_fragment_variants_keeps_clean_unpaired_fragment() -> None:
+    # An original-only fragment that is CLEAN must never be dropped.
+    clean = TextFragment(_CLEAN_LINE, 1, 45.0, 100.0, 400.0, 120.0, 0, 0)
+    clean_orphan = TextFragment(
+        "अख्तियार दुरुपयोग अनुसन्धान आयोग", 1, 45.0, 122.0, 400.0, 142.0, 0, 1
+    )
+
+    merged = _merge_fragment_variants([clean, clean_orphan], [clean])
+    texts = [fragment.text for fragment in merged]
+
+    assert clean_orphan.text in texts
