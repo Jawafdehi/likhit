@@ -31,6 +31,15 @@ _DUPLICATE_CONSONANT_PATTERN = re.compile(r"([क-ह])\1")
 _SUSPICIOUS_ARTIFACT_PATTERN = re.compile(
     r"(ख्ज|अधध|धिरूद्ध|धिरुद्ध|प्रविधध|राविय|नम्िर|िडा|ितन|उज्वल|उज्जवल)"
 )
+# Devanagari signs that are valid Unicode but essentially never occur in real
+# Nepali: short-O (U+094A) and the nukta-form consonants NNNA/RRA/LLLA
+# (U+0929/0931/0934). They are produced almost exclusively by a mis-applied
+# legacy-font byte map (e.g. Preeti read as WinAnsi), so they are a reliable
+# signal that a fragment is garbled even when the rest looks Devanagari.
+# NOTE: candra-O (U+0949 ॉ) is deliberately EXCLUDED — it appears in legitimate
+# Nepali/Hindi loanwords (डॉलर "dollar", कॉल "call", डॉक्टर "doctor"), so
+# flagging it would penalise clean text. The remaining signs have no such use.
+_INVALID_SIGN_PATTERN = re.compile(r"[ॊऩऱऴ]")
 
 
 def parse_page_range(spec: str, total_pages: int) -> tuple[int, int]:
@@ -129,6 +138,7 @@ def _text_quality_penalty(text: str) -> int:
     return (
         text.count("\ufffd") * 12
         + _private_use_count(text) * 12
+        + len(_INVALID_SIGN_PATTERN.findall(text)) * 8
         + len(_PREFIX_IKAR_PATTERN.findall(text)) * 6
         + len(_INVALID_IKAR_PATTERN.findall(text)) * 6
         + len(_HALANT_IKAR_PATTERN.findall(text)) * 4
@@ -137,11 +147,40 @@ def _text_quality_penalty(text: str) -> int:
     )
 
 
+def _is_garbled_orphan(text: str) -> bool:
+    """True if a fragment with no clean counterpart is clearly legacy-font garble.
+
+    Used only to decide whether to DROP an unpaired fragment during variant
+    merging, so it is deliberately conservative: it fires only when the text
+    carries the unambiguous mis-map signals (replacement char, private-use
+    glyphs, or invalid Devanagari signs) AND those signals are dense relative to
+    the Devanagari content. Clean Nepali has zero invalid signs, so this never
+    triggers on readable text.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return True
+    invalid = (
+        stripped.count("�")
+        + _private_use_count(stripped)
+        + len(_INVALID_SIGN_PATTERN.findall(stripped))
+    )
+    if invalid == 0:
+        return False
+    devanagari = sum(1 for char in stripped if 0x0900 <= ord(char) <= 0x097F)
+    if devanagari == 0:
+        return True
+    # >=2 invalid signals, or invalid signs making up a meaningful share of the
+    # Devanagari characters, marks a fragment as garble rather than a stray typo.
+    return invalid >= 2 or invalid / devanagari >= 0.08
+
+
 def _has_severe_noise(text: str) -> bool:
     return any(
         (
             "\ufffd" in text,
             _private_use_count(text) > 0,
+            bool(_INVALID_SIGN_PATTERN.search(text)),
             bool(_PREFIX_IKAR_PATTERN.search(text)),
             bool(_INVALID_IKAR_PATTERN.search(text)),
             bool(_HALANT_IKAR_PATTERN.search(text)),
@@ -206,6 +245,13 @@ def _merge_fragment_variants(
 
     for fragment in original_fragments:
         repaired = repaired_by_key.pop(_line_key(fragment), None)
+        if repaired is None and _is_garbled_orphan(fragment.text):
+            # An original-only fragment (no repaired counterpart to compare
+            # against) that is itself severely garbled is a legacy-font
+            # mis-map duplicate of text already captured by another fragment.
+            # Keeping it produces the "clean line + garbled tail" artifact, so
+            # drop it rather than emitting unreadable Devanagari.
+            continue
         merged.append(
             replace(
                 fragment,
@@ -216,7 +262,11 @@ def _merge_fragment_variants(
             )
         )
 
-    merged.extend(repaired_by_key.values())
+    merged.extend(
+        fragment
+        for fragment in repaired_by_key.values()
+        if not _is_garbled_orphan(fragment.text)
+    )
     return sorted(
         merged,
         key=lambda fragment: (
