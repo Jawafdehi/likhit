@@ -144,7 +144,7 @@ def test_converter_escalates_bad_default_pdf_output_to_likhit(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_convert_with_likhit",
-        lambda raw: DocumentConverterResult(markdown="नेपाल सरकार"),
+        lambda raw: (DocumentConverterResult(markdown="नेपाल सरकार"), []),
     )
 
     with sample.open("rb") as stream:
@@ -183,7 +183,7 @@ def test_converter_escalates_cid_garbage_default_pdf_output_to_likhit(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_convert_with_likhit",
-        lambda raw: DocumentConverterResult(markdown="नेपाल सरकार"),
+        lambda raw: (DocumentConverterResult(markdown="नेपाल सरकार"), []),
     )
 
     with sample.open("rb") as stream:
@@ -227,13 +227,61 @@ def test_converter_prefers_ocr_for_image_dominant_bad_text_pdf(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_convert_with_likhit",
-        lambda raw: DocumentConverterResult(markdown='t+ "Ut"U U^'),
+        lambda raw: (DocumentConverterResult(markdown='t+ "Ut"U U^'), []),
     )
 
     with sample.open("rb") as stream:
         result = converter.convert(stream, stream_info)
 
     assert result.markdown == "ओसीआर नतिजा"
+
+
+def test_converter_forces_ocr_when_likhit_flags_dropped_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A repair-font doc where likhit dropped a scanned page (needs_ocr_pages=[2])
+    # must still run OCR even though pdf_likely_needs_ocr is False, so the dropped
+    # page's content is not silently lost.
+    sample = ROOT / "samples" / "pressrelease.pdf"
+    converter = NepaliPdfConverter()
+    stream_info = SimpleNamespace(extension=".pdf", mimetype="application/pdf")
+
+    import likhit.converters.nepali_pdf as nepali_pdf_module
+    from markitdown import DocumentConverterResult
+
+    ocr_calls: list[bool] = []
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "classify_fonts_from_stream",
+        lambda _raw: {"Preeti": "legacy_remap"},
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "pdf_likely_needs_ocr",
+        lambda _raw: False,
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_run_default_pdf_converter",
+        lambda raw, info: DocumentConverterResult(markdown="t\\,&H default junk"),
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_try_convert_with_likhit",
+        lambda raw: (DocumentConverterResult(markdown="पहिलो पृष्ठ"), [2]),
+    )
+
+    def _fake_ocr(raw, info, **kwargs):
+        ocr_calls.append(True)
+        return DocumentConverterResult(markdown="ओसीआर एनेक्स पृष्ठ नतिजा हो")
+
+    monkeypatch.setattr(nepali_pdf_module, "_run_ocr_pdf_converter", _fake_ocr)
+
+    with sample.open("rb") as stream:
+        result = converter.convert(stream, stream_info)
+
+    assert ocr_calls, "OCR must run when likhit flags dropped pages"
+    assert result.markdown == "ओसीआर एनेक्स पृष्ठ नतिजा हो"
 
 
 def test_converter_logs_when_ocr_is_needed_but_not_configured(
@@ -270,7 +318,7 @@ def test_converter_logs_when_ocr_is_needed_but_not_configured(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_try_convert_with_likhit",
-        lambda raw: None,
+        lambda raw: (None, []),
     )
 
     with caplog.at_level(logging.INFO):

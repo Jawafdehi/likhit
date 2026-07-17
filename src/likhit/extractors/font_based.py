@@ -423,6 +423,11 @@ def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
     for map_key in ALL_MAP_KEYS:
         try:
             converted = get_converter_for_map(map_key)(text)
+        except ExtractionError:
+            # A missing/broken npttf2utf is a real config error — surface it
+            # rather than silently disabling Part B (the name-based path raises
+            # the same way), so behavior does not depend on the font name.
+            raise
         except Exception:
             continue
         validity = _nepali_validity(converted)
@@ -452,42 +457,47 @@ def detect_content_legacy_fonts(
     # Cheap pre-check on font metadata: unless a bare Latin core font is present
     # somewhere, there is nothing to reinterpret, so skip the expensive per-page
     # text-dict pass entirely (the common pure-Unicode Nepali PDF hits this).
-    core_font_names: set[str] = set()
-    for page_index in range(doc.page_count):
-        if (page_index + 1) in skip_pages:
-            continue
-        for font_info in doc[page_index].get_fonts(full=True):
-            if is_core_font_name(str(font_info[3])):
-                core_font_names.add(_span_base_font(str(font_info[3])))
-    if not core_font_names:
+    considered_pages = [
+        page_index
+        for page_index in range(doc.page_count)
+        if (page_index + 1) not in skip_pages
+    ]
+    has_core_font = any(
+        is_core_font_name(str(font_info[3]))
+        for page_index in considered_pages
+        for font_info in doc[page_index].get_fonts(full=True)
+    )
+    if not has_core_font:
         return {}
 
+    # Aggregate span text per FULL font name (subset prefix included) so a
+    # mislabeled-Preeti embedded font ("ABCDE+Helvetica") is decided separately
+    # from a genuine bare core font ("Helvetica") of the same family — mapping
+    # one must not corrupt the other's spans.
     text_by_font: dict[str, list[str]] = defaultdict(list)
-    for page_index in range(doc.page_count):
-        if (page_index + 1) in skip_pages:
-            continue
-        page = doc[page_index]
-        page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+    for page_index in considered_pages:
+        page_dict = doc[page_index].get_text(
+            "dict", flags=fitz.TEXT_PRESERVE_WHITESPACE
+        )
         for block in page_dict["blocks"]:
             if "lines" not in block:
                 continue
             for line in block["lines"]:
                 for span in line["spans"]:
-                    base = _span_base_font(str(span["font"]))
-                    text_by_font[base].append(str(span["text"]))
+                    text_by_font[str(span["font"])].append(str(span["text"]))
 
     content_maps: dict[str, str] = {}
-    for base, parts in text_by_font.items():
-        if base not in core_font_names:
+    for font_name, parts in text_by_font.items():
+        if not is_core_font_name(font_name):
             continue
-        if classify_font(base, "") != "correct":
+        if classify_font(font_name, "") != "correct":
             continue
         aggregate = "".join(parts)
         if not _is_probably_legacy_ascii(aggregate):
             continue
         map_key, _validity = choose_legacy_map(aggregate)
         if map_key is not None:
-            content_maps[base] = map_key
+            content_maps[font_name] = map_key
     return content_maps
 
 
@@ -725,8 +735,10 @@ class FontBasedStrategy(ExtractionStrategy):
 
         # Decoy suppression happens page-level in _extract_from_document (decoy
         # pages are skipped wholesale), so no span-level decoy branch is needed.
+        # Content-legacy maps are keyed by full font name (subset prefix included)
+        # so only the exact mislabeled font resource is remapped.
         if content_legacy_maps:
-            content_map_key = content_legacy_maps.get(base)
+            content_map_key = content_legacy_maps.get(font_name)
             if content_map_key is not None:
                 return get_converter_for_map(content_map_key)(text)
 

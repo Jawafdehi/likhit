@@ -42,12 +42,6 @@ _CORE_FONT_FAMILIES = (
     "zapfdingbats",
 )
 _CORE_FONT_SIMPLE_SUBTYPES = {"Type1", "MMType1", "TrueType"}
-_CORE_FONT_ENCODINGS = {
-    "winansiencoding",
-    "standardencoding",
-    "macromanencoding",
-    "pdfdocencoding",
-}
 
 # A page counts as image-dominant at this coverage (matches
 # ``PdfPageAnalysis.is_image_dominant``); combined with the strict core-font +
@@ -105,7 +99,7 @@ def _is_non_embedded_core_font(doc: fitz.Document, font_info: tuple) -> bool:
     FontDescriptor, no ToUnicode) and never matches a real embedded Nepali font.
     """
 
-    xref, ext, font_type, base_font, _refname, encoding = font_info[:6]
+    xref, ext, font_type, base_font, _refname, _encoding = font_info[:6]
     if ext not in ("n/a", ""):
         # An embedded font program is present -> a real, trustworthy font.
         return False
@@ -113,8 +107,11 @@ def _is_non_embedded_core_font(doc: fitz.Document, font_info: tuple) -> bool:
         return False
     if not is_core_font_name(str(base_font)):
         return False
-    if encoding and str(encoding).lower() not in _CORE_FONT_ENCODINGS:
-        return False
+    # Encoding is intentionally NOT constrained: the subtype (a simple, non-CID
+    # font) + a standard-14 base name + no embedded program + no ToUnicode is
+    # already the decoy signature, and requiring a specific encoding let decoys
+    # using an exotic/Differences encoding leak through.
+    #
     # A ToUnicode CMap means the producer supplied a trustworthy byte->Unicode
     # mapping; the decoy layer deliberately has none.
     if doc.xref_get_key(xref, "ToUnicode")[0] != "null":

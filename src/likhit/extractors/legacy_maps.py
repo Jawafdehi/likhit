@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from typing import Callable
 import warnings
 
@@ -32,6 +33,7 @@ ALL_MAP_KEYS: tuple[str, ...] = (
 )
 
 _mapper = None
+_mapper_lock = threading.Lock()
 
 
 def _match_font(font_name: str) -> str | None:
@@ -49,25 +51,33 @@ def _get_mapper():
     if _mapper is not None:
         return _mapper
 
-    try:
-        # npttf2utf's bundled preetimapper uses a few non-raw string literals
-        # ('b\\w' etc.) that emit SyntaxWarning when first compiled. The bug is
-        # upstream (a raw-string PR is warranted); suppress it here so it does
-        # not leak into our logs/output. The catch_warnings block scopes this to
-        # the npttf2utf import only. A ``module=`` filter is intentionally not
-        # used: the compile-time warning's module name does not reliably match
-        # it, which would let a strict SyntaxWarning filter turn it fatal.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", SyntaxWarning)
-            import npttf2utf
-            from npttf2utf.base.fontmapper import FontMapper
-    except ModuleNotFoundError as exc:
-        raise ExtractionError(
-            "npttf2utf is required for legacy Nepali font conversion but is not installed"
-        ) from exc
+    # Double-checked lock: build the mapper once even under concurrent PDF
+    # conversions. This also confines the process-global warnings-filter mutation
+    # in the catch_warnings block below to a single initializing thread.
+    with _mapper_lock:
+        if _mapper is not None:
+            return _mapper
 
-    map_json = os.path.join(os.path.dirname(npttf2utf.__file__), "map.json")
-    _mapper = FontMapper(map_json)
+        try:
+            # npttf2utf's bundled preetimapper uses a few non-raw string literals
+            # ('b\\w' etc.) that emit SyntaxWarning when first compiled. The bug
+            # is upstream (a raw-string PR is warranted); suppress it here so it
+            # does not leak into our logs/output. The catch_warnings block scopes
+            # this to the npttf2utf import only. A ``module=`` filter is
+            # intentionally not used: the compile-time warning's module name does
+            # not reliably match it, which would let a strict SyntaxWarning filter
+            # turn it fatal.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                import npttf2utf
+                from npttf2utf.base.fontmapper import FontMapper
+        except ModuleNotFoundError as exc:
+            raise ExtractionError(
+                "npttf2utf is required for legacy Nepali font conversion but is not installed"
+            ) from exc
+
+        map_json = os.path.join(os.path.dirname(npttf2utf.__file__), "map.json")
+        _mapper = FontMapper(map_json)
     return _mapper
 
 
