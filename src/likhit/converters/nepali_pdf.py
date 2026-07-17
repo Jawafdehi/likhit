@@ -88,23 +88,36 @@ class NepaliPdfConverter(DocumentConverter):
         if isinstance(pages, str) and pages.strip():
             raw = _slice_pdf_to_requested_pages(raw, pages)
 
+        prefetched_likhit: DocumentConverterResult | None = None
+        force_ocr = False
         classifications = classify_fonts_from_stream(io.BytesIO(raw))
         if _has_known_nepali_repair_font(classifications):
             logger.info(
                 "PDF converter: known Nepali repair fonts detected; using likhit extraction directly."
             )
-            likhit_result = _try_convert_with_likhit(raw)
-            if likhit_result is not None:
+            likhit_result, likhit_needs_ocr = _try_convert_with_likhit(raw)
+            if likhit_result is not None and not likhit_needs_ocr:
                 return likhit_result
-            logger.warning(
-                "PDF converter: likhit extraction failed after repair-font detection; falling back to default extraction."
-            )
+            if likhit_needs_ocr:
+                # likhit dropped scanned/decoy pages; keep its result as a
+                # candidate but force OCR so that dropped content is still
+                # captured instead of silently vanishing.
+                logger.info(
+                    "PDF converter: likhit flagged pages needing OCR (%s); forcing OCR.",
+                    likhit_needs_ocr,
+                )
+                prefetched_likhit = likhit_result
+                force_ocr = True
+            else:
+                logger.warning(
+                    "PDF converter: likhit extraction failed after repair-font detection; falling back to default extraction."
+                )
 
         logger.info("PDF converter: running default MarkItDown PDF extraction first.")
         default_result = _run_default_pdf_converter(raw, stream_info)
         candidates = [default_result]
 
-        needs_ocr = pdf_likely_needs_ocr(raw)
+        needs_ocr = pdf_likely_needs_ocr(raw) or force_ocr
         if needs_ocr:
             logger.info(
                 "PDF converter: page analysis suggests OCR is needed because the PDF looks image-dominant with a suspicious text layer."
@@ -122,11 +135,15 @@ class NepaliPdfConverter(DocumentConverter):
                     "PDF converter: OCR appears necessary, but OCR is not configured. Set OPENAI_API_KEY or GEMINI_API_KEY, plus MARKITDOWN_OCR_MODEL, to enable markitdown-ocr."
                 )
 
-        if _default_pdf_result_needs_likhit(default_result.markdown):
+        if prefetched_likhit is not None:
+            # Already extracted above (repair-font path); reuse it rather than
+            # re-running likhit.
+            candidates.append(prefetched_likhit)
+        elif _default_pdf_result_needs_likhit(default_result.markdown):
             logger.info(
                 "PDF converter: default extraction looks suspicious for Nepali text; retrying with likhit extraction."
             )
-            likhit_result = _try_convert_with_likhit(raw)
+            likhit_result, _ = _try_convert_with_likhit(raw)
             if likhit_result is not None:
                 logger.info("PDF converter: likhit re-extraction produced a candidate.")
                 candidates.append(likhit_result)
@@ -541,7 +558,9 @@ def _resolve_ocr_env() -> tuple[str | None, str | None, str | None]:
     return api_key, model, base_url
 
 
-def _convert_with_likhit(raw: bytes) -> DocumentConverterResult:
+def _convert_with_likhit(raw: bytes) -> tuple[DocumentConverterResult, list[int]]:
+    """Return the likhit markdown plus the 1-based pages it dropped as scanned."""
+
     with NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(raw)
         tmp_path = Path(tmp.name)
@@ -553,17 +572,21 @@ def _convert_with_likhit(raw: bytes) -> DocumentConverterResult:
             raise ExtractionError(
                 "No extractable text found in PDF. Scanned or image-only PDFs are not supported."
             )
-        return DocumentConverterResult(markdown=markdown)
+        return DocumentConverterResult(markdown=markdown), list(
+            raw_document.needs_ocr_pages
+        )
     finally:
         tmp_path.unlink(missing_ok=True)
 
 
-def _try_convert_with_likhit(raw: bytes) -> DocumentConverterResult | None:
+def _try_convert_with_likhit(
+    raw: bytes,
+) -> tuple[DocumentConverterResult | None, list[int]]:
     try:
         return _convert_with_likhit(raw)
     except Exception as exc:
         logger.debug("PDF converter: likhit extraction failed: %s", exc)
-        return None
+        return None, []
 
 
 def _default_pdf_result_needs_likhit(markdown: str) -> bool:

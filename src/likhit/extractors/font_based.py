@@ -9,15 +9,25 @@ from pathlib import Path
 
 import fitz
 
-from likhit.errors import ExtractionError, ValidationError
+from likhit.errors import ExtractionError, ScannedPdfError, ValidationError
 from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
-from likhit.extractors.font_classifier import scan_pdf_fonts_by_page
+from likhit.extractors.font_classifier import (
+    SCANNED_DECOY_TEXT,
+    classify_font,
+    is_core_font_name,
+    scan_ocr_pages,
+    scan_pdf_fonts_by_page,
+)
 from likhit.extractors.kalimati import (
     fix_kalimati_cmap,
     normalize_devanagari_spacing,
     reorder_devanagari,
 )
-from likhit.extractors.legacy_maps import get_converter
+from likhit.extractors.legacy_maps import (
+    ALL_MAP_KEYS,
+    get_converter,
+    get_converter_for_map,
+)
 from likhit.extractors.tables import detect_page_tables, merge_continuation_tables
 from likhit.models import Table
 
@@ -292,6 +302,205 @@ def _raw_document_from_fragments(
     )
 
 
+# --- Part B: content-based (name-agnostic) legacy-font detection ---------------
+#
+# The font name alone cannot tell a legacy-font span apart when the producer
+# mislabels an embedded Preeti glyf as a generic core font ("Helvetica"). We
+# detect it from CONTENT: try every legacy map on the font's aggregate text and
+# accept a remap only when the output validates as real Nepali. Validation is
+# deliberately anchor/dictionary based, NOT Devanagari-ratio based — every
+# legacy map emits Devanagari code points from any ASCII, so a high Devanagari
+# ratio is a mirage (proven on the CIB decoy layer, which yields ~0.95 ratio yet
+# zero real words under all five maps).
+
+_DEVANAGARI_CHAR = re.compile(r"[ऀ-ॿ]")
+
+# Common Nepali admin/legal words, each >= 4 Devanagari code points so they do
+# not appear by chance inside garble. A genuine mislabeled-Preeti document hits
+# several of these; a wrong-map read of scanned-page junk hits none.
+_CONTENT_LEGACY_DICTIONARY: frozenset[str] = frozenset(
+    {
+        "नेपाल",
+        "सरकार",
+        "गरेको",
+        "गरेका",
+        "गरिएको",
+        "भएको",
+        "अनुसार",
+        "अनुसन्धान",
+        "कार्यालय",
+        "मन्त्रालय",
+        "प्रतिवादी",
+        "निर्णय",
+        "सम्बन्धी",
+        "सम्बन्धमा",
+        "अदालत",
+        "मुद्दा",
+        "भ्रष्टाचार",
+        "प्रहरी",
+        "आयोग",
+        "आरोप",
+        "दायर",
+        "विषय",
+        "जिल्ला",
+        "काठमाडौं",
+        "प्रदेश",
+        "कारबाही",
+        "बरामद",
+        "रहेको",
+        "फैसला",
+        "विरुद्ध",
+        "निजले",
+        "रकम",
+        "हिनामिना",
+        "मिति",
+    }
+)
+
+# Accept gate thresholds. Calibrated so hand-built real Preeti keystrokes pass
+# (hits >= 2, penalty-per-Devanagari ~0.0) while CIB decoy text fails under all
+# five maps (hits == 0, penalty-per-Devanagari 0.09-0.17).
+_CONTENT_LEGACY_MIN_HITS = 2
+_CONTENT_LEGACY_MAX_PENALTY_PER_DEVA = 0.05
+_CONTENT_LEGACY_MIN_DEVA_RATIO = 0.6
+_CONTENT_LEGACY_MIN_DEVA = 8
+
+
+def _span_base_font(font_name: str) -> str:
+    """Base font name with any subset prefix stripped (matches _convert_span_text)."""
+
+    return font_name.split("+", 1)[-1] if "+" in font_name else font_name
+
+
+def _is_probably_legacy_ascii(text: str) -> bool:
+    """True if ``text`` looks like raw legacy-font keystrokes (ASCII, no Devanagari)."""
+
+    stripped = text.strip()
+    if len(stripped) < _CONTENT_LEGACY_MIN_DEVA:
+        return False
+    if _DEVANAGARI_CHAR.search(stripped):
+        return False
+    printable_ascii = sum(1 for char in stripped if 0x20 <= ord(char) < 0x7F)
+    return printable_ascii / len(stripped) >= 0.8
+
+
+def _nepali_validity(text: str) -> dict[str, float]:
+    """Score how much ``text`` reads as genuine Nepali (higher = more valid)."""
+
+    devanagari = len(_DEVANAGARI_CHAR.findall(text))
+    non_space = len(re.sub(r"\s", "", text)) or 1
+    penalty = _text_quality_penalty(text)
+    hits = sum(1 for word in _CONTENT_LEGACY_DICTIONARY if word in text)
+    return {
+        "devanagari": devanagari,
+        "ratio": devanagari / non_space,
+        "penalty_per_deva": penalty / devanagari if devanagari else float("inf"),
+        "hits": hits,
+    }
+
+
+def _passes_content_legacy_gate(validity: dict[str, float]) -> bool:
+    return (
+        validity["hits"] >= _CONTENT_LEGACY_MIN_HITS
+        and validity["devanagari"] >= _CONTENT_LEGACY_MIN_DEVA
+        and validity["ratio"] >= _CONTENT_LEGACY_MIN_DEVA_RATIO
+        and validity["penalty_per_deva"] <= _CONTENT_LEGACY_MAX_PENALTY_PER_DEVA
+    )
+
+
+def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
+    """Pick the best legacy map for ``text`` if one validates, else ``(None, best)``.
+
+    Tries every :data:`ALL_MAP_KEYS` map and keeps the candidate with the most
+    dictionary hits (ties broken by lower penalty). Returns the winning map key
+    only when it clears :func:`_passes_content_legacy_gate`; otherwise the map
+    key is ``None`` (the second element is the best-scoring validity for
+    diagnostics).
+    """
+
+    best_key: str | None = None
+    best: dict[str, float] | None = None
+    for map_key in ALL_MAP_KEYS:
+        try:
+            converted = get_converter_for_map(map_key)(text)
+        except ExtractionError:
+            # A missing/broken npttf2utf is a real config error — surface it
+            # rather than silently disabling Part B (the name-based path raises
+            # the same way), so behavior does not depend on the font name.
+            raise
+        except Exception:
+            continue
+        validity = _nepali_validity(converted)
+        if best is None or (validity["hits"], -validity["penalty_per_deva"]) > (
+            best["hits"],
+            -best["penalty_per_deva"],
+        ):
+            best, best_key = validity, map_key
+    if best is not None and _passes_content_legacy_gate(best):
+        return best_key, best
+    return None, best
+
+
+def detect_content_legacy_fonts(
+    doc: fitz.Document,
+    skip_pages: frozenset[int] = frozenset(),
+) -> dict[str, str]:
+    """Map base-font name -> legacy map key for mislabeled legacy fonts.
+
+    Considers only bare Latin core fonts that the name-based classifier calls
+    "correct" and whose aggregate span text reads as raw legacy keystrokes.
+    ``skip_pages`` (1-based) excludes scanned-decoy pages — so this never rescues
+    the CIB junk layer (Part A owns those) — and any page outside the requested
+    extraction range.
+    """
+
+    # Cheap pre-check on font metadata: unless a bare Latin core font is present
+    # somewhere, there is nothing to reinterpret, so skip the expensive per-page
+    # text-dict pass entirely (the common pure-Unicode Nepali PDF hits this).
+    considered_pages = [
+        page_index
+        for page_index in range(doc.page_count)
+        if (page_index + 1) not in skip_pages
+    ]
+    has_core_font = any(
+        is_core_font_name(str(font_info[3]))
+        for page_index in considered_pages
+        for font_info in doc[page_index].get_fonts(full=True)
+    )
+    if not has_core_font:
+        return {}
+
+    # Aggregate span text per FULL font name (subset prefix included) so a
+    # mislabeled-Preeti embedded font ("ABCDE+Helvetica") is decided separately
+    # from a genuine bare core font ("Helvetica") of the same family — mapping
+    # one must not corrupt the other's spans.
+    text_by_font: dict[str, list[str]] = defaultdict(list)
+    for page_index in considered_pages:
+        page_dict = doc[page_index].get_text(
+            "dict", flags=fitz.TEXT_PRESERVE_WHITESPACE
+        )
+        for block in page_dict["blocks"]:
+            if "lines" not in block:
+                continue
+            for line in block["lines"]:
+                for span in line["spans"]:
+                    text_by_font[str(span["font"])].append(str(span["text"]))
+
+    content_maps: dict[str, str] = {}
+    for font_name, parts in text_by_font.items():
+        if not is_core_font_name(font_name):
+            continue
+        if classify_font(font_name, "") != "correct":
+            continue
+        aggregate = "".join(parts)
+        if not _is_probably_legacy_ascii(aggregate):
+            continue
+        map_key, _validity = choose_legacy_map(aggregate)
+        if map_key is not None:
+            content_maps[font_name] = map_key
+    return content_maps
+
+
 class FontBasedStrategy(ExtractionStrategy):
     """Extract text from Nepali PDFs using PyMuPDF blocks."""
 
@@ -319,6 +528,7 @@ class FontBasedStrategy(ExtractionStrategy):
                 "Unable to parse PDF. File may be corrupted or encrypted"
             ) from exc
 
+        repaired_doc: fitz.Document | None = None
         try:
             page_start, page_end = 0, doc.page_count - 1
             if pages:
@@ -330,13 +540,34 @@ class FontBasedStrategy(ExtractionStrategy):
                 for page_strategies in font_strategies_by_page.values()
                 for strategy in page_strategies.values()
             )
-            repaired_doc: fitz.Document | None = None
+
+            # Part A: pages that are a scanned raster (with or without a decoy
+            # core-font text layer) carry no born-digital text and need OCR.
+            ocr_pages = scan_ocr_pages(doc)
+            in_range = range(page_start + 1, page_end + 2)
+            needs_ocr_pages = sorted(page for page in ocr_pages if page in in_range)
+            decoy_pages = frozenset(
+                page
+                for page, marker in ocr_pages.items()
+                if marker == SCANNED_DECOY_TEXT and page in in_range
+            )
+            # Part B: bare Latin core fonts that actually carry legacy keystrokes.
+            # Skip OCR pages AND pages outside the requested range, so text the
+            # caller never asked for cannot flip the content-map gate and corrupt
+            # in-range extraction (mirrors needs_ocr_pages/decoy_pages scoping).
+            skip_for_content = frozenset(ocr_pages) | frozenset(
+                page for page in range(1, doc.page_count + 1) if page not in in_range
+            )
+            content_legacy_maps = detect_content_legacy_fonts(doc, skip_for_content)
+
             raw_document = self._extract_from_document(
                 doc,
                 font_strategies_by_page,
                 page_start=page_start,
                 page_end=page_end,
                 needs_reorder=False,
+                decoy_pages=decoy_pages,
+                content_legacy_maps=content_legacy_maps,
             )
             if has_broken_cmap:
                 repaired_source = fitz.open(path)
@@ -354,6 +585,8 @@ class FontBasedStrategy(ExtractionStrategy):
                     page_start=page_start,
                     page_end=page_end,
                     needs_reorder=needs_reorder,
+                    decoy_pages=decoy_pages,
+                    content_legacy_maps=content_legacy_maps,
                 )
                 raw_document = _raw_document_from_fragments(
                     _merge_fragment_variants(
@@ -363,7 +596,14 @@ class FontBasedStrategy(ExtractionStrategy):
                     repaired_document.tables or raw_document.tables,
                 )
 
+            raw_document.needs_ocr_pages = needs_ocr_pages
+
             if not raw_document.raw_text:
+                if needs_ocr_pages:
+                    raise ScannedPdfError(
+                        "PDF has no recoverable text layer; needs OCR",
+                        needs_ocr_pages,
+                    )
                 raise ExtractionError("No text content found in document")
 
             return raw_document
@@ -386,6 +626,8 @@ class FontBasedStrategy(ExtractionStrategy):
         page_start: int,
         page_end: int,
         needs_reorder: bool,
+        decoy_pages: frozenset[int] = frozenset(),
+        content_legacy_maps: dict[str, str] | None = None,
     ) -> RawDocument:
         paragraphs: list[str] = []
         fragments: list[TextFragment] = []
@@ -393,6 +635,11 @@ class FontBasedStrategy(ExtractionStrategy):
         table_index = 0
 
         for page_index in range(page_start, page_end + 1):
+            if (page_index + 1) in decoy_pages:
+                # Scanned raster with a non-embedded core-font decoy layer: its
+                # text is legacy-keystroke garbage, so drop the whole page and
+                # leave it for the caller's OCR path (see needs_ocr_pages).
+                continue
             page = doc[page_index]
             page_font_strategies = font_strategies_by_page.get(page_index + 1, {})
             page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
@@ -409,6 +656,7 @@ class FontBasedStrategy(ExtractionStrategy):
                             str(span["font"]),
                             page_font_strategies,
                             needs_reorder,
+                            content_legacy_maps=content_legacy_maps,
                         )
                         if not text:
                             continue
@@ -480,9 +728,19 @@ class FontBasedStrategy(ExtractionStrategy):
         font_name: str,
         font_strategies: dict[str, str],
         needs_reorder: bool,
+        content_legacy_maps: dict[str, str] | None = None,
     ) -> str:
-        base = font_name.split("+", 1)[-1] if "+" in font_name else font_name
+        base = _span_base_font(font_name)
         strategy = font_strategies.get(base, "correct")
+
+        # Decoy suppression happens page-level in _extract_from_document (decoy
+        # pages are skipped wholesale), so no span-level decoy branch is needed.
+        # Content-legacy maps are keyed by full font name (subset prefix included)
+        # so only the exact mislabeled font resource is remapped.
+        if content_legacy_maps:
+            content_map_key = content_legacy_maps.get(font_name)
+            if content_map_key is not None:
+                return get_converter_for_map(content_map_key)(text)
 
         if strategy == "legacy_remap":
             converter = get_converter(font_name)
