@@ -52,6 +52,20 @@ class PdfPageAnalysis:
         )
 
 
+def page_max_image_coverage(page: fitz.Page) -> float:
+    """Return the largest single-image coverage as a fraction of page area."""
+
+    page_area = max(page.rect.width * page.rect.height, 1.0)
+    max_image_coverage = 0.0
+    for image in page.get_images(full=True):
+        xref = image[0]
+        for rect in page.get_image_rects(xref):
+            coverage = (rect.width * rect.height) / page_area
+            if coverage > max_image_coverage:
+                max_image_coverage = coverage
+    return max_image_coverage
+
+
 def analyze_pdf_pages(source: bytes | str | Path) -> list[PdfPageAnalysis]:
     if isinstance(source, bytes):
         doc = fitz.open(stream=source, filetype="pdf")
@@ -63,19 +77,11 @@ def analyze_pdf_pages(source: bytes | str | Path) -> list[PdfPageAnalysis]:
         for page_index in range(doc.page_count):
             page = doc[page_index]
             page_text = page.get_text()
-            page_area = max(page.rect.width * page.rect.height, 1.0)
-
-            max_image_coverage = 0.0
+            max_image_coverage = page_max_image_coverage(page)
             images = page.get_images(full=True)
-            for image in images:
-                xref = image[0]
-                for rect in page.get_image_rects(xref):
-                    coverage = (rect.width * rect.height) / page_area
-                    if coverage > max_image_coverage:
-                        max_image_coverage = coverage
 
             token_count, devanagari_char_count, suspicious_ratio, vowel_poor_ratio = (
-                _analyze_text_quality(page_text)
+                analyze_text_quality(page_text)
             )
 
             analyses.append(
@@ -104,7 +110,7 @@ def pdf_likely_needs_ocr(source: bytes | str | Path) -> bool:
     return suspicious_pages >= max(1, (len(analyses) + 1) // 2)
 
 
-def _analyze_text_quality(text: str) -> tuple[int, int, float, float]:
+def analyze_text_quality(text: str) -> tuple[int, int, float, float]:
     tokens = _TOKEN_PATTERN.findall(text)
     if not tokens:
         return 0, 0, 0.0, 0.0

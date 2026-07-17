@@ -31,6 +31,9 @@ class RawDocument:
     raw_text: str
     fragments: list[TextFragment]
     tables: list[Table] = field(default_factory=list)
+    # 1-based page numbers whose text layer was absent or suppressed as a
+    # scanned-raster decoy; these pages carry no born-digital text and need OCR.
+    needs_ocr_pages: list[int] = field(default_factory=list)
 
 
 class ExtractionStrategy(ABC):

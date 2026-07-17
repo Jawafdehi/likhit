@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import types
 
+import fitz
 import pytest
 
 from likhit.errors import ExtractionError, ValidationError
@@ -89,6 +90,14 @@ def test_font_based_strategy_auto_detects_and_converts_legacy_fonts(
     source.write_bytes(b"%PDF-1.4")
 
     class FakePage:
+        # Scanned-page (OCR) analysis needs page geometry + image coverage; this
+        # page carries no images, so it is never routed to OCR.
+        rect = fitz.Rect(0, 0, 595, 842)
+
+        def get_images(self, full: bool = True) -> list[tuple[object, ...]]:
+            del full
+            return []
+
         def get_fonts(self, full: bool = True) -> list[tuple[object, ...]]:
             del full
             return [(1, "ttf", "Type0", "ABCDEF+Preeti", "Identity-H")]

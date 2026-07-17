@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from typing import Callable
+import warnings
 
 from likhit.errors import ExtractionError
 
@@ -19,6 +20,16 @@ _REGISTRY: dict[str, str] = {
     "pcsnepali": "PCS NEPALI",
     "sagarmatha": "Sagarmatha",
 }
+
+# The full set of npttf2utf map keys, used by content-based (name-agnostic)
+# legacy-font detection to try every known legacy encoding against a span.
+ALL_MAP_KEYS: tuple[str, ...] = (
+    "Preeti",
+    "Kantipur",
+    "PCS NEPALI",
+    "FONTASY_HIMALI_TT",
+    "Sagarmatha",
+)
 
 _mapper = None
 
@@ -39,8 +50,17 @@ def _get_mapper():
         return _mapper
 
     try:
-        import npttf2utf
-        from npttf2utf.base.fontmapper import FontMapper
+        # npttf2utf's bundled preetimapper uses a few non-raw string literals
+        # ('b\\w' etc.) that emit SyntaxWarning when first compiled. The bug is
+        # upstream (a raw-string PR is warranted); suppress it here so it does
+        # not leak into our logs/output. The catch_warnings block scopes this to
+        # the npttf2utf import only. A ``module=`` filter is intentionally not
+        # used: the compile-time warning's module name does not reliably match
+        # it, which would let a strict SyntaxWarning filter turn it fatal.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            import npttf2utf
+            from npttf2utf.base.fontmapper import FontMapper
     except ModuleNotFoundError as exc:
         raise ExtractionError(
             "npttf2utf is required for legacy Nepali font conversion but is not installed"
@@ -55,6 +75,15 @@ def get_converter(font_name: str) -> Callable[[str], str] | None:
     map_key = _match_font(font_name)
     if map_key is None:
         return None
+    return get_converter_for_map(map_key)
+
+
+def get_converter_for_map(map_key: str) -> Callable[[str], str]:
+    """Return a converter for an explicit npttf2utf map key.
+
+    Used by content-based legacy detection, which chooses the map from the span
+    text rather than the (unreliable) font name.
+    """
 
     mapper = _get_mapper()
 
