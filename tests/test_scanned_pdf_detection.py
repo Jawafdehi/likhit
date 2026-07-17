@@ -36,6 +36,7 @@ from likhit.extractors.font_classifier import (
 )
 from likhit.extractors.legacy_maps import get_converter_for_map
 from tests.synthetic_pdfs import (
+    build_legacy_then_english_pdf,
     build_mislabeled_preeti_pdf,
     build_mixed_scan_and_text_pdf,
     build_pure_scan_pdf,
@@ -44,6 +45,10 @@ from tests.synthetic_pdfs import (
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLES_DIR = ROOT / "samples"
+
+
+def _has_devanagari(text: str) -> bool:
+    return any("ऀ" <= ch <= "ॿ" for ch in text)
 
 
 def _write_pdf(tmp_path: Path, raw: bytes, name: str = "synthetic.pdf") -> str:
@@ -209,6 +214,18 @@ def test_detect_content_legacy_fonts_ignores_english() -> None:
         assert detect_content_legacy_fonts(doc, frozenset(ocr_pages)) == {}
     finally:
         doc.close()
+
+
+def test_content_legacy_detection_is_scoped_to_requested_pages(tmp_path: Path) -> None:
+    # Page 1 is mislabeled-Preeti Helvetica, page 2 is English Helvetica (same
+    # base name). Extracting only page 2 must not let page 1's Preeti flip the
+    # content-map gate and remap page 2's English into Devanagari garbage.
+    path = _write_pdf(tmp_path, build_legacy_then_english_pdf())
+
+    result = FontBasedStrategy().extract_text(path, pages="2")
+
+    assert "English catalogue reference" in result.raw_text
+    assert not _has_devanagari(result.raw_text)
 
 
 def test_mislabeled_preeti_pdf_extracts_as_nepali(tmp_path: Path) -> None:

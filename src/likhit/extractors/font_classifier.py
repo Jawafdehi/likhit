@@ -17,7 +17,8 @@ _KNOWN_BROKEN_CMAP = {"kalimati"}
 # Page-level OCR markers. A "scanned_decoy_text" page is a full-page raster whose
 # only text layer is non-embedded core-font garbage (see cib-press-release
 # extraction doc); an "image_only" page is a raster with no text layer at all.
-# Both need OCR, so both outrank any font-level strategy during scanning.
+# These are page-level OCR markers, handled by scan_ocr_pages and the decoy-page
+# skip — they are never stored as a font-level strategy.
 SCANNED_DECOY_TEXT = "scanned_decoy_text"
 IMAGE_ONLY = "image_only"
 
@@ -25,7 +26,6 @@ _STRATEGY_PRIORITY = {
     "correct": 0,
     "broken_cmap": 1,
     "legacy_remap": 2,
-    SCANNED_DECOY_TEXT: 3,
 }
 
 # Standard-14 core font families. A PDF may reference these WITHOUT embedding a

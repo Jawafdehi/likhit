@@ -93,6 +93,34 @@ def build_mislabeled_preeti_pdf() -> bytes:
         doc.close()
 
 
+def build_legacy_then_english_pdf() -> bytes:
+    """Page 1 is mislabeled-Preeti Helvetica; page 2 is ordinary English Helvetica.
+
+    Both pages share the base font name "Helvetica". Used to prove that
+    content-based legacy detection is scoped to the requested page range: a
+    ``pages='2'`` extraction must not let page 1's Preeti flip the gate and
+    corrupt page 2's English.
+    """
+
+    doc = fitz.open()
+    try:
+        legacy_page = doc.new_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        _write_lines(legacy_page, _PREETI_LINES, start_y=100.0)
+
+        english_page = doc.new_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        _write_lines(
+            english_page,
+            (
+                "Ordinary English catalogue reference line one.",
+                "Second English line with plain readable words.",
+            ),
+            start_y=100.0,
+        )
+        return doc.tobytes()
+    finally:
+        doc.close()
+
+
 def build_mixed_scan_and_text_pdf() -> bytes:
     """Page 1 is a scanned decoy; page 2 is ordinary born-digital text."""
 

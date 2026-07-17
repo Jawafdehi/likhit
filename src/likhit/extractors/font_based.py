@@ -438,14 +438,15 @@ def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
 
 def detect_content_legacy_fonts(
     doc: fitz.Document,
-    decoy_pages: frozenset[int] = frozenset(),
+    skip_pages: frozenset[int] = frozenset(),
 ) -> dict[str, str]:
     """Map base-font name -> legacy map key for mislabeled legacy fonts.
 
     Considers only bare Latin core fonts that the name-based classifier calls
     "correct" and whose aggregate span text reads as raw legacy keystrokes.
-    Scanned-decoy pages are skipped so this never rescues the CIB junk layer
-    (Part A owns those pages).
+    ``skip_pages`` (1-based) excludes scanned-decoy pages — so this never rescues
+    the CIB junk layer (Part A owns those) — and any page outside the requested
+    extraction range.
     """
 
     # Cheap pre-check on font metadata: unless a bare Latin core font is present
@@ -453,7 +454,7 @@ def detect_content_legacy_fonts(
     # text-dict pass entirely (the common pure-Unicode Nepali PDF hits this).
     core_font_names: set[str] = set()
     for page_index in range(doc.page_count):
-        if (page_index + 1) in decoy_pages:
+        if (page_index + 1) in skip_pages:
             continue
         for font_info in doc[page_index].get_fonts(full=True):
             if is_core_font_name(str(font_info[3])):
@@ -463,7 +464,7 @@ def detect_content_legacy_fonts(
 
     text_by_font: dict[str, list[str]] = defaultdict(list)
     for page_index in range(doc.page_count):
-        if (page_index + 1) in decoy_pages:
+        if (page_index + 1) in skip_pages:
             continue
         page = doc[page_index]
         page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
@@ -541,7 +542,13 @@ class FontBasedStrategy(ExtractionStrategy):
                 if marker == SCANNED_DECOY_TEXT and page in in_range
             )
             # Part B: bare Latin core fonts that actually carry legacy keystrokes.
-            content_legacy_maps = detect_content_legacy_fonts(doc, frozenset(ocr_pages))
+            # Skip OCR pages AND pages outside the requested range, so text the
+            # caller never asked for cannot flip the content-map gate and corrupt
+            # in-range extraction (mirrors needs_ocr_pages/decoy_pages scoping).
+            skip_for_content = frozenset(ocr_pages) | frozenset(
+                page for page in range(1, doc.page_count + 1) if page not in in_range
+            )
+            content_legacy_maps = detect_content_legacy_fonts(doc, skip_for_content)
 
             raw_document = self._extract_from_document(
                 doc,
@@ -713,13 +720,11 @@ class FontBasedStrategy(ExtractionStrategy):
         needs_reorder: bool,
         content_legacy_maps: dict[str, str] | None = None,
     ) -> str:
-        base = font_name.split("+", 1)[-1] if "+" in font_name else font_name
+        base = _span_base_font(font_name)
         strategy = font_strategies.get(base, "correct")
 
-        if strategy == SCANNED_DECOY_TEXT:
-            # Non-embedded core-font decoy on a scanned page: suppress entirely.
-            return ""
-
+        # Decoy suppression happens page-level in _extract_from_document (decoy
+        # pages are skipped wholesale), so no span-level decoy branch is needed.
         if content_legacy_maps:
             content_map_key = content_legacy_maps.get(base)
             if content_map_key is not None:
