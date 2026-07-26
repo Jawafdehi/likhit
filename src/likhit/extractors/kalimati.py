@@ -196,8 +196,19 @@ def _analyze_gsub(
                             (features, first_name, list(ligature.Component), output_gid)
                         )
 
+    # A convergent ligature fixpoint resolves at least one new output glyph per
+    # pass, so it settles in at most len(ligature_rules) passes. Some embedded
+    # fonts have conflicting rules that write the same output_gid with different
+    # strings, which makes `changed` oscillate forever, spinning at 100% CPU and
+    # never terminating (observed as an unbounded hang on born-digital PDFs that
+    # embed several unrelated fonts). Bound the loop so a non-convergent GSUB
+    # degrades gracefully — the remaining glyphs keep their last resolved value —
+    # instead of never returning.
+    max_passes = len(ligature_rules) + 1
+    passes = 0
     changed = True
-    while changed:
+    while changed and passes < max_passes:
+        passes += 1
         changed = False
         for features, first_name, component_names, output_gid in ligature_rules:
             component_gids: list[int] = []
@@ -232,6 +243,17 @@ def _analyze_gsub(
                 continue
             derived[output_gid] = resolved
             changed = True
+
+    if changed:
+        # The pass cap was reached with resolutions still oscillating: this GSUB
+        # has conflicting ligature rules (see the bound above). Surface it so the
+        # offending font is diagnosable; affected glyphs keep their last value.
+        logger.warning(
+            "GSUB ligature resolution did not converge within %d passes over "
+            "%d rule(s); font has conflicting ligature substitutions.",
+            max_passes,
+            len(ligature_rules),
+        )
 
     for gid, value in list(derived.items()):
         for index in range(len(value) - 2):
