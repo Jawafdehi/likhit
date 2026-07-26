@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 from pathlib import Path
 import sys
+import threading
 import types
 
 import fitz
@@ -281,6 +282,108 @@ def test_fix_kalimati_cmap_uses_trace_fallback_when_font_map_is_unavailable(
     assert repaired_doc is reopened_doc
     assert needs_reorder is True
     assert patched_maps == [(12, {7: "का"})]
+
+
+def _conflicting_ligature_gsub() -> tuple[dict[str, object], list[str], dict[int, str]]:
+    """A GSUB where two ligature rules write the same output glyph differently.
+
+    Both rules target ``gLig`` (gid 3) but resolve to different strings, so an
+    unbounded fixpoint keeps overwriting ``derived[3]`` and ``changed`` never
+    settles. This is the shape that made ``_analyze_gsub`` spin at 100% CPU
+    forever on born-digital PDFs embedding several unrelated fonts.
+    """
+    glyph_order = ["g0", "gA", "gB", "gLig"]  # gids 0..3
+    gid_to_correct = {1: "अ", 2: "आ"}  # gA -> अ, gB -> आ
+    lig_a = types.SimpleNamespace(LigGlyph="gLig", Component=["gA"])  # gA+gA -> gLig
+    lig_b = types.SimpleNamespace(LigGlyph="gLig", Component=["gB"])  # gB+gB -> gLig
+    subtable = types.SimpleNamespace(ligatures={"gA": [lig_a], "gB": [lig_b]})
+    lookup = types.SimpleNamespace(LookupType=4, SubTable=[subtable])
+    feature = types.SimpleNamespace(
+        FeatureTag="liga", Feature=types.SimpleNamespace(LookupListIndex=[0])
+    )
+    table = types.SimpleNamespace(
+        FeatureList=types.SimpleNamespace(FeatureRecord=[feature]),
+        LookupList=types.SimpleNamespace(Lookup=[lookup]),
+    )
+    return {"GSUB": types.SimpleNamespace(table=table)}, glyph_order, gid_to_correct
+
+
+def _run_analyze_gsub_with_timeout(
+    font: dict[str, object],
+    glyph_order: list[str],
+    gid_to_correct: dict[int, str],
+    timeout: float = 10.0,
+) -> dict[int, str]:
+    """Run ``_analyze_gsub`` on a worker thread and fail if it does not return.
+
+    A hung fixpoint would block forever, so the call is isolated on a daemon
+    thread; a worker exception is re-raised in the caller rather than silently
+    passing the ``is_alive`` check.
+    """
+    result: dict[str, dict[int, str]] = {}
+    error: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            result["derived"] = kalimati_module._analyze_gsub(
+                font, glyph_order, gid_to_correct
+            )
+        except BaseException as exc:  # noqa: BLE001 - surfaced in the main thread
+            error.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=timeout)
+
+    assert (
+        not worker.is_alive()
+    ), "_analyze_gsub did not terminate: the ligature fixpoint is unbounded"
+    if error:
+        raise error[0]
+    return result["derived"]
+
+
+def test_analyze_gsub_terminates_on_conflicting_ligature_rules() -> None:
+    font, glyph_order, gid_to_correct = _conflicting_ligature_gsub()
+
+    derived = _run_analyze_gsub_with_timeout(font, glyph_order, gid_to_correct)
+
+    # The contested glyph resolves to one of its two twins (last writer wins);
+    # what matters is that resolution completes at all.
+    assert derived.get(3) in {"अअ", "आआ"}
+
+
+def test_analyze_gsub_fully_resolves_a_multi_pass_ligature_chain() -> None:
+    # A nested chain L1 <- L2 <- L3 <- base, with the rules listed consumer-first
+    # so the fixpoint propagates exactly one link per pass — the worst-case
+    # ordering that needs the full len(rules)-pass budget. This guards the bound
+    # against being weakened to a value that would truncate a legitimate,
+    # convergent multi-pass font.
+    glyph_order = ["g0", "base", "L3", "L2", "L1"]  # gids 0..4
+    gid_to_correct = {1: "क"}  # base -> क
+    lig_l1 = types.SimpleNamespace(LigGlyph="L1", Component=["base"])  # L2+base -> L1
+    lig_l2 = types.SimpleNamespace(LigGlyph="L2", Component=["base"])  # L3+base -> L2
+    lig_l3 = types.SimpleNamespace(LigGlyph="L3", Component=["base"])  # base+base -> L3
+    # Insertion order fixes ligature_rules to [L1, L2, L3] (consumer before producer).
+    subtable = types.SimpleNamespace(
+        ligatures={"L2": [lig_l1], "L3": [lig_l2], "base": [lig_l3]}
+    )
+    lookup = types.SimpleNamespace(LookupType=4, SubTable=[subtable])
+    feature = types.SimpleNamespace(
+        FeatureTag="liga", Feature=types.SimpleNamespace(LookupListIndex=[0])
+    )
+    table = types.SimpleNamespace(
+        FeatureList=types.SimpleNamespace(FeatureRecord=[feature]),
+        LookupList=types.SimpleNamespace(Lookup=[lookup]),
+    )
+    font: dict[str, object] = {"GSUB": types.SimpleNamespace(table=table)}
+
+    derived = _run_analyze_gsub_with_timeout(font, glyph_order, gid_to_correct)
+
+    # Every link must be fully resolved despite the backward ordering.
+    assert derived.get(2) == "कक"  # L3
+    assert derived.get(3) == "ककक"  # L2
+    assert derived.get(4) == "कककक"  # L1
 
 
 def test_handler_keeps_table_content_after_numbered_prose() -> None:
