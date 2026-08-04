@@ -29,6 +29,7 @@ from likhit.extractors.font_based import (
 )
 from likhit.extractors.kalimati import _get_font_correction_map
 from likhit.handlers.single_column_notice import SingleColumnNoticeHandler
+from likhit.models import Table
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -145,6 +146,159 @@ def test_font_based_strategy_auto_detects_and_converts_legacy_fonts(
 
     assert result.raw_text == "converted:abc"
     assert result.fragments[0].text == "converted:abc"
+
+
+def test_extract_from_document_can_skip_table_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    detected_pages: list[object] = []
+
+    class FakePage:
+        def get_text(self, mode: str, flags: int | None = None) -> dict[str, object]:
+            assert mode == "dict"
+            del flags
+            return {
+                "blocks": [
+                    {
+                        "lines": [
+                            {
+                                "spans": [
+                                    {
+                                        "font": "Kalimati",
+                                        "text": "परीक्षण",
+                                        "bbox": (10.0, 20.0, 70.0, 35.0),
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+
+    class FakeDoc:
+        def __getitem__(self, index: int) -> FakePage:
+            assert index == 0
+            return FakePage()
+
+    monkeypatch.setattr(
+        font_based_module,
+        "detect_page_tables",
+        lambda page, fragments, index: detected_pages.append(page),
+    )
+
+    result = FontBasedStrategy()._extract_from_document(
+        FakeDoc(),  # type: ignore[arg-type]
+        {},
+        page_start=0,
+        page_end=0,
+        needs_reorder=False,
+        detect_tables=False,
+    )
+
+    assert result.raw_text == "परीक्षण"
+    assert result.tables == []
+    assert detected_pages == []
+
+
+def _run_broken_cmap_table_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    repaired_has_tables: bool,
+) -> tuple[list[tuple[object, bool]], RawDocument, Table, Table]:
+    source = tmp_path / "broken-cmap.pdf"
+    source.write_bytes(b"%PDF-1.4")
+
+    class FakeDoc:
+        page_count = 1
+
+        def close(self) -> None:
+            return None
+
+    original_doc = FakeDoc()
+    repaired_source = FakeDoc()
+    repaired_doc = FakeDoc()
+    opened_docs = iter([original_doc, repaired_source])
+
+    original_table = Table(row_count=2, col_count=2, cells=[])
+    repaired_table = Table(row_count=3, col_count=2, cells=[])
+    calls: list[tuple[object, bool]] = []
+
+    monkeypatch.setattr(font_based_module.fitz, "open", lambda _: next(opened_docs))
+    monkeypatch.setattr(
+        font_based_module,
+        "scan_pdf_fonts_by_page",
+        lambda _doc: {1: {"Kalimati": "broken_cmap"}},
+    )
+    monkeypatch.setattr(font_based_module, "scan_ocr_pages", lambda _doc: {})
+    monkeypatch.setattr(
+        font_based_module,
+        "detect_content_legacy_fonts",
+        lambda _doc, _skip: {},
+    )
+    monkeypatch.setattr(
+        font_based_module,
+        "fix_kalimati_cmap",
+        lambda source_doc: (repaired_doc, False),
+    )
+
+    def fake_extract_from_document(
+        self: FontBasedStrategy,
+        doc: object,
+        font_strategies_by_page: dict[int, dict[str, str]],
+        **kwargs: object,
+    ) -> RawDocument:
+        del self, font_strategies_by_page
+        detect_tables = bool(kwargs.get("detect_tables", True))
+        calls.append((doc, detect_tables))
+        if doc is original_doc:
+            tables = [original_table] if detect_tables else []
+        else:
+            assert doc is repaired_doc
+            tables = [repaired_table] if repaired_has_tables else []
+        fragment = TextFragment("परीक्षण", 1, 10.0, 20.0, 70.0, 35.0)
+        return RawDocument(
+            paragraphs=[fragment.text],
+            raw_text=fragment.text,
+            fragments=[fragment],
+            tables=tables,
+        )
+
+    monkeypatch.setattr(
+        FontBasedStrategy,
+        "_extract_from_document",
+        fake_extract_from_document,
+    )
+
+    result = FontBasedStrategy().extract_text(str(source))
+    return calls, result, original_table, repaired_table
+
+
+def test_broken_cmap_skips_unrepaired_table_detection_when_repair_finds_tables(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, result, _original_table, repaired_table = _run_broken_cmap_table_flow(
+        monkeypatch,
+        tmp_path,
+        repaired_has_tables=True,
+    )
+
+    assert [detect_tables for _doc, detect_tables in calls] == [False, True]
+    assert result.tables == [repaired_table]
+
+
+def test_broken_cmap_recovers_unrepaired_tables_when_repair_finds_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, result, original_table, _repaired_table = _run_broken_cmap_table_flow(
+        monkeypatch,
+        tmp_path,
+        repaired_has_tables=False,
+    )
+
+    assert [detect_tables for _doc, detect_tables in calls] == [False, True, True]
+    assert calls[0][0] is calls[2][0]
+    assert result.tables == [original_table]
 
 
 def test_font_based_strategy_wraps_unexpected_extraction_failures(
