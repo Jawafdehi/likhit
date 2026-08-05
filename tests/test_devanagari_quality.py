@@ -14,7 +14,9 @@ import pytest
 from tests.devanagari_quality import (
     devanagari_quality,
     is_consonant,
+    is_independent_vowel,
     is_matra,
+    is_sign,
     orphaned_matra_ratio,
 )
 
@@ -152,10 +154,21 @@ def test_predicates_cover_extended_dependent_vowels(matra: str) -> None:
     assert devanagari_quality(matra)["stranded_matras"] == 1
 
 
-@pytest.mark.parametrize("consonant", "ॹॺॻॼॽॾॿ")
+@pytest.mark.parametrize("consonant", "ॸॹॺॻॼॽॾॿ")
 def test_predicates_cover_extended_consonants(consonant: str) -> None:
     assert is_consonant(consonant)
     assert devanagari_quality(f"{consonant}ा")["stranded_matras"] == 0
+
+
+@pytest.mark.parametrize("vowel", "\u0904\u0972\u0973\u0974\u0975\u0976\u0977")
+def test_predicates_cover_extended_independent_vowels(vowel: str) -> None:
+    assert is_independent_vowel(vowel)
+    assert devanagari_quality(f"{vowel}ं")["stranded"] == 0
+
+
+def test_predicates_cover_inverted_candrabindu() -> None:
+    assert is_sign("\u0900")
+    assert devanagari_quality("क\u0900")["stranded"] == 0
 
 
 def test_empty_and_latin_text_is_clean() -> None:

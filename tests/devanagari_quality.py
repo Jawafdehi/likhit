@@ -19,8 +19,8 @@ guard on exactly that trap.
 
 from __future__ import annotations
 
-# Consonants: KA..HA, nukta forms QA..YYA, and Sindhi extensions.
-_CONSONANT_RANGES = ((0x0915, 0x0939), (0x0958, 0x095F), (0x0979, 0x097F))
+# Consonants: KA..HA, nukta forms QA..YYA, and extended letters.
+_CONSONANT_RANGES = ((0x0915, 0x0939), (0x0958, 0x095F), (0x0978, 0x097F))
 # Dependent vowel signs, including short/extended and vocalic L/LL forms.
 _MATRA_RANGES = (
     (0x093A, 0x093B),
@@ -29,10 +29,10 @@ _MATRA_RANGES = (
     (0x0955, 0x0957),
     (0x0962, 0x0963),
 )
-# Candrabindu, anusvara, visarga, nukta, virama.
-_SIGNS = frozenset("ँंः़्")
-# Independent vowels A..AU -- a valid base for anusvara/visarga.
-_INDEPENDENT_VOWEL_RANGE = (0x0905, 0x0914)
+# Inverted candrabindu, candrabindu, anusvara, visarga, nukta, virama.
+_SIGNS = frozenset("ऀँंः़्")
+# Independent vowels, including short A and extended OE/AW/UE forms.
+_INDEPENDENT_VOWEL_RANGES = ((0x0904, 0x0914), (0x0972, 0x0977))
 
 
 def _in_ranges(char: str, ranges: tuple[tuple[int, int], ...]) -> bool:
@@ -65,7 +65,7 @@ def is_sign(char: str) -> bool:
 def is_independent_vowel(char: str) -> bool:
     """True for an independent vowel, a valid base for anusvara/visarga."""
 
-    return _in_ranges(char, (_INDEPENDENT_VOWEL_RANGE,))
+    return _in_ranges(char, _INDEPENDENT_VOWEL_RANGES)
 
 
 def devanagari_quality(text: str) -> dict[str, int]:

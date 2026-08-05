@@ -136,7 +136,7 @@ def _convert_one(
         record["stdout_head"] = completed.stdout.decode(errors="replace")[:2000]
         return record
 
-    record["status"] = payload.get("status")
+    record["status"] = payload.get("status") or "bad_output"
     record["wall_s"] = payload.get("wall_s")
     record["max_rss_mb"] = payload.get("max_rss_mb")
     if payload.get("status") == "ok":
@@ -154,16 +154,26 @@ def _convert_one(
 
 def _iter_files(roots: list[str]) -> list[pathlib.Path]:
     files: list[pathlib.Path] = []
+    seen: set[pathlib.Path] = set()
     for root in roots:
         path = pathlib.Path(root)
         if path.is_file():
-            files.append(path)
+            resolved = path.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                files.append(path)
             continue
-        files.extend(
-            candidate
-            for candidate in sorted(path.rglob("*"))
-            if candidate.is_file() and candidate.suffix.lower() in CONVERTIBLE_SUFFIXES
-        )
+        for candidate in sorted(path.rglob("*")):
+            if (
+                not candidate.is_file()
+                or candidate.suffix.lower() not in CONVERTIBLE_SUFFIXES
+            ):
+                continue
+            resolved = candidate.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            files.append(candidate)
     return files
 
 

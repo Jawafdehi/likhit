@@ -19,11 +19,17 @@ from tests.benchmark.measure import (
     _classify,
     _convert_one,
     _file_id,
+    _iter_files,
     _load,
     _text_signals,
     main,
 )
-from tests.benchmark.run_one import _write_all
+from tests.benchmark.run_one import (
+    DEFAULT_MEM_CAP_BYTES,
+    _apply_memory_cap,
+    _parse_memory_cap,
+    _write_all,
+)
 
 BASE = {
     "status": "ok",
@@ -207,6 +213,22 @@ def test_load_rejects_duplicate_record_ids(tmp_path: pathlib.Path) -> None:
         _load(str(measurements))
 
 
+def test_iter_files_deduplicates_repeated_and_overlapping_roots(
+    tmp_path: pathlib.Path,
+) -> None:
+    first = tmp_path / "a.pdf"
+    second = tmp_path / "b.docx"
+    ignored = tmp_path / "notes.txt"
+    for path in (first, second, ignored):
+        path.touch()
+
+    files = _iter_files(
+        [str(tmp_path), str(first), str(tmp_path), str(second), str(first)]
+    )
+
+    assert files == [first, second]
+
+
 def test_progress_handles_missing_wall_time(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -261,7 +283,27 @@ def test_positive_worker_exit_is_not_reported_as_signal_kill(
     assert record["returncode"] == 2
 
 
-def test_write_all_retries_short_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_payload_without_status_uses_safe_fallback(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "sample.pdf"
+    source.touch()
+    completed = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps({"wall_s": 0.1, "max_rss_mb": 1.0}).encode(),
+        stderr=b"",
+    )
+    monkeypatch.setattr(
+        "tests.benchmark.measure.subprocess.run", lambda *a, **k: completed
+    )
+
+    record = _convert_one(source, pages=None, timeout_s=1)
+
+    assert record["status"] == "bad_output"
+
+
+def test_write_all_retries_short_writes() -> None:
     written = bytearray()
 
     def short_write(_file_descriptor: int, data: bytes | memoryview) -> int:
@@ -269,11 +311,64 @@ def test_write_all_retries_short_writes(monkeypatch: pytest.MonkeyPatch) -> None
         written.extend(chunk)
         return len(chunk)
 
-    monkeypatch.setattr("tests.benchmark.run_one.os.write", short_write)
-
-    _write_all(1, b"complete record")
+    _write_all(1, b"complete record", write=short_write)
 
     assert written == b"complete record"
+
+
+@pytest.mark.parametrize("progress", [0, -1])
+def test_write_all_rejects_zero_progress(progress: int) -> None:
+    def stalled_write(_file_descriptor: int, _data: memoryview) -> int:
+        return progress
+
+    with pytest.raises(OSError, match="made no progress"):
+        _write_all(1, b"complete record", write=stalled_write)
+
+
+@pytest.mark.parametrize("value", [None, "", "invalid", "0", "-2"])
+def test_memory_cap_parser_falls_back_for_invalid_values(value: str | None) -> None:
+    assert _parse_memory_cap(value) == DEFAULT_MEM_CAP_BYTES
+
+
+def test_memory_cap_is_clamped_to_existing_hard_limit() -> None:
+    class FakeResource:
+        RLIMIT_DATA = 2
+        RLIM_INFINITY = -1
+
+        def __init__(self) -> None:
+            self.applied: tuple[int, int] | None = None
+
+        def getrlimit(self, _limit: int) -> tuple[int, int]:
+            return (256, 1024)
+
+        def setrlimit(self, _limit: int, limits: tuple[int, int]) -> None:
+            self.applied = limits
+
+    fake_resource = FakeResource()
+
+    _apply_memory_cap(fake_resource, cap_bytes=2048)
+
+    assert fake_resource.applied == (1024, 1024)
+
+
+def test_memory_cap_failure_does_not_abort_worker(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class RestrictedResource:
+        RLIMIT_DATA = 2
+        RLIM_INFINITY = -1
+
+        @staticmethod
+        def getrlimit(_limit: int) -> tuple[int, int]:
+            return (256, 1024)
+
+        @staticmethod
+        def setrlimit(_limit: int, _limits: tuple[int, int]) -> None:
+            raise OSError("restricted")
+
+    _apply_memory_cap(RestrictedResource(), cap_bytes=512)
+
+    assert "memory cap not applied: restricted" in capsys.readouterr().err
 
 
 def test_run_one_reports_import_failures_as_json(tmp_path: pathlib.Path) -> None:
@@ -287,6 +382,7 @@ def test_run_one_reports_import_failures_as_json(tmp_path: pathlib.Path) -> None
     env["PYTHONPATH"] = os.pathsep.join(
         part for part in (str(tmp_path), env.get("PYTHONPATH")) if part
     )
+    env["LIKHIT_MEM_CAP_GB"] = "invalid"
 
     completed = subprocess.run(
         [sys.executable, str(runner), "unused.pdf"],

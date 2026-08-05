@@ -30,21 +30,58 @@ import os
 import sys
 import time
 import traceback
+from collections.abc import Callable
+from typing import Any
 
 try:
     import resource
 except ImportError:  # pragma: no cover - Windows has no resource module
     resource = None  # type: ignore[assignment]
 
-MEM_CAP_BYTES = int(os.getenv("LIKHIT_MEM_CAP_GB", "8")) * 1024**3
+DEFAULT_MEM_CAP_BYTES = 8 * 1024**3
 
 
-def _write_all(file_descriptor: int, data: bytes) -> None:
+def _parse_memory_cap(value: str | None) -> int:
+    """Return a positive byte cap, falling back for invalid environment values."""
+
+    try:
+        gigabytes = int(value) if value is not None else 8
+    except ValueError:
+        return DEFAULT_MEM_CAP_BYTES
+    return gigabytes * 1024**3 if gigabytes > 0 else DEFAULT_MEM_CAP_BYTES
+
+
+MEM_CAP_BYTES = _parse_memory_cap(os.getenv("LIKHIT_MEM_CAP_GB"))
+
+
+def _apply_memory_cap(
+    resource_module: Any = resource, cap_bytes: int = MEM_CAP_BYTES
+) -> None:
+    """Apply the data cap when supported without preventing result emission."""
+
+    if resource_module is None:
+        return
+    try:
+        _soft, hard = resource_module.getrlimit(resource_module.RLIMIT_DATA)
+        cap = (
+            cap_bytes if hard == resource_module.RLIM_INFINITY else min(cap_bytes, hard)
+        )
+        resource_module.setrlimit(resource_module.RLIMIT_DATA, (cap, hard))
+    except (OSError, ValueError) as exc:
+        print(f"memory cap not applied: {exc}", file=sys.stderr)
+
+
+def _write_all(
+    file_descriptor: int,
+    data: bytes,
+    *,
+    write: Callable[[int, memoryview], int] = os.write,
+) -> None:
     """Write a complete JSON record even when the OS accepts a short write."""
 
     remaining = memoryview(data)
     while remaining:
-        written = os.write(file_descriptor, remaining)
+        written = write(file_descriptor, remaining)
         if written <= 0:
             raise OSError("stdout write made no progress")
         remaining = remaining[written:]
@@ -58,15 +95,14 @@ def main() -> int:
     path = sys.argv[1]
     pages = sys.argv[2] if len(sys.argv) > 2 else None
 
-    if resource is not None:
-        resource.setrlimit(resource.RLIMIT_DATA, (MEM_CAP_BYTES, MEM_CAP_BYTES))
-
     real_stdout = os.dup(1)
     os.dup2(2, 1)
 
     started = time.monotonic()
     result: dict[str, object] = {"path": path, "pages": pages}
     try:
+        _apply_memory_cap()
+
         from markitdown import MarkItDown
 
         markitdown = MarkItDown(enable_plugins=True)
