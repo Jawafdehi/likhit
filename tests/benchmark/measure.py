@@ -36,7 +36,7 @@ import unicodedata
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
-from tests.devanagari_quality import devanagari_quality  # noqa: E402
+from tests.devanagari_quality import devanagari_quality
 
 CONVERTIBLE_SUFFIXES = frozenset({".pdf", ".docx", ".doc"})
 DEVANAGARI_RANGE = (0x0900, 0x097F)
@@ -122,8 +122,9 @@ def _convert_one(
         return record
 
     if completed.returncode != 0 and not completed.stdout:
-        # Killed by a signal (OOM, segfault) before it could emit a record.
-        record["status"] = "killed"
+        # Negative return codes are POSIX signals; positive values are ordinary
+        # worker failures that happened before a record could be emitted.
+        record["status"] = "killed" if completed.returncode < 0 else "worker_error"
         record["returncode"] = completed.returncode
         record["stderr_tail"] = completed.stderr.decode(errors="replace")[-2000:]
         return record
@@ -186,8 +187,10 @@ def command_run(args: argparse.Namespace) -> int:
         for done in concurrent.futures.as_completed(futures):
             record = done.result()
             records.append(record)
+            wall_s = record.get("wall_s")
+            wall_display = "?" if wall_s is None else str(wall_s)
             print(
-                f"  {record['status']:<11} {record.get('wall_s', '?'):>8}s  "
+                f"  {record['status']:<11} {wall_display:>8}s  "
                 f"{record['file'][:58]}",
                 file=sys.stderr,
             )
@@ -203,11 +206,16 @@ def command_run(args: argparse.Namespace) -> int:
 
 
 def _load(path: str) -> dict[str, dict[str, object]]:
-    return {
-        json.loads(line)["file"]: json.loads(line)
-        for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    }
+    records: dict[str, dict[str, object]] = {}
+    for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        file_id = str(record["file"])
+        if file_id in records:
+            raise ValueError(f"duplicate record key {file_id!r} in {path}")
+        records[file_id] = record
+    return records
 
 
 def _classify(before: dict[str, object], after: dict[str, object]) -> tuple[str, str]:

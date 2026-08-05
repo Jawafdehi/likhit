@@ -146,6 +146,18 @@ def test_predicates_accept_the_empty_previous_character() -> None:
     assert devanagari_quality("ि")["stranded"] == 1
 
 
+@pytest.mark.parametrize("matra", "ऺऻॎॏॕॖॗ")
+def test_predicates_cover_extended_dependent_vowels(matra: str) -> None:
+    assert is_matra(matra)
+    assert devanagari_quality(matra)["stranded_matras"] == 1
+
+
+@pytest.mark.parametrize("consonant", "ॹॺॻॼॽॾॿ")
+def test_predicates_cover_extended_consonants(consonant: str) -> None:
+    assert is_consonant(consonant)
+    assert devanagari_quality(f"{consonant}ा")["stranded_matras"] == 0
+
+
 def test_empty_and_latin_text_is_clean() -> None:
     for text in ("", "   ", "Ordinary English text.", "12345"):
         assert devanagari_quality(text)["malformed"] == 0

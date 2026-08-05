@@ -15,6 +15,9 @@ Two details here are load-bearing and were both found the hard way:
   fd 2 for the duration of the conversion and the result is written to a private
   dup.
 
+Memory limiting uses ``resource`` when the platform provides it. RSS reporting
+is normalized for Linux and macOS; platforms without ``resource`` report no RSS.
+
 Usage::
 
     python -m tests.benchmark.run_one <path> [pages]
@@ -24,12 +27,27 @@ from __future__ import annotations
 
 import json
 import os
-import resource
 import sys
 import time
 import traceback
 
+try:
+    import resource
+except ImportError:  # pragma: no cover - Windows has no resource module
+    resource = None  # type: ignore[assignment]
+
 MEM_CAP_BYTES = int(os.getenv("LIKHIT_MEM_CAP_GB", "8")) * 1024**3
+
+
+def _write_all(file_descriptor: int, data: bytes) -> None:
+    """Write a complete JSON record even when the OS accepts a short write."""
+
+    remaining = memoryview(data)
+    while remaining:
+        written = os.write(file_descriptor, remaining)
+        if written <= 0:
+            raise OSError("stdout write made no progress")
+        remaining = remaining[written:]
 
 
 def main() -> int:
@@ -40,7 +58,8 @@ def main() -> int:
     path = sys.argv[1]
     pages = sys.argv[2] if len(sys.argv) > 2 else None
 
-    resource.setrlimit(resource.RLIMIT_DATA, (MEM_CAP_BYTES, MEM_CAP_BYTES))
+    if resource is not None:
+        resource.setrlimit(resource.RLIMIT_DATA, (MEM_CAP_BYTES, MEM_CAP_BYTES))
 
     real_stdout = os.dup(1)
     os.dup2(2, 1)
@@ -64,13 +83,17 @@ def main() -> int:
         result["traceback"] = traceback.format_exc()[-4000:]
 
     result["wall_s"] = round(time.monotonic() - started, 3)
-    result["max_rss_mb"] = round(
-        resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1
-    )
+    if resource is not None:
+        max_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        divisor = 1024**2 if sys.platform == "darwin" else 1024
+        result["max_rss_mb"] = round(max_rss / divisor, 1)
+    else:
+        result["max_rss_mb"] = None
 
     sys.stdout.flush()
     os.dup2(real_stdout, 1)
-    os.write(real_stdout, json.dumps(result).encode())
+    _write_all(real_stdout, json.dumps(result).encode())
+    os.close(real_stdout)
     return 0
 
 

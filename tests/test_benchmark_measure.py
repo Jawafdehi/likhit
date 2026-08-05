@@ -15,7 +15,15 @@ import sys
 
 import pytest
 
-from tests.benchmark.measure import _classify, _file_id, _text_signals, main
+from tests.benchmark.measure import (
+    _classify,
+    _convert_one,
+    _file_id,
+    _load,
+    _text_signals,
+    main,
+)
+from tests.benchmark.run_one import _write_all
 
 BASE = {
     "status": "ok",
@@ -137,6 +145,25 @@ def test_allowlisted_regression_does_not_fail_the_run(tmp_path: pathlib.Path) ->
     assert main(["diff", str(before), str(after), "--allow", "x.pdf"]) == 0
 
 
+def test_missing_file_gates_the_run(tmp_path: pathlib.Path) -> None:
+    before = tmp_path / "before.jsonl"
+    after = tmp_path / "after.jsonl"
+    before.write_text(
+        json.dumps({"file": "x.pdf", **BASE})
+        + "\n"
+        + json.dumps({"file": "y.pdf", **BASE})
+        + "\n",
+        encoding="utf-8",
+    )
+    after.write_text(
+        json.dumps({"file": "x.pdf", **BASE}) + "\n",
+        encoding="utf-8",
+    )
+
+    assert main(["diff", str(before), str(after)]) == 1
+    assert main(["diff", str(before), str(after), "--allow", "y.pdf"]) == 0
+
+
 def test_text_signals_report_devanagari_and_damage() -> None:
     signals = _text_signals("अख्तियार दुरुपयोग")
     assert signals["devanagari"] > 0
@@ -169,6 +196,84 @@ def test_file_ids_distinguish_duplicate_basenames(
 
     assert _file_id(first) == "first/report.pdf"
     assert _file_id(second) == "second/report.pdf"
+
+
+def test_load_rejects_duplicate_record_ids(tmp_path: pathlib.Path) -> None:
+    measurements = tmp_path / "measurements.jsonl"
+    record = json.dumps({"file": "same/report.pdf", **BASE})
+    measurements.write_text(f"{record}\n{record}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate record key"):
+        _load(str(measurements))
+
+
+def test_progress_handles_missing_wall_time(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "sample.pdf"
+    source.touch()
+    output = tmp_path / "measurements.jsonl"
+
+    def fake_convert(
+        path: pathlib.Path, *, pages: str | None, timeout_s: int
+    ) -> dict[str, object]:
+        del pages, timeout_s
+        return {"file": _file_id(path), "status": "bad_output", "wall_s": None}
+
+    monkeypatch.setattr("tests.benchmark.measure._convert_one", fake_convert)
+
+    assert (
+        main(
+            [
+                "run",
+                str(source),
+                "--out",
+                str(output),
+                "--workers",
+                "1",
+            ]
+        )
+        == 0
+    )
+    assert "?s" in capsys.readouterr().err
+
+
+def test_positive_worker_exit_is_not_reported_as_signal_kill(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "sample.pdf"
+    source.touch()
+    completed = subprocess.CompletedProcess(
+        args=[],
+        returncode=2,
+        stdout=b"",
+        stderr=b"worker setup failed",
+    )
+    monkeypatch.setattr(
+        "tests.benchmark.measure.subprocess.run", lambda *a, **k: completed
+    )
+
+    record = _convert_one(source, pages=None, timeout_s=1)
+
+    assert record["status"] == "worker_error"
+    assert record["returncode"] == 2
+
+
+def test_write_all_retries_short_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    written = bytearray()
+
+    def short_write(_file_descriptor: int, data: bytes | memoryview) -> int:
+        chunk = bytes(data[:3])
+        written.extend(chunk)
+        return len(chunk)
+
+    monkeypatch.setattr("tests.benchmark.run_one.os.write", short_write)
+
+    _write_all(1, b"complete record")
+
+    assert written == b"complete record"
 
 
 def test_run_one_reports_import_failures_as_json(tmp_path: pathlib.Path) -> None:
