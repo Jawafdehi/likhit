@@ -204,8 +204,7 @@ def command_run(args: argparse.Namespace) -> int:
             wall_s = record.get("wall_s")
             wall_display = "?" if wall_s is None else str(wall_s)
             print(
-                f"  {record['status']:<11} {wall_display:>8}s  "
-                f"{record['file'][:58]}",
+                f"  {record['status']:<11} {wall_display:>8}s  {record['file'][:58]}",
                 file=sys.stderr,
             )
 

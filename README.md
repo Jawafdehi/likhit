@@ -171,14 +171,49 @@ The high-level PDF pipeline is:
   - `tests/integration/`: end-to-end integration tests 
   - `tests/integration/test_data/`: committed test fixtures (PDF, DOCX, DOC samples)
 
-## Testing
+## Development
 
-### Running Tests
+`likhit` uses [uv](https://docs.astral.sh/uv/) for dependency management, and the
+rest of Astral's toolchain — [ruff](https://docs.astral.sh/ruff/) for linting and
+formatting, [ty](https://github.com/astral-sh/ty) for type checking.
+
+Install the project together with its dev dependencies:
+```bash
+uv sync
+```
+
+Install the pre-commit hooks once per clone:
+```bash
+uv run pre-commit install
+```
+
+### Testing
 
 Run all tests:
 ```bash
-poetry run pytest
+uv run pytest
 ```
+
+Run only the end-to-end integration suite:
+```bash
+uv run pytest tests/integration
+```
+
+### Gates
+
+CI runs the following. Run them yourself before opening a pull request:
+
+```bash
+uv run ruff check .           # lint — gated
+uv run ruff format --check .  # formatting — gated
+uv run pytest                 # tests — gated
+uv run ty check               # types — ADVISORY, see pyproject.toml
+```
+
+`ty` is advisory rather than a gate: it is pre-1.0, and several of this package's
+dependencies (PyMuPDF among them) ship no type information, so the rule families
+it cannot yet see through are silenced in `pyproject.toml`. Read its output; do
+not ignore it.
 
 
 ## References

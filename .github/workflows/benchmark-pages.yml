@@ -29,30 +29,28 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
+          enable-cache: true
           python-version: "3.12"
 
-      - name: Install Poetry
-        uses: abatilo/actions-poetry@fd0e6716a0de25ef6ade151b8b53190b0376acfd # v3
-
       - name: Install dependencies
-        run: poetry install
+        run: uv sync --locked
 
       - name: Test benchmark generator
-        run: poetry run pytest tests/test_benchmark_site.py
+        run: uv run pytest tests/test_benchmark_site.py
 
       - name: Run integration suite
         id: integration
         continue-on-error: true
         run: |
           mkdir -p .benchmark
-          poetry run pytest tests/integration --junitxml=.benchmark/integration.xml
+          uv run pytest tests/integration --junitxml=.benchmark/integration.xml
 
       - name: Generate Pages artifact
         run: |
-          poetry run python site/generate.py \
+          uv run python site/generate.py \
             --output _site \
             --junit .benchmark/integration.xml \
             --commit "${GITHUB_SHA}" \
@@ -62,7 +60,7 @@ jobs:
         id: benchmark-gate
         continue-on-error: true
         run: |
-          poetry run python -c "import json,sys; data=json.load(open('_site/data/results.json')); sys.exit(data['summary']['fail'] > 0)"
+          uv run python -c "import json,sys; data=json.load(open('_site/data/results.json')); sys.exit(data['summary']['fail'] > 0)"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3

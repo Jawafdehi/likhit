@@ -584,7 +584,7 @@ def _try_convert_with_likhit(
 ) -> tuple[DocumentConverterResult | None, list[int]]:
     try:
         return _convert_with_likhit(raw)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - fall back to the default PDF path
         logger.debug("PDF converter: likhit extraction failed: %s", exc)
         return None, []
 

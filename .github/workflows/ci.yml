@@ -1,8 +1,25 @@
+# SPDX-License-Identifier: Hippocratic-3.0
+
+# Test + lint gate for likhit, uv-native (was Poetry). Three gates plus one
+# advisory step:
+#
+#   uv run ruff check .           gated
+#   uv run ruff format --check .  gated (this replaced `black --check`)
+#   uv run pytest                 gated
+#   uv run ty check               ADVISORY — `|| true`, see pyproject.toml
+#
+# Python stays pinned to 3.12, now through setup-uv rather than setup-python:
+# `requires-python` is ">=3.12,<4.0", so without the pin CI would silently move
+# to whatever newer interpreter uv prefers on the runner, which is not what this
+# package's classifiers claim to support.
 name: CI
 
 on:
   push:
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -12,22 +29,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
+          enable-cache: true
           python-version: "3.12"
 
-      - name: Install Poetry
-        uses: abatilo/actions-poetry@v3
+      # --locked, not --frozen: both install straight from uv.lock without
+      # re-resolving, but only --locked *verifies* the lock still matches
+      # pyproject.toml. Measured: bump the version in pyproject without
+      # re-locking and `uv sync --frozen` exits 0 (installing the new version
+      # against a lock that records the old one), while `uv sync --locked`
+      # exits 1 and says to run `uv lock`. A stale lockfile should break the
+      # build, not slip through it.
+      - name: Install dependencies (incl. dev group)
+        run: uv sync --locked
 
-      - name: Install dependencies
-        run: poetry install
+      - name: Lint (ruff check)
+        run: uv run ruff check .
 
-      - name: Run Ruff
-        run: poetry run ruff check .
+      - name: Format check (ruff format)
+        run: uv run ruff format --check .
 
-      - name: Run Black check
-        run: poetry run black --check .
+      # Type check, ADVISORY: reports into the log but never fails the build
+      # (`|| true`). ty is pre-1.0 and this package's dependencies are largely
+      # unstubbed, so at adoption it reported 102 diagnostics of which 99 were
+      # tool limitations. pyproject.toml's [tool.ty.rules] silences those
+      # families, leaving 3. Drop the `|| true` and make this a gate once those
+      # reach 0; see the staged plan in pyproject.toml.
+      - name: Type check (ty, advisory — does not fail the build)
+        run: uv run ty check || true
 
       - name: Run tests
-        run: poetry run pytest
+        run: uv run pytest

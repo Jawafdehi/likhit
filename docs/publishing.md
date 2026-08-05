@@ -12,11 +12,18 @@
 Example:
 
 ```bash
-poetry version patch
-git add pyproject.toml poetry.lock
+uv version --bump patch
+git add pyproject.toml uv.lock
 git commit -m "Bump version to 0.1.1"
 git tag v0.1.1
 git push origin main --follow-tags
 ```
 
-The publish workflow verifies that the git tag matches the version in `pyproject.toml` before uploading to PyPI.
+`uv version` re-locks the project, and `uv.lock` records `likhit`'s own version,
+so both files must go in the bump commit — otherwise CI's `uv sync --locked`
+fails on the release tag with a stale lockfile.
+
+Use `uv version --bump patch --dry-run` to see the new version without writing it.
+
+The publish workflow verifies that the git tag matches the version in
+`pyproject.toml` before uploading to PyPI, then builds with `uv build`.

@@ -52,7 +52,7 @@ def _safe_get_best_cmap(font) -> dict[int, str]:
         if "cmap" not in font:
             return {}
         best_cmap = font["cmap"].getBestCmap()
-    except Exception:
+    except Exception:  # noqa: BLE001 - a malformed cmap table means no mapping
         return {}
     return best_cmap or {}
 
@@ -422,7 +422,7 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
         full_map.update(gid_to_correct)
         font.close()
         return full_map
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - degrade to no repair, never fail
         logger.warning(
             "Failed to build Kalimati correction map for xref=%s: %s",
             type0_xref,
@@ -460,7 +460,7 @@ def _get_fontfile_xref(doc: fitz.Document, type0_xref: int) -> Optional[int]:
         if not fontfile_match:
             return None
         return int(fontfile_match.group(1))
-    except Exception:
+    except Exception:  # noqa: BLE001 - unparsable xref object means no FontFile2
         return None
 
 
