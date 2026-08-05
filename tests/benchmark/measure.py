@@ -47,6 +47,16 @@ PRIVATE_USE_RANGE = (0xE000, 0xF8FF)
 DEFAULT_TIMEOUT_S = 300
 
 
+def _file_id(path: pathlib.Path) -> str:
+    """Return a stable, collision-free identifier for a corpus input."""
+
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(pathlib.Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return resolved.as_posix()
+
+
 def _text_signals(text: str) -> dict[str, object]:
     """Quality and damage signals for one conversion's markdown."""
 
@@ -91,7 +101,7 @@ def _convert_one(
         command.append(pages)
 
     record: dict[str, object] = {
-        "file": path.name,
+        "file": _file_id(path),
         "bytes": path.stat().st_size,
         "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "pages": pages,
@@ -339,7 +349,7 @@ def build_parser() -> argparse.ArgumentParser:
     diff.add_argument(
         "--allow",
         nargs="*",
-        help="file names permitted to regress (intentional output changes)",
+        help="file identifiers permitted to regress (intentional output changes)",
     )
     diff.set_defaults(func=command_diff)
     return parser

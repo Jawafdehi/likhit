@@ -45,11 +45,11 @@ def main() -> int:
     real_stdout = os.dup(1)
     os.dup2(2, 1)
 
-    from markitdown import MarkItDown
-
     started = time.monotonic()
     result: dict[str, object] = {"path": path, "pages": pages}
     try:
+        from markitdown import MarkItDown
+
         markitdown = MarkItDown(enable_plugins=True)
         kwargs = {"pages": pages} if pages else {}
         converted = markitdown.convert(path, **kwargs)

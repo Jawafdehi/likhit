@@ -8,11 +8,14 @@ regression it is meant to catch.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
+import subprocess
+import sys
 
 import pytest
 
-from tests.benchmark.measure import _classify, _text_signals, main
+from tests.benchmark.measure import _classify, _file_id, _text_signals, main
 
 BASE = {
     "status": "ok",
@@ -151,3 +154,43 @@ def test_text_signals_are_stable_for_identical_text() -> None:
 
     assert _text_signals("क")["sha256"] == _text_signals("क")["sha256"]
     assert _text_signals("क")["sha256"] != _text_signals("ख")["sha256"]
+
+
+def test_file_ids_distinguish_duplicate_basenames(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "first" / "report.pdf"
+    second = tmp_path / "second" / "report.pdf"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.touch()
+    second.touch()
+    monkeypatch.chdir(tmp_path)
+
+    assert _file_id(first) == "first/report.pdf"
+    assert _file_id(second) == "second/report.pdf"
+
+
+def test_run_one_reports_import_failures_as_json(tmp_path: pathlib.Path) -> None:
+    """Dependency failures must remain distinguishable from native process kills."""
+
+    (tmp_path / "markitdown.py").write_text(
+        'raise RuntimeError("synthetic import failure")\n', encoding="utf-8"
+    )
+    runner = pathlib.Path(__file__).parent / "benchmark" / "run_one.py"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(tmp_path), env.get("PYTHONPATH")) if part
+    )
+
+    completed = subprocess.run(
+        [sys.executable, str(runner), "unused.pdf"],
+        capture_output=True,
+        check=True,
+        env=env,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert payload["status"] == "error"
+    assert payload["exc_type"] == "RuntimeError"
+    assert payload["exc_msg"] == "synthetic import failure"
