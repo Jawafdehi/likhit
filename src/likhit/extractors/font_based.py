@@ -560,6 +560,21 @@ class FontBasedStrategy(ExtractionStrategy):
             )
             content_legacy_maps = detect_content_legacy_fonts(doc, skip_for_content)
 
+            # On a broken-CMap PDF this document is extracted twice, before and
+            # after the ToUnicode repair, and the merge below keeps the repaired
+            # pass's tables whenever it found any. Table detection is the single
+            # largest cost in extraction (67-87% of wall time on these documents),
+            # so detecting in the first pass is usually pure waste: measured
+            # across 28 corpus documents, the repaired pass found tables every
+            # time and the first pass's were always discarded. Skip it here and
+            # detect below only if the repaired pass comes back empty.
+            #
+            # The results cannot simply be shared between passes: PyMuPDF derives
+            # a table's header from the page's decoded text, so on a broken-CMap
+            # page the repair changes header.external, header.bbox and
+            # header.names -- and captions feed the continuation-merge decision.
+            detect_tables = not has_broken_cmap
+
             raw_document = self._extract_from_document(
                 doc,
                 font_strategies_by_page,
@@ -568,6 +583,7 @@ class FontBasedStrategy(ExtractionStrategy):
                 needs_reorder=False,
                 decoy_pages=decoy_pages,
                 content_legacy_maps=content_legacy_maps,
+                detect_tables=detect_tables,
             )
             if has_broken_cmap:
                 repaired_source = fitz.open(path)
@@ -588,12 +604,26 @@ class FontBasedStrategy(ExtractionStrategy):
                     decoy_pages=decoy_pages,
                     content_legacy_maps=content_legacy_maps,
                 )
+                tables = repaired_document.tables
+                if not tables:
+                    # The repaired pass found nothing, so fall back to detecting
+                    # on the unrepaired document -- preserving the behaviour of
+                    # the `repaired.tables or raw.tables` merge this replaces.
+                    tables = self._extract_from_document(
+                        doc,
+                        font_strategies_by_page,
+                        page_start=page_start,
+                        page_end=page_end,
+                        needs_reorder=False,
+                        decoy_pages=decoy_pages,
+                        content_legacy_maps=content_legacy_maps,
+                    ).tables
                 raw_document = _raw_document_from_fragments(
                     _merge_fragment_variants(
                         raw_document.fragments,
                         repaired_document.fragments,
                     ),
-                    repaired_document.tables or raw_document.tables,
+                    tables,
                 )
 
             raw_document.needs_ocr_pages = needs_ocr_pages
@@ -628,6 +658,7 @@ class FontBasedStrategy(ExtractionStrategy):
         needs_reorder: bool,
         decoy_pages: frozenset[int] = frozenset(),
         content_legacy_maps: dict[str, str] | None = None,
+        detect_tables: bool = True,
     ) -> RawDocument:
         paragraphs: list[str] = []
         fragments: list[TextFragment] = []
@@ -711,9 +742,10 @@ class FontBasedStrategy(ExtractionStrategy):
                 page_fragments.append(fragment)
 
             fragments.extend(page_fragments)
-            page_tables = detect_page_tables(page, page_fragments, table_index)
-            tables.extend(page_tables)
-            table_index += len(page_tables)
+            if detect_tables:
+                page_tables = detect_page_tables(page, page_fragments, table_index)
+                tables.extend(page_tables)
+                table_index += len(page_tables)
 
         return RawDocument(
             paragraphs=paragraphs,
