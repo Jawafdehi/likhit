@@ -1,0 +1,590 @@
+{
+  "schema_version": 1,
+  "documents": [
+    {
+      "id": "scanned-decoy",
+      "title": "Scanned page with decoy text layer",
+      "summary": "Full-page raster pages carrying a misleading legacy-looking text layer.",
+      "kind": "pdf",
+      "builder": "scanned_decoy",
+      "publisher": "Likhit benchmark lab",
+      "origin": "synthetic",
+      "privacy": "synthetic-pii-free",
+      "tags": ["scan", "decoy-text", "ocr"],
+      "runs": [
+        {
+          "id": "markitdown",
+          "config": "markitdown",
+          "expectation": "reference",
+          "checks": []
+        },
+        {
+          "id": "likhit-no-ocr",
+          "config": "likhit-no-ocr",
+          "expectation": "blocked",
+          "checks": [
+            {
+              "kind": "diagnostic_contains",
+              "value": "OCR",
+              "label": "OCR requirement reported"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pure-scan",
+      "title": "Image-only scanned page",
+      "summary": "A raster-only PDF with no searchable text layer.",
+      "kind": "pdf",
+      "builder": "pure_scan",
+      "publisher": "Likhit benchmark lab",
+      "origin": "synthetic",
+      "privacy": "synthetic-pii-free",
+      "tags": ["scan", "image-only", "ocr"],
+      "runs": [
+        {
+          "id": "markitdown",
+          "config": "markitdown",
+          "expectation": "reference",
+          "checks": []
+        },
+        {
+          "id": "likhit-no-ocr",
+          "config": "likhit-no-ocr",
+          "expectation": "blocked",
+          "checks": [
+            {
+              "kind": "diagnostic_contains",
+              "value": "OCR",
+              "label": "OCR requirement reported"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mislabeled-preeti",
+      "title": "Mislabeled Preeti text",
+      "summary": "Legacy Nepali keystrokes stored under a standard Helvetica font name.",
+      "kind": "pdf",
+      "builder": "mislabeled_preeti",
+      "publisher": "Likhit benchmark lab",
+      "origin": "synthetic",
+      "privacy": "synthetic-pii-free",
+      "tags": ["born-digital", "legacy-font", "preeti"],
+      "runs": [
+        {
+          "id": "markitdown",
+          "config": "markitdown",
+          "expectation": "reference",
+          "checks": []
+        },
+        {
+          "id": "likhit",
+          "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 20,
+              "label": "Legacy text decoded to Devanagari"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "legacy-then-english",
+      "title": "Legacy Nepali followed by English",
+      "summary": "A two-page file used to verify that page-scoped extraction does not leak font classification.",
+      "kind": "pdf",
+      "builder": "legacy_then_english",
+      "publisher": "Likhit benchmark lab",
+      "origin": "synthetic",
+      "privacy": "synthetic-pii-free",
+      "tags": ["page-range", "legacy-font", "english"],
+      "runs": [
+        {
+          "id": "likhit-full",
+          "config": "likhit",
+          "expectation": "known_issue",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "Ordinary English catalogue",
+              "label": "English page retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 20,
+              "label": "Legacy page decoded"
+            }
+          ]
+        },
+        {
+          "id": "likhit-page-2",
+          "config": "likhit",
+          "pages": "2",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "Ordinary English catalogue",
+              "label": "Requested page returned"
+            },
+            {
+              "kind": "max_devanagari",
+              "value": 0,
+              "label": "Page-one font state did not leak"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mixed-scan-text",
+      "title": "Mixed scan and born-digital text",
+      "summary": "A scanned first page followed by a normal searchable page.",
+      "kind": "pdf",
+      "builder": "mixed_scan_text",
+      "publisher": "Likhit benchmark lab",
+      "origin": "synthetic",
+      "privacy": "synthetic-pii-free",
+      "tags": ["mixed-mode", "scan", "born-digital"],
+      "runs": [
+        {
+          "id": "markitdown",
+          "config": "markitdown",
+          "expectation": "reference",
+          "checks": []
+        },
+        {
+          "id": "likhit-no-ocr",
+          "config": "likhit-no-ocr",
+          "expectation": "blocked",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "ordinary born-digital paragraph",
+              "label": "Searchable page retained"
+            },
+            {
+              "kind": "diagnostic_contains",
+              "value": "OCR",
+              "label": "Scanned page reported"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "born-digital-table",
+      "title": "Born-digital ruled table",
+      "summary": "A compact table with visible cell geometry and an ordinary text footer.",
+      "kind": "pdf",
+      "builder": "born_digital_table",
+      "publisher": "Likhit benchmark lab",
+      "origin": "synthetic",
+      "privacy": "synthetic-pii-free",
+      "tags": ["table", "born-digital", "layout"],
+      "runs": [
+        {
+          "id": "markitdown",
+          "config": "markitdown",
+          "expectation": "reference",
+          "checks": []
+        },
+        {
+          "id": "likhit",
+          "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "Procurement Plan",
+              "label": "Document title retained"
+            },
+            {
+              "kind": "contains",
+              "value": "Status",
+              "label": "Table header retained"
+            },
+            {
+              "kind": "contains",
+              "value": "Approved",
+              "label": "Table body retained"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "unicode-word",
+      "title": "Unicode Nepali Word document",
+      "summary": "A DOCX containing Nepali paragraphs, English text, and a small table.",
+      "kind": "docx",
+      "builder": "unicode_docx",
+      "publisher": "Likhit benchmark lab",
+      "origin": "synthetic",
+      "privacy": "synthetic-pii-free",
+      "tags": ["word", "docx", "unicode"],
+      "runs": [
+        {
+          "id": "markitdown",
+          "config": "markitdown",
+          "expectation": "reference",
+          "checks": []
+        },
+        {
+          "id": "likhit",
+          "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "\u0928\u0947\u092a\u093e\u0932 \u0938\u0930\u0915\u093e\u0930",
+              "label": "Unicode Nepali retained"
+            },
+            {
+              "kind": "contains",
+              "value": "Quarterly programme",
+              "label": "English text retained"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ciaa-news-article-notice",
+      "title": "CIAA news and article submission notice",
+      "summary": "A two-page public notice inviting journalism about good governance and corruption control.",
+      "kind": "pdf",
+      "url": "https://ciaa.gov.np/uploads/notice/7BFkgG.pdf",
+      "sha256": "110a6773822ff13c72b14a6d38b64bad8949ae794d4456bc9b0e2a4b8681b1df",
+      "publisher": "Commission for the Investigation of Abuse of Authority, Nepal",
+      "origin": "public-institutional",
+      "privacy": "public-institutional",
+      "content_note": "Official public notice published in full; includes CIAA contact information.",
+      "tags": ["ciaa", "notice", "nepali", "born-digital"],
+      "runs": [
+        {
+          "id": "likhit",
+          "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "\u0938\u092e\u093e\u091a\u093e\u0930 \u0924\u0925\u093e \u0932\u0947\u0916 \u092a\u0920\u093e\u0909\u0928\u0947 \u0938\u092e\u094d\u092c\u0928\u094d\u0927\u0940 \u0938\u0942\u091a\u0928\u093e",
+              "label": "Notice title retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 700,
+              "label": "Nepali notice extracted"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ciaa-asset-declaration-guidance",
+      "title": "CIAA asset declaration guidance",
+      "summary": "A three-page press release with recommendations for implementing public officials' asset declarations.",
+      "kind": "pdf",
+      "url": "https://ciaa.gov.np/uploads/pressRelease/K8sAcU.pdf",
+      "sha256": "16198adcd064b686ba360e37a269d0f34f198dbaf81bb0ef0ce53f1520f2154c",
+      "publisher": "Commission for the Investigation of Abuse of Authority, Nepal",
+      "origin": "public-institutional",
+      "privacy": "public-institutional",
+      "content_note": "Official public press release published in full.",
+      "tags": ["ciaa", "press-release", "nepali", "born-digital"],
+      "runs": [
+        {
+          "id": "likhit",
+          "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "\u0938\u092e\u094d\u092a\u0924\u093f \u0935\u093f\u0935\u0930\u0923",
+              "label": "Asset declaration subject retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 2000,
+              "label": "Nepali guidance extracted"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ciaa-earthquake-relief-docx",
+      "title": "CIAA earthquake relief contribution",
+      "summary": "An official DOCX press release recording a staff contribution to the earthquake relief fund.",
+      "kind": "docx",
+      "url": "https://ciaa.gov.np/uploads/pressRelease/0P4Ihq.docx",
+      "sha256": "befaf3f4329a58062ecb33779b7bc701cdfe4f3751255cbc2f8c9b277f751a79",
+      "publisher": "Commission for the Investigation of Abuse of Authority, Nepal",
+      "origin": "public-institutional",
+      "privacy": "public-institutional",
+      "content_note": "Official public press release published in full; includes a public fund account number and spokesperson name.",
+      "tags": ["ciaa", "press-release", "docx", "unicode"],
+      "runs": [
+        {
+          "id": "likhit",
+          "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "\u0938\u0939\u092f\u094b\u0917\u093e\u0930\u094d\u0925 \u0930\u0915\u092e \u091c\u092e\u094d\u092e\u093e \u0917\u0930\u093f\u090f\u0915\u094b",
+              "label": "Press release subject retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 150,
+              "label": "Unicode Nepali extracted"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ciaa-detention-legacy-doc",
+      "title": "CIAA detention press release",
+      "summary": "A legacy Microsoft Word press release about two people being taken into custody during an investigation.",
+      "kind": "doc",
+      "url": "https://ciaa.gov.np/uploads/pressRelease/50Fy4N.doc",
+      "sha256": "23c3250a7ea72b62e9d7ec301976b4f95a51eb6c0279f16b9225a35880111d12",
+      "publisher": "Commission for the Investigation of Abuse of Authority, Nepal",
+      "origin": "public-institutional",
+      "privacy": "public-institutional",
+      "content_note": "Official public enforcement press release published in full; names investigated individuals and a spokesperson.",
+      "tags": ["ciaa", "press-release", "legacy-word", "enforcement"],
+      "runs": [
+        {
+          "id": "likhit",
+          "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "\u092e\u093e\u0928\u093f\u0938 \u0939\u093f\u0930\u093e\u0938\u0924\u092e\u093e \u0932\u093f\u0907\u090f\u0915\u094b",
+              "label": "Press release title retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 350,
+              "label": "Legacy Word text extracted"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ciaa-research-grant-notice",
+      "title": "CIAA research grant notice",
+      "summary": "A four-page research and thesis grant notice whose stripped font map currently produces corrupted text.",
+      "kind": "pdf",
+      "url": "https://ciaa.gov.np/uploads/notice/YjfSP9.pdf",
+      "sha256": "e1c1e5502d5693b0f2cf991e03ee8d3df57989c5e40e841a67c197f07d26ee96",
+      "publisher": "Commission for the Investigation of Abuse of Authority, Nepal",
+      "origin": "public-institutional",
+      "privacy": "public-institutional",
+      "content_note": "Official public grant notice published in full; application pages may contain institutional contact fields.",
+      "tags": ["ciaa", "notice", "broken-cmap", "known-issue"],
+      "runs": [
+        {
+          "id": "likhit",
+          "config": "likhit",
+          "expectation": "known_issue",
+          "checks": [
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "industry-annual-return-notice",
+      "title": "Industry annual return update notice",
+      "summary": "A Department of Industry notice with dense letterhead and table-like page geometry.",
+      "kind": "pdf",
+      "url": "https://giwmscdnone.gov.np/media/pdf_upload/%E0%A4%A6%E0%A5%8D%E0%A4%AF%E0%A5%8B%E0%A4%97%E0%A4%95%E0%A5%8B%20%E0%A4%B5%E0%A4%BE%E0%A4%B0%E0%A5%8D%E0%A4%B7%E0%A4%BF%E0%A4%95%20%E0%A4%B5%E0%A4%BF%E0%A4%B5%E0%A4%B0%E0%A4%A3%20%E0%A4%85%E0%A4%A6%E0%A5%8D%E0%A4%AF%E0%A4%BE%E0%A4%B5%E0%A4%A7%E0%A4%BF%E0%A4%95%E0%A4%AE%E0%A4%BE%20%E0%A4%97%E0%A4%B0%E0%A5%8D%E0%A4%A8%E0%A5%87%20%E0%A4%B8%E0%A4%AE%E0%A5%8D%E0%A4%AC%E0%A4%A8%E0%A5%8D%E0%A4%A7%E0%A4%AE%E0%A4%BE%20%E0%A4%89%E0%A4%A6%E0%A5%8D%E0%A4%AF%E0%A5%8B%E0%A4%97%20%E0%A4%B5%E0%A4%BF%E0%A4%AD%E0%A4%BE%E0%A4%97%E0%A4%95%E0%A5%8B%20%E0%A4%B8%E0%A5%82%E0%A4%9A%E0%A4%A8%E0%A4%BE_i8mime0.pdf",
+      "sha256": "e790f59122eb9af5f9cc57bcd0b3846bba6abe51c1712cd431de639d09d61d4f",
+      "publisher": "Department of Industry, Government of Nepal",
+      "origin": "public-institutional",
+      "privacy": "public-institutional",
+      "content_note": "Official public administrative notice published in full; includes agency contact details.",
+      "tags": ["industry", "notice", "nepali", "layout"],
+      "runs": [
+        {
+          "id": "likhit",
+          "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "\u0909\u0926\u094d\u092f\u094b\u0917\u0915\u094b \u0935\u093e\u0930\u094d\u0937\u093f\u0915 \u0935\u093f\u0935\u0930\u0923",
+              "label": "Notice subject retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 800,
+              "label": "Nepali notice extracted"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "npc-press-note",
+      "title": "National Planning Commission press note",
+      "summary": "A two-page scanned press note whose non-Unicode text layer currently requires OCR.",
+      "kind": "pdf",
+      "url": "https://giwmscdnone.gov.np/media/pdf_upload/Press%20Note.%204-1_mkypouj.pdf",
+      "sha256": "f0619f234c91029eaf6a9fbc742dc8f5190f06248f435f40c7eb629effb878f3",
+      "publisher": "National Planning Commission, Government of Nepal",
+      "origin": "public-institutional",
+      "privacy": "public-institutional",
+      "content_note": "Official public press note published in full.",
+      "tags": ["planning", "press-note", "scan", "ocr", "known-issue"],
+      "runs": [
+        {
+          "id": "likhit-no-ocr",
+          "config": "likhit-no-ocr",
+          "expectation": "known_issue",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 500,
+              "label": "Nepali press note recovered"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "seed-rules-2081",
+      "title": "Seed Rules, 2081",
+      "summary": "A 76-page set of Nepali agricultural rules published through the government document portal.",
+      "kind": "pdf",
+      "url": "https://giwmscdnone.gov.np/media/pdf_upload/%E0%A4%B5%E0%A4%BF%E0%A4%89%20%E0%A4%B5%E0%A4%BF%E0%A4%9C%E0%A4%A8%20%E0%A4%A8%E0%A4%BF%E0%A4%AF%E0%A4%AE%E0%A4%BE%E0%A4%B5%E0%A4%B2%E0%A5%80%20%E0%A5%A8%E0%A5%A6%E0%A5%AE%E0%A5%A7_bzpydam.pdf",
+      "sha256": "1d6e0595026419e7bd1e1cba20823faeb8ef625bb20b50cc5829b08654c3c10d",
+      "publisher": "Nepal Law Commission, Government of Nepal",
+      "origin": "public-institutional",
+      "privacy": "public-institutional",
+      "content_note": "Official public legislation published in full.",
+      "tags": ["legislation", "agriculture", "nepali", "long-form"],
+      "runs": [
+        {
+          "id": "likhit",
+          "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "\u092c\u0940\u0909 \u092c\u093f\u091c\u0928 \u0928\u093f\u092f\u092e\u093e\u0935\u0932\u0940, \u0968\u0966\u096e\u0967",
+              "label": "Rules title retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 30000,
+              "label": "Long-form Nepali rules extracted"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "economic-act-2083",
+      "title": "Economic Bill, 2083",
+      "summary": "Official Nepal legislation published through the Government of Nepal document portal.",
+      "kind": "pdf",
+      "url": "https://giwmscdnone.gov.np/media/pdf_upload/%E0%A4%86%E0%A4%B0%E0%A5%8D%E0%A4%A5%E0%A4%BF%E0%A4%95%20%E0%A4%B5%E0%A4%BF%E0%A4%A7%E0%A5%87%E0%A4%AF%E0%A4%95%2C%20%E0%A5%A8%E0%A5%A6%E0%A5%AE%E0%A5%A9_mqsvmdf.pdf",
+      "sha256": "31b21b1a1b55378b3119d44252d1372ec129516ca7f5dbb65cd9ae6534f140b3",
+      "publisher": "Nepal Law Commission, Government of Nepal",
+      "origin": "public-institutional",
+      "privacy": "public-institutional",
+      "content_note": "Pages 1-3 contain public legislation front matter.",
+      "publish_pages": "1-3",
+      "sanitization": "Three-page benchmark excerpt; source document metadata removed.",
+      "tags": ["legislation", "nepali", "government"],
+      "runs": [
+        {
+          "id": "likhit-pages-1-3",
+          "config": "likhit",
+          "pages": "1-3",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 500,
+              "label": "Nepali legislation extracted"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gcf-country-programme",
+      "title": "Nepal Green Climate Fund Country Programme",
+      "summary": "An English-language national policy programme published by Nepal's Ministry of Finance.",
+      "kind": "pdf",
+      "url": "https://giwmscdnone.gov.np/media/pdf_upload/GCF%20Country%20Program%20Document_rrkudfi.pdf",
+      "sha256": "b6e298f58e4c67be68316963f49717fde21d2e5db3925175700b2d213d7c4a04",
+      "publisher": "Ministry of Finance, Government of Nepal",
+      "origin": "public-institutional",
+      "privacy": "public-institutional",
+      "content_note": "Pages 1-3 contain public policy programme front matter.",
+      "publish_pages": "1-3",
+      "sanitization": "Three-page benchmark excerpt; source document metadata removed.",
+      "tags": ["policy", "english", "government"],
+      "runs": [
+        {
+          "id": "likhit-pages-1-3",
+          "config": "likhit",
+          "pages": "1-3",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "Nepal Country Programme",
+              "label": "Programme title retained"
+            },
+            {
+              "kind": "min_chars",
+              "value": 500,
+              "label": "Policy content extracted"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "configurations": {
+    "markitdown": {
+      "label": "MarkItDown",
+      "description": "Built-in conversion with plugins disabled.",
+      "plugins": false,
+      "environment": "default"
+    },
+    "likhit": {
+      "label": "Likhit",
+      "description": "MarkItDown with the Likhit plugin enabled.",
+      "plugins": true,
+      "environment": "default"
+    },
+    "likhit-no-ocr": {
+      "label": "Likhit / no OCR",
+      "description": "Likhit with OCR credentials and model configuration removed.",
+      "plugins": true,
+      "environment": "no-ocr"
+    }
+  }
+}
