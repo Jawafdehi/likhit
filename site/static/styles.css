@@ -672,6 +672,7 @@ main {
   border-radius: 5px;
   background: #ffffff;
   color: var(--ink);
+  cursor: pointer;
   font-size: 11px;
   font-weight: 650;
   text-decoration: none;
@@ -815,9 +816,91 @@ main {
 .source-frame {
   width: 100%;
   min-height: 620px;
+  border: 0;
+  background: #ffffff;
+}
+
+.source-preview {
+  display: grid;
+  grid-template-rows: 42px minmax(620px, 1fr);
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--line-strong);
   border-radius: 5px;
   background: #ffffff;
+}
+
+.source-preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.source-preview-bar strong {
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.source-preview-bar a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.source-preview-bar a:hover {
+  text-decoration: underline;
+}
+
+.source-preview-bar svg {
+  width: 14px;
+  height: 14px;
+}
+
+.source-fallback {
+  display: grid;
+  place-items: center;
+  gap: 14px;
+  min-height: 620px;
+  padding: 18px;
+  background: var(--surface-muted);
+}
+
+.source-fallback img {
+  width: auto;
+  max-width: 100%;
+  max-height: 510px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  box-shadow: var(--shadow);
+  object-fit: contain;
+}
+
+.source-fallback p,
+.source-fallback span {
+  display: block;
+}
+
+.source-fallback p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.source-fallback span {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .source-placeholder {
@@ -1020,6 +1103,18 @@ main {
   .source-frame {
     min-height: 500px;
   }
+
+  .source-preview {
+    grid-template-rows: 42px minmax(500px, 1fr);
+  }
+
+  .source-fallback {
+    min-height: 500px;
+  }
+
+  .source-fallback img {
+    max-height: 390px;
+  }
 }
 
 @media (max-width: 760px) {
@@ -1198,6 +1293,18 @@ main {
 
   .source-frame {
     min-height: 440px;
+  }
+
+  .source-preview {
+    grid-template-rows: 42px minmax(440px, 1fr);
+  }
+
+  .source-fallback {
+    min-height: 440px;
+  }
+
+  .source-fallback img {
+    max-height: 330px;
   }
 
   .metrics-grid {

@@ -365,6 +365,10 @@ def _evaluate_check(
         actual = int(metrics.get("devanagari", 0))
         passed = actual <= int(value)
         detail = f"{actual:,} Devanagari letters; maximum {int(value):,}"
+    elif kind == "max_replacement":
+        actual = int(metrics.get("replacement", 0))
+        passed = actual <= int(value)
+        detail = f"{actual:,} replacement characters; maximum {int(value):,}"
     elif kind == "diagnostic_contains":
         passed = str(value).casefold() in diagnostics.casefold()
         detail = f"Diagnostic {'found' if passed else 'missing'}"
@@ -606,7 +610,7 @@ def generate(
                 "publisher": spec["publisher"],
                 "origin": spec["origin"],
                 "privacy": spec["privacy"],
-                "screening": spec.get("screening"),
+                "content_note": spec.get("content_note"),
                 "tags": spec["tags"],
                 "source": {
                     "download": f"documents/{source.name}",

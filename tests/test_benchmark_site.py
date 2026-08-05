@@ -139,7 +139,7 @@ def test_generator_refuses_to_replace_repository_content(
     assert sentinel.read_text(encoding="utf-8") == "must survive"
 
 
-def test_public_catalog_is_hash_pinned_and_screened() -> None:
+def test_public_catalog_is_hash_pinned_and_described() -> None:
     catalog = json.loads((SITE_DIR / "catalog.json").read_text(encoding="utf-8"))
     public = [
         document
@@ -148,17 +148,90 @@ def test_public_catalog_is_hash_pinned_and_screened() -> None:
     ]
 
     assert {document["id"] for document in public} == {
+        "ciaa-asset-declaration-guidance",
+        "ciaa-detention-legacy-doc",
+        "ciaa-earthquake-relief-docx",
+        "ciaa-news-article-notice",
+        "ciaa-research-grant-notice",
         "economic-act-2083",
         "gcf-country-programme",
+        "industry-annual-return-notice",
+        "npc-press-note",
+        "seed-rules-2081",
     }
+    assert {document["kind"] for document in public} == {"pdf", "docx", "doc"}
+    assert (
+        sum(document["url"].startswith("https://ciaa.gov.np/") for document in public)
+        == 5
+    )
+    excerpt_ids = {
+        document["id"] for document in public if document.get("publish_pages")
+    }
+    assert excerpt_ids == {"economic-act-2083", "gcf-country-programme"}
     for document in public:
         assert document["privacy"] == "public-institutional"
-        assert document["screening"]
-        assert document["publish_pages"] == "1-3"
-        assert document["sanitization"]
+        assert document["content_note"]
         assert document["url"].startswith("https://")
         assert len(document["sha256"]) == 64
-        assert all(run.get("pages") for run in document["runs"])
+        if document.get("publish_pages"):
+            assert document["publish_pages"] == "1-3"
+            assert document["sanitization"]
+            assert all(run.get("pages") for run in document["runs"])
+        else:
+            assert not document.get("sanitization")
+            assert all(not run.get("pages") for run in document["runs"])
+
+
+@pytest.mark.parametrize(
+    "document_id",
+    [
+        "ciaa-news-article-notice",
+        "ciaa-earthquake-relief-docx",
+        "ciaa-detention-legacy-doc",
+    ],
+)
+def test_public_source_cache_supports_catalog_formats(
+    tmp_path: pathlib.Path, document_id: str
+) -> None:
+    catalog = json.loads((SITE_DIR / "catalog.json").read_text(encoding="utf-8"))
+    document = next(item for item in catalog["documents"] if item["id"] == document_id)
+    cached = tmp_path / f"{document['id']}.{document['kind']}"
+    cached.write_bytes(b"cached public source")
+
+    assert generator._cached_public_source(document, tmp_path) == cached
+
+
+def test_replacement_character_check_reports_damage() -> None:
+    result = generator._evaluate_check(
+        {
+            "kind": "max_replacement",
+            "value": 0,
+            "label": "No replacement-character corruption",
+        },
+        "",
+        "",
+        {"replacement": 970},
+    )
+
+    assert result == {
+        "label": "No replacement-character corruption",
+        "kind": "max_replacement",
+        "passed": False,
+        "detail": "970 replacement characters; maximum 0",
+    }
+
+
+def test_dashboard_exposes_inline_pdf_view_separately_from_download() -> None:
+    app = (SITE_DIR / "static" / "app.js").read_text(encoding="utf-8")
+    index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert "data-view-pdf" in app
+    assert 'selectTab("source")' in app
+    assert "Source PDF preview" in app
+    assert "Open in new tab" in app
+    assert "First-page preview" in app
+    assert "download>" in app
+    assert '<option value="doc">Legacy Word (.doc)</option>' in index
 
 
 def test_public_excerpt_removes_metadata_and_unselected_pages() -> None:

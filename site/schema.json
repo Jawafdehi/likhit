@@ -39,7 +39,7 @@
   "$defs": {
     "document": {
       "type": "object",
-      "required": ["id", "title", "summary", "kind", "publisher", "origin", "privacy", "tags", "source", "runs"],
+      "required": ["id", "title", "summary", "kind", "publisher", "origin", "privacy", "content_note", "tags", "source", "runs"],
       "properties": {
         "id": {"type": "string", "pattern": "^[a-z0-9-]+$"},
         "title": {"type": "string"},
@@ -48,6 +48,7 @@
         "publisher": {"type": "string"},
         "origin": {"enum": ["synthetic", "public-institutional"]},
         "privacy": {"enum": ["synthetic-pii-free", "public-institutional"]},
+        "content_note": {"type": ["string", "null"]},
         "tags": {"type": "array", "items": {"type": "string"}},
         "source": {
           "type": "object",

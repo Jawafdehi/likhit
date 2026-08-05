@@ -291,6 +291,11 @@ function selectRun(id) {
   renderDetailBody();
 }
 
+function selectTab(tab) {
+  state.tab = tab;
+  renderDetailBody();
+}
+
 function updateUrl() {
   const url = new URL(window.location.href);
   if (state.selectedDocument) {
@@ -330,12 +335,24 @@ function renderDetail() {
       </a>
     `
     : "";
+  const viewPdf =
+    item.kind === "pdf"
+      ? `
+        <button class="command-link" type="button" data-view-pdf>
+          ${icon("eye")} View PDF
+        </button>
+      `
+      : "";
   byId("detail-actions").innerHTML = `
+    ${viewPdf}
     <a class="command-link" href="./${escapeHtml(item.source.download)}" download>
-      ${icon("download")} Source
+      ${icon("download")} Download
     </a>
     ${original}
   `;
+  byId("detail-actions")
+    .querySelector("[data-view-pdf]")
+    ?.addEventListener("click", () => selectTab("source"));
   renderRunSegments();
   renderDetailBody();
   refreshIcons();
@@ -410,17 +427,48 @@ async function renderTranscript(run, token) {
 }
 
 function renderSource(item) {
+  const sourceThumbnail = item.source.thumbnail
+    ? `
+      <img
+        src="./${escapeHtml(item.source.thumbnail)}"
+        alt="First page of ${escapeHtml(item.title)}"
+      />
+    `
+    : "";
   const preview =
     item.kind === "pdf"
       ? `
-        <object
-          class="source-frame"
-          data="./${escapeHtml(item.source.download)}#page=1&view=FitH"
-          type="application/pdf"
-          aria-label="Source PDF preview"
-        >
-          <a href="./${escapeHtml(item.source.download)}">Download source PDF</a>
-        </object>
+        <div class="source-preview">
+          <header class="source-preview-bar">
+            <strong>PDF preview</strong>
+            <a
+              href="./${escapeHtml(item.source.download)}"
+              target="_blank"
+              rel="noreferrer"
+            >
+              ${icon("external-link")} Open in new tab
+            </a>
+          </header>
+          <object
+            class="source-frame"
+            data="./${escapeHtml(item.source.download)}#page=1&view=FitH"
+            type="application/pdf"
+            aria-label="Source PDF preview"
+          >
+            <div class="source-fallback">
+              ${sourceThumbnail}
+              <p>
+                First-page preview
+                <span>This browser cannot display the inline PDF.</span>
+                <a
+                  href="./${escapeHtml(item.source.download)}"
+                  target="_blank"
+                  rel="noreferrer"
+                >Open the complete PDF in a new tab</a>.
+              </p>
+            </div>
+          </object>
+        </div>
       `
       : `
         <div class="source-placeholder">
@@ -436,8 +484,13 @@ function renderSource(item) {
         <div><dt>Publisher</dt><dd>${escapeHtml(item.publisher)}</dd></div>
         <div><dt>Origin</dt><dd>${escapeHtml(item.origin)}</dd></div>
         <div><dt>Privacy</dt><dd>${escapeHtml(item.privacy)}</dd></div>
-        <div><dt>Screening</dt><dd>${escapeHtml(item.screening || "Synthetic, PII-free fixture")}</dd></div>
-        <div><dt>Publication</dt><dd>${escapeHtml(item.source.sanitization || "Original synthetic fixture")}</dd></div>
+        <div><dt>Content note</dt><dd>${escapeHtml(item.content_note || "Synthetic, PII-free fixture")}</dd></div>
+        <div><dt>Published file</dt><dd>${escapeHtml(
+          item.source.sanitization ||
+            (item.origin === "synthetic"
+              ? "Original synthetic fixture"
+              : "Original public file"),
+        )}</dd></div>
         <div><dt>Pages</dt><dd>${escapeHtml(item.source.pages ?? "—")}</dd></div>
         <div><dt>Size</dt><dd>${escapeHtml(formatBytes(item.source.bytes))}</dd></div>
         <div><dt>SHA-256</dt><dd><code>${escapeHtml(item.source.sha256)}</code></dd></div>
@@ -586,10 +639,7 @@ function bindControls() {
   byId("detail-tabs")
     .querySelectorAll("[data-tab]")
     .forEach((button) => {
-      button.addEventListener("click", () => {
-        state.tab = button.dataset.tab;
-        renderDetailBody();
-      });
+      button.addEventListener("click", () => selectTab(button.dataset.tab));
     });
   byId("mobile-back").addEventListener("click", () => {
     document.body.classList.remove("detail-open");
