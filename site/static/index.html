@@ -1,0 +1,144 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Hippocratic-3.0 -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Generated integration and document-conversion results for Likhit."
+    />
+    <title>Likhit benchmark</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script
+      src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"
+      defer
+    ></script>
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Likhit benchmark home">
+        <span class="brand-mark" aria-hidden="true">लि</span>
+        <span>
+          <strong>Likhit</strong>
+          <small>document benchmark</small>
+        </span>
+      </a>
+      <div class="run-identity" id="run-identity" aria-live="polite">
+        Loading benchmark…
+      </div>
+      <a
+        class="icon-link"
+        href="https://github.com/Jawafdehi/likhit"
+        title="Open GitHub repository"
+        aria-label="Open GitHub repository"
+      >
+        <i data-lucide="github" aria-hidden="true"></i>
+      </a>
+    </header>
+
+    <main>
+      <section class="summary-strip" id="summary-strip" aria-label="Run summary">
+        <div class="summary-skeleton"></div>
+      </section>
+
+      <section class="workspace" aria-label="Benchmark results">
+        <aside class="results-pane" aria-label="Documents">
+          <div class="integration-banner" id="integration-banner"></div>
+
+          <div class="filter-bar">
+            <label class="search-field">
+              <i data-lucide="search" aria-hidden="true"></i>
+              <span class="sr-only">Search documents</span>
+              <input
+                id="search-input"
+                type="search"
+                placeholder="Search documents"
+                autocomplete="off"
+              />
+            </label>
+            <label class="select-field">
+              <span class="sr-only">File type</span>
+              <select id="kind-filter" aria-label="Filter by file type">
+                <option value="all">All files</option>
+                <option value="pdf">PDF</option>
+                <option value="docx">Word</option>
+              </select>
+              <i data-lucide="chevron-down" aria-hidden="true"></i>
+            </label>
+            <label class="select-field">
+              <span class="sr-only">Configuration</span>
+              <select id="config-filter" aria-label="Filter by configuration">
+                <option value="all">All configurations</option>
+              </select>
+              <i data-lucide="chevron-down" aria-hidden="true"></i>
+            </label>
+          </div>
+
+          <div
+            class="status-segments"
+            id="status-filter"
+            role="group"
+            aria-label="Filter by outcome"
+          >
+            <button class="active" type="button" data-status="all">All</button>
+            <button type="button" data-status="pass">Passed</button>
+            <button type="button" data-status="known-issue">Known</button>
+            <button type="button" data-status="blocked">Blocked</button>
+            <button type="button" data-status="fail">Failed</button>
+          </div>
+
+          <div class="result-count" id="result-count"></div>
+          <div class="result-list" id="result-list" aria-live="polite"></div>
+        </aside>
+
+        <article class="detail-pane" id="detail-pane" aria-label="Document detail">
+          <div class="empty-state" id="empty-state">
+            <i data-lucide="files" aria-hidden="true"></i>
+            <p>Select a document result</p>
+          </div>
+          <div class="detail-content" id="detail-content" hidden>
+            <header class="detail-header">
+              <button
+                class="icon-button mobile-back"
+                id="mobile-back"
+                type="button"
+                title="Back to results"
+                aria-label="Back to results"
+              >
+                <i data-lucide="arrow-left" aria-hidden="true"></i>
+              </button>
+              <div class="detail-title">
+                <div class="detail-kicker" id="detail-kicker"></div>
+                <h1 id="detail-name"></h1>
+                <p id="detail-summary"></p>
+              </div>
+              <div class="detail-actions" id="detail-actions"></div>
+            </header>
+
+            <div
+              class="run-segments"
+              id="run-segments"
+              role="group"
+              aria-label="Select configuration"
+            ></div>
+
+            <nav class="detail-tabs" id="detail-tabs" aria-label="Result views">
+              <button class="active" type="button" data-tab="transcript">
+                Transcript
+              </button>
+              <button type="button" data-tab="source">Source</button>
+              <button type="button" data-tab="checks">Checks</button>
+              <button type="button" data-tab="metadata">Metadata</button>
+            </nav>
+
+            <section class="detail-body" id="detail-body"></section>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <noscript>This benchmark requires JavaScript to load generated results.</noscript>
+  </body>
+</html>
