@@ -66,18 +66,19 @@ def test_metric_separates_repaired_from_corrupted(
 def test_metric_discriminates_where_devanagari_count_does_not() -> None:
     """A raw code-point count is a near-useless quality signal; this is not.
 
-    Figures measured end-to-end on one corpus PDF (pages 17-22), comparing the
-    default extraction against likhit's: the Devanagari code-point counts differ
-    by 0.4% while the stranded-mark counts differ by 57x. A metric worth having
-    must reproduce that separation.
+    Representative corrupted and repaired words have identical Devanagari
+    code-point counts. The quality metric must still separate them.
     """
 
-    default_deva, likhit_deva = 4206, 4188
-    default_stranded, likhit_stranded = 172, 3
+    corrupted = ("प्रनििेदन टििरण " * 20).strip()
+    repaired = ("प्रतिवेदन विवरण " * 20).strip()
 
-    deva_separation = abs(default_deva - likhit_deva) / max(default_deva, likhit_deva)
-    assert deva_separation < 0.01, "premise: code-point counts are nearly identical"
-    assert default_stranded / max(likhit_stranded, 1) > 50
+    def devanagari_count(text: str) -> int:
+        return sum(1 for char in text if 0x0900 <= ord(char) <= 0x097F)
+
+    assert devanagari_count(corrupted) == devanagari_count(repaired)
+    assert devanagari_quality(corrupted)["malformed"] >= 50
+    assert devanagari_quality(repaired)["malformed"] == 0
 
 
 def test_metric_does_not_use_unicodedata_combining() -> None:
@@ -102,6 +103,13 @@ def test_word_initial_matra_is_counted() -> None:
     quality = devanagari_quality("सूचना िदँदा")
     assert quality["word_initial"] >= 1
     assert quality["stranded"] >= 1
+
+
+def test_every_matra_in_orphaned_chain_is_counted() -> None:
+    quality = devanagari_quality(" िी")
+
+    assert quality["matras"] == 2
+    assert quality["stranded_matras"] == 2
 
 
 def test_doubled_matra_is_counted() -> None:

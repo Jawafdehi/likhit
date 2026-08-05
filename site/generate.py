@@ -14,6 +14,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +29,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SITE_DIR = pathlib.Path(__file__).resolve().parent
 STATIC_DIR = SITE_DIR / "static"
 RUNNER = SITE_DIR / "run_case.py"
+DEFAULT_MAX_PUBLIC_SOURCE_BYTES = 100 * 1024 * 1024
+DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+OUTPUT_MARKER = ".likhit-benchmark-output"
+OUTPUT_MARKER_CONTENT = "likhit-benchmark-output-v1\n"
 
 sys.path.insert(0, str(ROOT))
 
@@ -174,6 +179,44 @@ def _cached_public_source(
     return next((path for path in matches if path.is_file()), None)
 
 
+def _source_size_limit(spec: dict[str, Any]) -> int:
+    try:
+        max_bytes = int(spec.get("max_bytes", DEFAULT_MAX_PUBLIC_SOURCE_BYTES))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{spec['id']} has an invalid max_bytes value") from exc
+    if max_bytes < 1:
+        raise ValueError(f"{spec['id']} max_bytes must be positive")
+    return max_bytes
+
+
+def _read_bounded_response(
+    response: Any,
+    *,
+    source_id: str,
+    max_bytes: int,
+) -> bytes:
+    headers = getattr(response, "headers", None)
+    content_length = headers.get("Content-Length") if headers is not None else None
+    try:
+        declared_bytes = int(content_length) if content_length is not None else None
+    except (TypeError, ValueError):
+        declared_bytes = None
+    if declared_bytes is not None and declared_bytes > max_bytes:
+        raise ValueError(f"{source_id} download exceeds {max_bytes} bytes")
+
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = response.read(min(DOWNLOAD_CHUNK_BYTES, max_bytes - total + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"{source_id} download exceeds {max_bytes} bytes")
+        chunks.append(bytes(chunk))
+    return b"".join(chunks)
+
+
 def _download_public_source(
     spec: dict[str, Any],
     source_cache: pathlib.Path | None,
@@ -182,9 +225,14 @@ def _download_public_source(
     open_url: Callable[..., Any] = urllib.request.urlopen,
     sleep: Callable[[float], None] = time.sleep,
 ) -> bytes:
+    max_bytes = _source_size_limit(spec)
     cached = _cached_public_source(spec, source_cache)
     if cached is not None:
+        if cached.stat().st_size > max_bytes:
+            raise ValueError(f"{spec['id']} cached source exceeds {max_bytes} bytes")
         data = cached.read_bytes()
+        if len(data) > max_bytes:
+            raise ValueError(f"{spec['id']} cached source exceeds {max_bytes} bytes")
     else:
         if attempts < 1:
             raise ValueError("download attempts must be positive")
@@ -196,7 +244,11 @@ def _download_public_source(
         for attempt in range(attempts):
             try:
                 with open_url(request, timeout=120) as response:
-                    data = response.read()
+                    data = _read_bounded_response(
+                        response,
+                        source_id=spec["id"],
+                        max_bytes=max_bytes,
+                    )
                 break
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 last_error = exc
@@ -350,6 +402,19 @@ def _evaluate_check(
 ) -> dict[str, Any]:
     kind = check["kind"]
     value = check["value"]
+    metric_kinds = {
+        "min_chars",
+        "min_devanagari",
+        "max_devanagari",
+        "max_replacement",
+    }
+    if kind in metric_kinds and not metrics:
+        return {
+            "label": check["label"],
+            "kind": kind,
+            "passed": False,
+            "detail": "Metric unavailable because conversion did not succeed",
+        }
     if kind == "contains":
         passed = str(value) in text
         detail = f"Required text {'found' if passed else 'missing'}"
@@ -383,8 +448,9 @@ def _evaluate_check(
 
 
 def _write_text_artifact(path: pathlib.Path, value: str) -> tuple[str, str]:
-    path.write_text(value, encoding="utf-8")
-    return path.as_posix(), _sha256(value.encode())
+    data = value.encode()
+    path.write_bytes(data)
+    return path.as_posix(), _sha256(data)
 
 
 def _generate_run(
@@ -405,16 +471,18 @@ def _generate_run(
         for check in run.get("checks", [])
     ]
 
-    if payload.get("status") != "ok":
-        outcome = "fail"
-    elif run["expectation"] == "reference":
+    status_ok = payload.get("status") == "ok"
+    checks_passed = all(item["passed"] for item in checks)
+    if run["expectation"] == "reference":
         outcome = "reference"
     elif run["expectation"] == "blocked":
-        outcome = "blocked" if all(item["passed"] for item in checks) else "fail"
+        outcome = "blocked" if checks_passed else "fail"
     elif run["expectation"] == "known_issue":
-        outcome = "pass" if all(item["passed"] for item in checks) else "known-issue"
+        outcome = "pass" if status_ok and checks_passed else "known-issue"
+    elif not status_ok:
+        outcome = "fail"
     else:
-        outcome = "pass" if all(item["passed"] for item in checks) else "fail"
+        outcome = "pass" if checks_passed else "fail"
 
     artifact_id = f"{document['id']}--{run['id']}"
     transcript_path = output / "transcripts" / f"{artifact_id}.md"
@@ -531,19 +599,34 @@ def _build_metadata(commit: str | None, ref: str | None) -> dict[str, str | None
     }
 
 
-def _prepare_output(output: pathlib.Path) -> None:
+def _validate_output_target(output: pathlib.Path) -> None:
     resolved = output.resolve()
     repository_root = ROOT.resolve()
     allowed_repository_output = (repository_root / "_site").resolve()
     if (
-        resolved == pathlib.Path(resolved.anchor)
+        output.is_symlink()
+        or resolved == pathlib.Path(resolved.anchor)
         or resolved == repository_root
+        or resolved in repository_root.parents
         or (
             repository_root in resolved.parents
             and resolved != allowed_repository_output
         )
     ):
         raise ValueError("refusing to replace repository content")
+    if output.exists() and not output.is_dir():
+        raise ValueError("refusing to replace a non-directory output path")
+    if output.exists() and resolved != allowed_repository_output:
+        marker = output / OUTPUT_MARKER
+        try:
+            owned = marker.read_text(encoding="utf-8") == OUTPUT_MARKER_CONTENT
+        except OSError:
+            owned = False
+        if not owned:
+            raise ValueError("refusing to replace an unowned output directory")
+
+
+def _initialize_output(output: pathlib.Path) -> None:
     if output.exists():
         shutil.rmtree(output)
     for directory in (
@@ -560,6 +643,31 @@ def _prepare_output(output: pathlib.Path) -> None:
             shutil.copy2(source, output / source.name)
     shutil.copy2(SITE_DIR / "schema.json", output / "data" / "schema.json")
     (output / ".nojekyll").touch()
+    (output / OUTPUT_MARKER).write_text(OUTPUT_MARKER_CONTENT, encoding="utf-8")
+
+
+def _prepare_output(output: pathlib.Path) -> None:
+    _validate_output_target(output)
+    _initialize_output(output)
+
+
+def _publish_output(staging: pathlib.Path, output: pathlib.Path) -> None:
+    _validate_output_target(output)
+    backup: pathlib.Path | None = None
+    if output.exists():
+        backup = pathlib.Path(
+            tempfile.mkdtemp(prefix=f".{output.name}-previous-", dir=output.parent)
+        )
+        backup.rmdir()
+        output.rename(backup)
+    try:
+        staging.rename(output)
+    except BaseException:
+        if backup is not None and not output.exists():
+            backup.rename(output)
+        raise
+    if backup is not None:
+        shutil.rmtree(backup)
 
 
 def generate(
@@ -574,81 +682,93 @@ def generate(
     run_case: RunCase = _default_run_case,
 ) -> dict[str, Any]:
     catalog = _load_catalog()
-    _prepare_output(output)
-
-    documents: list[dict[str, Any]] = []
-    for spec in catalog["documents"]:
-        if spec["origin"] == "public-institutional" and not include_public:
-            continue
-        source = _materialize_source(spec, output / "documents", source_cache)
-        data = source.read_bytes()
-        if (
-            spec.get("sha256")
-            and not spec.get("publish_pages")
-            and _sha256(data) != spec["sha256"]
-        ):
-            raise ValueError(f"{spec['id']} did not retain its pinned checksum")
-        thumbnail, pages = _render_thumbnail(source, output / "previews")
-        runs = [
-            _generate_run(
-                spec,
-                source,
-                run,
-                catalog["configurations"],
-                output,
-                timeout_s,
-                run_case,
-            )
-            for run in spec["runs"]
-        ]
-        documents.append(
-            {
-                "id": spec["id"],
-                "title": spec["title"],
-                "summary": spec["summary"],
-                "kind": spec["kind"],
-                "publisher": spec["publisher"],
-                "origin": spec["origin"],
-                "privacy": spec["privacy"],
-                "content_note": spec.get("content_note"),
-                "tags": spec["tags"],
-                "source": {
-                    "download": f"documents/{source.name}",
-                    "original_url": spec.get("url"),
-                    "original_sha256": spec.get("sha256"),
-                    "sanitization": spec.get("sanitization"),
-                    "thumbnail": thumbnail,
-                    "bytes": len(data),
-                    "sha256": _sha256(data),
-                    "pages": pages,
-                },
-                "runs": runs,
-            }
-        )
-
-    outcomes = [run["outcome"] for document in documents for run in document["runs"]]
-    artifact = {
-        "schema_version": catalog["schema_version"],
-        "generated_at": dt.datetime.now(dt.UTC).isoformat(),
-        "build": _build_metadata(commit, ref),
-        "integration": _parse_junit(junit),
-        "summary": {
-            "documents": len(documents),
-            "runs": len(outcomes),
-            "pass": outcomes.count("pass"),
-            "fail": outcomes.count("fail"),
-            "known_issue": outcomes.count("known-issue"),
-            "blocked": outcomes.count("blocked"),
-            "reference": outcomes.count("reference"),
-        },
-        "configurations": catalog["configurations"],
-        "documents": documents,
-    }
-    (output / "data" / "results.json").write_text(
-        json.dumps(artifact, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    _validate_output_target(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = pathlib.Path(
+        tempfile.mkdtemp(prefix=f".{output.name}-staging-", dir=output.parent)
     )
-    return artifact
+    try:
+        _initialize_output(staging)
+
+        documents: list[dict[str, Any]] = []
+        for spec in catalog["documents"]:
+            if spec["origin"] == "public-institutional" and not include_public:
+                continue
+            source = _materialize_source(spec, staging / "documents", source_cache)
+            data = source.read_bytes()
+            if (
+                spec.get("sha256")
+                and not spec.get("publish_pages")
+                and _sha256(data) != spec["sha256"]
+            ):
+                raise ValueError(f"{spec['id']} did not retain its pinned checksum")
+            thumbnail, pages = _render_thumbnail(source, staging / "previews")
+            runs = [
+                _generate_run(
+                    spec,
+                    source,
+                    run,
+                    catalog["configurations"],
+                    staging,
+                    timeout_s,
+                    run_case,
+                )
+                for run in spec["runs"]
+            ]
+            documents.append(
+                {
+                    "id": spec["id"],
+                    "title": spec["title"],
+                    "summary": spec["summary"],
+                    "kind": spec["kind"],
+                    "publisher": spec["publisher"],
+                    "origin": spec["origin"],
+                    "privacy": spec["privacy"],
+                    "content_note": spec.get("content_note"),
+                    "tags": spec["tags"],
+                    "source": {
+                        "download": f"documents/{source.name}",
+                        "original_url": spec.get("url"),
+                        "original_sha256": spec.get("sha256"),
+                        "sanitization": spec.get("sanitization"),
+                        "thumbnail": thumbnail,
+                        "bytes": len(data),
+                        "sha256": _sha256(data),
+                        "pages": pages,
+                    },
+                    "runs": runs,
+                }
+            )
+
+        outcomes = [
+            run["outcome"] for document in documents for run in document["runs"]
+        ]
+        artifact = {
+            "schema_version": catalog["schema_version"],
+            "generated_at": dt.datetime.now(dt.UTC).isoformat(),
+            "build": _build_metadata(commit, ref),
+            "integration": _parse_junit(junit),
+            "summary": {
+                "documents": len(documents),
+                "runs": len(outcomes),
+                "pass": outcomes.count("pass"),
+                "fail": outcomes.count("fail"),
+                "known_issue": outcomes.count("known-issue"),
+                "blocked": outcomes.count("blocked"),
+                "reference": outcomes.count("reference"),
+            },
+            "configurations": catalog["configurations"],
+            "documents": documents,
+        }
+        (staging / "data" / "results.json").write_text(
+            json.dumps(artifact, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        _publish_output(staging, output)
+        return artifact
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
 
 
 def build_parser() -> argparse.ArgumentParser:

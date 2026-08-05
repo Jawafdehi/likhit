@@ -262,6 +262,31 @@ def test_progress_handles_missing_wall_time(
     assert "?s" in capsys.readouterr().err
 
 
+def test_unreadable_source_is_recorded_without_starting_worker(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "sample.pdf"
+    source.touch()
+    original_read_bytes = pathlib.Path.read_bytes
+
+    def fail_for_source(path: pathlib.Path) -> bytes:
+        if path == source:
+            raise PermissionError("source became unreadable")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", fail_for_source)
+    monkeypatch.setattr(
+        "tests.benchmark.measure.subprocess.run",
+        lambda *args, **kwargs: pytest.fail("worker must not start"),
+    )
+
+    record = _convert_one(source, pages=None, timeout_s=1)
+
+    assert record["status"] == "unreadable_source"
+    assert record["exc_type"] == "PermissionError"
+    assert "source became unreadable" in str(record["exc_msg"])
+
+
 def test_positive_worker_exit_is_not_reported_as_signal_kill(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

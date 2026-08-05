@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -14,6 +15,7 @@ from typing import Any
 
 import fitz
 import pytest
+import yaml
 
 SITE_DIR = pathlib.Path(__file__).resolve().parents[1] / "site"
 SPEC = importlib.util.spec_from_file_location(
@@ -95,6 +97,9 @@ def test_generator_writes_complete_synthetic_artifact(tmp_path: pathlib.Path) ->
     assert artifact["integration"]["skipped"] == 1
     assert (output / "index.html").is_file()
     assert (output / ".nojekyll").is_file()
+    assert (output / generator.OUTPUT_MARKER).read_text(encoding="utf-8") == (
+        generator.OUTPUT_MARKER_CONTENT
+    )
     assert (output / "data" / "schema.json").is_file()
 
     stored = json.loads((output / "data" / "results.json").read_text(encoding="utf-8"))
@@ -123,6 +128,25 @@ def test_generator_writes_complete_synthetic_artifact(tmp_path: pathlib.Path) ->
             )
 
 
+def test_failed_regeneration_preserves_previous_site(tmp_path: pathlib.Path) -> None:
+    output = tmp_path / "site"
+    generator.generate(output, include_public=False, run_case=_fake_run)
+    previous_results = (output / "data" / "results.json").read_bytes()
+
+    def fail_run(
+        _source: pathlib.Path,
+        _run: dict[str, Any],
+        _config: dict[str, Any],
+        _timeout_s: int,
+    ) -> tuple[dict[str, Any], str]:
+        raise RuntimeError("injected conversion failure")
+
+    with pytest.raises(RuntimeError, match="injected conversion failure"):
+        generator.generate(output, include_public=False, run_case=fail_run)
+
+    assert (output / "data" / "results.json").read_bytes() == previous_results
+
+
 def test_generator_refuses_to_replace_repository_content(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -135,6 +159,35 @@ def test_generator_refuses_to_replace_repository_content(
 
     with pytest.raises(ValueError, match="repository content"):
         generator._prepare_output(source_directory)
+
+    assert sentinel.read_text(encoding="utf-8") == "must survive"
+
+
+def test_generator_refuses_to_replace_repository_parent(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "parent" / "repository"
+    repository.mkdir(parents=True)
+    sentinel = repository / "must-survive.txt"
+    sentinel.write_text("must survive", encoding="utf-8")
+    monkeypatch.setattr(generator, "ROOT", repository)
+
+    with pytest.raises(ValueError, match="repository content"):
+        generator._prepare_output(repository.parent)
+
+    assert sentinel.read_text(encoding="utf-8") == "must survive"
+
+
+def test_generator_refuses_to_replace_unowned_directory(
+    tmp_path: pathlib.Path,
+) -> None:
+    output = tmp_path / "unrelated"
+    output.mkdir()
+    sentinel = output / "must-survive.txt"
+    sentinel.write_text("must survive", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unowned output"):
+        generator._prepare_output(output)
 
     assert sentinel.read_text(encoding="utf-8") == "must survive"
 
@@ -221,6 +274,93 @@ def test_replacement_character_check_reports_damage() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "kind",
+    ["min_chars", "min_devanagari", "max_devanagari", "max_replacement"],
+)
+def test_metric_checks_fail_when_conversion_metrics_are_unavailable(kind: str) -> None:
+    result = generator._evaluate_check(
+        {"kind": kind, "value": 0, "label": "Metric check"},
+        "",
+        "",
+        {},
+    )
+
+    assert result["passed"] is False
+    assert "unavailable" in result["detail"]
+
+
+@pytest.mark.parametrize(
+    ("expectation", "checks", "expected_outcome"),
+    [
+        (
+            "blocked",
+            [
+                {
+                    "kind": "diagnostic_contains",
+                    "value": "OCR",
+                    "label": "OCR requirement reported",
+                }
+            ],
+            "blocked",
+        ),
+        (
+            "known_issue",
+            [
+                {
+                    "kind": "max_replacement",
+                    "value": 0,
+                    "label": "No replacement characters",
+                }
+            ],
+            "known-issue",
+        ),
+        ("reference", [], "reference"),
+        ("pass", [], "fail"),
+    ],
+)
+def test_non_ok_run_respects_declared_expectation(
+    tmp_path: pathlib.Path,
+    expectation: str,
+    checks: list[dict[str, Any]],
+    expected_outcome: str,
+) -> None:
+    output = tmp_path / expectation
+    generator._prepare_output(output)
+
+    def failed_run(
+        _source: pathlib.Path,
+        _run: dict[str, Any],
+        _config: dict[str, Any],
+        _timeout_s: int,
+    ) -> tuple[dict[str, Any], str]:
+        return {
+            "status": "error",
+            "text": "",
+            "wall_s": 0.1,
+            "max_rss_mb": 1.0,
+            "exc_type": "ExtractionError",
+            "exc_msg": "OCR is required",
+        }, "OCR is required"
+
+    result = generator._generate_run(
+        {"id": "sample"},
+        tmp_path / "sample.pdf",
+        {
+            "id": "failed-run",
+            "config": "test",
+            "expectation": expectation,
+            "checks": checks,
+        },
+        {"test": {"label": "Test configuration"}},
+        output,
+        1,
+        failed_run,
+    )
+
+    assert result["outcome"] == expected_outcome
+
+
 def test_dashboard_exposes_inline_pdf_view_separately_from_download() -> None:
     app = (SITE_DIR / "static" / "app.js").read_text(encoding="utf-8")
     index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
@@ -232,6 +372,11 @@ def test_dashboard_exposes_inline_pdf_view_separately_from_download() -> None:
     assert "First-page preview" in app
     assert "download>" in app
     assert '<option value="doc">Legacy Word (.doc)</option>' in index
+    assert (
+        'integrity="sha384-uTYyvsSSUZeaPhb5RbKlQa0zY/WpX/QHfvg2mczXyBQOpkWPEDy9lczyp+w7SKXu"'
+        in index
+    )
+    assert 'crossorigin="anonymous"' in index
 
 
 def test_public_excerpt_removes_metadata_and_unselected_pages() -> None:
@@ -291,6 +436,57 @@ def test_public_download_retries_and_names_failed_url() -> None:
     assert isinstance(raised.value.__cause__, urllib.error.URLError)
     assert calls == ["attempt-120"] * 3
     assert delays == [1.0, 2.0]
+
+
+def test_public_download_rejects_oversized_response() -> None:
+    data = b"oversized"
+    spec = {
+        "id": "public-sample",
+        "kind": "pdf",
+        "url": "https://example.com/public-sample.pdf",
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "max_bytes": len(data) - 1,
+    }
+
+    def oversized_open(_request: object, *, timeout: int) -> io.BytesIO:
+        assert timeout == 120
+        return io.BytesIO(data)
+
+    with pytest.raises(ValueError, match="download exceeds"):
+        generator._download_public_source(spec, None, open_url=oversized_open)
+
+
+def test_public_download_rejects_oversized_cached_source(
+    tmp_path: pathlib.Path,
+) -> None:
+    data = b"oversized"
+    spec = {
+        "id": "public-sample",
+        "kind": "pdf",
+        "url": "https://example.com/public-sample.pdf",
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "max_bytes": len(data) - 1,
+    }
+    (tmp_path / "public-sample.pdf").write_bytes(data)
+
+    with pytest.raises(ValueError, match="cached source exceeds"):
+        generator._download_public_source(spec, tmp_path)
+
+
+def test_pages_deployment_requires_successful_main_branch_gate() -> None:
+    workflow_path = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / ".github"
+        / "workflows"
+        / "benchmark-pages.yml"
+    )
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    assert workflow["jobs"]["gate"]["if"] == "always()"
+    assert workflow["jobs"]["deploy"]["needs"] == ["build", "gate"]
+    deploy_condition = workflow["jobs"]["deploy"]["if"]
+    assert "github.ref == 'refs/heads/main'" in deploy_condition
+    assert "needs.gate.result == 'success'" in deploy_condition
 
 
 def test_isolated_runner_converts_generated_docx(tmp_path: pathlib.Path) -> None:

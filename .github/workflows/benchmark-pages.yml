@@ -69,10 +69,30 @@ jobs:
         with:
           path: _site
 
+  gate:
+    name: Verify published results
+    if: always()
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check integration and benchmark outcomes
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          INTEGRATION_OUTCOME: ${{ needs.build.outputs.integration-outcome }}
+          BENCHMARK_OUTCOME: ${{ needs.build.outputs.benchmark-outcome }}
+        run: |
+          test "${BUILD_RESULT}" = "success"
+          test "${INTEGRATION_OUTCOME}" = "success"
+          test "${BENCHMARK_OUTCOME}" = "success"
+
   deploy:
     name: Deploy Pages
-    if: github.event_name != 'pull_request'
-    needs: build
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main' &&
+      needs.gate.result == 'success'
+    needs: [build, gate]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -85,18 +105,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
-
-  gate:
-    name: Verify published results
-    if: always() && needs.build.result == 'success'
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check integration and benchmark outcomes
-        env:
-          INTEGRATION_OUTCOME: ${{ needs.build.outputs.integration-outcome }}
-          BENCHMARK_OUTCOME: ${{ needs.build.outputs.benchmark-outcome }}
-        run: |
-          test "${INTEGRATION_OUTCOME}" = "success"
-          test "${BENCHMARK_OUTCOME}" = "success"

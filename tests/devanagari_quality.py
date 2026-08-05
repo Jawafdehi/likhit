@@ -93,20 +93,16 @@ def devanagari_quality(text: str) -> dict[str, int]:
     matras = 0
     marks = 0
     previous = ""
+    has_base = False
 
     for char in text:
         char_is_matra = is_matra(char)
+        char_is_sign = is_sign(char)
         if char_is_matra:
             matras += 1
 
-        if char_is_matra or is_sign(char):
+        if char_is_matra or char_is_sign:
             marks += 1
-            has_base = bool(previous) and (
-                is_consonant(previous)
-                or is_matra(previous)
-                or is_sign(previous)
-                or is_independent_vowel(previous)
-            )
             if not has_base:
                 stranded += 1
                 if char_is_matra:
@@ -117,6 +113,10 @@ def devanagari_quality(text: str) -> dict[str, int]:
                 doubled += 1
             if char_is_matra and previous == "्":
                 halant_matra += 1
+        elif is_consonant(char) or is_independent_vowel(char):
+            has_base = True
+        elif char not in {"\u200c", "\u200d"}:
+            has_base = False
 
         previous = char
 

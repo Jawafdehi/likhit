@@ -100,12 +100,16 @@ def _convert_one(
     if pages:
         command.append(pages)
 
-    record: dict[str, object] = {
-        "file": _file_id(path),
-        "bytes": path.stat().st_size,
-        "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "pages": pages,
-    }
+    record: dict[str, object] = {"file": _file_id(path), "pages": pages}
+    try:
+        record["bytes"] = path.stat().st_size
+        record["source_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        record["status"] = "unreadable_source"
+        record["exc_type"] = type(exc).__name__
+        record["exc_msg"] = str(exc)[:2000]
+        return record
+
     try:
         completed = subprocess.run(
             command,
