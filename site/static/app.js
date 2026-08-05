@@ -42,7 +42,8 @@ function refreshIcons() {
 }
 
 function formatNumber(value) {
-  return new Intl.NumberFormat("en-US").format(value ?? 0);
+  if (!Number.isFinite(value)) return "—";
+  return new Intl.NumberFormat("en-US").format(value);
 }
 
 function formatBytes(bytes) {
@@ -118,21 +119,24 @@ function renderSummary() {
       : integration.status === "failed"
         ? "fail"
         : "";
+  const executedTests = integration.tests - integration.skipped;
+  const passedTests =
+    executedTests - integration.failures - integration.errors;
   const items = [
-    ["Documents", summary.documents, "source files", ""],
-    ["Runs", summary.runs, "configurations", ""],
-    ["Passed", summary.pass, "verified", "pass"],
-    ["Known", summary.known_issue, "tracked issue", "known"],
-    ["Blocked", summary.blocked, "missing dependency", "blocked"],
     ["Failed", summary.fail, "needs attention", summary.fail ? "fail" : ""],
     [
       "Integration",
       integration.status === "not-run"
         ? "—"
-        : `${integration.tests - integration.failures - integration.errors}/${integration.tests}`,
+        : `${passedTests}/${executedTests}`,
       integration.status,
       integrationClass,
     ],
+    ["Documents", summary.documents, "source files", ""],
+    ["Runs", summary.runs, "configurations", ""],
+    ["Passed", summary.pass, "verified", "pass"],
+    ["Known", summary.known_issue, "tracked issue", "known"],
+    ["Blocked", summary.blocked, "missing dependency", "blocked"],
   ];
   byId("summary-strip").innerHTML = items
     .map(
@@ -361,8 +365,7 @@ function renderRunSegments() {
     });
 }
 
-async function renderTranscript(run) {
-  const token = ++state.loadToken;
+async function renderTranscript(run, token) {
   byId("detail-body").innerHTML =
     '<div class="loading-copy">Loading transcript…</div>';
   try {
@@ -530,16 +533,19 @@ function renderMetadata(item, run) {
 }
 
 function renderDetailBody() {
+  const token = ++state.loadToken;
   const item = activeDocument();
   const run = activeRun();
   if (!item || !run) return;
   byId("detail-tabs")
     .querySelectorAll("[data-tab]")
     .forEach((button) => {
-      button.classList.toggle("active", button.dataset.tab === state.tab);
+      const selected = button.dataset.tab === state.tab;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-pressed", String(selected));
     });
   if (state.tab === "transcript") {
-    renderTranscript(run);
+    renderTranscript(run, token);
   } else if (state.tab === "source") {
     renderSource(item);
   } else if (state.tab === "checks") {
@@ -570,7 +576,9 @@ function bindControls() {
         byId("status-filter")
           .querySelectorAll("[data-status]")
           .forEach((candidate) => {
-            candidate.classList.toggle("active", candidate === button);
+            const selected = candidate === button;
+            candidate.classList.toggle("active", selected);
+            candidate.setAttribute("aria-pressed", String(selected));
           });
         renderResults();
       });
@@ -607,7 +615,7 @@ async function initialize() {
     } else {
       renderResults();
       const first = filteredDocuments()[0];
-      if (first && window.innerWidth > 760) {
+      if (first && !window.matchMedia("(max-width: 760px)").matches) {
         selectDocument(first.id);
         document.body.classList.remove("detail-open");
       }

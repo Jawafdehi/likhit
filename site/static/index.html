@@ -82,11 +82,30 @@
             role="group"
             aria-label="Filter by outcome"
           >
-            <button class="active" type="button" data-status="all">All</button>
-            <button type="button" data-status="pass">Passed</button>
-            <button type="button" data-status="known-issue">Known</button>
-            <button type="button" data-status="blocked">Blocked</button>
-            <button type="button" data-status="fail">Failed</button>
+            <button
+              class="active"
+              type="button"
+              data-status="all"
+              aria-pressed="true"
+            >
+              All
+            </button>
+            <button type="button" data-status="pass" aria-pressed="false">
+              Passed
+            </button>
+            <button
+              type="button"
+              data-status="known-issue"
+              aria-pressed="false"
+            >
+              Known
+            </button>
+            <button type="button" data-status="blocked" aria-pressed="false">
+              Blocked
+            </button>
+            <button type="button" data-status="fail" aria-pressed="false">
+              Failed
+            </button>
           </div>
 
           <div class="result-count" id="result-count"></div>
@@ -125,12 +144,23 @@
             ></div>
 
             <nav class="detail-tabs" id="detail-tabs" aria-label="Result views">
-              <button class="active" type="button" data-tab="transcript">
+              <button
+                class="active"
+                type="button"
+                data-tab="transcript"
+                aria-pressed="true"
+              >
                 Transcript
               </button>
-              <button type="button" data-tab="source">Source</button>
-              <button type="button" data-tab="checks">Checks</button>
-              <button type="button" data-tab="metadata">Metadata</button>
+              <button type="button" data-tab="source" aria-pressed="false">
+                Source
+              </button>
+              <button type="button" data-tab="checks" aria-pressed="false">
+                Checks
+              </button>
+              <button type="button" data-tab="metadata" aria-pressed="false">
+                Metadata
+              </button>
             </nav>
 
             <section class="detail-body" id="detail-body"></section>

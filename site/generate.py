@@ -14,9 +14,11 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
 from collections.abc import Callable
 from typing import Any
 
@@ -173,18 +175,38 @@ def _cached_public_source(
 
 
 def _download_public_source(
-    spec: dict[str, Any], source_cache: pathlib.Path | None
+    spec: dict[str, Any],
+    source_cache: pathlib.Path | None,
+    *,
+    attempts: int = 3,
+    open_url: Callable[..., Any] = urllib.request.urlopen,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> bytes:
     cached = _cached_public_source(spec, source_cache)
     if cached is not None:
         data = cached.read_bytes()
     else:
+        if attempts < 1:
+            raise ValueError("download attempts must be positive")
         request = urllib.request.Request(
             spec["url"],
             headers={"User-Agent": "likhit-benchmark/1.0"},
         )
-        with urllib.request.urlopen(request, timeout=120) as response:
-            data = response.read()
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                with open_url(request, timeout=120) as response:
+                    data = response.read()
+                break
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                last_error = exc
+                if attempt + 1 < attempts:
+                    sleep(float(2**attempt))
+        else:
+            raise RuntimeError(
+                f"{spec['id']} download failed from {spec['url']} "
+                f"after {attempts} attempts"
+            ) from last_error
 
     digest = _sha256(data)
     if digest != spec["sha256"]:

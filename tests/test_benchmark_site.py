@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
+import urllib.error
 from typing import Any
 
 import fitz
@@ -189,9 +191,40 @@ def test_public_excerpt_removes_metadata_and_unselected_pages() -> None:
         assert not any(excerpt.metadata[field] for field in identifying_fields)
 
 
+def test_public_download_retries_and_names_failed_url() -> None:
+    spec = {
+        "id": "public-sample",
+        "kind": "pdf",
+        "url": "https://example.com/public-sample.pdf",
+        "sha256": "0" * 64,
+    }
+    calls: list[str] = []
+    delays: list[float] = []
+
+    def failing_open(_request: object, *, timeout: int) -> object:
+        calls.append(f"attempt-{timeout}")
+        raise urllib.error.URLError("temporarily unavailable")
+
+    with pytest.raises(RuntimeError) as raised:
+        generator._download_public_source(
+            spec,
+            None,
+            attempts=3,
+            open_url=failing_open,
+            sleep=delays.append,
+        )
+
+    assert spec["url"] in str(raised.value)
+    assert isinstance(raised.value.__cause__, urllib.error.URLError)
+    assert calls == ["attempt-120"] * 3
+    assert delays == [1.0, 2.0]
+
+
 def test_isolated_runner_converts_generated_docx(tmp_path: pathlib.Path) -> None:
     source = tmp_path / "unicode.docx"
     source.write_bytes(generator._build_unicode_docx())
+    environment = os.environ.copy()
+    environment["LIKHIT_MEM_CAP_GB"] = "invalid"
 
     completed = subprocess.run(
         [
@@ -203,6 +236,7 @@ def test_isolated_runner_converts_generated_docx(tmp_path: pathlib.Path) -> None
         ],
         capture_output=True,
         check=True,
+        env=environment,
         timeout=30,
     )
     payload = json.loads(completed.stdout)
@@ -212,9 +246,7 @@ def test_isolated_runner_converts_generated_docx(tmp_path: pathlib.Path) -> None
     assert "Quarterly programme" in payload["text"]
 
 
-def test_isolated_runner_retries_short_writes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_isolated_runner_retries_short_writes() -> None:
     written = bytearray()
 
     def short_write(_file_descriptor: int, data: bytes | memoryview) -> int:
@@ -222,8 +254,62 @@ def test_isolated_runner_retries_short_writes(
         written.extend(chunk)
         return len(chunk)
 
-    monkeypatch.setattr(runner.os, "write", short_write)
-
-    runner._write_all(1, b"complete result")
+    runner._write_all(1, b"complete result", write=short_write)
 
     assert written == b"complete result"
+
+
+@pytest.mark.parametrize("progress", [0, -1])
+def test_isolated_runner_rejects_zero_progress(progress: int) -> None:
+    def stalled_write(_file_descriptor: int, _data: memoryview) -> int:
+        return progress
+
+    with pytest.raises(OSError, match="made no progress"):
+        runner._write_all(1, b"complete result", write=stalled_write)
+
+
+@pytest.mark.parametrize("value", [None, "", "invalid", "0", "-2"])
+def test_isolated_runner_memory_cap_falls_back(value: str | None) -> None:
+    assert runner._parse_memory_cap(value) == runner.DEFAULT_MEM_CAP_BYTES
+
+
+def test_isolated_runner_clamps_memory_cap_to_hard_limit() -> None:
+    class FakeResource:
+        RLIMIT_DATA = 2
+        RLIM_INFINITY = -1
+
+        def __init__(self) -> None:
+            self.applied: tuple[int, int] | None = None
+
+        @staticmethod
+        def getrlimit(_limit: int) -> tuple[int, int]:
+            return (256, 1024)
+
+        def setrlimit(self, _limit: int, limits: tuple[int, int]) -> None:
+            self.applied = limits
+
+    fake_resource = FakeResource()
+
+    runner._apply_memory_cap(fake_resource, cap_bytes=2048)
+
+    assert fake_resource.applied == (1024, 1024)
+
+
+def test_isolated_runner_continues_when_memory_cap_is_unavailable(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class RestrictedResource:
+        RLIMIT_DATA = 2
+        RLIM_INFINITY = -1
+
+        @staticmethod
+        def getrlimit(_limit: int) -> tuple[int, int]:
+            return (256, 1024)
+
+        @staticmethod
+        def setrlimit(_limit: int, _limits: tuple[int, int]) -> None:
+            raise OSError("restricted")
+
+    runner._apply_memory_cap(RestrictedResource(), cap_bytes=512)
+
+    assert "memory cap not applied: restricted" in capsys.readouterr().err
