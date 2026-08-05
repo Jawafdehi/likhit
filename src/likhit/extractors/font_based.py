@@ -428,7 +428,7 @@ def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
             # rather than silently disabling Part B (the name-based path raises
             # the same way), so behavior does not depend on the font name.
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - this map does not fit; try the next
             continue
         validity = _nepali_validity(converted)
         if best is None or (validity["hits"], -validity["penalty_per_deva"]) > (

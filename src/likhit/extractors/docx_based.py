@@ -113,7 +113,7 @@ class DocxBasedStrategy(ExtractionStrategy):
             )
             text = result.stdout
             return text if text else ""
-        except Exception:
+        except Exception:  # noqa: BLE001 - antiword failed; try the next strategy
             return None
 
     def _extract_doc_with_textutil(self, file_path: str) -> str | None:
@@ -132,7 +132,7 @@ class DocxBasedStrategy(ExtractionStrategy):
             )
             text = result.stdout
             return text if text else ""
-        except Exception:
+        except Exception:  # noqa: BLE001 - textutil failed; try the next strategy
             return None
 
     def _create_fragments(self, text: str) -> list[TextFragment]:

@@ -139,7 +139,7 @@ def test_font_based_strategy_auto_detects_and_converts_legacy_fonts(
     monkeypatch.setattr(
         font_based_module,
         "get_converter",
-        lambda _font_name: (lambda text: f"converted:{text}"),
+        lambda _font_name: lambda text: f"converted:{text}",
     )
 
     result = FontBasedStrategy().extract_text(str(source))
@@ -489,9 +489,9 @@ def _run_analyze_gsub_with_timeout(
     worker.start()
     worker.join(timeout=timeout)
 
-    assert (
-        not worker.is_alive()
-    ), "_analyze_gsub did not terminate: the ligature fixpoint is unbounded"
+    assert not worker.is_alive(), (
+        "_analyze_gsub did not terminate: the ligature fixpoint is unbounded"
+    )
     if error:
         raise error[0]
     return result["derived"]

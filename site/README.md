@@ -6,7 +6,7 @@ The published `_site/` directory is generated and intentionally not committed.
 ## Generate locally
 
 ```bash
-poetry run python site/generate.py \
+uv run python site/generate.py \
   --output _site \
   --source-cache /path/to/research/corpus/gon_mixed
 python -m http.server 8000 --directory _site

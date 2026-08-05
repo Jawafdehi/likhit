@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Hippocratic-3.0
+
+# Pre-commit hooks for likhit (uv project).
+# Install once per clone:  uv run pre-commit install
+#
+# Gating policy matches the jawafdehi-api monolith, with one addition: likhit
+# gates FORMATTING too. That tree cannot (52k legacy lines would reflag under
+# `ruff format`); this one is 61 files and was already black-formatted, so the
+# `black --check` gate carried over to `ruff format --check` intact rather than
+# being dropped. The remaining hooks are non-mutating checks only.
+#
+# Both ruff hooks come from the official astral-sh/ruff-pre-commit mirror,
+# PINNED to the exact version in uv.lock. The pin is the point: pre-commit
+# builds its own hermetic env, so linting does not need a working project venv,
+# and the version is reviewable in a diff instead of moving silently whenever
+# `uv sync` bumps ruff.
+#
+# WHEN BUMPING RUFF: change `rev` here and the `ruff>=` floor in pyproject.toml
+# together, then re-run `uv lock`. A mismatch means pre-commit and CI can
+# disagree — `uv run ruff --version` must equal the `rev` below.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.22
+    hooks:
+      # No `args:` needed — the mirror's own hook definition already passes
+      # --force-exclude (passing it again is a hard error: "the argument
+      # '--force-exclude' cannot be used multiple times").
+      - id: ruff-check
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        # Raised from the 500 KB default because this repo legitimately commits
+        # binary corpora: samples/ holds the real government documents the
+        # converters are measured against, and tests/integration/test_data/ the
+        # PDF/DOC fixtures. The largest tracked file today is
+        # samples/aarop-patra.pdf at 3.2 MB, so 4 MB blocks a stray artifact
+        # while leaving room to re-add anything already here.
+        args: [--maxkb=4096]
+      - id: check-case-conflict
+      - id: check-toml
+      - id: check-yaml
+
+# ty (astral-sh) is deliberately NOT a hook yet. It is installed in the `dev`
+# group and configured in pyproject.toml under [tool.ty]; run it with
+# `uv run ty check`. At adoption it reported 102 diagnostics on this tree, 99 of
+# them in six families that are limitations of a pre-1.0 checker against
+# unstubbed dependencies (PyMuPDF tables, openai overloads, pytest.skip). The
+# [tool.ty.rules] block silences those and leaves 3. Wire it in here only once
+# those 3 are at 0 and the silenced families can be re-enabled — see the staged
+# plan in pyproject.toml.

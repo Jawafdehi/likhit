@@ -30,7 +30,7 @@ dependencies = [
     "pyantiword>=0.1.2,<1.0.0",
     "markitdown-ocr>=0.1.0,<0.2.0",
     "openai>=2.30.0,<3.0.0",
-    "sentry-sdk (>=2.0.0,<3.0.0)"
+    "sentry-sdk>=2.0.0,<3.0.0",
 ]
 
 [project.urls]
@@ -45,15 +45,147 @@ likhit = "likhit._plugin"
 [project.scripts]
 likhit-save = "likhit.save_cli:main"
 
-[tool.poetry]
-packages = [{ include = "likhit", from = "src" }]
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.0.0"
-pytest-cov = "^6.0.0"
-ruff = "^0.11.0"
-black = "^25.0.0"
-
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+# Bounded to a major, as `poetry-core>=2.0.0,<3.0.0` was before it. This is not
+# ceremony: the sdist `include` below depends on hatchling's file-selection
+# semantics, and this is a package that publishes to PyPI, so a major bump must
+# be an explicit decision with the artifacts re-diffed. The floor is the version
+# that built the artifacts this migration was verified against.
+requires = ["hatchling>=1.31,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/likhit"]
+
+# The sdist contents are pinned deliberately. Poetry shipped only the package,
+# README, LICENSE and pyproject (64 KB); hatchling's default is "everything git
+# does not ignore", which would add samples/ (7.8 MB) and tests/ (2.9 MB) to a
+# published artifact. Keep this list in sync if a new top-level file belongs in
+# the source release.
+#
+# The leading slashes matter: hatchling matches gitignore-style, so a bare
+# `README.md` would also pull in `site/README.md`.
+#
+# Verified against the last Poetry-built 0.1.7 artifacts: both the wheel and the
+# sdist carry an identical file list, except that hatchling also puts
+# `.gitignore` in the sdist. That one is force-included by the backend — an
+# `exclude` entry for it has no effect — and at under 5 KB it is not worth
+# working around.
+[tool.hatch.build.targets.sdist]
+include = ["/src/likhit", "/README.md", "/LICENSE"]
+
+[dependency-groups]
+# Dev tooling (lint/format/type/test). Not shipped in the wheel.
+#
+# black is gone: `ruff format` replaces it, so the whole toolchain is Astral's
+# and there is one less formatter version to keep in step. The two disagree on
+# 3 of this tree's 61 files (all under tests/), reformatted once in the
+# migration commit; `ruff format --check .` is clean from here on.
+dev = [
+    "pytest>=8.0.0,<9.0.0",
+    "pytest-cov>=6.0.0,<7.0.0",
+    "ruff>=0.15.0,<0.16.0",
+    "pre-commit>=4.6.0",
+    "ty>=0.0.66",
+]
+
+# ---------------------------------------------------------------------------
+# ruff — the lint AND format gate. CI runs `uv run ruff check .` plus
+# `uv run ruff format --check .`; pre-commit runs both as hooks.
+#
+# Formatting stays gated here, unlike in the jawafdehi-api monolith where 52k
+# legacy lines keep `ruff format` advisory. This tree was already black-formatted
+# and is 61 files, so the gate carries over from `black --check` intact.
+#
+# Beyond ruff's defaults (E4/E7/E9/F), two families are enforced tree-wide,
+# measured on this tree at adoption:
+#
+#   BLE001 — 7 findings, every one a deliberate graceful-degradation path in the
+#   document parsers (malformed PDF font tables, absent antiword/textutil). Each
+#   now carries `# noqa: BLE001` plus a reason, so the count is 0 and a NEW
+#   unexplained blind catch fails the gate instead of accumulating.
+#
+#   ANN (minus ANN401) — 20 findings: 15 in tests/ and 5 in
+#   src/likhit/extractors/, both exempted below. Everything else is already
+#   annotation-clean and is gated as such: all of src/likhit outside
+#   extractors/, plus site/.
+#
+# ANN401 (a parameter or return annotated `Any`) is off everywhere, as in
+# jawafdehi-api: where this tree reaches for `Any` it is holding a genuinely
+# untyped foreign object — a PyMuPDF table, a fontTools `TTFont`. `Any` is the
+# honest annotation there, and the rule would only push people to delete the
+# annotation, which ANN001/ANN201 then flag.
+# ---------------------------------------------------------------------------
+[tool.ruff.lint]
+extend-select = ["BLE", "ANN"]
+extend-ignore = ["ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+# ruff has no "select this rule for one path only" primitive, so ANN is selected
+# globally above and switched OFF for the two paths that do not yet satisfy it.
+# Deleting a line here is how a path opts IN — do that only once its
+# `ruff check <path> --select ANN --ignore ANN401` count is actually 0. An
+# entry that is always violated is not a gate.
+#
+# 4 ANN001 on fontTools `TTFont` parameters (kalimati.py) + 1 ANN202
+# (legacy_maps.py `_get_mapper`).
+"src/likhit/extractors/**" = ["ANN"]
+# Tests stay exempt permanently: pytest does not read annotations, and ANN401
+# would fight every fixture.
+"tests/**" = ["ANN"]
+
+# ---------------------------------------------------------------------------
+# ty (astral-sh) — type checking, ADVISORY, not a gate.
+#
+# Run it:  uv run ty check
+#
+# ty is pre-1.0 (0.0.67 here). likhit has no Django, so none of jawafdehi-api's
+# model-metaclass blind spot applies; what limits ty here is that this package's
+# dependencies are largely unstubbed. Measured at adoption: 102 diagnostics, of
+# which 99 are in the six demonstrated tool-limitation families silenced below,
+# leaving 3.
+# The rules stay off and ty stays advisory (CI runs it with `|| true`, and
+# pre-commit does not run it) because a checker that reports 99 non-defects
+# trains people to ignore it.
+#
+# The path to a real gate, in order:
+#   1. the two big families are third-party stub gaps — revisit when PyMuPDF
+#      ships type information, or add stubs for the handful of table attributes
+#      tables.py touches and re-measure;
+#   2. turn the small families on one at a time (each is 1-2 findings today);
+#   3. only then drop the `|| true` in ci.yml and add the hook to
+#      .pre-commit-config.yaml.
+# ---------------------------------------------------------------------------
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.src]
+# Never type-check the venv or generated output. `_site/` is the built benchmark
+# site and `dist/` the built distributions; neither is source.
+exclude = [".venv", "build", "dist", "_site"]
+
+[tool.ty.rules]
+# PyMuPDF ships no type information, so `page.find_tables()` and the table
+# objects it returns are plain `object` to ty. That accounts for 19 of src's 21
+# `unresolved-attribute` findings, all in src/likhit/extractors/tables.py
+# (`.bbox`, `.rows`, `.row_count`, `.col_count`). The other 2 are ty declining to
+# narrow a subscript expression: the `blocks[index - 1].text` reads in
+# converters/nepali_pdf.py and renderers/markdown.py are each guarded by an
+# `isinstance` on that same subscript a few lines above, which ty does not track.
+unresolved-attribute = "ignore"
+# Overload fan-out and `**kwargs` imprecision, not call errors: a single
+# `OpenAI(...)` construction accounts for 5 diagnostics, one per candidate
+# signature ty rejects, and `md.convert(src, **convert_kwargs)` with a
+# `dict[str, str]` makes ty assume any keyword could be the `StreamInfo`
+# parameter.
+invalid-argument-type = "ignore"
+# `pytest.skip("reason")` — ty reads the signature as taking 0 positional
+# arguments. All 14 findings are that one call form.
+too-many-positional-arguments = "ignore"
+# Values decoded from JSON are `object`, so anything derived from a benchmark
+# record trips these two.
+not-subscriptable = "ignore"
+unsupported-operator = "ignore"
+# The optional-import idiom `try: import resource / except ImportError:
+# resource = None`, used to keep the benchmark harness portable.
+invalid-assignment = "ignore"
