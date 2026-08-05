@@ -108,18 +108,13 @@ select:focus-visible {
   text-decoration: none;
 }
 
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  flex: 0 0 34px;
-  border: 1px solid rgb(255 255 255 / 28%);
-  border-radius: 6px;
-  background: #f1b84b;
-  color: #1c251f;
-  font-size: 17px;
-  font-weight: 800;
+/* Wide Devanagari lockup. Width is left to the intrinsic aspect ratio so the
+   glyph outlines never distort; only the height is pinned to the topbar. */
+.brand-logo {
+  display: block;
+  height: 40px;
+  width: auto;
+  flex: 0 0 auto;
 }
 
 .brand strong,
@@ -1124,10 +1119,8 @@ main {
     padding: 0 12px;
   }
 
-  .brand-mark {
-    width: 32px;
+  .brand-logo {
     height: 32px;
-    flex-basis: 32px;
   }
 
   .brand small,

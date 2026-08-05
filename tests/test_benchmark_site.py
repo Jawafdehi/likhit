@@ -83,14 +83,16 @@ def test_generator_writes_complete_synthetic_artifact(tmp_path: pathlib.Path) ->
         run_case=_fake_run,
     )
 
+    # One run per configuration, and only the two Likhit configurations exist, so
+    # there is no longer a MarkItDown "reference" run per document.
     assert artifact["summary"] == {
         "documents": 7,
-        "runs": 14,
-        "pass": 5,
+        "runs": 7,
+        "pass": 3,
         "fail": 0,
-        "known_issue": 0,
+        "known_issue": 1,
         "blocked": 3,
-        "reference": 6,
+        "reference": 0,
     }
     assert artifact["integration"]["status"] == "passed"
     assert artifact["integration"]["tests"] == 2
@@ -202,9 +204,15 @@ def test_public_catalog_is_hash_pinned_and_described() -> None:
 
     assert {document["id"] for document in public} == {
         "ciaa-asset-declaration-guidance",
+        "ciaa-corruption-study",
         "ciaa-detention-legacy-doc",
         "ciaa-earthquake-relief-docx",
+        "ciaa-ebulletin-himali",
         "ciaa-news-article-notice",
+        "ciaa-notice-image-only",
+        "ciaa-notice-scanned",
+        "ciaa-press-digest",
+        "ciaa-press-release-tables",
         "ciaa-research-grant-notice",
         "economic-act-2083",
         "gcf-country-programme",
@@ -215,24 +223,49 @@ def test_public_catalog_is_hash_pinned_and_described() -> None:
     assert {document["kind"] for document in public} == {"pdf", "docx", "doc"}
     assert (
         sum(document["url"].startswith("https://ciaa.gov.np/") for document in public)
-        == 5
+        == 11
     )
     excerpt_ids = {
         document["id"] for document in public if document.get("publish_pages")
     }
-    assert excerpt_ids == {"economic-act-2083", "gcf-country-programme"}
+    assert excerpt_ids == {
+        "ciaa-corruption-study",
+        "ciaa-ebulletin-himali",
+        "economic-act-2083",
+        "gcf-country-programme",
+        "seed-rules-2081",
+    }
     for document in public:
         assert document["privacy"] == "public-institutional"
         assert document["content_note"]
         assert document["url"].startswith("https://")
         assert len(document["sha256"]) == 64
         if document.get("publish_pages"):
-            assert document["publish_pages"] == "1-3"
+            # Every published sample stays under ten pages. Whole-file entries
+            # cannot be checked offline (the source is not in the tree), so this
+            # pins the excerpts, which are the ones cut from long sources.
+            start, _, end = document["publish_pages"].partition("-")
+            span = int(end or start) - int(start) + 1
+            assert 1 <= span < 10, f"{document['id']} publishes {span} pages"
             assert document["sanitization"]
-            assert all(run.get("pages") for run in document["runs"])
         else:
             assert not document.get("sanitization")
-            assert all(not run.get("pages") for run in document["runs"])
+        # Page scoping belongs to the document, so the published file *is* the
+        # excerpt and every run converts it whole. That is what keeps one run per
+        # configuration instead of per-page run variants.
+        assert all(not run.get("pages") for run in document["runs"])
+        assert {run["config"] for run in document["runs"]} <= {"likhit", "likhit-ocr"}
+
+
+def test_catalog_exposes_exactly_two_configurations() -> None:
+    catalog = json.loads((SITE_DIR / "catalog.json").read_text(encoding="utf-8"))
+
+    assert list(catalog["configurations"]) == ["likhit", "likhit-ocr"]
+    assert catalog["configurations"]["likhit"]["environment"] == "no-ocr"
+    assert catalog["configurations"]["likhit-ocr"]["environment"] == "default"
+    for document in catalog["documents"]:
+        ids = [run["id"] for run in document["runs"]]
+        assert ids in (["likhit"], ["likhit", "likhit-ocr"]), document["id"]
 
 
 @pytest.mark.parametrize(

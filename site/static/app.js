@@ -101,13 +101,26 @@ function outcomeChip(run, includeLabel = true) {
   `;
 }
 
+// Nepal Time (UTC+05:45). This benchmark is read by people working on Nepali
+// government documents, so timestamps are pinned to Asia/Kathmandu and labelled,
+// rather than rendered in whatever zone the viewer's browser happens to be in.
+const NPT_ZONE = "Asia/Kathmandu";
+
+function formatNpt(value, options = { dateStyle: "medium", timeStyle: "short" }) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "unknown";
+  }
+  const formatted = date.toLocaleString("en-GB", { ...options, timeZone: NPT_ZONE });
+  return `${formatted} NPT`;
+}
+
 function renderIdentity() {
   const { build, generated_at: generatedAt } = state.data;
-  const date = new Date(generatedAt);
   byId("run-identity").innerHTML = `
     <code>${escapeHtml(shortSha(build.commit))}</code>
     · Likhit ${escapeHtml(build.likhit)}
-    · ${escapeHtml(date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}
+    · ${escapeHtml(formatNpt(generatedAt))}
   `;
 }
 
@@ -352,7 +365,12 @@ function renderDetail() {
   `;
   byId("detail-actions")
     .querySelector("[data-view-pdf]")
-    ?.addEventListener("click", () => selectTab("source"));
+    ?.addEventListener("click", () => {
+      const panel = byId("document-source");
+      panel.classList.add("expanded");
+      panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  renderSource(item);
   renderRunSegments();
   renderDetailBody();
   refreshIcons();
@@ -563,7 +581,10 @@ function renderChecks(run) {
 
 function renderMetadata(item, run) {
   const build = state.data.build;
-  const generated = new Date(state.data.generated_at).toLocaleString();
+  const generated = formatNpt(state.data.generated_at, {
+    dateStyle: "full",
+    timeStyle: "medium",
+  });
   byId("detail-body").innerHTML = `
     <div class="metadata-layout">
       <h2>Run metadata</h2>

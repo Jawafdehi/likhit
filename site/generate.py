@@ -676,6 +676,7 @@ def generate(
     junit: pathlib.Path | None = None,
     source_cache: pathlib.Path | None = None,
     include_public: bool = True,
+    include_synthetic: bool = True,
     timeout_s: int = 300,
     commit: str | None = None,
     ref: str | None = None,
@@ -693,6 +694,12 @@ def generate(
         documents: list[dict[str, Any]] = []
         for spec in catalog["documents"]:
             if spec["origin"] == "public-institutional" and not include_public:
+                continue
+            # The published benchmark carries real government documents only.
+            # The synthetic fixtures stay in the catalog because they are the
+            # only corpus the generator can build with no network access, which
+            # is what test_generator_writes_complete_synthetic_artifact uses.
+            if spec["origin"] == "synthetic" and not include_synthetic:
                 continue
             source = _materialize_source(spec, staging / "documents", source_cache)
             data = source.read_bytes()
@@ -777,6 +784,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--junit", type=pathlib.Path)
     parser.add_argument("--source-cache", type=pathlib.Path)
     parser.add_argument("--skip-public", action="store_true")
+    parser.add_argument("--skip-synthetic", action="store_true")
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--commit")
     parser.add_argument("--ref")
@@ -791,6 +799,7 @@ def main(argv: list[str] | None = None) -> int:
         junit=args.junit,
         source_cache=args.source_cache,
         include_public=not args.skip_public,
+        include_synthetic=not args.skip_synthetic,
         timeout_s=args.timeout,
         commit=args.commit,
         ref=args.ref,

@@ -21,7 +21,13 @@
   <body>
     <header class="topbar">
       <a class="brand" href="./" aria-label="Likhit benchmark home">
-        <span class="brand-mark" aria-hidden="true">लि</span>
+        <img
+          class="brand-logo"
+          src="./logo-mark.svg"
+          alt=""
+          width="414"
+          height="132"
+        />
         <span>
           <strong>Likhit</strong>
           <small>document benchmark</small>
@@ -139,6 +145,15 @@
               <div class="detail-actions" id="detail-actions"></div>
             </header>
 
+            <!-- The source document belongs to the document, not to a run: every
+                 configuration converts the same bytes. It therefore sits above the
+                 run selector rather than being repeated as a per-run tab. -->
+            <section
+              class="document-source"
+              id="document-source"
+              aria-label="Source document"
+            ></section>
+
             <div
               class="run-segments"
               id="run-segments"
@@ -154,9 +169,6 @@
                 aria-pressed="true"
               >
                 Transcript
-              </button>
-              <button type="button" data-tab="source" aria-pressed="false">
-                Source
               </button>
               <button type="button" data-tab="checks" aria-pressed="false">
                 Checks

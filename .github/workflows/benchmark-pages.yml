@@ -53,6 +53,7 @@ jobs:
           uv run python site/generate.py \
             --output _site \
             --junit .benchmark/integration.xml \
+            --skip-synthetic \
             --commit "${GITHUB_SHA}" \
             --ref "${GITHUB_REF_NAME}"
 
