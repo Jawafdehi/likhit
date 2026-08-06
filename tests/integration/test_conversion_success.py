@@ -32,6 +32,11 @@ def _has_working_doc_runtime() -> bool:
     if antiword_bin:
         return True
 
+    # LibreOffice is the fallback that works on architectures pyantiword's
+    # bundled x86-64 binary cannot run on at all.
+    if shutil.which("soffice") or shutil.which("libreoffice"):
+        return True
+
     try:
         import pyantiword
 
@@ -53,8 +58,9 @@ DOC_EXTRACTION_AVAILABLE = (not IS_WINDOWS) and _has_working_doc_runtime()
 SKIP_DOC_WHEN_UNAVAILABLE = pytest.mark.skipif(
     not DOC_EXTRACTION_AVAILABLE,
     reason=(
-        "DOC extraction requires a working runtime (antiword or macOS textutil). "
-        "On macOS you can also install antiword with: brew install antiword"
+        "DOC extraction requires a working runtime (antiword, LibreOffice, or macOS "
+        "textutil). Debian/Ubuntu: apt-get install antiword libreoffice-writer; "
+        "on macOS you can also install antiword with: brew install antiword"
     ),
 )
 
