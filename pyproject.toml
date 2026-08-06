@@ -1,6 +1,6 @@
 [project]
 name = "likhit"
-version = "0.1.7"
+version = "0.1.8"
 description = "MarkItDown plugin for Nepali PDFs and legacy DOC files"
 authors = [
     { name = "Jawafdehi", email = "inquiry@jawafdehi.org" }
@@ -72,7 +72,7 @@ packages = ["src/likhit"]
 # `exclude` entry for it has no effect — and at under 5 KB it is not worth
 # working around.
 [tool.hatch.build.targets.sdist]
-include = ["/src/likhit", "/README.md", "/LICENSE"]
+include = ["/src/likhit", "/README.md", "/LICENSE", "/CHANGELOG.md"]
 
 [dependency-groups]
 # Dev tooling (lint/format/type/test). Not shipped in the wheel.
