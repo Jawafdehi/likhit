@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -9,7 +10,7 @@ import pytest
 
 from likhit.converters.nepali_docx import NepaliDocxConverter
 from likhit.errors import ExtractionError
-from likhit.extractors.docx_based import DocxBasedStrategy
+from likhit.extractors.docx_based import SOFFICE_TIMEOUT_SECONDS, DocxBasedStrategy
 from likhit.handlers.single_column_notice import SingleColumnNoticeHandler
 from likhit.handlers.two_column_layout import TwoColumnLayoutHandler
 
@@ -57,6 +58,166 @@ class TestDocxBasedStrategy:
         strategy = DocxBasedStrategy()
 
         assert strategy.extract_tables("test.doc") == []
+
+
+class TestSystemAntiwordFallback:
+    """A system antiword must be pinned to UTF-8 rather than trusting the locale."""
+
+    @staticmethod
+    def _exec_format_error(*_args, **_kwargs):
+        raise OSError(8, "Exec format error")
+
+    def test_system_antiword_is_forced_to_utf8(self):
+        """Without `-m UTF-8.txt` Devanagari silently degrades to ASCII `?`.
+
+        antiword reads its charmap from the locale and containers usually have no
+        LANG, so the bare call exits 0 with valid UTF-8 that has lost every
+        Devanagari codepoint. Nothing downstream can detect that, which is why
+        the flag is asserted here.
+        """
+        strategy = DocxBasedStrategy()
+
+        with (
+            patch(
+                "pyantiword.antiword_wrapper.extract_text_with_antiword",
+                self._exec_format_error,
+            ),
+            patch(
+                "likhit.extractors.docx_based.shutil.which",
+                lambda name: "/usr/bin/antiword" if name == "antiword" else None,
+            ),
+            patch("likhit.extractors.docx_based.subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = SimpleNamespace(
+                returncode=0, stdout="अख्तियार दुरुपयोग अनुसन्धान आयोग", stderr=""
+            )
+            result = strategy.extract_text("sample.doc")
+
+        argv = mock_run.call_args[0][0]
+        assert "-m" in argv
+        assert "UTF-8.txt" in argv
+        assert argv.index("UTF-8.txt") == argv.index("-m") + 1
+        assert result.raw_text == "अख्तियार दुरुपयोग अनुसन्धान आयोग"
+
+
+class TestSofficeFallback:
+    """LibreOffice carries .doc conversion where pyantiword's binary cannot run.
+
+    pyantiword ships an x86-64 executable, so on arm64 the primary path dies with
+    `Exec format error` and a fallback has to do the work. LibreOffice is the only
+    converter packaged for every architecture we deploy to. Verified against a
+    real CIAA press release on arm64: byte-identical to amd64 antiword.
+    """
+
+    @staticmethod
+    def _exec_format_error(*_args, **_kwargs):
+        raise OSError(8, "Exec format error")
+
+    @staticmethod
+    def _which_only_soffice(name):
+        return "/usr/bin/soffice" if name in ("soffice", "libreoffice") else None
+
+    @staticmethod
+    def _fake_soffice(text, *, bom=False):
+        """Stand in for LibreOffice: write `<stem>.txt` into `--outdir`."""
+
+        def _run(argv, **kwargs):
+            argv = list(argv)
+            outdir = Path(argv[argv.index("--outdir") + 1])
+            source = Path(argv[-1])
+            payload = ("﻿" if bom else "") + text
+            (outdir / f"{source.stem}.txt").write_text(payload, encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        return _run
+
+    def test_soffice_used_when_bundled_binary_cannot_exec(self):
+        """arm64: pyantiword raises, no antiword/textutil, LibreOffice converts."""
+        strategy = DocxBasedStrategy()
+        nepali = "अख्तियार दुरुपयोग अनुसन्धान आयोग\n\nप्रेस विज्ञप्ति"
+
+        with (
+            patch(
+                "pyantiword.antiword_wrapper.extract_text_with_antiword",
+                self._exec_format_error,
+            ),
+            patch(
+                "likhit.extractors.docx_based.shutil.which", self._which_only_soffice
+            ),
+            patch(
+                "likhit.extractors.docx_based.subprocess.run",
+                side_effect=self._fake_soffice(nepali),
+            ),
+        ):
+            result = strategy.extract_text("sample.doc")
+
+        assert result.raw_text == nepali
+        assert result.fragments[0].text == "अख्तियार दुरुपयोग अनुसन्धान आयोग"
+
+    def test_soffice_bom_is_stripped(self):
+        """The `Text (encoded):UTF8` filter emits a BOM; it must not survive."""
+        strategy = DocxBasedStrategy()
+
+        with (
+            patch(
+                "pyantiword.antiword_wrapper.extract_text_with_antiword",
+                self._exec_format_error,
+            ),
+            patch(
+                "likhit.extractors.docx_based.shutil.which", self._which_only_soffice
+            ),
+            patch(
+                "likhit.extractors.docx_based.subprocess.run",
+                side_effect=self._fake_soffice("विषय: परीक्षण", bom=True),
+            ),
+        ):
+            result = strategy.extract_text("sample.doc")
+
+        assert not result.raw_text.startswith("﻿")
+        assert result.raw_text == "विषय: परीक्षण"
+
+    def test_soffice_invocation_forces_utf8_and_a_private_profile(self):
+        """Guard the three flags that make this work in a container."""
+        strategy = DocxBasedStrategy()
+
+        with (
+            patch(
+                "pyantiword.antiword_wrapper.extract_text_with_antiword",
+                self._exec_format_error,
+            ),
+            patch(
+                "likhit.extractors.docx_based.shutil.which", self._which_only_soffice
+            ),
+            patch(
+                "likhit.extractors.docx_based.subprocess.run",
+                side_effect=self._fake_soffice("पाठ"),
+            ) as mock_run,
+        ):
+            strategy.extract_text("sample.doc")
+
+        argv, kwargs = mock_run.call_args[0][0], mock_run.call_args[1]
+        # UTF-8 or Devanagari comes back as the host locale's charset.
+        assert "txt:Text (encoded):UTF8" in argv
+        # Without a private profile LibreOffice writes to $HOME (absent in the
+        # image) and concurrent calls deadlock on a lock file.
+        assert any(a.startswith("-env:UserInstallation=file://") for a in argv)
+        assert "--headless" in argv
+        # LibreOffice hangs rather than failing on some malformed inputs.
+        assert kwargs["timeout"] == SOFFICE_TIMEOUT_SECONDS
+
+    def test_no_converter_at_all_names_libreoffice_in_the_error(self):
+        """With nothing installed the operator is told what to install."""
+        strategy = DocxBasedStrategy()
+
+        with (
+            patch(
+                "pyantiword.antiword_wrapper.extract_text_with_antiword",
+                self._exec_format_error,
+            ),
+            patch("likhit.extractors.docx_based.shutil.which", lambda _name: None),
+            pytest.raises(ExtractionError, match="LibreOffice"),
+        ):
+            strategy.extract_text("sample.doc")
 
 
 class TestSingleColumnNoticeDocRouting:

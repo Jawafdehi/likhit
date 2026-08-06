@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 
 from likhit.errors import ExtractionError
 from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
+
+# LibreOffice hangs rather than failing on some malformed .doc inputs, and this
+# runs inside a queue consumer, so the conversion has to be bounded.
+SOFFICE_TIMEOUT_SECONDS = 120
 
 
 class DocxBasedStrategy(ExtractionStrategy):
@@ -25,8 +31,6 @@ class DocxBasedStrategy(ExtractionStrategy):
         Raises:
             ExtractionError: If extraction fails or file format is unsupported
         """
-        from pathlib import Path
-
         path = Path(file_path)
         suffix = path.suffix.lower()
 
@@ -65,7 +69,13 @@ class DocxBasedStrategy(ExtractionStrategy):
 
         The primary path uses pyantiword. If pyantiword's bundled antiword binary
         is incompatible with the current platform, we fall back to other
-        locally available extractors.
+        locally available extractors, cheapest first: a system antiword, macOS
+        textutil, then a headless LibreOffice conversion.
+
+        pyantiword ships an x86-64 binary, so on every other architecture the
+        primary path raises `Exec format error` and one of the fallbacks has to
+        carry the conversion. LibreOffice is the only one packaged for all the
+        architectures we deploy to, which is why it anchors the chain.
         """
         try:
             # pyantiword.extract_text_with_antiword() takes a file path
@@ -82,6 +92,10 @@ class DocxBasedStrategy(ExtractionStrategy):
             if fallback_text is not None:
                 return fallback_text
 
+            fallback_text = self._extract_doc_with_soffice(file_path)
+            if fallback_text is not None:
+                return fallback_text
+
             err = str(e)
             if "Win32" in err or "WinError" in err:
                 raise ExtractionError(
@@ -92,19 +106,30 @@ class DocxBasedStrategy(ExtractionStrategy):
             if "Exec format error" in err:
                 raise ExtractionError(
                     "Failed to extract text from DOC: pyantiword bundled binary is not compatible with this OS/architecture. "
-                    "Install antiword in your system PATH (for macOS: brew install antiword). "
+                    "Install antiword or LibreOffice in your system PATH "
+                    "(Debian/Ubuntu: apt-get install antiword libreoffice-writer; macOS: brew install antiword). "
                     f"Original error: {e}"
                 ) from e
             raise ExtractionError(f"Failed to extract text from DOC: {e}") from e
 
     def _extract_doc_with_system_antiword(self, file_path: str) -> str | None:
-        """Try extracting DOC text with a system antiword executable."""
+        """Try extracting DOC text with a system antiword executable.
+
+        `-m UTF-8.txt` is not optional. antiword picks its output charmap from
+        the locale, and under a non-UTF-8 or unset `LANG` — the default in most
+        containers — it renders every Devanagari character as an ASCII `?` while
+        exiting 0 with an empty stderr. That is valid UTF-8 carrying no
+        replacement characters, so nothing downstream can tell it went wrong.
+        Measured on a CIAA press release: 1853 Devanagari codepoints with the
+        flag, 0 without it. The failure is locale-driven, not architecture-driven
+        — it reproduces on x86-64 under `LANG=C`.
+        """
         antiword_bin = shutil.which("antiword")
         if not antiword_bin:
             return None
         try:
             result = subprocess.run(
-                [antiword_bin, file_path],
+                [antiword_bin, "-m", "UTF-8.txt", file_path],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -133,6 +158,63 @@ class DocxBasedStrategy(ExtractionStrategy):
             text = result.stdout
             return text if text else ""
         except Exception:  # noqa: BLE001 - textutil failed; try the next strategy
+            return None
+
+    def _extract_doc_with_soffice(self, file_path: str) -> str | None:
+        """Try extracting DOC text via a headless LibreOffice conversion.
+
+        LibreOffice is packaged for every architecture we deploy to, so this is
+        the path that carries the conversion where pyantiword's bundled x86-64
+        binary cannot execute at all.
+
+        Three details are load-bearing:
+
+        * `-env:UserInstallation` gives each call its own profile directory.
+          Without it LibreOffice writes to `$HOME/.config`, which is absent or
+          read-only in a container, and two concurrent calls sharing one profile
+          abort on a lock file.
+        * The filter is `Text (encoded)` with `UTF8` rather than plain `txt`.
+          The default writes the host locale's charset, which mangles
+          Devanagari into replacement characters.
+        * The call is bounded by a timeout; LibreOffice hangs rather than
+          failing on some malformed inputs.
+        """
+        soffice_bin = shutil.which("soffice") or shutil.which("libreoffice")
+        if not soffice_bin:
+            return None
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                profile = Path(tmpdir) / "profile"
+                subprocess.run(
+                    [
+                        soffice_bin,
+                        f"-env:UserInstallation=file://{profile}",
+                        "--headless",
+                        "--norestore",
+                        "--convert-to",
+                        "txt:Text (encoded):UTF8",
+                        "--outdir",
+                        tmpdir,
+                        file_path,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    # LibreOffice reports soft failures on stderr and still
+                    # exits 0, so the converted file is the real success signal.
+                    check=False,
+                    timeout=SOFFICE_TIMEOUT_SECONDS,
+                )
+                converted = Path(tmpdir) / f"{Path(file_path).stem}.txt"
+                if not converted.is_file():
+                    return None
+                # utf-8-sig, not utf-8: the `Text (encoded):UTF8` filter emits a
+                # BOM, which would otherwise survive as a zero-width character
+                # at the head of the first fragment.
+                text = converted.read_text(encoding="utf-8-sig", errors="replace")
+                return text if text else ""
+        except Exception:  # noqa: BLE001 - LibreOffice failed; try the next strategy
             return None
 
     def _create_fragments(self, text: str) -> list[TextFragment]:
