@@ -176,6 +176,41 @@ class TestSofficeFallback:
         assert not result.raw_text.startswith("﻿")
         assert result.raw_text == "विषय: परीक्षण"
 
+    def test_profile_uri_is_percent_encoded(self, tmp_path, monkeypatch):
+        """A TMPDIR with a space must still yield a well-formed file:// URI.
+
+        The profile directory is created under TMPDIR, so an operator-set TMPDIR
+        containing a space or non-ASCII character would produce a malformed URI.
+        LibreOffice falls back to $HOME in that case, which is unset in the
+        image, and the conversion fails.
+        """
+        spaced = tmp_path / "dir with space"
+        spaced.mkdir()
+        # tempfile.gettempdir() caches into tempfile.tempdir on first use, so
+        # setting TMPDIR here would be ignored; override the cache itself.
+        monkeypatch.setattr("tempfile.tempdir", str(spaced))
+        strategy = DocxBasedStrategy()
+
+        with (
+            patch(
+                "pyantiword.antiword_wrapper.extract_text_with_antiword",
+                self._exec_format_error,
+            ),
+            patch(
+                "likhit.extractors.docx_based.shutil.which", self._which_only_soffice
+            ),
+            patch(
+                "likhit.extractors.docx_based.subprocess.run",
+                side_effect=self._fake_soffice("पाठ"),
+            ) as mock_run,
+        ):
+            strategy.extract_text("sample.doc")
+
+        argv = mock_run.call_args[0][0]
+        profile_arg = next(a for a in argv if a.startswith("-env:UserInstallation="))
+        assert "%20" in profile_arg
+        assert " " not in profile_arg
+
     def test_soffice_invocation_forces_utf8_and_a_private_profile(self):
         """Guard the three flags that make this work in a container."""
         strategy = DocxBasedStrategy()

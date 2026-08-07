@@ -188,7 +188,11 @@ class DocxBasedStrategy(ExtractionStrategy):
                 subprocess.run(
                     [
                         soffice_bin,
-                        f"-env:UserInstallation=file://{profile}",
+                        # as_uri(), not an f-string: the profile sits under
+                        # TMPDIR, and a space or non-ASCII character there yields
+                        # a malformed URI. LibreOffice then falls back to $HOME,
+                        # which is unset in the image, and the conversion fails.
+                        f"-env:UserInstallation={profile.as_uri()}",
                         "--headless",
                         "--norestore",
                         "--convert-to",
