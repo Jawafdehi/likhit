@@ -473,8 +473,8 @@ def _read_ocr_usage(usage_url: str | None) -> dict[str, int] | None:
 
     The endpoint reports totals since it started, so a single run's usage is the
     difference across the run. Returns None when unreachable or malformed, which
-    is treated as "usage unknown" rather than as zero usage -- reporting a cost of
-    $0.00 for a run that really did call a vision model would be a lie.
+    is treated as "usage unknown" rather than as zero usage -- reporting zero
+    tokens for a run that really did call a vision model would be a lie.
     """
 
     if not usage_url:
@@ -562,6 +562,30 @@ def _local_ocr_models(base_url: str) -> frozenset[str]:
     )
 
 
+def _ocr_backend_accounting(config: dict[str, Any]) -> tuple[str | None, str | None]:
+    """The usage endpoint and model id belonging to a configuration's backend.
+
+    Both are per-backend, not global. Reading a single ambient endpoint and a
+    single ambient model name would attribute one backend's tokens, and one
+    backend's model id, to a run served by the other -- so a locally served model
+    could be reported as having spent tokens on a hosted API.
+    """
+
+    requirement = config.get("requires")
+    if requirement == "ocr-api":
+        return (
+            os.environ.get("LIKHIT_OCR_USAGE_URL"),
+            os.environ.get("MARKITDOWN_OCR_MODEL"),
+        )
+    if requirement == "ocr-local":
+        return (
+            os.environ.get("LIKHIT_LOCAL_OCR_USAGE_URL"),
+            os.environ.get("LIKHIT_LOCAL_OCR_MODEL"),
+        )
+    # A configuration with no OCR backend cannot spend tokens.
+    return None, None
+
+
 def _ocr_usage_record(
     before: dict[str, int] | None,
     after: dict[str, int] | None,
@@ -607,12 +631,8 @@ def _generate_run(
 ) -> dict[str, Any]:
     config = configurations[run["config"]]
     # Bracket the conversion so the tokens attributed to this run are only the
-    # ones it spent. Configurations with OCR stripped cannot spend any.
-    usage_url = (
-        os.environ.get("LIKHIT_OCR_USAGE_URL")
-        if config.get("environment") != "no-ocr"
-        else None
-    )
+    # ones it spent, and read the counter belonging to *this* run's backend.
+    usage_url, usage_model = _ocr_backend_accounting(config)
     usage_before = _read_ocr_usage(usage_url)
     # A configuration may need more wall clock than the global default: a vision
     # model served locally on CPU is orders of magnitude slower than a hosted API,
@@ -624,7 +644,7 @@ def _generate_run(
     ocr_usage = _ocr_usage_record(
         usage_before,
         _read_ocr_usage(usage_url),
-        os.environ.get("MARKITDOWN_OCR_MODEL"),
+        usage_model,
     )
     text = str(payload.get("text") or "")
     metrics = _text_signals(text) if payload.get("status") == "ok" else {}

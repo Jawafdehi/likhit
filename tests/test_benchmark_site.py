@@ -8,6 +8,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import urllib.error
@@ -1004,3 +1005,225 @@ def test_configuration_labels_all_name_their_ocr_backend() -> None:
     for name, label in labels.items():
         assert label != "Likhit", name
         assert "(" in label and ")" in label, name
+
+
+def test_every_css_variable_referenced_is_defined() -> None:
+    """No rule may reference a custom property that does not exist.
+
+    An undefined var() does not error -- it silently falls back to the initial
+    value, so a colour becomes inherit and a background becomes transparent. The
+    page still renders, which makes this class of typo easy to ship.
+    """
+
+    styles = (SITE_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+    defined = set(re.findall(r"^\s+(--[a-z0-9-]+):", styles, re.MULTILINE))
+    referenced = set(re.findall(r"var\((--[a-z0-9-]+)\)", styles))
+
+    assert referenced, "expected the stylesheet to use custom properties"
+    assert not (referenced - defined), sorted(referenced - defined)
+
+
+def test_landing_page_introduces_likhit_above_the_benchmark() -> None:
+    index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
+    styles = (SITE_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+    app = (SITE_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+    # The introduction precedes the results, not the other way round.
+    assert index.index('class="intro"') < index.index('id="summary-strip"')
+    assert index.index('id="benchmark-title"') < index.index('id="summary-strip"')
+
+    # It says what Likhit is and how to install it, sourced from the README.
+    assert "MarkItDown" in index
+    assert "pip install likhit" in index
+    assert "enable_plugins=True" in index
+    assert "https://jawafdehi.org/" in index
+    assert "https://pypi.org/project/likhit/" in index
+
+    assert ".intro-features" in styles
+    assert ".benchmark-intro" in styles
+    # Copy-to-clipboard degrades honestly when the clipboard is unavailable.
+    assert "bindCopyButtons();" in app
+    assert "navigator.clipboard.writeText" in app
+    assert "Press ⌘/Ctrl+C" in app
+
+
+def test_page_scrolls_and_does_not_lock_content_to_the_viewport() -> None:
+    """The page must scroll, now that the introduction sits above the dashboard.
+
+    This was a real defect: the layout was a viewport-locked app shell
+    (`body { overflow: hidden }`, `main { height: calc(100% - 58px) }`), so adding
+    the introduction pushed the whole benchmark below the fold with no way to
+    reach it. The page rendered fine in a screenshot, which is exactly why it
+    shipped.
+    """
+
+    styles = (SITE_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+
+    def rule(selector: str) -> str:
+        """Every declaration that applies to a selector, across all its blocks.
+
+        A selector can be styled by more than one rule (``html, body`` and a
+        later ``body``), and the effective style is their union, so matching only
+        the first block reads the wrong declarations.
+        """
+
+        blocks = re.findall(r"(?ms)^([^{}/@]+)\{([^}]*)\}", styles)
+        return "\n".join(
+            body
+            for selectors, body in blocks
+            if selector in [part.strip() for part in selectors.split(",")]
+        )
+
+    body = rule("body")
+    assert "overflow: hidden" not in body, "body must not clip the page"
+    assert "overflow-y: auto" in body
+
+    # main must not be pinned to a fraction of the viewport.
+    main = rule("main")
+    assert "height: calc(100% -" not in main, "main must size to its content"
+
+    # The workspace keeps a definite height so its panes scroll internally
+    # instead of stretching the page to the longest transcript.
+    workspace = rule(".workspace")
+    assert "100vh" in workspace, "workspace needs a viewport-relative height"
+    assert "min-height" in workspace
+
+    # html/body may set a floor, never a ceiling.
+    assert "min-height: 100%" in styles
+
+
+def test_landing_page_documents_the_likhit_save_cli() -> None:
+    """The helper CLI is the shortest path to using Likhit, so the page shows it.
+
+    The commands are pinned against the README so the page cannot drift from the
+    interface the package actually installs.
+    """
+
+    index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
+    styles = (SITE_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+    readme = (SITE_DIR.parent / "README.md").read_text(encoding="utf-8")
+
+    assert "likhit-save" in index
+    assert ".cli-examples" in styles
+
+    # Each flag shown on the page must be one the README documents.
+    for flag in ("--out", "--out-dir", "--pages"):
+        assert flag in index, flag
+        assert flag in readme, f"{flag} is shown on the page but absent from README"
+
+    # The CLI section sits between the introduction and the benchmark.
+    assert index.index('class="intro"') < index.index('id="cli-title"')
+    assert index.index('id="cli-title"') < index.index('id="benchmark-title"')
+
+    # Commands are copyable through the same handler as the install command.
+    assert index.count("cli-copy-button") == 3
+
+
+def test_generated_artifact_validates_against_its_published_schema(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The artifact must satisfy the schema shipped beside it.
+
+    schema.json is published next to results.json as the contract for anyone
+    consuming the benchmark, so asserting the schema's own contents is not
+    enough -- the artifact has to actually conform, or the contract is fiction.
+    """
+
+    jsonschema = pytest.importorskip("jsonschema")
+    _without_ocr_backends(monkeypatch)
+
+    artifact = generator.generate(
+        tmp_path / "site", include_public=False, run_case=_fake_run
+    )
+    schema = json.loads((SITE_DIR / "schema.json").read_text(encoding="utf-8"))
+
+    validator = jsonschema.Draft202012Validator(schema)
+    errors = [
+        f"{'/'.join(str(part) for part in error.path)}: {error.message}"
+        for error in validator.iter_errors(artifact)
+    ]
+    assert not errors, errors
+
+    # And the copy written to disk, which is what consumers actually fetch.
+    written = json.loads(
+        (tmp_path / "site" / "data" / "results.json").read_text(encoding="utf-8")
+    )
+    assert not list(validator.iter_errors(written))
+
+
+def test_ocr_accounting_is_scoped_to_the_backend_that_served_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each backend's tokens and model id are read from that backend's own source.
+
+    Reading one ambient endpoint and one ambient model name would credit a locally
+    served run with the hosted API's tokens and label it with the hosted model.
+    """
+
+    monkeypatch.setenv("LIKHIT_OCR_USAGE_URL", "http://hosted.invalid/usage")
+    monkeypatch.setenv("MARKITDOWN_OCR_MODEL", "hosted-vision-model")
+    monkeypatch.setenv("LIKHIT_LOCAL_OCR_USAGE_URL", "http://local.invalid/usage")
+    monkeypatch.setenv("LIKHIT_LOCAL_OCR_MODEL", "local-vision-model")
+
+    hosted = {"label": "api", "environment": "default", "requires": "ocr-api"}
+    local = {"label": "local", "environment": "ocr-local", "requires": "ocr-local"}
+    plain = {"label": "plain", "environment": "no-ocr"}
+
+    assert generator._ocr_backend_accounting(hosted) == (
+        "http://hosted.invalid/usage",
+        "hosted-vision-model",
+    )
+    assert generator._ocr_backend_accounting(local) == (
+        "http://local.invalid/usage",
+        "local-vision-model",
+    )
+    # No backend means no counter to read and no model to name.
+    assert generator._ocr_backend_accounting(plain) == (None, None)
+
+
+def test_stylesheet_has_no_rules_for_classes_nothing_applies() -> None:
+    """Guard against styling class names the application never sets.
+
+    Dead rules outlive the behaviour they were written for -- the `expanded`
+    state belonged to the inline source panel that the PDF modal replaced.
+    """
+
+    styles = (SITE_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+    app = (SITE_DIR / "static" / "app.js").read_text(encoding="utf-8")
+    index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
+    markup = app + index
+
+    # State classes are toggled from JavaScript; a rule for one that is never
+    # toggled is dead. Structural class names come from the markup.
+    for state in ("expanded", "detail-open"):
+        if f".{state}" in styles:
+            assert state in markup, f".{state} is styled but never set"
+
+
+def test_site_readme_documents_the_flags_and_configurations_that_exist() -> None:
+    """The site README must describe the generator as it actually behaves.
+
+    Stale documentation outlives the code that made it true, and this file is the
+    first thing a contributor reads before running a build.
+    """
+
+    readme = (SITE_DIR / "README.md").read_text(encoding="utf-8")
+    catalog = json.loads((SITE_DIR / "catalog.json").read_text(encoding="utf-8"))
+    generate = (SITE_DIR / "generate.py").read_text(encoding="utf-8")
+
+    # Every configuration id and label is described.
+    for name, config in catalog["configurations"].items():
+        assert name in readme, name
+        assert config["label"] in readme, config["label"]
+
+    # Every command-line flag the generator accepts is mentioned.
+    flags = set(re.findall(r'add_argument\(\s*"(--[a-z-]+)"', generate))
+    assert flags, "expected to find generator flags"
+    for flag in flags - {"--output", "--timeout", "--commit", "--ref"}:
+        assert flag in readme, f"{flag} is accepted but undocumented"
+
+    # Every environment variable the generator reads is documented.
+    for variable in sorted(
+        set(re.findall(r'environ\.get\("(LIKHIT_[A-Z_]+)"', generate))
+    ):
+        assert variable in readme, f"{variable} is read but undocumented"

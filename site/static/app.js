@@ -451,10 +451,10 @@ function renderInline(text) {
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
     .replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (match, label, href) => {
-      // Only http(s) survives; javascript: and data: URLs are dropped, and the
-      // href is already HTML-escaped by the caller.
-      const safe = /^https?:&#039;?\/\//.test(href) || /^https?:\/\//.test(href);
-      if (!safe) return label;
+      // Only absolute http(s) survives. javascript:, data: and anything else --
+      // including the base64 images Likhit emits for .docx -- degrade to their
+      // label text. The href is already HTML-escaped by the caller.
+      if (!/^https?:\/\//.test(href)) return label;
       return `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
     });
 }
@@ -902,9 +902,31 @@ function bindControls() {
   });
 }
 
+// The install command is the one thing a visitor is most likely to want to take
+// away, so make it copyable without selecting text. Clipboard access can be
+// refused (insecure origin, denied permission), in which case say so rather than
+// silently pretending it worked.
+function bindCopyButtons() {
+  document.querySelectorAll("[data-copy]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const original = button.textContent.trim();
+      try {
+        await navigator.clipboard.writeText(button.dataset.copy);
+        button.textContent = "Copied";
+      } catch {
+        button.textContent = "Press ⌘/Ctrl+C";
+      }
+      window.setTimeout(() => {
+        button.textContent = original;
+      }, 1800);
+    });
+  });
+}
+
 async function initialize() {
   bindControls();
   bindPdfModal();
+  bindCopyButtons();
   try {
     const response = await fetch("./data/results.json");
     if (!response.ok) throw new Error(`Results request failed: ${response.status}`);

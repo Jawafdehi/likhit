@@ -87,6 +87,10 @@ dev = [
     "ruff>=0.15.0,<0.16.0",
     "pre-commit>=4.6.0",
     "ty>=0.0.66",
+    # site/schema.json is published next to results.json as the artifact's
+    # contract, so the tests validate the generated artifact against it rather
+    # than only asserting the schema's own contents.
+    "jsonschema>=4.23.0,<5.0.0",
 ]
 
 # ---------------------------------------------------------------------------
