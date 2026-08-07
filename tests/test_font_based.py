@@ -48,6 +48,53 @@ def _sample_path(*candidates: str) -> Path:
 PRESS_RELEASE = _sample_path("pressrelease.pdf")
 
 
+def _build_zeroed_tounicode_pdf() -> bytes:
+    """Build a PDF where distinct source codes all map to unknown Unicode."""
+
+    doc = fitz.open()
+    try:
+        page = doc.new_page()
+        page.insert_text(
+            (72, 72),
+            "\u6d4b\u8bd5\u6587\u5b57",
+            fontname="china-s",
+        )
+        font_xref = page.get_fonts(full=True)[0][0]
+        cmap_xref = doc.get_new_xref()
+        doc.update_object(cmap_xref, "<<>>")
+        doc.update_stream(
+            cmap_xref,
+            b"""/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /Zeroed-ToUnicode def
+/CMapType 2 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+4 beginbfchar
+<6D4B> <0000>
+<8BD5> <0000>
+<6587> <0000>
+<5B57> <0000>
+endbfchar
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end""",
+        )
+        font_object = doc.xref_object(font_xref, compressed=False).rstrip()
+        assert font_object.endswith(">>")
+        doc.update_object(
+            font_xref,
+            f"{font_object[:-2]}/ToUnicode {cmap_xref} 0 R\n>>",
+        )
+        return doc.tobytes()
+    finally:
+        doc.close()
+
+
 def test_parse_page_range_accepts_single_page() -> None:
     assert parse_page_range("2", 5) == (1, 1)
 
@@ -198,6 +245,27 @@ def test_extract_from_document_can_skip_table_detection(
     assert result.raw_text == "परीक्षण"
     assert result.tables == []
     assert detected_pages == []
+
+
+def test_extract_from_document_preserves_distinct_unknown_cids() -> None:
+    doc = fitz.open(stream=_build_zeroed_tounicode_pdf(), filetype="pdf")
+    try:
+        result = FontBasedStrategy()._extract_from_document(
+            doc,
+            {},
+            page_start=0,
+            page_end=0,
+            needs_reorder=False,
+            detect_tables=False,
+        )
+    finally:
+        doc.close()
+
+    extracted = result.raw_text.strip()
+    assert "\ufffd" not in extracted
+    assert "\x00" not in extracted
+    assert len(extracted) == 4
+    assert len(set(extracted)) == 4
 
 
 def _run_broken_cmap_table_flow(
@@ -655,11 +723,12 @@ def test_normalize_extracted_word_keeps_space_before_prebase_marker_word() -> No
     assert line == "सञ्चालक विशाल"
 
 
-def test_normalize_press_release_paragraph_turns_leading_replacement_char_into_bullet() -> (
-    None
-):
+@pytest.mark.parametrize("marker", ["\ufffd", "\x83"])
+def test_normalize_press_release_paragraph_turns_leading_unknown_glyph_into_bullet(
+    marker: str,
+) -> None:
     assert (
-        normalize_press_release_paragraph("� अपराध गर्ने व्यक्तिको पीडितसंगको")
+        normalize_press_release_paragraph(f"{marker} अपराध गर्ने व्यक्तिको पीडितसंगको")
         == "- अपराध गर्ने व्यक्तिको पीडितसंगको"
     )
 
