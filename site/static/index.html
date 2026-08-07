@@ -184,6 +184,32 @@
       </section>
     </main>
 
+    <dialog class="pdf-modal" id="pdf-modal" aria-labelledby="pdf-modal-title">
+      <header class="pdf-modal-bar">
+        <h2 id="pdf-modal-title">Source PDF</h2>
+        <div class="pdf-modal-actions">
+          <a
+            class="command-link"
+            id="pdf-modal-open"
+            href="#"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Open in new tab
+          </a>
+          <button
+            class="command-link"
+            type="button"
+            id="pdf-modal-close"
+            aria-label="Close PDF viewer"
+          >
+            Close
+          </button>
+        </div>
+      </header>
+      <iframe id="pdf-modal-frame" title="Source PDF" src="about:blank"></iframe>
+    </dialog>
+
     <noscript>This benchmark requires JavaScript to load generated results.</noscript>
   </body>
 </html>

@@ -27,6 +27,30 @@
               "label": "OCR requirement reported"
             }
           ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "blocked",
+          "checks": [
+            {
+              "kind": "diagnostic_contains",
+              "value": "OCR",
+              "label": "OCR requirement reported"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "blocked",
+          "checks": [
+            {
+              "kind": "diagnostic_contains",
+              "value": "OCR",
+              "label": "OCR requirement reported"
+            }
+          ]
         }
       ]
     },
@@ -48,6 +72,30 @@
         {
           "id": "likhit",
           "config": "likhit",
+          "expectation": "blocked",
+          "checks": [
+            {
+              "kind": "diagnostic_contains",
+              "value": "OCR",
+              "label": "OCR requirement reported"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "blocked",
+          "checks": [
+            {
+              "kind": "diagnostic_contains",
+              "value": "OCR",
+              "label": "OCR requirement reported"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
           "expectation": "blocked",
           "checks": [
             {
@@ -85,6 +133,30 @@
               "label": "Legacy text decoded to Devanagari"
             }
           ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 20,
+              "label": "Legacy text decoded to Devanagari"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 20,
+              "label": "Legacy text decoded to Devanagari"
+            }
+          ]
         }
       ]
     },
@@ -106,6 +178,50 @@
         {
           "id": "likhit",
           "config": "likhit",
+          "expectation": "known_issue",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "Ordinary English catalogue",
+              "label": "English page retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 20,
+              "label": "Legacy page decoded"
+            },
+            {
+              "kind": "max_devanagari",
+              "value": 0,
+              "label": "Page-one font state did not leak"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "known_issue",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "Ordinary English catalogue",
+              "label": "English page retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 20,
+              "label": "Legacy page decoded"
+            },
+            {
+              "kind": "max_devanagari",
+              "value": 0,
+              "label": "Page-one font state did not leak"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
           "expectation": "known_issue",
           "checks": [
             {
@@ -158,6 +274,40 @@
               "label": "Scanned page reported"
             }
           ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "blocked",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "ordinary born-digital paragraph",
+              "label": "Searchable page retained"
+            },
+            {
+              "kind": "diagnostic_contains",
+              "value": "OCR",
+              "label": "Scanned page reported"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "blocked",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "ordinary born-digital paragraph",
+              "label": "Searchable page retained"
+            },
+            {
+              "kind": "diagnostic_contains",
+              "value": "OCR",
+              "label": "Scanned page reported"
+            }
+          ]
         }
       ]
     },
@@ -179,6 +329,50 @@
         {
           "id": "likhit",
           "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "Procurement Plan",
+              "label": "Document title retained"
+            },
+            {
+              "kind": "contains",
+              "value": "Status",
+              "label": "Table header retained"
+            },
+            {
+              "kind": "contains",
+              "value": "Approved",
+              "label": "Table body retained"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "Procurement Plan",
+              "label": "Document title retained"
+            },
+            {
+              "kind": "contains",
+              "value": "Status",
+              "label": "Table header retained"
+            },
+            {
+              "kind": "contains",
+              "value": "Approved",
+              "label": "Table body retained"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
           "expectation": "pass",
           "checks": [
             {
@@ -231,6 +425,40 @@
               "label": "English text retained"
             }
           ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "नेपाल सरकार",
+              "label": "Unicode Nepali retained"
+            },
+            {
+              "kind": "contains",
+              "value": "Quarterly programme",
+              "label": "English text retained"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "नेपाल सरकार",
+              "label": "Unicode Nepali retained"
+            },
+            {
+              "kind": "contains",
+              "value": "Quarterly programme",
+              "label": "English text retained"
+            }
+          ]
         }
       ]
     },
@@ -255,6 +483,40 @@
         {
           "id": "likhit",
           "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "समाचार तथा लेख पठाउने सम्बन्धी सूचना",
+              "label": "Notice title retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 700,
+              "label": "Nepali notice extracted"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "समाचार तथा लेख पठाउने सम्बन्धी सूचना",
+              "label": "Notice title retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 700,
+              "label": "Nepali notice extracted"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
           "expectation": "pass",
           "checks": [
             {
@@ -305,6 +567,40 @@
               "label": "Nepali guidance extracted"
             }
           ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "सम्पति विवरण",
+              "label": "Asset declaration subject retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 2000,
+              "label": "Nepali guidance extracted"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "सम्पति विवरण",
+              "label": "Asset declaration subject retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 2000,
+              "label": "Nepali guidance extracted"
+            }
+          ]
         }
       ]
     },
@@ -329,6 +625,40 @@
         {
           "id": "likhit",
           "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "सहयोगार्थ रकम जम्मा गरिएको",
+              "label": "Press release subject retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 150,
+              "label": "Unicode Nepali extracted"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "सहयोगार्थ रकम जम्मा गरिएको",
+              "label": "Press release subject retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 150,
+              "label": "Unicode Nepali extracted"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
           "expectation": "pass",
           "checks": [
             {
@@ -379,6 +709,40 @@
               "label": "Legacy Word text extracted"
             }
           ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "मानिस हिरासतमा लिइएको",
+              "label": "Press release title retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 350,
+              "label": "Legacy Word text extracted"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "मानिस हिरासतमा लिइएको",
+              "label": "Press release title retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 350,
+              "label": "Legacy Word text extracted"
+            }
+          ]
         }
       ]
     },
@@ -403,6 +767,30 @@
         {
           "id": "likhit",
           "config": "likhit",
+          "expectation": "known_issue",
+          "checks": [
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "known_issue",
+          "checks": [
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
           "expectation": "known_issue",
           "checks": [
             {
@@ -460,6 +848,18 @@
               "label": "Notice transcribed with OCR available"
             }
           ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 800,
+              "label": "Notice transcribed with OCR available"
+            }
+          ]
         }
       ]
     },
@@ -497,6 +897,18 @@
         {
           "id": "likhit-ocr",
           "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 500,
+              "label": "Scanned press note transcribed"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
           "expectation": "pass",
           "checks": [
             {
@@ -544,6 +956,40 @@
               "label": "Long-form Nepali rules extracted"
             }
           ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "बीउ बिजन नियमावली, २०८१",
+              "label": "Rules title retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 2200,
+              "label": "Long-form Nepali rules extracted"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "बीउ बिजन नियमावली, २०८१",
+              "label": "Rules title retained"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 2200,
+              "label": "Long-form Nepali rules extracted"
+            }
+          ]
         }
       ]
     },
@@ -577,6 +1023,30 @@
               "label": "Nepali legislation extracted"
             }
           ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 500,
+              "label": "Nepali legislation extracted"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 500,
+              "label": "Nepali legislation extracted"
+            }
+          ]
         }
       ]
     },
@@ -602,6 +1072,40 @@
         {
           "id": "likhit",
           "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "Nepal Country Programme",
+              "label": "Programme title retained"
+            },
+            {
+              "kind": "min_chars",
+              "value": 500,
+              "label": "Policy content extracted"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "Nepal Country Programme",
+              "label": "Programme title retained"
+            },
+            {
+              "kind": "min_chars",
+              "value": 500,
+              "label": "Policy content extracted"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
           "expectation": "pass",
           "checks": [
             {
@@ -655,6 +1159,40 @@
               "label": "No replacement-character corruption"
             }
           ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 3000,
+              "label": "Preeti report converted to Unicode"
+            },
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 3000,
+              "label": "Preeti report converted to Unicode"
+            },
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
         }
       ]
     },
@@ -682,6 +1220,40 @@
         {
           "id": "likhit",
           "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 2200,
+              "label": "Mixed legacy encodings converted"
+            },
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 2200,
+              "label": "Mixed legacy encodings converted"
+            },
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
           "expectation": "pass",
           "checks": [
             {
@@ -738,6 +1310,50 @@
               "label": "No replacement-character corruption"
             }
           ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 5500,
+              "label": "Tabulated Nepali extracted"
+            },
+            {
+              "kind": "contains",
+              "value": "प्रेस विज्ञप्ति",
+              "label": "Press release heading retained"
+            },
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 5500,
+              "label": "Tabulated Nepali extracted"
+            },
+            {
+              "kind": "contains",
+              "value": "प्रेस विज्ञप्ति",
+              "label": "Press release heading retained"
+            },
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
         }
       ]
     },
@@ -763,6 +1379,40 @@
         {
           "id": "likhit",
           "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 11500,
+              "label": "Full seven-page release extracted"
+            },
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 11500,
+              "label": "Full seven-page release extracted"
+            },
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
           "expectation": "pass",
           "checks": [
             {
@@ -821,6 +1471,18 @@
               "label": "Scanned notice transcribed"
             }
           ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_chars",
+              "value": 400,
+              "label": "Scanned notice transcribed"
+            }
+          ]
         }
       ]
     },
@@ -866,22 +1528,43 @@
               "label": "Scanned notice transcribed to Nepali"
             }
           ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "min_devanagari",
+              "value": 200,
+              "label": "Scanned notice transcribed to Nepali"
+            }
+          ]
         }
       ]
     }
   ],
   "configurations": {
     "likhit": {
-      "label": "Likhit",
+      "label": "Likhit (no OCR)",
       "description": "MarkItDown with the Likhit plugin enabled and no OCR credentials.",
       "plugins": true,
       "environment": "no-ocr"
     },
     "likhit-ocr": {
       "label": "Likhit (with OCR)",
-      "description": "Likhit with OCR credentials and a vision model configured, so image-only pages are transcribed instead of refused.",
+      "description": "Likhit with a hosted vision model configured, so image-only pages are transcribed instead of refused. Billed per token.",
       "plugins": true,
-      "environment": "default"
+      "environment": "default",
+      "requires": "ocr-api"
+    },
+    "likhit-ocr-local": {
+      "label": "Likhit (offline OCR)",
+      "description": "Likhit pointed at a vision model served locally, so image-only pages are transcribed with no API and no per-token charge.",
+      "plugins": true,
+      "environment": "ocr-local",
+      "requires": "ocr-local",
+      "timeout_s": 2400
     }
   }
 }
