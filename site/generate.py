@@ -358,6 +358,21 @@ def _default_run_case(
             "MARKITDOWN_OCR_MODEL",
         ):
             environment.pop(name, None)
+    elif config["environment"] == "ocr-local":
+        # Point likhit's OpenAI-compatible client at a locally served vision model
+        # (Ollama, llama.cpp, vLLM). No likhit change is needed for this: it is the
+        # same client, a different base URL, and no per-token charge. Any hosted
+        # key is cleared so a local run cannot silently bill a hosted API.
+        environment.pop("GEMINI_API_KEY", None)
+        environment.pop("GEMINI_MODEL", None)
+        environment["OPENAI_BASE_URL"] = os.environ.get("LIKHIT_LOCAL_OCR_BASE_URL", "")
+        environment["MARKITDOWN_OCR_MODEL"] = os.environ.get(
+            "LIKHIT_LOCAL_OCR_MODEL", ""
+        )
+        # Local servers ignore the key but the client refuses to build without one.
+        environment["OPENAI_API_KEY"] = os.environ.get(
+            "LIKHIT_LOCAL_OCR_API_KEY", "local"
+        )
 
     try:
         completed = subprocess.run(
@@ -453,6 +468,158 @@ def _write_text_artifact(path: pathlib.Path, value: str) -> tuple[str, str]:
     return path.as_posix(), _sha256(data)
 
 
+def _read_ocr_usage(usage_url: str | None) -> dict[str, int] | None:
+    """Read cumulative OCR token counters from the configured endpoint.
+
+    The endpoint reports totals since it started, so a single run's usage is the
+    difference across the run. Returns None when unreachable or malformed, which
+    is treated as "usage unknown" rather than as zero usage -- reporting zero
+    tokens for a run that really did call a vision model would be a lie.
+    """
+
+    if not usage_url:
+        return None
+    try:
+        request = urllib.request.Request(
+            usage_url, headers={"User-Agent": "likhit-benchmark/1.0"}
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    counters = {}
+    for key in ("calls", "input_tokens", "output_tokens"):
+        value = payload.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None
+        counters[key] = value
+    return counters
+
+
+_UNAVAILABLE_REASONS = {
+    "ocr-api": (
+        "no hosted vision API configured (needs MARKITDOWN_OCR_MODEL plus "
+        "OPENAI_API_KEY or GEMINI_API_KEY)"
+    ),
+    "ocr-local": (
+        "no local vision model served (needs LIKHIT_LOCAL_OCR_BASE_URL and "
+        "LIKHIT_LOCAL_OCR_MODEL, with that model actually served)"
+    ),
+}
+
+
+def _ocr_backend_available(config: dict[str, Any]) -> bool:
+    """Whether the OCR backend a configuration needs is actually reachable here.
+
+    Environments differ: CI has no vision credentials, a laptop may have a hosted
+    API key, and another machine may only have a local model server. A
+    configuration whose backend is absent is *skipped* rather than run, because
+    running it would report a likhit defect where the truth is "not configured".
+    Configurations that do not use OCR are always available.
+    """
+
+    requirement = config.get("requires")
+    if not requirement:
+        return True
+    if requirement == "ocr-api":
+        return bool(
+            os.environ.get("MARKITDOWN_OCR_MODEL")
+            and (os.environ.get("OPENAI_API_KEY") or os.environ.get("GEMINI_API_KEY"))
+        )
+    if requirement == "ocr-local":
+        # A local OpenAI-compatible server (Ollama, llama.cpp, vLLM). It counts as
+        # available only when it answers *and* serves the requested model, so a
+        # running-but-empty server does not produce a column of failures.
+        base = os.environ.get("LIKHIT_LOCAL_OCR_BASE_URL")
+        model = os.environ.get("LIKHIT_LOCAL_OCR_MODEL")
+        if not base or not model:
+            return False
+        return model in _local_ocr_models(base)
+    return False
+
+
+def _local_ocr_models(base_url: str) -> frozenset[str]:
+    """Model ids a local OpenAI-compatible server currently serves."""
+
+    url = base_url.rstrip("/") + "/models"
+    try:
+        request = urllib.request.Request(
+            url, headers={"User-Agent": "likhit-benchmark/1.0"}
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return frozenset()
+    entries = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return frozenset()
+    return frozenset(
+        str(entry.get("id"))
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("id")
+    )
+
+
+def _ocr_backend_accounting(config: dict[str, Any]) -> tuple[str | None, str | None]:
+    """The usage endpoint and model id belonging to a configuration's backend.
+
+    Both are per-backend, not global. Reading a single ambient endpoint and a
+    single ambient model name would attribute one backend's tokens, and one
+    backend's model id, to a run served by the other -- so a locally served model
+    could be reported as having spent tokens on a hosted API.
+    """
+
+    requirement = config.get("requires")
+    if requirement == "ocr-api":
+        return (
+            os.environ.get("LIKHIT_OCR_USAGE_URL"),
+            os.environ.get("MARKITDOWN_OCR_MODEL"),
+        )
+    if requirement == "ocr-local":
+        return (
+            os.environ.get("LIKHIT_LOCAL_OCR_USAGE_URL"),
+            os.environ.get("LIKHIT_LOCAL_OCR_MODEL"),
+        )
+    # A configuration with no OCR backend cannot spend tokens.
+    return None, None
+
+
+def _ocr_usage_record(
+    before: dict[str, int] | None,
+    after: dict[str, int] | None,
+    model: str | None,
+) -> dict[str, Any] | None:
+    """Vision calls and tokens one run spent, plus the model that spent them.
+
+    Tokens only, deliberately: no cost is derived. Vendor token rates are not
+    published for every model in the AWS price list, so any built-in price table
+    would silently produce wrong money. Tokens and calls are the measured
+    quantities, and the model is recorded so they can be priced elsewhere.
+    """
+
+    if before is None or after is None:
+        return None
+    calls = after["calls"] - before["calls"]
+    input_tokens = after["input_tokens"] - before["input_tokens"]
+    output_tokens = after["output_tokens"] - before["output_tokens"]
+    # A counter that went backwards means the endpoint restarted mid-build; the
+    # difference is then meaningless.
+    if min(calls, input_tokens, output_tokens) < 0:
+        return None
+    if calls == 0:
+        return None
+
+    return {
+        "calls": calls,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "model": model,
+    }
+
+
 def _generate_run(
     document: dict[str, Any],
     source: pathlib.Path,
@@ -463,7 +630,22 @@ def _generate_run(
     run_case: RunCase,
 ) -> dict[str, Any]:
     config = configurations[run["config"]]
-    payload, diagnostics = run_case(source, run, config, timeout_s)
+    # Bracket the conversion so the tokens attributed to this run are only the
+    # ones it spent, and read the counter belonging to *this* run's backend.
+    usage_url, usage_model = _ocr_backend_accounting(config)
+    usage_before = _read_ocr_usage(usage_url)
+    # A configuration may need more wall clock than the global default: a vision
+    # model served locally on CPU is orders of magnitude slower than a hosted API,
+    # and timing it out would report a Likhit defect where the truth is "this
+    # machine is slow".
+    payload, diagnostics = run_case(
+        source, run, config, int(config.get("timeout_s") or timeout_s)
+    )
+    ocr_usage = _ocr_usage_record(
+        usage_before,
+        _read_ocr_usage(usage_url),
+        usage_model,
+    )
     text = str(payload.get("text") or "")
     metrics = _text_signals(text) if payload.get("status") == "ok" else {}
     checks = [
@@ -513,6 +695,7 @@ def _generate_run(
         "wall_s": payload.get("wall_s"),
         "max_rss_mb": payload.get("max_rss_mb"),
         "metrics": metrics,
+        "ocr_usage": ocr_usage,
         "checks": checks,
         "transcript": f"transcripts/{transcript_path.name}",
         "transcript_sha256": transcript_sha,
@@ -676,6 +859,7 @@ def generate(
     junit: pathlib.Path | None = None,
     source_cache: pathlib.Path | None = None,
     include_public: bool = True,
+    include_synthetic: bool = True,
     timeout_s: int = 300,
     commit: str | None = None,
     ref: str | None = None,
@@ -690,9 +874,24 @@ def generate(
     try:
         _initialize_output(staging)
 
+        # Decide once, up front, which configurations can actually run here, so
+        # the same catalog produces a coherent artifact on a machine with a vision
+        # API, on one with only a local model server, and in CI with neither.
+        availability = {
+            name: _ocr_backend_available(config)
+            for name, config in catalog["configurations"].items()
+        }
+        skipped_runs = 0
+
         documents: list[dict[str, Any]] = []
         for spec in catalog["documents"]:
             if spec["origin"] == "public-institutional" and not include_public:
+                continue
+            # The published benchmark carries real government documents only.
+            # The synthetic fixtures stay in the catalog because they are the
+            # only corpus the generator can build with no network access, which
+            # is what test_generator_writes_complete_synthetic_artifact uses.
+            if spec["origin"] == "synthetic" and not include_synthetic:
                 continue
             source = _materialize_source(spec, staging / "documents", source_cache)
             data = source.read_bytes()
@@ -714,7 +913,11 @@ def generate(
                     run_case,
                 )
                 for run in spec["runs"]
+                if availability[run["config"]]
             ]
+            skipped_runs += sum(
+                1 for run in spec["runs"] if not availability[run["config"]]
+            )
             documents.append(
                 {
                     "id": spec["id"],
@@ -756,8 +959,22 @@ def generate(
                 "known_issue": outcomes.count("known-issue"),
                 "blocked": outcomes.count("blocked"),
                 "reference": outcomes.count("reference"),
+                "skipped": skipped_runs,
             },
-            "configurations": catalog["configurations"],
+            "configurations": {
+                name: {
+                    **config,
+                    "available": availability[name],
+                    "unavailable_reason": (
+                        None
+                        if availability[name]
+                        else _UNAVAILABLE_REASONS.get(
+                            config.get("requires"), "backend not configured"
+                        )
+                    ),
+                }
+                for name, config in catalog["configurations"].items()
+            },
             "documents": documents,
         }
         (staging / "data" / "results.json").write_text(
@@ -777,6 +994,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--junit", type=pathlib.Path)
     parser.add_argument("--source-cache", type=pathlib.Path)
     parser.add_argument("--skip-public", action="store_true")
+    parser.add_argument("--skip-synthetic", action="store_true")
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--commit")
     parser.add_argument("--ref")
@@ -791,6 +1009,7 @@ def main(argv: list[str] | None = None) -> int:
         junit=args.junit,
         source_cache=args.source_cache,
         include_public=not args.skip_public,
+        include_synthetic=not args.skip_synthetic,
         timeout_s=args.timeout,
         commit=args.commit,
         ref=args.ref,

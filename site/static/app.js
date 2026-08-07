@@ -9,6 +9,7 @@ const state = {
   selectedDocument: null,
   selectedRun: null,
   tab: "transcript",
+  transcriptView: "rendered",
   loadToken: 0,
 };
 
@@ -101,13 +102,26 @@ function outcomeChip(run, includeLabel = true) {
   `;
 }
 
+// Nepal Time (UTC+05:45). This benchmark is read by people working on Nepali
+// government documents, so timestamps are pinned to Asia/Kathmandu and labelled,
+// rather than rendered in whatever zone the viewer's browser happens to be in.
+const NPT_ZONE = "Asia/Kathmandu";
+
+function formatNpt(value, options = { dateStyle: "medium", timeStyle: "short" }) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "unknown";
+  }
+  const formatted = date.toLocaleString("en-GB", { ...options, timeZone: NPT_ZONE });
+  return `${formatted} NPT`;
+}
+
 function renderIdentity() {
   const { build, generated_at: generatedAt } = state.data;
-  const date = new Date(generatedAt);
   byId("run-identity").innerHTML = `
     <code>${escapeHtml(shortSha(build.commit))}</code>
     · Likhit ${escapeHtml(build.likhit)}
-    · ${escapeHtml(date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}
+    · ${escapeHtml(formatNpt(generatedAt))}
   `;
 }
 
@@ -352,10 +366,19 @@ function renderDetail() {
   `;
   byId("detail-actions")
     .querySelector("[data-view-pdf]")
-    ?.addEventListener("click", () => selectTab("source"));
+    ?.addEventListener("click", () => openPdfModal(item));
+  renderSource(item);
   renderRunSegments();
   renderDetailBody();
   refreshIcons();
+}
+
+// Tokens an OCR run spent, on the configuration chip itself, so the cost of the
+// OCR column is visible without opening a tab.
+function runCostBadge(run) {
+  const usage = run.ocr_usage;
+  if (!usage) return "";
+  return ` <span class="run-cost">${escapeHtml(formatTokens(usage.total_tokens))} tok</span>`;
 }
 
 function renderRunSegments() {
@@ -370,7 +393,7 @@ function renderRunSegments() {
           data-run="${escapeHtml(run.id)}"
           aria-pressed="${run.id === state.selectedRun}"
         >
-          ${escapeHtml(run.label)}
+          ${escapeHtml(run.label)}${runCostBadge(run)}
         </button>
       `,
     )
@@ -380,6 +403,197 @@ function renderRunSegments() {
     .forEach((button) => {
       button.addEventListener("click", () => selectRun(button.dataset.run));
     });
+}
+
+// The source PDF opens in a modal rather than replacing the panel, so the run's
+// transcript stays on screen behind it. <dialog> is used for the native Esc key,
+// focus trapping and inert backdrop.
+function openPdfModal(item) {
+  const modal = byId("pdf-modal");
+  const frame = byId("pdf-modal-frame");
+  const href = `./${item.source.download}`;
+  byId("pdf-modal-title").textContent = item.title;
+  byId("pdf-modal-open").href = href;
+  frame.src = href;
+  if (!modal.open) modal.showModal();
+}
+
+function closePdfModal() {
+  const modal = byId("pdf-modal");
+  if (modal.open) modal.close();
+}
+
+function bindPdfModal() {
+  const modal = byId("pdf-modal");
+  byId("pdf-modal-close").addEventListener("click", closePdfModal);
+  // Clicking the backdrop closes it; clicks inside the dialog do not, which is
+  // why this compares the target rather than just listening on the dialog.
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal) closePdfModal();
+  });
+  // Drop the src on close so a large PDF stops rendering and does not keep
+  // playing/scrolling behind the scenes.
+  modal.addEventListener("close", () => {
+    byId("pdf-modal-frame").src = "about:blank";
+  });
+}
+
+// A deliberately narrow Markdown renderer for the transcript preview.
+//
+// Transcripts are machine output derived from untrusted third-party PDFs, so this
+// escapes the input *first* and never emits a tag it did not construct itself.
+// That removes the injection surface a general-purpose library would add, at the
+// cost of covering only what Likhit actually emits: headings, GFM pipe tables,
+// lists, blockquotes, rules, fenced code, and inline emphasis, code and links.
+function renderInline(text) {
+  return text
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (match, label, href) => {
+      // Only absolute http(s) survives. javascript:, data: and anything else --
+      // including the base64 images Likhit emits for .docx -- degrade to their
+      // label text. The href is already HTML-escaped by the caller.
+      if (!/^https?:\/\//.test(href)) return label;
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    });
+}
+
+function renderMarkdown(markdown) {
+  const lines = escapeHtml(markdown).split("\n");
+  const out = [];
+  let index = 0;
+
+  const isTableSeparator = (line) => /^\s*\|?[\s:-]*-[\s|:-]*\|?\s*$/.test(line) && line.includes("-");
+  const cells = (line) =>
+    line
+      .replace(/^\s*\|/, "")
+      .replace(/\|\s*$/, "")
+      .split("|")
+      .map((cell) => renderInline(cell.trim()));
+
+  while (index < lines.length) {
+    const line = lines[index];
+
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    if (/^```/.test(line)) {
+      const block = [];
+      index += 1;
+      while (index < lines.length && !/^```/.test(lines[index])) {
+        block.push(lines[index]);
+        index += 1;
+      }
+      index += 1;
+      out.push(`<pre class="md-code"><code>${block.join("\n")}</code></pre>`);
+      continue;
+    }
+
+    // A pipe table needs its delimiter row; without one these are just lines of
+    // text that happen to contain a pipe.
+    if (line.includes("|") && isTableSeparator(lines[index + 1] || "")) {
+      const head = cells(line);
+      index += 2;
+      const body = [];
+      while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+        body.push(cells(lines[index]));
+        index += 1;
+      }
+      const headRow = head.map((cell) => `<th>${cell}</th>`).join("");
+      const bodyRows = body
+        .map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`)
+        .join("");
+      out.push(
+        `<div class="md-table-scroll"><table class="md-table">` +
+          `<thead><tr>${headRow}</tr></thead><tbody>${bodyRows}</tbody></table></div>`,
+      );
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      const level = heading[1].length;
+      out.push(`<h${level}>${renderInline(heading[2])}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*(---+|\*\*\*+|___+)\s*$/.test(line)) {
+      out.push("<hr />");
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*&gt;\s?/.test(line)) {
+      const block = [];
+      while (index < lines.length && /^\s*&gt;\s?/.test(lines[index])) {
+        block.push(lines[index].replace(/^\s*&gt;\s?/, ""));
+        index += 1;
+      }
+      out.push(`<blockquote>${renderInline(block.join(" "))}</blockquote>`);
+      continue;
+    }
+
+    const bullet = /^\s*([-*+])\s+/;
+    const numbered = /^\s*\d+\.\s+/;
+    if (bullet.test(line) || numbered.test(line)) {
+      const ordered = numbered.test(line);
+      const pattern = ordered ? numbered : bullet;
+      const items = [];
+      while (index < lines.length && pattern.test(lines[index])) {
+        items.push(renderInline(lines[index].replace(pattern, "")));
+        index += 1;
+      }
+      const tag = ordered ? "ol" : "ul";
+      out.push(`<${tag}>${items.map((li) => `<li>${li}</li>`).join("")}</${tag}>`);
+      continue;
+    }
+
+    const paragraph = [];
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !/^```/.test(lines[index]) &&
+      !/^(#{1,6})\s/.test(lines[index]) &&
+      !/^\s*(---+|\*\*\*+|___+)\s*$/.test(lines[index]) &&
+      !/^\s*&gt;\s?/.test(lines[index]) &&
+      !bullet.test(lines[index]) &&
+      !numbered.test(lines[index]) &&
+      !(lines[index].includes("|") && isTableSeparator(lines[index + 1] || ""))
+    ) {
+      paragraph.push(lines[index]);
+      index += 1;
+    }
+    if (paragraph.length) {
+      out.push(`<p>${renderInline(paragraph.join("<br />"))}</p>`);
+    }
+  }
+
+  return out.join("\n") || "<p class=\"md-empty\">No text was extracted for this run.</p>";
+}
+
+function applyTranscriptView(markdown) {
+  const target = byId("transcript-copy");
+  if (!target) return;
+  const rendered = state.transcriptView === "rendered";
+  target.classList.toggle("markdown-body", rendered);
+  target.classList.toggle("transcript-source", !rendered);
+  if (rendered) {
+    target.innerHTML = renderMarkdown(markdown);
+  } else {
+    target.textContent = markdown || "No text was extracted for this run.";
+  }
+  byId("transcript-view")
+    ?.querySelectorAll("[data-view]")
+    .forEach((button) => {
+      const selected = button.dataset.view === state.transcriptView;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+  refreshIcons();
 }
 
 async function renderTranscript(run, token) {
@@ -403,9 +617,17 @@ async function renderTranscript(run, token) {
         <section class="transcript-panel">
           <header class="panel-heading">
             <h2>Extracted Markdown</h2>
+            <div class="view-toggle" id="transcript-view" role="group" aria-label="Markdown view">
+              <button type="button" data-view="rendered" aria-pressed="true">
+                ${icon("book-open")} Preview
+              </button>
+              <button type="button" data-view="source" aria-pressed="false">
+                ${icon("code")} Source
+              </button>
+            </div>
             <code title="${escapeHtml(run.transcript_sha256)}">${escapeHtml(shortSha(run.transcript_sha256))}</code>
           </header>
-          <pre id="transcript-copy"></pre>
+          <div id="transcript-copy"></div>
         </section>
         <section class="transcript-panel diagnostic-panel">
           <header class="panel-heading">
@@ -416,8 +638,15 @@ async function renderTranscript(run, token) {
         </section>
       </div>
     `;
-    byId("transcript-copy").textContent =
-      transcript || "No text was extracted for this run.";
+    applyTranscriptView(transcript);
+    byId("transcript-view")
+      .querySelectorAll("[data-view]")
+      .forEach((button) => {
+        button.addEventListener("click", () => {
+          state.transcriptView = button.dataset.view;
+          applyTranscriptView(transcript);
+        });
+      });
     byId("diagnostic-copy").textContent =
       diagnostics || "No diagnostic output.";
   } catch (error) {
@@ -477,7 +706,8 @@ function renderSource(item) {
           <span>${escapeHtml(formatBytes(item.source.bytes))}</span>
         </div>
       `;
-  byId("detail-body").innerHTML = `
+  // Document-level, not run-level: every configuration converts the same bytes.
+  byId("document-source").innerHTML = `
     <div class="source-layout">
       ${preview}
       <dl class="source-facts">
@@ -561,11 +791,39 @@ function renderChecks(run) {
   refreshIcons();
 }
 
+// Token usage for the OCR configurations. Tokens and calls only -- no cost is
+// derived, because vendor token rates are not published for every model and a
+// guessed rate would render a confidently wrong number. The model is shown so the
+// tokens can be priced elsewhere.
+function formatTokens(value) {
+  if (typeof value !== "number") return "—";
+  return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value);
+}
+
+function renderOcrUsageBlock(run) {
+  const usage = run.ocr_usage;
+  if (!usage) return "";
+  return `
+      <h2>OCR usage</h2>
+      <dl class="metadata-block">
+        <div><dt>Model</dt><dd><code>${escapeHtml(usage.model || "unknown")}</code></dd></div>
+        <div><dt>Total tokens</dt><dd><strong>${usage.total_tokens.toLocaleString()}</strong></dd></div>
+        <div><dt>Input tokens</dt><dd>${usage.input_tokens.toLocaleString()}</dd></div>
+        <div><dt>Output tokens</dt><dd>${usage.output_tokens.toLocaleString()}</dd></div>
+        <div><dt>Vision calls</dt><dd>${usage.calls.toLocaleString()}</dd></div>
+      </dl>
+  `;
+}
+
 function renderMetadata(item, run) {
   const build = state.data.build;
-  const generated = new Date(state.data.generated_at).toLocaleString();
+  const generated = formatNpt(state.data.generated_at, {
+    dateStyle: "full",
+    timeStyle: "medium",
+  });
   byId("detail-body").innerHTML = `
     <div class="metadata-layout">
+      ${renderOcrUsageBlock(run)}
       <h2>Run metadata</h2>
       <dl class="metadata-block">
         <div><dt>Configuration</dt><dd>${escapeHtml(run.label)}</dd></div>
@@ -599,8 +857,6 @@ function renderDetailBody() {
     });
   if (state.tab === "transcript") {
     renderTranscript(run, token);
-  } else if (state.tab === "source") {
-    renderSource(item);
   } else if (state.tab === "checks") {
     renderChecks(run);
   } else {
@@ -646,8 +902,31 @@ function bindControls() {
   });
 }
 
+// The install command is the one thing a visitor is most likely to want to take
+// away, so make it copyable without selecting text. Clipboard access can be
+// refused (insecure origin, denied permission), in which case say so rather than
+// silently pretending it worked.
+function bindCopyButtons() {
+  document.querySelectorAll("[data-copy]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const original = button.textContent.trim();
+      try {
+        await navigator.clipboard.writeText(button.dataset.copy);
+        button.textContent = "Copied";
+      } catch {
+        button.textContent = "Press ⌘/Ctrl+C";
+      }
+      window.setTimeout(() => {
+        button.textContent = original;
+      }, 1800);
+    });
+  });
+}
+
 async function initialize() {
   bindControls();
+  bindPdfModal();
+  bindCopyButtons();
   try {
     const response = await fetch("./data/results.json");
     if (!response.ok) throw new Error(`Results request failed: ${response.status}`);

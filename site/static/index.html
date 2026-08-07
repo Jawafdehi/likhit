@@ -21,7 +21,13 @@
   <body>
     <header class="topbar">
       <a class="brand" href="./" aria-label="Likhit benchmark home">
-        <span class="brand-mark" aria-hidden="true">लि</span>
+        <img
+          class="brand-logo"
+          src="./logo-mark.svg"
+          alt=""
+          width="414"
+          height="132"
+        />
         <span>
           <strong>Likhit</strong>
           <small>document benchmark</small>
@@ -41,6 +47,165 @@
     </header>
 
     <main>
+      <section class="intro" aria-labelledby="intro-title">
+        <div class="intro-copy">
+          <img
+            class="intro-logo"
+            src="./logo.svg"
+            alt="Likhit"
+            width="1240"
+            height="260"
+          />
+          <h1 id="intro-title">Nepali documents, converted faithfully</h1>
+          <p class="intro-lede">
+            <strong>Likhit</strong> is
+            <a href="https://jawafdehi.org/">Jawafdehi's</a> public
+            <a href="https://github.com/microsoft/markitdown">MarkItDown</a>
+            plugin for Nepal-specific document support. It adds Nepali PDF
+            repair, layout-aware Markdown assembly, optional OCR for
+            image-dominant pages, and legacy <code>.doc</code> support. For PDFs
+            it evaluates several extraction paths and returns the best result
+            rather than trusting one fixed pipeline.
+          </p>
+
+          <div class="intro-install">
+            <code>pip install likhit</code>
+            <button
+              class="copy-button"
+              type="button"
+              data-copy="pip install likhit"
+              aria-label="Copy install command"
+            >
+              Copy
+            </button>
+          </div>
+
+          <p class="intro-usage">
+            Then enable plugins when you convert:
+            <code>MarkItDown(enable_plugins=True)</code>, or from the CLI
+            <code>markitdown --use-plugins document.pdf</code>.
+          </p>
+
+          <div class="intro-links">
+            <a class="command-link" href="https://github.com/Jawafdehi/likhit">
+              <i data-lucide="github" aria-hidden="true"></i> Source
+            </a>
+            <a class="command-link" href="https://pypi.org/project/likhit/">
+              <i data-lucide="package" aria-hidden="true"></i> PyPI
+            </a>
+            <a class="command-link" href="https://jawafdehi.org/">
+              <i data-lucide="globe" aria-hidden="true"></i> Jawafdehi
+            </a>
+          </div>
+        </div>
+
+        <ul class="intro-features">
+          <li>
+            <i data-lucide="wrench" aria-hidden="true"></i>
+            <div>
+              <strong>Devanagari repair</strong>
+              <span
+                >Recovers conjuncts and matras that ordinary extraction turns
+                into replacement characters.</span
+              >
+            </div>
+          </li>
+          <li>
+            <i data-lucide="table" aria-hidden="true"></i>
+            <div>
+              <strong>Layout-aware Markdown</strong>
+              <span
+                >Reconstructs reading order and tables instead of emitting a
+                flat character dump.</span
+              >
+            </div>
+          </li>
+          <li>
+            <i data-lucide="scan-text" aria-hidden="true"></i>
+            <div>
+              <strong>OCR when needed</strong>
+              <span
+                >Falls back to a vision model on image-only pages, which no text
+                layer can serve.</span
+              >
+            </div>
+          </li>
+          <li>
+            <i data-lucide="file-clock" aria-hidden="true"></i>
+            <div>
+              <strong>Legacy formats</strong>
+              <span
+                >Reads the <code>.doc</code> and Preeti-era files government
+                archives are actually made of.</span
+              >
+            </div>
+          </li>
+        </ul>
+      </section>
+
+      <section class="cli-section" aria-labelledby="cli-title">
+        <div class="cli-copy">
+          <h2 id="cli-title">
+            <i data-lucide="terminal" aria-hidden="true"></i>
+            Convert from the command line
+          </h2>
+          <p>
+            The package installs <code>likhit-save</code>, a helper that runs
+            MarkItDown with the plugin enabled and writes the Markdown out for
+            you — no Python needed.
+          </p>
+        </div>
+
+        <ul class="cli-examples">
+          <li>
+            <span class="cli-label">One file</span>
+            <code>likhit-save notice.pdf --out notice.md</code>
+            <button
+              class="copy-button cli-copy-button"
+              type="button"
+              data-copy="likhit-save notice.pdf --out notice.md"
+              aria-label="Copy command: convert one file"
+            >
+              Copy
+            </button>
+          </li>
+          <li>
+            <span class="cli-label">Many files</span>
+            <code>likhit-save a.pdf b.pdf --out-dir converted/</code>
+            <button
+              class="copy-button cli-copy-button"
+              type="button"
+              data-copy="likhit-save a.pdf b.pdf --out-dir converted/"
+              aria-label="Copy command: convert many files"
+            >
+              Copy
+            </button>
+          </li>
+          <li>
+            <span class="cli-label">Page range</span>
+            <code>likhit-save report.pdf --pages 2-4 --out pages.md</code>
+            <button
+              class="copy-button cli-copy-button"
+              type="button"
+              data-copy="likhit-save report.pdf --pages 2-4 --out pages.md"
+              aria-label="Copy command: convert a page range"
+            >
+              Copy
+            </button>
+          </li>
+        </ul>
+      </section>
+
+      <section class="benchmark-intro" aria-labelledby="benchmark-title">
+        <h2 id="benchmark-title">Benchmark</h2>
+        <p>
+          Every result below is generated from real, published government
+          documents — no synthetic fixtures — and re-run on each commit. Pick a
+          document to read what Likhit extracted, compare the OCR
+          configurations, and check the assertions that gate the build.
+        </p>
+      </section>
+
       <section class="summary-strip" id="summary-strip" aria-label="Run summary">
         <div class="summary-skeleton"></div>
       </section>
@@ -139,6 +304,15 @@
               <div class="detail-actions" id="detail-actions"></div>
             </header>
 
+            <!-- The source document belongs to the document, not to a run: every
+                 configuration converts the same bytes. It therefore sits above the
+                 run selector rather than being repeated as a per-run tab. -->
+            <section
+              class="document-source"
+              id="document-source"
+              aria-label="Source document"
+            ></section>
+
             <div
               class="run-segments"
               id="run-segments"
@@ -155,9 +329,6 @@
               >
                 Transcript
               </button>
-              <button type="button" data-tab="source" aria-pressed="false">
-                Source
-              </button>
               <button type="button" data-tab="checks" aria-pressed="false">
                 Checks
               </button>
@@ -171,6 +342,32 @@
         </article>
       </section>
     </main>
+
+    <dialog class="pdf-modal" id="pdf-modal" aria-labelledby="pdf-modal-title">
+      <header class="pdf-modal-bar">
+        <h2 id="pdf-modal-title">Source PDF</h2>
+        <div class="pdf-modal-actions">
+          <a
+            class="command-link"
+            id="pdf-modal-open"
+            href="#"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Open in new tab
+          </a>
+          <button
+            class="command-link"
+            type="button"
+            id="pdf-modal-close"
+            aria-label="Close PDF viewer"
+          >
+            Close
+          </button>
+        </div>
+      </header>
+      <iframe id="pdf-modal-frame" title="Source PDF" src="about:blank"></iframe>
+    </dialog>
 
     <noscript>This benchmark requires JavaScript to load generated results.</noscript>
   </body>
