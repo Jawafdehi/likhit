@@ -33,6 +33,9 @@ DEFAULT_MAX_PUBLIC_SOURCE_BYTES = 100 * 1024 * 1024
 DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 OUTPUT_MARKER = ".likhit-benchmark-output"
 OUTPUT_MARKER_CONTENT = "likhit-benchmark-output-v1\n"
+# Bump when a snapshot field changes meaning. _load_snapshot refuses a version it
+# does not understand rather than silently replaying half a record.
+SNAPSHOT_VERSION = 1
 
 sys.path.insert(0, str(ROOT))
 
@@ -608,8 +611,11 @@ def _ocr_usage_record(
     # difference is then meaningless.
     if min(calls, input_tokens, output_tokens) < 0:
         return None
-    if calls == 0:
-        return None
+    # Zero calls is a measurement, not an absence: Likhit only adds an OCR
+    # candidate for pages a text layer cannot serve, so most documents spend
+    # nothing even with a vision backend configured. Reporting that as null would
+    # make "this run needed no OCR" indistinguishable from "nobody was counting",
+    # and the dashboard would show a blank for both.
 
     return {
         "calls": calls,
@@ -617,6 +623,88 @@ def _ocr_usage_record(
         "output_tokens": output_tokens,
         "total_tokens": input_tokens + output_tokens,
         "model": model,
+    }
+
+
+_RECORDED_PAYLOAD_FIELDS = (
+    "status",
+    "text",
+    "wall_s",
+    "max_rss_mb",
+    "exc_type",
+    "exc_msg",
+    "traceback",
+)
+
+
+def _snapshot_key(document_id: str, run_id: str) -> str:
+    return f"{document_id}--{run_id}"
+
+
+def _load_snapshot(path: pathlib.Path) -> dict[str, Any]:
+    """Read a recorded benchmark, refusing a shape this generator cannot replay."""
+
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(snapshot, dict):
+        raise ValueError(f"{path} is not a snapshot object")
+    version = snapshot.get("snapshot_version")
+    if version != SNAPSHOT_VERSION:
+        raise ValueError(
+            f"{path} declares snapshot_version {version!r}; "
+            f"this generator replays version {SNAPSHOT_VERSION}"
+        )
+    if not isinstance(snapshot.get("recorded_at"), str):
+        raise ValueError(f"{path} is missing required field 'recorded_at'")
+    for field in ("build", "configurations", "runs"):
+        # Typed, not merely present: a `runs` string would pass a presence check
+        # and then fail deep in the build with an AttributeError.
+        if not isinstance(snapshot.get(field), dict):
+            raise ValueError(f"{path} is missing required field {field!r}")
+    return snapshot
+
+
+def _replayed_payload(recorded: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Rebuild the (payload, diagnostics) pair a recorded run originally produced.
+
+    The recorded diagnostics are the raw subprocess stderr, *before* the error and
+    traceback lines are folded in -- so a replayed run composes its diagnostic
+    artifact exactly once, byte-identically to the run that was recorded.
+    """
+
+    payload = {
+        field: recorded[field]
+        for field in _RECORDED_PAYLOAD_FIELDS
+        if recorded.get(field) is not None
+    }
+    payload.setdefault("status", "bad-output")
+    payload.setdefault("text", "")
+    return payload, str(recorded.get("diagnostics") or "")
+
+
+def _snapshot_document(
+    artifact: dict[str, Any], recordings: dict[str, Any]
+) -> dict[str, Any]:
+    """The committed record of a full-fidelity run, for replay where one is impossible.
+
+    The published site is built by CI, which has no vision backend and no budget
+    for tens of conversions per commit. Recording a complete local run -- every
+    configuration, every document -- lets CI publish those measurements instead of
+    a degraded subset it could compute itself.
+    """
+
+    return {
+        "snapshot_version": SNAPSHOT_VERSION,
+        "recorded_at": artifact["generated_at"],
+        "build": artifact["build"],
+        "configurations": {
+            name: {
+                "label": config["label"],
+                "available": config["available"],
+                "model": config["model"],
+            }
+            for name, config in artifact["configurations"].items()
+        },
+        "runs": recordings,
     }
 
 
@@ -628,24 +716,31 @@ def _generate_run(
     output: pathlib.Path,
     timeout_s: int,
     run_case: RunCase,
-) -> dict[str, Any]:
+    recorded: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     config = configurations[run["config"]]
-    # Bracket the conversion so the tokens attributed to this run are only the
-    # ones it spent, and read the counter belonging to *this* run's backend.
-    usage_url, usage_model = _ocr_backend_accounting(config)
-    usage_before = _read_ocr_usage(usage_url)
-    # A configuration may need more wall clock than the global default: a vision
-    # model served locally on CPU is orders of magnitude slower than a hosted API,
-    # and timing it out would report a Likhit defect where the truth is "this
-    # machine is slow".
-    payload, diagnostics = run_case(
-        source, run, config, int(config.get("timeout_s") or timeout_s)
-    )
-    ocr_usage = _ocr_usage_record(
-        usage_before,
-        _read_ocr_usage(usage_url),
-        usage_model,
-    )
+    if recorded is None:
+        # Bracket the conversion so the tokens attributed to this run are only the
+        # ones it spent, and read the counter belonging to *this* run's backend.
+        usage_url, usage_model = _ocr_backend_accounting(config)
+        usage_before = _read_ocr_usage(usage_url)
+        # A configuration may need more wall clock than the global default: a
+        # vision model served locally on CPU is orders of magnitude slower than a
+        # hosted API, and timing it out would report a Likhit defect where the
+        # truth is "this machine is slow".
+        payload, diagnostics = run_case(
+            source, run, config, int(config.get("timeout_s") or timeout_s)
+        )
+        ocr_usage = _ocr_usage_record(
+            usage_before,
+            _read_ocr_usage(usage_url),
+            usage_model,
+        )
+    else:
+        # Replaying a recorded run. Nothing is converted and no backend is called,
+        # so the usage figures come from the record rather than from live counters.
+        payload, diagnostics = _replayed_payload(recorded)
+        ocr_usage = recorded.get("ocr_usage")
     text = str(payload.get("text") or "")
     metrics = _text_signals(text) if payload.get("status") == "ok" else {}
     checks = [
@@ -685,6 +780,19 @@ def _generate_run(
     label = config["label"]
     if run.get("pages"):
         label = f"{label} / pages {run['pages']}"
+    # Everything a later build needs to reproduce this run without performing it.
+    # Captured here, where the raw payload and pre-composition stderr are still in
+    # hand, rather than reconstructed from the published artifact.
+    recording = {
+        **{
+            field: payload.get(field)
+            for field in _RECORDED_PAYLOAD_FIELDS
+            if field != "text"
+        },
+        "text": text,
+        "diagnostics": diagnostics,
+        "ocr_usage": ocr_usage,
+    }
     return {
         "id": run["id"],
         "config": run["config"],
@@ -710,7 +818,7 @@ def _generate_run(
             else None
         ),
         "excerpt": text[:500],
-    }
+    }, recording
 
 
 def _parse_junit(path: pathlib.Path | None) -> dict[str, Any]:
@@ -864,8 +972,11 @@ def generate(
     commit: str | None = None,
     ref: str | None = None,
     run_case: RunCase = _default_run_case,
+    snapshot: pathlib.Path | None = None,
+    write_snapshot: pathlib.Path | None = None,
 ) -> dict[str, Any]:
     catalog = _load_catalog()
+    snapshot_data = _load_snapshot(snapshot) if snapshot is not None else None
     _validate_output_target(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = pathlib.Path(
@@ -877,11 +988,36 @@ def generate(
         # Decide once, up front, which configurations can actually run here, so
         # the same catalog produces a coherent artifact on a machine with a vision
         # API, on one with only a local model server, and in CI with neither.
-        availability = {
-            name: _ocr_backend_available(config)
-            for name, config in catalog["configurations"].items()
-        }
+        # Replaying a snapshot inverts the question: what matters is which
+        # configurations the *recording* covered, not what this machine can reach,
+        # or CI would drop the very OCR columns the snapshot exists to publish.
+        # The model id belongs to the configuration, not to a single run: it is
+        # the same for every document, and it has to be reportable even for the
+        # runs that spent nothing -- which is most of them -- and for a backend
+        # with no token counter at all. Read from the environment on a live build,
+        # from the recording on a replay.
+        if snapshot_data is None:
+            availability = {
+                name: _ocr_backend_available(config)
+                for name, config in catalog["configurations"].items()
+            }
+            models = {
+                name: _ocr_backend_accounting(config)[1]
+                for name, config in catalog["configurations"].items()
+            }
+        else:
+            recorded_configurations = snapshot_data["configurations"]
+            availability = {
+                name: bool(recorded_configurations.get(name, {}).get("available"))
+                for name in catalog["configurations"]
+            }
+            models = {
+                name: recorded_configurations.get(name, {}).get("model")
+                for name in catalog["configurations"]
+            }
         skipped_runs = 0
+        recordings: dict[str, Any] = {}
+        missing_runs: list[str] = []
 
         documents: list[dict[str, Any]] = []
         for spec in catalog["documents"]:
@@ -902,8 +1038,24 @@ def generate(
             ):
                 raise ValueError(f"{spec['id']} did not retain its pinned checksum")
             thumbnail, pages = _render_thumbnail(source, staging / "previews")
-            runs = [
-                _generate_run(
+            runs: list[dict[str, Any]] = []
+            for run in spec["runs"]:
+                if not availability[run["config"]]:
+                    skipped_runs += 1
+                    continue
+                key = _snapshot_key(spec["id"], run["id"])
+                recorded = None
+                if snapshot_data is not None:
+                    recorded = snapshot_data["runs"].get(key)
+                    if recorded is None:
+                        # The catalog grew a run the snapshot predates. Skipping is
+                        # the only honest option -- there is no measurement to
+                        # publish -- but it must be visible, not silent, so the
+                        # artifact names it and the dashboard can say so.
+                        missing_runs.append(key)
+                        skipped_runs += 1
+                        continue
+                record, recording = _generate_run(
                     spec,
                     source,
                     run,
@@ -911,13 +1063,16 @@ def generate(
                     staging,
                     timeout_s,
                     run_case,
+                    recorded,
                 )
-                for run in spec["runs"]
-                if availability[run["config"]]
-            ]
-            skipped_runs += sum(
-                1 for run in spec["runs"] if not availability[run["config"]]
-            )
+                runs.append(record)
+                recordings[key] = recording
+            if not runs:
+                # Every configuration this document declares was skipped, so there
+                # is nothing to show and nothing to assert. Publishing the document
+                # anyway would emit an empty `runs` array -- which the schema
+                # forbids -- and a row the dashboard would filter out regardless.
+                continue
             documents.append(
                 {
                     "id": spec["id"],
@@ -946,10 +1101,25 @@ def generate(
         outcomes = [
             run["outcome"] for document in documents for run in document["runs"]
         ]
+        build = _build_metadata(commit, ref)
+        # Two provenances, deliberately separate: `build` is the commit that
+        # published these pages, `measured` is the commit whose behaviour the
+        # numbers actually describe. On a live build they are the same thing and
+        # `measured` is null; on a replay they can differ, and collapsing them
+        # would present recorded numbers as freshly measured ones.
+        measured = None
+        if snapshot_data is not None:
+            measured = {
+                "recorded_at": snapshot_data["recorded_at"],
+                "build": snapshot_data["build"],
+                "missing_runs": sorted(missing_runs),
+                "stale": snapshot_data["build"].get("commit") != build["commit"],
+            }
         artifact = {
             "schema_version": catalog["schema_version"],
             "generated_at": dt.datetime.now(dt.UTC).isoformat(),
-            "build": _build_metadata(commit, ref),
+            "build": build,
+            "measured": measured,
             "integration": _parse_junit(junit),
             "summary": {
                 "documents": len(documents),
@@ -965,6 +1135,7 @@ def generate(
                 name: {
                     **config,
                     "available": availability[name],
+                    "model": models[name],
                     "unavailable_reason": (
                         None
                         if availability[name]
@@ -982,6 +1153,20 @@ def generate(
             encoding="utf-8",
         )
         _publish_output(staging, output)
+        if write_snapshot is not None:
+            # Only after a successful publish: a build that failed to produce a
+            # site should not leave behind a record claiming it did.
+            write_snapshot.parent.mkdir(parents=True, exist_ok=True)
+            write_snapshot.write_text(
+                json.dumps(
+                    _snapshot_document(artifact, recordings),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         return artifact
     finally:
         if staging.exists():
@@ -999,6 +1184,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--commit")
     parser.add_argument("--ref")
     parser.add_argument("--fail-on-regression", action="store_true")
+    # Reading a snapshot and writing one in the same invocation would record a
+    # replay of a recording -- a copy with a fresh timestamp, and no new
+    # measurement anywhere in it.
+    snapshots = parser.add_mutually_exclusive_group()
+    snapshots.add_argument(
+        "--snapshot",
+        type=pathlib.Path,
+        help="publish runs recorded in this file instead of converting anything",
+    )
+    snapshots.add_argument(
+        "--write-snapshot",
+        type=pathlib.Path,
+        help="record this build's runs to this file for later replay",
+    )
     return parser
 
 
@@ -1013,12 +1212,37 @@ def main(argv: list[str] | None = None) -> int:
         timeout_s=args.timeout,
         commit=args.commit,
         ref=args.ref,
+        snapshot=args.snapshot,
+        write_snapshot=args.write_snapshot,
     )
+    summary = artifact["summary"]
     print(
-        f"generated {artifact['summary']['documents']} documents and "
-        f"{artifact['summary']['runs']} runs in {args.output}"
+        f"generated {summary['documents']} documents and "
+        f"{summary['runs']} runs in {args.output}"
     )
-    return int(args.fail_on_regression and artifact["summary"]["fail"] > 0)
+    if artifact["measured"]:
+        measured = artifact["measured"]
+        print(
+            f"replayed runs recorded at {measured['build'].get('commit')} "
+            f"on {measured['recorded_at']}"
+        )
+        if measured["missing_runs"]:
+            print(
+                f"warning: {len(measured['missing_runs'])} catalog runs are absent "
+                f"from the snapshot and were skipped: "
+                f"{', '.join(measured['missing_runs'])}"
+            )
+    if args.write_snapshot is not None:
+        available = sorted(
+            name
+            for name, config in artifact["configurations"].items()
+            if config["available"]
+        )
+        print(
+            f"recorded {summary['runs']} runs to {args.write_snapshot} "
+            f"covering {len(available)} configurations: {', '.join(available)}"
+        )
+    return int(args.fail_on_regression and summary["fail"] > 0)
 
 
 if __name__ == "__main__":

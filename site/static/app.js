@@ -125,6 +125,48 @@ function renderIdentity() {
   `;
 }
 
+// The benchmark cannot run on every commit: CI has no vision backend, and the
+// full corpus takes far longer than a Pages build. So a recorded snapshot is
+// replayed instead -- which is only honest if the page says so, names the commit
+// the numbers were measured at, and flags the case where that commit is no longer
+// the one being published.
+function renderMeasured() {
+  const banner = byId("measured-banner");
+  const measured = state.data.measured;
+  if (!measured) {
+    banner.hidden = true;
+    banner.innerHTML = "";
+    return;
+  }
+  banner.hidden = false;
+  const build = measured.build || {};
+  const missing = measured.missing_runs || [];
+  const notes = [];
+  if (measured.stale) {
+    notes.push(
+      `These numbers predate the published commit ${escapeHtml(shortSha(state.data.build.commit))}.`,
+    );
+  }
+  if (missing.length) {
+    notes.push(
+      `${formatNumber(missing.length)} catalog ${missing.length === 1 ? "run is" : "runs are"} newer than the recording and were skipped.`,
+    );
+  }
+  banner.classList.toggle("stale", Boolean(measured.stale) || missing.length > 0);
+  banner.innerHTML = `
+    ${icon(measured.stale || missing.length ? "triangle-alert" : "history")}
+    <span>
+      <strong>Recorded results.</strong>
+      Measured at <code>${escapeHtml(shortSha(build.commit))}</code>
+      on ${escapeHtml(formatNpt(measured.recorded_at))}
+      with Likhit ${escapeHtml(build.likhit ?? "unknown")}.
+      This build replayed them rather than re-running the benchmark.
+      ${notes.join(" ")}
+    </span>
+  `;
+  refreshIcons();
+}
+
 function renderSummary() {
   const { summary, integration } = state.data;
   const integrationClass =
@@ -373,12 +415,32 @@ function renderDetail() {
   refreshIcons();
 }
 
+function configurationOf(run) {
+  return state.data.configurations?.[run.config] ?? {};
+}
+
+// The model a run used. Held per configuration rather than per run, because most
+// runs make no vision call at all and so carry no usage record to read it from --
+// yet "which model would this have used" is exactly what a reader wants to know.
+function runModel(run) {
+  return configurationOf(run).model ?? run.ocr_usage?.model ?? null;
+}
+
 // Tokens an OCR run spent, on the configuration chip itself, so the cost of the
 // OCR column is visible without opening a tab.
+//
+// Zero is a result, not a blank: Likhit only calls a vision model for pages a text
+// layer cannot serve, so most documents spend nothing even with OCR configured.
+// Showing "0 tok" for those distinguishes them from a run whose spend nobody
+// counted, which renders as no badge at all.
 function runCostBadge(run) {
   const usage = run.ocr_usage;
   if (!usage) return "";
-  return ` <span class="run-cost">${escapeHtml(formatTokens(usage.total_tokens))} tok</span>`;
+  const label = usage.calls
+    ? `${formatTokens(usage.total_tokens)} tok`
+    : "no OCR call";
+  const className = usage.calls ? "run-cost" : "run-cost run-cost-idle";
+  return ` <span class="${className}">${escapeHtml(label)}</span>`;
 }
 
 function renderRunSegments() {
@@ -403,6 +465,46 @@ function renderRunSegments() {
     .forEach((button) => {
       button.addEventListener("click", () => selectRun(button.dataset.run));
     });
+  renderRunBackend();
+}
+
+// The backend line under the configuration selector: which vision model served
+// this run, and what it spent. Every branch here is a distinct, honest state --
+// conflating them is how "no OCR was needed" ends up looking like "we lost the
+// numbers".
+function renderRunBackend() {
+  const target = byId("run-backend");
+  const run = activeRun();
+  if (!target || !run) return;
+  const model = runModel(run);
+  if (!model) {
+    target.innerHTML = `
+      ${icon("file-text")}
+      <span>No vision model — this configuration reads the text layer only.</span>
+    `;
+    refreshIcons();
+    return;
+  }
+
+  const usage = run.ocr_usage;
+  let spend;
+  if (!usage) {
+    spend = "token usage was not recorded for this run";
+  } else if (!usage.calls) {
+    spend = "no OCR call — Likhit read this document without the model";
+  } else {
+    spend =
+      `${formatNumber(usage.calls)} ${usage.calls === 1 ? "call" : "calls"} · ` +
+      `${formatNumber(usage.total_tokens)} tokens ` +
+      `(${formatNumber(usage.input_tokens)} in / ${formatNumber(usage.output_tokens)} out)`;
+  }
+  target.innerHTML = `
+    ${icon("scan-text")}
+    <span>
+      Vision model <code>${escapeHtml(model)}</code> · ${escapeHtml(spend)}
+    </span>
+  `;
+  refreshIcons();
 }
 
 // The source PDF opens in a modal rather than replacing the panel, so the run's
@@ -801,26 +903,61 @@ function formatTokens(value) {
 }
 
 function renderOcrUsageBlock(run) {
+  const model = runModel(run);
+  // A configuration with no vision model has nothing to report here; one that has
+  // a model always does, even when the answer is "it made no call".
+  if (!model) return "";
   const usage = run.ocr_usage;
-  if (!usage) return "";
+  const rows = [["Model", `<code>${escapeHtml(model)}</code>`]];
+  if (!usage) {
+    rows.push(["Token usage", "not recorded for this run"]);
+  } else {
+    rows.push(
+      ["Vision calls", formatNumber(usage.calls)],
+      ["Total tokens", `<strong>${formatNumber(usage.total_tokens)}</strong>`],
+      ["Input tokens", formatNumber(usage.input_tokens)],
+      ["Output tokens", formatNumber(usage.output_tokens)],
+    );
+    if (!usage.calls) {
+      rows.push([
+        "Why zero",
+        "Likhit extracted this document without calling the model",
+      ]);
+    }
+  }
   return `
       <h2>OCR usage</h2>
       <dl class="metadata-block">
-        <div><dt>Model</dt><dd><code>${escapeHtml(usage.model || "unknown")}</code></dd></div>
-        <div><dt>Total tokens</dt><dd><strong>${usage.total_tokens.toLocaleString()}</strong></dd></div>
-        <div><dt>Input tokens</dt><dd>${usage.input_tokens.toLocaleString()}</dd></div>
-        <div><dt>Output tokens</dt><dd>${usage.output_tokens.toLocaleString()}</dd></div>
-        <div><dt>Vision calls</dt><dd>${usage.calls.toLocaleString()}</dd></div>
+        ${rows
+          .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${value}</dd></div>`)
+          .join("")}
       </dl>
   `;
 }
 
 function renderMetadata(item, run) {
-  const build = state.data.build;
-  const generated = formatNpt(state.data.generated_at, {
-    dateStyle: "full",
-    timeStyle: "medium",
-  });
+  const measured = state.data.measured;
+  // These rows describe the conversion, so they must name the environment that
+  // performed it. On a replayed build that is the recorded environment, not the
+  // one that assembled the page -- attributing a recorded run to the publishing
+  // commit's Likhit version would be a plain misstatement.
+  const build = measured?.build ?? state.data.build;
+  const generated = formatNpt(
+    measured ? measured.recorded_at : state.data.generated_at,
+    { dateStyle: "full", timeStyle: "medium" },
+  );
+  const publishedFrom = measured
+    ? `
+        <div>
+          <dt>Published from</dt>
+          <dd><code>${escapeHtml(state.data.build.commit)}</code></dd>
+        </div>
+        <div>
+          <dt>Published at</dt>
+          <dd>${escapeHtml(formatNpt(state.data.generated_at, { dateStyle: "full", timeStyle: "medium" }))}</dd>
+        </div>
+      `
+    : "";
   byId("detail-body").innerHTML = `
     <div class="metadata-layout">
       ${renderOcrUsageBlock(run)}
@@ -829,12 +966,13 @@ function renderMetadata(item, run) {
         <div><dt>Configuration</dt><dd>${escapeHtml(run.label)}</dd></div>
         <div><dt>Outcome</dt><dd>${escapeHtml(run.outcome)}</dd></div>
         <div><dt>Pages</dt><dd>${escapeHtml(run.pages || "all")}</dd></div>
-        <div><dt>Generated</dt><dd>${escapeHtml(generated)}</dd></div>
+        <div><dt>${measured ? "Measured" : "Generated"}</dt><dd>${escapeHtml(generated)}</dd></div>
         <div><dt>Commit</dt><dd><code>${escapeHtml(build.commit)}</code></dd></div>
         <div><dt>Branch</dt><dd>${escapeHtml(build.ref)}</dd></div>
         <div><dt>Likhit</dt><dd>${escapeHtml(build.likhit)}</dd></div>
         <div><dt>MarkItDown</dt><dd>${escapeHtml(build.markitdown)}</dd></div>
         <div><dt>Python</dt><dd>${escapeHtml(build.python)}</dd></div>
+        ${publishedFrom}
         <div><dt>Transcript hash</dt><dd><code>${escapeHtml(run.transcript_sha256)}</code></dd></div>
         <div><dt>Diagnostic hash</dt><dd><code>${escapeHtml(run.diagnostics_sha256)}</code></dd></div>
         <div><dt>Source hash</dt><dd><code>${escapeHtml(item.source.sha256)}</code></dd></div>
@@ -906,12 +1044,20 @@ function bindControls() {
 // away, so make it copyable without selecting text. Clipboard access can be
 // refused (insecure origin, denied permission), in which case say so rather than
 // silently pretending it worked.
+// A multi-line setup block is copied from the <pre> it sits beside rather than
+// from a duplicate in a data attribute, so the text shown and the text copied
+// cannot drift apart.
+function copyPayload(button) {
+  if (button.dataset.copy !== undefined) return button.dataset.copy;
+  return button.parentElement?.querySelector("pre")?.textContent ?? "";
+}
+
 function bindCopyButtons() {
-  document.querySelectorAll("[data-copy]").forEach((button) => {
+  document.querySelectorAll("[data-copy], [data-copy-block]").forEach((button) => {
     button.addEventListener("click", async () => {
       const original = button.textContent.trim();
       try {
-        await navigator.clipboard.writeText(button.dataset.copy);
+        await navigator.clipboard.writeText(copyPayload(button));
         button.textContent = "Copied";
       } catch {
         button.textContent = "Press ⌘/Ctrl+C";
@@ -932,6 +1078,7 @@ async function initialize() {
     if (!response.ok) throw new Error(`Results request failed: ${response.status}`);
     state.data = await response.json();
     renderIdentity();
+    renderMeasured();
     renderSummary();
     renderIntegration();
     populateConfigFilter();

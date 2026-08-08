@@ -618,9 +618,16 @@ main {
   font-size: 12px;
 }
 
+/* One row per *in-flow* child, in order: header, run selector, backend line, tab
+   bar, body. `#document-source` sits between the header and the run selector in
+   the markup but is `display: none` (the PDF modal replaced it), so it takes no
+   row -- which is what makes this count easy to get wrong.
+   The count is load-bearing in both directions: one row too few and the tab bar
+   shares a cell with the body, leaving the tabs unclickable; one too many and the
+   body is squeezed to nothing while the flexible row sits empty. */
 .detail-content {
   display: grid;
-  grid-template-rows: auto auto 42px minmax(0, 1fr);
+  grid-template-rows: auto auto auto 42px minmax(0, 1fr);
   height: 100%;
 }
 
@@ -818,6 +825,40 @@ main {
   font-variant-numeric: tabular-nums;
   font-size: 11px;
   font-weight: 600;
+}
+
+/* A run that spent nothing is a different fact from one that spent a lot, so it
+   is not dressed in the same spend-coloured badge. */
+.run-cost-idle {
+  background: var(--surface-muted);
+  color: var(--ink-muted);
+}
+
+/* Which vision model served the selected configuration, and what it spent. */
+.run-backend {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 0 14px 10px;
+  color: var(--ink-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.run-backend svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  transform: translateY(2px);
+}
+
+.run-backend code {
+  padding: 0.1em 0.34em;
+  border-radius: 4px;
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 0.94em;
 }
 
 /* The source document is document-level, not run-level, so it sits above the run
@@ -1813,5 +1854,179 @@ main {
 
   .cli-label {
     grid-column: 1 / -1;
+  }
+}
+
+/* OCR configuration recipes ------------------------------------------------ */
+
+.ocr-section {
+  padding: 28px;
+  border-bottom: 1px solid var(--line);
+  background: var(--canvas);
+}
+
+.ocr-copy h2 {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+}
+
+.ocr-copy h2 svg {
+  width: 18px;
+  height: 18px;
+  color: var(--green);
+}
+
+.ocr-copy p {
+  margin: 0 0 8px;
+  max-width: 78ch;
+  color: var(--ink-muted);
+  font-size: 0.89rem;
+  line-height: 1.65;
+}
+
+.ocr-copy code,
+.ocr-recipe-head code {
+  padding: 0.1em 0.36em;
+  border-radius: 4px;
+  background: var(--surface-muted);
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 0.86em;
+}
+
+.ocr-note {
+  max-width: 78ch;
+}
+
+.ocr-recipes {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  margin-top: 18px;
+}
+
+.ocr-recipe {
+  display: flex;
+  position: relative;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.ocr-recipe-head h3 {
+  margin: 8px 0 6px;
+  font-size: 0.97rem;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+}
+
+.ocr-recipe-head p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.83rem;
+  line-height: 1.6;
+}
+
+.ocr-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.ocr-badge-free {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.ocr-commands {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--charcoal);
+  color: #eef2ef;
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.7;
+  /* Wrap rather than scroll. A model id or base URL that runs past the card edge
+     is invisible in a narrow column, and these commands are the whole point of
+     the section -- a reader should never have to scroll a box to find out what
+     they are being told to run. */
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.ocr-copy-button {
+  align-self: flex-start;
+}
+
+.ocr-footnote {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+@media (max-width: 980px) {
+  .ocr-section {
+    padding: 24px 18px;
+  }
+}
+
+/* Recorded-results provenance --------------------------------------------- */
+
+.measured-banner {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 28px;
+  border-bottom: 1px solid var(--line);
+  background: var(--blue-soft);
+  color: var(--ink);
+  font-size: 0.83rem;
+  line-height: 1.6;
+}
+
+.measured-banner.stale {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.measured-banner svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  color: var(--blue);
+}
+
+.measured-banner.stale svg {
+  color: var(--amber);
+}
+
+.measured-banner code {
+  padding: 0.1em 0.34em;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 60%);
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 0.86em;
+}
+
+@media (max-width: 980px) {
+  .measured-banner {
+    padding: 12px 18px;
   }
 }

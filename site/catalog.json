@@ -909,7 +909,8 @@
         {
           "id": "likhit-ocr-local",
           "config": "likhit-ocr-local",
-          "expectation": "pass",
+          "comment": "Intermittently slow, not reliably broken: the locally served model exhausted the 2400s budget on one recording of this document and completed the next in 1073s, against about a minute for the hosted backend. Marked known_issue so a timeout is reported rather than failing the build, while a run that completes and meets the check is promoted straight back to pass -- which is what the current recording shows. Revisit if it times out repeatedly.",
+          "expectation": "known_issue",
           "checks": [
             {
               "kind": "min_devanagari",
