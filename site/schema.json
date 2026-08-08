@@ -36,6 +36,53 @@
         ]
       }
     },
+    "measured": {
+      "description": "Provenance of the measurements, when they were replayed from a recorded snapshot rather than taken by this build. Null on a build that ran the conversions itself. Optional rather than required so that artifacts published before this field existed still validate against schema_version 1; the generator always emits it.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "recorded_at",
+        "build",
+        "missing_runs",
+        "stale"
+      ],
+      "properties": {
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "build": {
+          "description": "Commit and tool versions the recorded runs were measured against.",
+          "type": "object",
+          "required": [
+            "commit",
+            "ref",
+            "python",
+            "likhit",
+            "markitdown"
+          ],
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "missing_runs": {
+          "description": "Catalog runs the snapshot does not cover, and which were therefore skipped.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "stale": {
+          "description": "Whether the recorded commit differs from the commit that published this build.",
+          "type": "boolean"
+        }
+      }
+    },
     "integration": {
       "type": "object",
       "required": [
@@ -110,6 +157,13 @@
           },
           "available": {
             "type": "boolean"
+          },
+          "model": {
+            "description": "Vision model this configuration was recorded against, or null for a configuration that uses no OCR. Held per configuration rather than per run so it is reportable for the runs that made no vision call -- which is most of them.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "unavailable_reason": {
             "type": [

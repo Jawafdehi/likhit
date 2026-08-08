@@ -196,15 +196,135 @@
         </ul>
       </section>
 
+      <section class="ocr-section" aria-labelledby="ocr-title">
+        <div class="ocr-copy">
+          <h2 id="ocr-title">
+            <i data-lucide="scan-text" aria-hidden="true"></i>
+            Turn on OCR for scanned pages
+          </h2>
+          <p>
+            Plenty of published records are page images with no usable text layer
+            — nothing but a vision model can read them. Likhit adds an OCR
+            candidate when it finds such a page <em>and</em> OCR is configured.
+            It talks to any endpoint that speaks the OpenAI chat API, so the same
+            three variables cover a model on your own machine, Bedrock behind a
+            gateway, or a hosted API.
+          </p>
+          <p class="ocr-note">
+            <code>OPENAI_BASE_URL</code> points at the endpoint,
+            <code>OPENAI_API_KEY</code> authenticates to it, and
+            <code>MARKITDOWN_OCR_MODEL</code> names the model. Leave them unset
+            and Likhit still converts — it just records that a page needed OCR
+            and carries on with the text it could extract.
+          </p>
+        </div>
+
+        <div class="ocr-recipes">
+          <article class="ocr-recipe">
+            <header class="ocr-recipe-head">
+              <span class="ocr-badge ocr-badge-free">No API cost</span>
+              <h3>A model on your own machine</h3>
+              <p>
+                Ollama, llama.cpp or vLLM — all three serve an OpenAI-compatible
+                endpoint, and no page image leaves the machine.
+              </p>
+            </header>
+            <pre class="ocr-commands">ollama pull qwen2.5vl:7b
+
+# Ollama ignores the key; the client refuses to start without one
+export OPENAI_API_KEY=ollama
+export OPENAI_BASE_URL=http://127.0.0.1:11434/v1
+export MARKITDOWN_OCR_MODEL=qwen2.5vl:7b
+
+likhit-save scanned-notice.pdf --out notice.md</pre>
+            <button
+              class="copy-button ocr-copy-button"
+              type="button"
+              data-copy-block
+              aria-label="Copy the local OCR setup"
+            >
+              Copy
+            </button>
+          </article>
+
+          <article class="ocr-recipe">
+            <header class="ocr-recipe-head">
+              <span class="ocr-badge">AWS</span>
+              <h3>Bedrock, through a gateway</h3>
+              <p>
+                Bedrock does not speak the OpenAI API, so run a translating proxy
+                in front of it. The proxy picks up your AWS credentials the usual
+                way — <code>AWS_PROFILE</code>, environment variables or an
+                instance role — and Likhit only ever sees an OpenAI endpoint.
+              </p>
+            </header>
+            <pre class="ocr-commands">pip install 'litellm[proxy]'
+litellm --model bedrock/anthropic.claude-sonnet-5
+
+# whatever you configured the proxy to accept
+export OPENAI_API_KEY=local-proxy-key
+export OPENAI_BASE_URL=http://127.0.0.1:4000/v1
+export MARKITDOWN_OCR_MODEL=bedrock/anthropic.claude-sonnet-5
+
+likhit-save scanned-notice.pdf --out notice.md</pre>
+            <button
+              class="copy-button ocr-copy-button"
+              type="button"
+              data-copy-block
+              aria-label="Copy the Bedrock OCR setup"
+            >
+              Copy
+            </button>
+            <p class="ocr-footnote">
+              Any vision-capable model your account has enabled will do — swap
+              the model id for the one you have access to.
+            </p>
+          </article>
+
+          <article class="ocr-recipe">
+            <header class="ocr-recipe-head">
+              <span class="ocr-badge">Hosted</span>
+              <h3>A hosted API</h3>
+              <p>
+                Point at any OpenAI-compatible provider. For Gemini, set the
+                Google key alone and Likhit selects Google's OpenAI-compatible
+                base URL for you.
+              </p>
+            </header>
+            <pre class="ocr-commands">export OPENAI_API_KEY=your-api-key
+export OPENAI_BASE_URL=https://api.example.com/v1
+export MARKITDOWN_OCR_MODEL=your-vision-model
+
+# or Gemini, where the base URL is filled in for you
+export GEMINI_API_KEY=your-gemini-key
+export GEMINI_MODEL=gemini-2.5-flash</pre>
+            <button
+              class="copy-button ocr-copy-button"
+              type="button"
+              data-copy-block
+              aria-label="Copy the hosted OCR setup"
+            >
+              Copy
+            </button>
+          </article>
+        </div>
+      </section>
+
       <section class="benchmark-intro" aria-labelledby="benchmark-title">
         <h2 id="benchmark-title">Benchmark</h2>
         <p>
-          Every result below is generated from real, published government
-          documents — no synthetic fixtures — and re-run on each commit. Pick a
-          document to read what Likhit extracted, compare the OCR
-          configurations, and check the assertions that gate the build.
+          Every result below comes from a real, published government document —
+          no synthetic fixtures. Each one is converted three ways, recorded on a
+          machine where all three OCR backends work, and replayed here; the
+          banner below says when. Pick a document to read what Likhit extracted,
+          compare the configurations, and check the assertions that gate the
+          build.
         </p>
       </section>
+
+      <!-- Populated only when the published numbers were replayed from a recorded
+           snapshot rather than measured by this build. Empty otherwise. -->
+      <div class="measured-banner" id="measured-banner" aria-live="polite"></div>
 
       <section class="summary-strip" id="summary-strip" aria-label="Run summary">
         <div class="summary-skeleton"></div>
@@ -319,6 +439,11 @@
               role="group"
               aria-label="Select configuration"
             ></div>
+
+            <!-- Which model served the selected configuration, and what it spent.
+                 Sits beside the selector because that is where the question comes
+                 up, and it holds for runs that made no call at all. -->
+            <div class="run-backend" id="run-backend"></div>
 
             <nav class="detail-tabs" id="detail-tabs" aria-label="Result views">
               <button
