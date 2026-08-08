@@ -16,6 +16,9 @@ pip install likhit
 
 - Website: https://jawafdehi.org/
 - GitHub: https://github.com/Jawafdehi/likhit/
+- Benchmark: https://jawafdehi.github.io/likhit/ — real, published Government of
+  Nepal documents converted with and without OCR, with the extracted Markdown and
+  the assertions behind every result
 - Contact: inquiry@jawafdehi.org
 
 ## Usage
@@ -132,6 +135,57 @@ Optional variables:
 
 ```bash
 export MARKITDOWN_OCR_PROMPT="Custom OCR instructions"
+```
+
+#### Recipe: a vision model on your own machine
+
+Ollama, llama.cpp and vLLM all serve an OpenAI-compatible endpoint, so no `likhit`
+change is needed — and no page image leaves the machine:
+
+```bash
+ollama pull qwen2.5vl:7b
+
+# Ollama ignores the key; the client refuses to start without one
+export OPENAI_API_KEY="ollama"
+export OPENAI_BASE_URL="http://127.0.0.1:11434/v1"
+export MARKITDOWN_OCR_MODEL="qwen2.5vl:7b"
+
+likhit-save scanned-notice.pdf --out notice.md
+```
+
+#### Recipe: AWS Bedrock, through a gateway
+
+Bedrock does not speak the OpenAI API, so put a translating proxy in front of it.
+The proxy resolves AWS credentials the usual way — `AWS_PROFILE`, environment
+variables or an instance role — and `likhit` only ever sees an OpenAI endpoint:
+
+```bash
+pip install 'litellm[proxy]'
+litellm --model bedrock/anthropic.claude-sonnet-5
+
+# whatever you configured the proxy to accept
+export OPENAI_API_KEY="local-proxy-key"
+export OPENAI_BASE_URL="http://127.0.0.1:4000/v1"
+export MARKITDOWN_OCR_MODEL="bedrock/anthropic.claude-sonnet-5"
+```
+
+Any vision-capable model your account has enabled will do; swap the model id for
+one you have access to.
+
+#### When OCR actually runs
+
+`likhit` adds an OCR candidate only for pages whose text layer cannot serve them
+(see [Architecture](#architecture) below), so configuring a vision backend does
+not mean paying for one on every document. In the published benchmark, 13 of 16
+Government of Nepal documents are converted without a single vision call; only the
+image-only scans need one.
+
+If OCR is left unconfigured, `likhit` still converts. It logs that a page needed
+OCR and returns the best result it could reach without it, rather than failing:
+
+```
+PDF converter: OCR appears necessary, but OCR is not configured.
+Set OPENAI_API_KEY or GEMINI_API_KEY, plus MARKITDOWN_OCR_MODEL, to enable markitdown-ocr.
 ```
 
 ## Architecture

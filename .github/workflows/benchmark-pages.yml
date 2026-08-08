@@ -48,12 +48,18 @@ jobs:
           mkdir -p .benchmark
           uv run pytest tests/integration --junitxml=.benchmark/integration.xml
 
+      # The conversions are replayed from site/snapshot.json rather than run here.
+      # A runner has no vision backend, so a live build could only ever measure
+      # the no-OCR configuration, and the full corpus takes far longer than a
+      # Pages build should. The snapshot is recorded by a maintainer with all
+      # three backends available; see site/README.md for how to refresh it.
       - name: Generate Pages artifact
         run: |
           uv run python site/generate.py \
             --output _site \
             --junit .benchmark/integration.xml \
             --skip-synthetic \
+            --snapshot site/snapshot.json \
             --commit "${GITHUB_SHA}" \
             --ref "${GITHUB_REF_NAME}"
 
@@ -62,6 +68,12 @@ jobs:
         continue-on-error: true
         run: |
           uv run python -c "import json,sys; data=json.load(open('_site/data/results.json')); sys.exit(data['summary']['fail'] > 0)"
+
+      # Put the published numbers in the job summary so a regression is visible
+      # from the Actions run itself, without deploying or downloading the artifact.
+      - name: Publish benchmark numbers
+        if: always()
+        run: uv run python site/summarize.py _site/data/results.json >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3

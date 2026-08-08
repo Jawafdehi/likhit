@@ -394,7 +394,7 @@ def test_non_ok_run_respects_declared_expectation(
             "exc_msg": "OCR is required",
         }, "OCR is required"
 
-    result = generator._generate_run(
+    result, recording = generator._generate_run(
         {"id": "sample"},
         tmp_path / "sample.pdf",
         {
@@ -410,6 +410,11 @@ def test_non_ok_run_respects_declared_expectation(
     )
 
     assert result["outcome"] == expected_outcome
+
+    # The recording carries the raw stderr, not the composed diagnostic artifact,
+    # so replaying it composes the error lines exactly once.
+    assert recording["diagnostics"] == "OCR is required"
+    assert recording["exc_type"] == "ExtractionError"
 
 
 def test_dashboard_exposes_inline_pdf_view_separately_from_download() -> None:
@@ -769,16 +774,33 @@ def test_ocr_usage_reports_tokens_and_model_without_deriving_cost() -> None:
     assert not [key for key in record if "cost" in key or "usd" in key]
 
 
-def test_ocr_usage_is_absent_when_unknown_or_unspent() -> None:
+def test_ocr_usage_separates_an_unknown_spend_from_a_measured_zero() -> None:
+    """ "Nobody was counting" and "it spent nothing" are different facts.
+
+    Likhit only calls a vision model for pages a text layer cannot serve, so most
+    documents spend nothing even with OCR configured. Collapsing that into the
+    same null as an unreachable counter loses the more common and more
+    interesting of the two, and the dashboard can then only draw a blank.
+    """
+
     counters = {"calls": 2, "input_tokens": 10, "output_tokens": 5}
 
-    # Endpoint unreachable at either edge: unknown, not zero.
+    # Endpoint unreachable at either edge: genuinely unknown.
     assert generator._ocr_usage_record(None, counters, "m") is None
     assert generator._ocr_usage_record(counters, None, "m") is None
-    # No calls attributable to this run (e.g. a no-OCR configuration).
-    assert generator._ocr_usage_record(counters, counters, "m") is None
     # Counters went backwards, so the endpoint restarted mid-build.
     assert generator._ocr_usage_record(counters, {**counters, "calls": 1}, "m") is None
+
+    # Unchanged counters mean this run made no call -- a measurement, reported as
+    # zero, and still carrying the model it would have used.
+    idle = generator._ocr_usage_record(counters, counters, "m")
+    assert idle == {
+        "calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "model": "m",
+    }
 
 
 def test_ocr_usage_endpoint_rejects_malformed_payloads(
@@ -832,8 +854,11 @@ def test_dashboard_shows_ocr_tokens_and_model_but_never_a_cost() -> None:
 
     assert "runCostBadge(run)" in app
     assert "OCR usage" in app
-    assert "usage.model" in app
     assert "usage.total_tokens" in app
+    # The model is resolved per configuration, with the per-run usage record only
+    # as a fallback -- a run that made no call still has to be able to name it.
+    assert "runModel(run)" in app
+    assert "run.ocr_usage?.model" in app
     # No currency anywhere in the dashboard: tokens are reported, cost is not.
     assert "formatUsd" not in app
     assert "cost_usd" not in app
@@ -1227,3 +1252,917 @@ def test_site_readme_documents_the_flags_and_configurations_that_exist() -> None
         set(re.findall(r'environ\.get\("(LIKHIT_[A-Z_]+)"', generate))
     ):
         assert variable in readme, f"{variable} is read but undocumented"
+
+
+# --------------------------------------------------------------------------- #
+# Recorded snapshots
+#
+# CI cannot measure this benchmark: a runner has no vision backend, and the full
+# corpus takes far longer than a Pages build. So a full local run is recorded and
+# replayed. These tests cover the property that makes that safe -- a replay is
+# indistinguishable from the run it recorded -- and the provenance that keeps it
+# honest.
+# --------------------------------------------------------------------------- #
+
+SUMMARIZE_SPEC = importlib.util.spec_from_file_location(
+    "likhit_site_summarize", SITE_DIR / "summarize.py"
+)
+assert SUMMARIZE_SPEC and SUMMARIZE_SPEC.loader
+summarize = importlib.util.module_from_spec(SUMMARIZE_SPEC)
+SUMMARIZE_SPEC.loader.exec_module(summarize)
+
+RECORDED_COMMIT = "a" * 40
+
+
+def _synthetic_snapshot() -> dict[str, Any]:
+    """A recording covering every configuration of the PII-free synthetic corpus.
+
+    Hand-built rather than measured, so a test can pose the exact situation CI is
+    in: a machine with no OCR backend at all, replaying a recording that has all
+    three.
+    """
+
+    catalog = generator._load_catalog()
+    runs: dict[str, Any] = {}
+    for spec in catalog["documents"]:
+        if spec["origin"] != "synthetic":
+            continue
+        for run in spec["runs"]:
+            runs[generator._snapshot_key(spec["id"], run["id"])] = {
+                "status": "ok",
+                "text": "नेपाल सरकार डिजिटल अभिलेख " * 20,
+                "diagnostics": "recorded stderr",
+                "wall_s": 1.5,
+                "max_rss_mb": 80.0,
+                "exc_type": None,
+                "exc_msg": None,
+                "traceback": None,
+                "ocr_usage": (
+                    None
+                    if run["config"] == "likhit"
+                    else {
+                        "calls": 2,
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "total_tokens": 120,
+                        "model": "recorded-vision-model",
+                    }
+                ),
+            }
+    return {
+        "snapshot_version": generator.SNAPSHOT_VERSION,
+        "recorded_at": "2026-08-01T00:00:00+00:00",
+        "build": {
+            "commit": RECORDED_COMMIT,
+            "ref": "main",
+            "python": "3.12.0",
+            "likhit": "0.1.8",
+            "markitdown": "0.1.7",
+        },
+        "configurations": {
+            name: {"label": config["label"], "available": True}
+            for name, config in catalog["configurations"].items()
+        },
+        "runs": runs,
+    }
+
+
+def _write_snapshot(path: pathlib.Path, snapshot: dict[str, Any]) -> pathlib.Path:
+    path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _unreachable_run_case(
+    _source: pathlib.Path,
+    _run: dict[str, Any],
+    _config: dict[str, Any],
+    _timeout_s: int,
+) -> tuple[dict[str, Any], str]:
+    raise AssertionError("a replayed build must not convert anything")
+
+
+def _fake_run_including_a_failure(
+    source: pathlib.Path,
+    run: dict[str, Any],
+    config: dict[str, Any],
+    timeout_s: int,
+) -> tuple[dict[str, Any], str]:
+    """Like `_fake_run`, but one document raises.
+
+    A run that fails is the case where the diagnostic artifact is *composed* --
+    raw stderr plus the error line plus the traceback. A corpus of successes only
+    would let a replay that re-composes that text pass unnoticed, because with
+    nothing to append composition is the identity function.
+    """
+
+    if source.stem == "pure-scan":
+        return {
+            "status": "error",
+            "text": "",
+            "wall_s": 0.2,
+            "max_rss_mb": 12.0,
+            "exc_type": "ExtractionError",
+            "exc_msg": "No extractable text found in PDF.",
+            "traceback": "Traceback (most recent call last):\n  ...",
+        }, "OCR appears necessary, but OCR is not configured."
+    return _fake_run(source, run, config, timeout_s)
+
+
+def _run_index(artifact: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    fields = (
+        "label",
+        "outcome",
+        "status",
+        "wall_s",
+        "max_rss_mb",
+        "metrics",
+        "ocr_usage",
+        "checks",
+        "transcript_sha256",
+        "diagnostics_sha256",
+        "error",
+        "excerpt",
+    )
+    return {
+        (document["id"], run["id"]): {field: run[field] for field in fields}
+        for document in artifact["documents"]
+        for run in document["runs"]
+    }
+
+
+def test_snapshot_replay_reproduces_the_recorded_build_exactly(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replaying a recording must be indistinguishable from the run it recorded.
+
+    This is the property the whole mechanism rests on. If a replay drifts -- a
+    recomposed diagnostic, a re-derived metric, a lost timing -- then the
+    published page is not the measurement it claims to be.
+    """
+
+    _without_ocr_backends(monkeypatch)
+    snapshot = tmp_path / "snapshot.json"
+
+    live = generator.generate(
+        tmp_path / "live",
+        include_public=False,
+        run_case=_fake_run_including_a_failure,
+        write_snapshot=snapshot,
+    )
+    replayed = generator.generate(
+        tmp_path / "replay",
+        include_public=False,
+        snapshot=snapshot,
+        run_case=_unreachable_run_case,
+    )
+
+    assert live["summary"] == replayed["summary"]
+    assert _run_index(live) == _run_index(replayed)
+
+    # The corpus has to contain a run whose diagnostics were composed, or the
+    # comparison below cannot catch a replay that composes them a second time.
+    errored = [
+        run
+        for document in live["documents"]
+        for run in document["runs"]
+        if run["error"]
+    ]
+    assert errored, "expected the fixture to produce a failing run"
+
+    # Down to the bytes of the published artifacts, not just their recorded
+    # hashes -- the diagnostics file is composed from the raw stderr plus the
+    # error lines, and composing it twice is the obvious way to get this wrong.
+    for directory in ("transcripts", "diagnostics"):
+        live_files = sorted((tmp_path / "live" / directory).iterdir())
+        replayed_files = sorted((tmp_path / "replay" / directory).iterdir())
+        assert [path.name for path in live_files] == [
+            path.name for path in replayed_files
+        ]
+        for original, copy in zip(live_files, replayed_files, strict=True):
+            assert original.read_bytes() == copy.read_bytes(), original.name
+
+
+def test_snapshot_publishes_ocr_configurations_where_no_backend_exists(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reason the snapshot exists: CI has no vision backend, yet must publish.
+
+    A replay takes availability from the recording, not from the machine doing
+    the replaying. Deriving it from the environment here would silently drop the
+    two OCR columns -- exactly the measurements CI cannot make for itself.
+    """
+
+    _without_ocr_backends(monkeypatch)
+    snapshot = _write_snapshot(tmp_path / "snapshot.json", _synthetic_snapshot())
+
+    artifact = generator.generate(
+        tmp_path / "site",
+        include_public=False,
+        snapshot=snapshot,
+        run_case=_unreachable_run_case,
+    )
+
+    published = {
+        run["config"] for document in artifact["documents"] for run in document["runs"]
+    }
+    assert published == {"likhit", "likhit-ocr", "likhit-ocr-local"}
+    assert artifact["summary"]["skipped"] == 0
+    for config in artifact["configurations"].values():
+        assert config["available"] is True
+        assert config["unavailable_reason"] is None
+
+    # Token usage is the recording's, not a live counter read against a backend
+    # that is not even configured here.
+    hosted = [
+        run["ocr_usage"]
+        for document in artifact["documents"]
+        for run in document["runs"]
+        if run["config"] == "likhit-ocr"
+    ]
+    assert hosted and all(
+        usage and usage["model"] == "recorded-vision-model" for usage in hosted
+    )
+
+
+def test_snapshot_run_absent_from_the_recording_is_skipped_and_named(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A catalog that outgrew its recording must say so, not quietly shrink.
+
+    Adding a document without re-recording leaves runs with no measurement. The
+    only honest options are to skip them and report it, or to invent numbers.
+    """
+
+    _without_ocr_backends(monkeypatch)
+    data = _synthetic_snapshot()
+    dropped = sorted(data["runs"])[0]
+    del data["runs"][dropped]
+    snapshot = _write_snapshot(tmp_path / "snapshot.json", data)
+
+    artifact = generator.generate(
+        tmp_path / "site",
+        include_public=False,
+        snapshot=snapshot,
+        run_case=_unreachable_run_case,
+    )
+
+    assert artifact["measured"]["missing_runs"] == [dropped]
+    assert artifact["summary"]["skipped"] == 1
+    published = {
+        generator._snapshot_key(document["id"], run["id"])
+        for document in artifact["documents"]
+        for run in document["runs"]
+    }
+    assert dropped not in published
+
+    # The job summary has to surface it too, or the warning dies in the artifact.
+    assert dropped in summarize.render(artifact)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (lambda data: data.update(snapshot_version=99), "snapshot_version"),
+        (lambda data: data.pop("runs"), "runs"),
+        (lambda data: data.pop("configurations"), "configurations"),
+        (lambda data: data.pop("build"), "build"),
+    ],
+)
+def test_snapshot_refuses_a_shape_it_cannot_replay(
+    tmp_path: pathlib.Path,
+    mutate: Any,
+    expected: str,
+) -> None:
+    """Refuse an unreadable recording rather than replaying part of it.
+
+    A snapshot is committed data that outlives the code that wrote it. Silently
+    treating a future version as empty would publish a page of zero runs.
+    """
+
+    data = _synthetic_snapshot()
+    mutate(data)
+    snapshot = _write_snapshot(tmp_path / "snapshot.json", data)
+
+    with pytest.raises(ValueError, match=expected):
+        generator.generate(tmp_path / "site", include_public=False, snapshot=snapshot)
+
+
+def test_replayed_artifact_keeps_measured_provenance_apart_from_the_build(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two commits, two meanings: one published the page, one produced the numbers.
+
+    Collapsing them would present a recording as a fresh measurement, which is
+    the single most misleading thing this feature could do.
+    """
+
+    _without_ocr_backends(monkeypatch)
+    snapshot = _write_snapshot(tmp_path / "snapshot.json", _synthetic_snapshot())
+
+    artifact = generator.generate(
+        tmp_path / "site",
+        include_public=False,
+        snapshot=snapshot,
+        run_case=_unreachable_run_case,
+        commit="b" * 40,
+        ref="feature",
+    )
+
+    assert artifact["build"]["commit"] == "b" * 40
+    assert artifact["measured"]["build"]["commit"] == RECORDED_COMMIT
+    assert artifact["measured"]["recorded_at"] == "2026-08-01T00:00:00+00:00"
+    assert artifact["measured"]["stale"] is True, (
+        "a recording from another commit is stale and must be flagged"
+    )
+
+    # Same commit, same numbers: nothing to warn about.
+    current = generator.generate(
+        tmp_path / "current",
+        include_public=False,
+        snapshot=snapshot,
+        run_case=_unreachable_run_case,
+        commit=RECORDED_COMMIT,
+    )
+    assert current["measured"]["stale"] is False
+
+    # A build that measured its own numbers claims no recorded provenance at all.
+    live = generator.generate(
+        tmp_path / "live", include_public=False, run_case=_fake_run
+    )
+    assert live["measured"] is None
+
+
+def test_committed_snapshot_covers_every_published_run_and_configuration() -> None:
+    """The committed recording must cover what the deployed site publishes.
+
+    CI replays this file. A recording that misses runs, or that records a backend
+    as unavailable, degrades the published page -- and does so quietly, because a
+    skipped run is not a failure.
+    """
+
+    snapshot = json.loads((SITE_DIR / "snapshot.json").read_text(encoding="utf-8"))
+    catalog = json.loads((SITE_DIR / "catalog.json").read_text(encoding="utf-8"))
+
+    assert snapshot["snapshot_version"] == generator.SNAPSHOT_VERSION
+
+    # The deployed build passes --skip-synthetic, so the real documents are what
+    # has to be covered.
+    required = {
+        generator._snapshot_key(spec["id"], run["id"])
+        for spec in catalog["documents"]
+        if spec["origin"] != "synthetic"
+        for run in spec["runs"]
+    }
+    assert required, "expected the catalog to publish real documents"
+    assert not sorted(required - set(snapshot["runs"])), sorted(
+        required - set(snapshot["runs"])
+    )
+
+    for name in catalog["configurations"]:
+        assert name in snapshot["configurations"], name
+        assert snapshot["configurations"][name]["available"] is True, (
+            f"{name} is recorded as unavailable, so replaying publishes no runs "
+            f"for it -- re-record on a machine where its backend works"
+        )
+
+    for key, run in snapshot["runs"].items():
+        assert set(run) >= {
+            "status",
+            "text",
+            "diagnostics",
+            "wall_s",
+            "max_rss_mb",
+            "ocr_usage",
+        }, key
+
+
+def test_benchmark_workflow_replays_the_snapshot_and_reports_the_numbers() -> None:
+    """CI must publish recorded numbers, and surface them on the run itself."""
+
+    workflow = yaml.safe_load(
+        (SITE_DIR.parent / ".github" / "workflows" / "benchmark-pages.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    steps = workflow["jobs"]["build"]["steps"]
+    named = {step.get("name"): step for step in steps}
+
+    assert "--snapshot site/snapshot.json" in named["Generate Pages artifact"]["run"]
+
+    summary = named["Publish benchmark numbers"]
+    assert "site/summarize.py" in summary["run"]
+    assert "GITHUB_STEP_SUMMARY" in summary["run"]
+    # The numbers are most wanted precisely when the gate failed.
+    assert summary["if"] == "always()"
+
+
+def test_job_summary_reports_configurations_and_flags_a_stale_recording(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Actions summary is where a regression gets noticed, so it must be legible."""
+
+    _without_ocr_backends(monkeypatch)
+    snapshot = _write_snapshot(tmp_path / "snapshot.json", _synthetic_snapshot())
+    artifact = generator.generate(
+        tmp_path / "site",
+        include_public=False,
+        snapshot=snapshot,
+        run_case=_unreachable_run_case,
+        commit="b" * 40,
+    )
+
+    rendered = summarize.render(artifact)
+
+    for config in artifact["configurations"].values():
+        assert config["label"] in rendered, config["label"]
+    assert f"{artifact['summary']['runs']} runs" in rendered
+    assert RECORDED_COMMIT[:8] in rendered, "the measured commit must be named"
+    assert "b" * 8 in rendered, "the publishing commit must be named too"
+    assert "[!WARNING]" in rendered, "a stale recording must warn"
+
+    # A build that measured its own numbers says so, and warns about nothing.
+    live = generator.generate(
+        tmp_path / "live", include_public=False, run_case=_fake_run
+    )
+    live_summary = summarize.render(live)
+    assert "Measured by this build" in live_summary
+    assert "[!WARNING]" not in live_summary
+
+
+def test_job_summary_survives_a_build_that_produced_no_artifact(
+    tmp_path: pathlib.Path,
+) -> None:
+    """It runs with `if: always()`, so the artifact may not exist.
+
+    Failing here would replace the real error on the run page with a traceback
+    about a missing file.
+    """
+
+    assert summarize.main([str(tmp_path / "absent.json")]) == 0
+
+
+def test_dashboard_declares_recorded_results_rather_than_implying_fresh_ones() -> None:
+    """A page that replays a recording must say so, next to the numbers."""
+
+    index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
+    app = (SITE_DIR / "static" / "app.js").read_text(encoding="utf-8")
+    styles = (SITE_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="measured-banner"' in index
+    assert ".measured-banner" in styles
+    # The call, not the definition -- a defined-but-never-called renderer leaves
+    # the banner empty and the page silently claims fresh measurements.
+    assert "renderMeasured();" in app, "the banner must actually be rendered"
+    assert "Recorded results" in app
+
+    # It qualifies the summary numbers, so it has to appear before them.
+    assert index.index('id="measured-banner"') < index.index('id="summary-strip"')
+
+    # Run metadata describes the conversion, so it must name the environment that
+    # performed it -- the recorded one -- not the environment that built the page.
+    assert "measured?.build ?? state.data.build" in app
+    assert "Published from" in app
+
+
+def test_landing_page_ocr_recipes_use_only_variables_likhit_reads() -> None:
+    """Every variable the page tells people to export must be one Likhit honours.
+
+    Setup instructions that name a variable nothing reads fail silently: OCR
+    simply never engages, and the page is the reason.
+    """
+
+    index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
+    styles = (SITE_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+    converter = (
+        SITE_DIR.parent / "src" / "likhit" / "converters" / "nepali_pdf.py"
+    ).read_text(encoding="utf-8")
+
+    section = index[index.index('id="ocr-title"') : index.index('id="benchmark-title"')]
+    exported = set(re.findall(r"export ([A-Z0-9_]+)=", section))
+    assert exported, "expected the page to show exportable variables"
+    for name in exported:
+        assert name in converter, (
+            f"{name} is shown on the page but Likhit never reads it"
+        )
+
+    # All three backends the benchmark measures are documented, local first.
+    assert "ollama" in section.lower()
+    assert "bedrock" in section.lower()
+    assert "GEMINI_API_KEY" in section
+
+    # Bedrock does not speak the OpenAI API, so the recipe must show a gateway
+    # rather than implying Likhit can reach it directly.
+    assert "litellm" in section.lower()
+    assert "OPENAI_BASE_URL" in section
+
+    assert ".ocr-recipes" in styles
+    assert section.count("data-copy-block") == 3
+    assert index.index('id="cli-title"') < index.index('id="ocr-title"')
+
+
+def test_measured_is_always_emitted_but_optional_in_the_published_schema(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`measured` is a schema addition, so it must not invalidate older artifacts.
+
+    schema.json ships beside results.json as the published contract. Making a new
+    field *required* breaks validation of every artifact produced before it
+    existed, for no gain -- the generator emitting it is what callers rely on, and
+    that is asserted here rather than in the schema.
+    """
+
+    jsonschema = pytest.importorskip("jsonschema")
+    _without_ocr_backends(monkeypatch)
+    schema = json.loads((SITE_DIR / "schema.json").read_text(encoding="utf-8"))
+    validator = jsonschema.Draft202012Validator(schema)
+
+    live = generator.generate(
+        tmp_path / "live", include_public=False, run_case=_fake_run
+    )
+    assert "measured" in live, "the generator must always emit the field"
+    assert live["measured"] is None
+    assert not list(validator.iter_errors(live))
+
+    snapshot = _write_snapshot(tmp_path / "snapshot.json", _synthetic_snapshot())
+    replayed = generator.generate(
+        tmp_path / "replay",
+        include_public=False,
+        snapshot=snapshot,
+        run_case=_unreachable_run_case,
+    )
+    assert not list(validator.iter_errors(replayed))
+
+    # An artifact from before the field existed still validates.
+    legacy = {key: value for key, value in live.items() if key != "measured"}
+    assert not list(validator.iter_errors(legacy))
+
+
+def test_configuration_records_the_model_it_ran_against(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The model id belongs to the configuration, not to a usage record.
+
+    Most runs make no vision call, so a per-run usage record is absent for them --
+    yet the model those runs were configured against is exactly what a reader
+    wants named. Recording it per configuration makes it reportable for every run,
+    including a backend with no token counter at all.
+    """
+
+    _without_ocr_backends(monkeypatch)
+    monkeypatch.setenv("MARKITDOWN_OCR_MODEL", "hosted-vision-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "hosted-key")
+    monkeypatch.setenv("LIKHIT_LOCAL_OCR_MODEL", "local-vision-model")
+
+    catalog = generator._load_catalog()["configurations"]
+    assert generator._ocr_backend_accounting(catalog["likhit-ocr"])[1] == (
+        "hosted-vision-model"
+    )
+    assert generator._ocr_backend_accounting(catalog["likhit-ocr-local"])[1] == (
+        "local-vision-model"
+    )
+    # A configuration that uses no OCR has no model, rather than inheriting the
+    # ambient one from whichever backend happens to be exported.
+    assert generator._ocr_backend_accounting(catalog["likhit"])[1] is None
+
+    artifact = generator.generate(
+        tmp_path / "site", include_public=False, run_case=_fake_run
+    )
+    assert artifact["configurations"]["likhit"]["model"] is None
+    assert artifact["configurations"]["likhit-ocr"]["model"] == "hosted-vision-model"
+
+
+def test_replayed_configuration_model_comes_from_the_recording(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replay must name the recorded model, not the replaying machine's.
+
+    CI exports no model at all, so deriving it from the environment would blank
+    the field on exactly the build that publishes it.
+    """
+
+    _without_ocr_backends(monkeypatch)
+    data = _synthetic_snapshot()
+    data["configurations"]["likhit-ocr"]["model"] = "recorded-hosted-model"
+    data["configurations"]["likhit-ocr-local"]["model"] = "recorded-local-model"
+    snapshot = _write_snapshot(tmp_path / "snapshot.json", data)
+
+    artifact = generator.generate(
+        tmp_path / "site",
+        include_public=False,
+        snapshot=snapshot,
+        run_case=_unreachable_run_case,
+    )
+
+    configurations = artifact["configurations"]
+    assert configurations["likhit-ocr"]["model"] == "recorded-hosted-model"
+    assert configurations["likhit-ocr-local"]["model"] == "recorded-local-model"
+    assert configurations["likhit"]["model"] is None
+
+
+def test_snapshot_carries_the_model_of_every_available_ocr_configuration() -> None:
+    """The committed recording must name each OCR backend's model.
+
+    Without it the published page cannot answer "which model produced this
+    column", which is the whole point of showing the configurations side by side.
+    """
+
+    snapshot = json.loads((SITE_DIR / "snapshot.json").read_text(encoding="utf-8"))
+    catalog = json.loads((SITE_DIR / "catalog.json").read_text(encoding="utf-8"))
+
+    for name, config in catalog["configurations"].items():
+        recorded = snapshot["configurations"][name]
+        if not config.get("requires"):
+            assert recorded.get("model") is None, (
+                f"{name} uses no OCR, so it must not claim a model"
+            )
+            continue
+        if not recorded["available"]:
+            continue
+        assert recorded.get("model"), (
+            f"{name} was recorded as available but names no model -- re-record "
+            f"with {config['requires']} configured"
+        )
+
+
+def test_dashboard_names_the_model_beside_the_configuration_selector() -> None:
+    """The model has to be readable without opening a tab.
+
+    It previously appeared only in the Metadata tab's usage block, which is absent
+    for every run that made no vision call -- that is, for most of them.
+    """
+
+    index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
+    app = (SITE_DIR / "static" / "app.js").read_text(encoding="utf-8")
+    styles = (SITE_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="run-backend"' in index
+    assert ".run-backend" in styles
+    assert "renderRunBackend();" in app, "the backend line must actually be rendered"
+
+    # It sits with the configuration selector, not buried in a tab.
+    assert index.index('id="run-segments"') < index.index('id="run-backend"')
+    assert index.index('id="run-backend"') < index.index('id="detail-tabs"')
+
+    # The model is read per configuration, so it survives a run with no usage.
+    assert "configurationOf(run).model" in app
+    # All three states are distinguished in words, not by an empty element.
+    assert "no OCR call" in app
+    assert "not recorded" in app
+    assert "No vision model" in app
+
+
+# --------------------------------------------------------------------------- #
+# Token counting proxy
+# --------------------------------------------------------------------------- #
+
+PROXY_SPEC = importlib.util.spec_from_file_location(
+    "likhit_ocr_usage_proxy", SITE_DIR / "ocr_usage_proxy.py"
+)
+assert PROXY_SPEC and PROXY_SPEC.loader
+usage_proxy = importlib.util.module_from_spec(PROXY_SPEC)
+PROXY_SPEC.loader.exec_module(usage_proxy)
+
+
+def test_usage_proxy_serves_the_shape_the_generator_reads() -> None:
+    """The counter must be readable by `_read_ocr_usage`, not merely well-formed.
+
+    The two live at opposite ends of a plain HTTP contract, so a renamed field
+    would leave every run silently reporting "usage unknown".
+    """
+
+    counter = usage_proxy.Counter()
+    counter.record({"prompt_tokens": 100, "completion_tokens": 20})
+    counter.record({"input_tokens": 5, "output_tokens": 1})
+
+    snapshot = counter.snapshot()
+    assert snapshot == {"calls": 2, "input_tokens": 105, "output_tokens": 21}
+    assert set(snapshot) == {"calls", "input_tokens", "output_tokens"}
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        # Both spellings, because gateways differ.
+        ({"prompt_tokens": 7, "completion_tokens": 3}, (7, 3)),
+        ({"input_tokens": 7, "output_tokens": 3}, (7, 3)),
+        # Absent, malformed, negative and boolean values count as zero rather
+        # than crashing the proxy mid-conversion.
+        ({}, (0, 0)),
+        ({"prompt_tokens": "7"}, (0, 0)),
+        ({"prompt_tokens": -7}, (0, 0)),
+        ({"prompt_tokens": True}, (0, 0)),
+    ],
+)
+def test_usage_proxy_reads_either_token_spelling(
+    usage: dict[str, Any], expected: tuple[int, int]
+) -> None:
+    counter = usage_proxy.Counter()
+    counter.record(usage)
+    snapshot = counter.snapshot()
+    assert (snapshot["input_tokens"], snapshot["output_tokens"]) == expected
+
+
+def test_usage_proxy_counts_only_successful_completions() -> None:
+    """An upstream failure spent no tokens, so it must not inflate the count."""
+
+    assert usage_proxy._usage_of(b'{"usage": {"prompt_tokens": 1}}') == {
+        "prompt_tokens": 1
+    }
+    # A body with no usage block, and one that is not JSON at all.
+    assert usage_proxy._usage_of(b'{"choices": []}') is None
+    assert usage_proxy._usage_of(b"upstream exploded") is None
+    assert usage_proxy._usage_of(b'{"usage": "lots"}') is None
+
+
+def test_usage_proxy_forwards_and_counts_a_real_request(
+    tmp_path: pathlib.Path,
+) -> None:
+    """End to end over a socket, against a stub upstream.
+
+    The counting happens in the response path of a proxied request, so unit-testing
+    the counter alone would not catch a proxy that never reaches it.
+    """
+
+    import http.server
+    import threading
+    import urllib.request
+
+    class Upstream(http.server.BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+            pass
+
+        def do_POST(self) -> None:  # noqa: N802
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            body = json.dumps(
+                {
+                    "choices": [{"message": {"content": "ओके"}}],
+                    "usage": {"prompt_tokens": 40, "completion_tokens": 6},
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+    counter = usage_proxy.Counter()
+    proxy = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        usage_proxy.build_handler(
+            f"http://127.0.0.1:{upstream.server_address[1]}", counter
+        ),
+    )
+    for server in (upstream, proxy):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = proxy.server_address[1]
+
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            data=b'{"model": "m", "messages": []}',
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read())
+        # The upstream's own body is returned unchanged.
+        assert payload["choices"][0]["message"]["content"] == "ओके"
+
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/usage", timeout=30
+        ) as read:
+            assert json.loads(read.read()) == {
+                "calls": 1,
+                "input_tokens": 40,
+                "output_tokens": 6,
+            }
+        # And the counter is exactly what the generator knows how to parse.
+        assert generator._read_ocr_usage(f"http://127.0.0.1:{port}/usage") == {
+            "calls": 1,
+            "input_tokens": 40,
+            "output_tokens": 6,
+        }
+    finally:
+        for server in (proxy, upstream):
+            server.shutdown()
+            server.server_close()
+
+
+def test_readme_and_landing_page_document_the_same_ocr_backends() -> None:
+    """The page and the README are two copies of the same setup instructions.
+
+    Whichever a reader finds first has to work, and a variable renamed in one
+    place has no way of announcing itself in the other.
+    """
+
+    readme = (SITE_DIR.parent / "README.md").read_text(encoding="utf-8")
+    index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
+    converter = (
+        SITE_DIR.parent / "src" / "likhit" / "converters" / "nepali_pdf.py"
+    ).read_text(encoding="utf-8")
+
+    section = index[index.index('id="ocr-title"') : index.index('id="benchmark-title"')]
+    page_variables = set(re.findall(r"export ([A-Z0-9_]+)=", section))
+    readme_variables = set(re.findall(r"export ([A-Z0-9_]+)=", readme))
+
+    assert page_variables, "expected the page to show exportable variables"
+    # Everything the page tells people to export is documented in the README too,
+    # and both are variables Likhit actually reads.
+    assert page_variables <= readme_variables, sorted(page_variables - readme_variables)
+    for name in readme_variables:
+        assert name in converter, (
+            f"{name} is documented in the README but Likhit never reads it"
+        )
+
+    # Both name the same two concrete deployments, and both are explicit that
+    # Bedrock needs a gateway rather than implying Likhit can reach it directly.
+    for marker in ("ollama", "bedrock", "litellm"):
+        assert marker in readme.lower(), f"README does not cover {marker}"
+        assert marker in section.lower(), f"landing page does not cover {marker}"
+
+    # The README points at the published benchmark, which is where the
+    # configurations are actually compared.
+    assert "jawafdehi.github.io/likhit" in readme
+
+
+def _direct_children_of(html: str, element_id: str) -> list[str]:
+    """Tag names and ids of an element's immediate children.
+
+    Regex cannot tell a direct child from a nested one, and the pane's children
+    are what the grid rows have to line up with.
+    """
+
+    from html.parser import HTMLParser
+
+    void = {"br", "hr", "img", "input", "meta", "link", "source"}
+
+    class Walker(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.depth: int | None = None
+            self.children: list[str] = []
+
+        def handle_starttag(
+            self, tag: str, attrs: list[tuple[str, str | None]]
+        ) -> None:
+            if tag in void:
+                return
+            mapping = dict(attrs)
+            if self.depth is None:
+                if mapping.get("id") == element_id:
+                    self.depth = 0
+                return
+            self.depth += 1
+            if self.depth == 1:
+                self.children.append(mapping.get("id") or tag)
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag in void or self.depth is None:
+                return
+            if self.depth == 0:
+                self.depth = None  # left the element entirely
+            else:
+                self.depth -= 1
+
+    walker = Walker()
+    walker.feed(html)
+    return walker.children
+
+
+def test_detail_pane_declares_one_grid_row_per_visible_child() -> None:
+    """The detail pane's row count must match the children that actually flow.
+
+    `.detail-content` is a fixed grid, so the count is load-bearing in both
+    directions: one row short and the tab bar shares a cell with the body, which
+    silently makes the tabs unclickable; one row too many and the body collapses
+    while the flexible row sits empty. Adding a child without a row is the easy
+    mistake -- this catches it without needing a browser.
+    """
+
+    index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
+    styles = (SITE_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+
+    rule = re.search(
+        r"\.detail-content\s*\{[^}]*grid-template-rows:\s*([^;]+);", styles
+    )
+    assert rule, "expected .detail-content to declare grid-template-rows"
+    # minmax(0, 1fr) is one track despite containing a comma.
+    tracks = re.sub(r"minmax\([^)]*\)", "minmax", rule.group(1)).split()
+    assert tracks, "expected at least one grid track"
+
+    children = _direct_children_of(index, "detail-content")
+    assert children, "expected to find the pane's direct children"
+
+    # `#document-source` is `display: none` -- the PDF modal replaced it -- so it
+    # takes no grid row. Any other hidden child must be added here.
+    assert "document-source" in children
+    assert re.search(r"\.document-source\s*\{[^}]*display:\s*none", styles), (
+        "document-source is excluded from the row count because it is hidden; "
+        "if it is visible again it needs a row"
+    )
+    flowing = [child for child in children if child != "document-source"]
+
+    assert len(tracks) == len(flowing), (
+        f"{len(tracks)} grid rows for {len(flowing)} in-flow children "
+        f"({', '.join(flowing)})"
+    )
