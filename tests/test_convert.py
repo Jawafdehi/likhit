@@ -466,10 +466,16 @@ def test_convert_renders_tables_as_raw_pipe_separated_rows() -> None:
     markdown = _convert_text(sample)
 
     assert "तालिका २.१९" in markdown
-    assert "क्र.सं. | उजुरीको व्यहोरा | अनुसन्धानबाट पुष्टि भएको | आयोगको निर्णय" in markdown
-    assert "व्यहोरा | बमोजिम कसुर/सजाय" in markdown
-    assert "1 | आन्तरिक | प्रतिवादीहरूको | 2081/04/24," in markdown
-    assert "मामिला | मिलेमतोमा | 2081/04/31," in markdown
+    assert (
+        "| क्र.सं. | उजुरीको व्यहोरा |  |  | अनुसन्धानबाट पुष्टि भएको |  |  |  | "
+        "आयोगको निर्णय |  | प्रतिवादीको नाम, पद र कार्यालय |  |  | "
+        "भ्रष्टाचार निवारण ऐन, २०५९ |  |  |"
+    ) in markdown
+    assert (
+        "|  |  |  |  | व्यहोरा |  |  |  |  |  |  |  |  | बमोजिम कसुर/सजाय |  |  |"
+    ) in markdown
+    assert ("| 1 |  | आन्तरिक |  | प्रतिवादीहरूको |  |  | 2081/04/24, |") in markdown
+    assert ("|  |  | मामिला |  | मिलेमतोमा |  |  | 2081/04/31, |") in markdown
     assert "**1**" not in markdown
     assert "- **उजुरीको व्यहोरा:**" not in markdown
 
