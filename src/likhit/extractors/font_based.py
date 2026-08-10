@@ -34,6 +34,9 @@ from likhit.models import Table
 
 PAGE_RANGE_PATTERN = re.compile(r"^\d+(?:-\d+)?$")
 SPAN_GAP_THRESHOLD = 0.75
+# Zeroed ToUnicode maps otherwise collapse every unknown glyph to the same
+# replacement character. Raw CIDs keep those glyphs distinct for later repair.
+_TEXT_DICT_FLAGS = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_USE_CID_FOR_UNKNOWN_UNICODE
 _PREFIX_IKAR_PATTERN = re.compile(r"(?:(?<=^)|(?<=[\s(]))ि(?=[\u0915-\u0939])")
 _INVALID_IKAR_PATTERN = re.compile(r"ि(?=[ािीुूृॄेैोौंःँ])")
 _HALANT_IKAR_PATTERN = re.compile(r"्ि")
@@ -83,7 +86,8 @@ def normalize_press_release_paragraph(text: str) -> str:
         return ""
 
     normalized = text
-    normalized = re.sub(r"^\ufffd(?=\s)", "-", normalized)
+    # CID preservation exposes the law-report sample's unknown bullet as 0x83.
+    normalized = re.sub(r"^[\ufffd\x83](?=\s)", "-", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     normalized = re.sub(r"\s+([।,:;])", r"\1", normalized)
     if re.fullmatch(r"प्रेस\s+विज्ञ\S*", normalized):
@@ -476,9 +480,7 @@ def detect_content_legacy_fonts(
     # one must not corrupt the other's spans.
     text_by_font: dict[str, list[str]] = defaultdict(list)
     for page_index in considered_pages:
-        page_dict = doc[page_index].get_text(
-            "dict", flags=fitz.TEXT_PRESERVE_WHITESPACE
-        )
+        page_dict = doc[page_index].get_text("dict", flags=_TEXT_DICT_FLAGS)
         for block in page_dict["blocks"]:
             if "lines" not in block:
                 continue
@@ -673,7 +675,7 @@ class FontBasedStrategy(ExtractionStrategy):
                 continue
             page = doc[page_index]
             page_font_strategies = font_strategies_by_page.get(page_index + 1, {})
-            page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+            page_dict = page.get_text("dict", flags=_TEXT_DICT_FLAGS)
             lines_by_key: dict[
                 tuple[int, int], list[tuple[float, float, float, float, str]]
             ] = defaultdict(list)
