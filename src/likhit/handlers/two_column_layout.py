@@ -10,7 +10,7 @@ from statistics import median
 from likhit.errors import ExtractionError
 from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
 from likhit.extractors.docx_based import DocxBasedStrategy
-from likhit.extractors.font_based import FontBasedStrategy
+from likhit.extractors.font_based import FontBasedStrategy, strip_marked_cids
 from likhit.handlers.base import StructureHandler
 from likhit.handlers.content_blocks import blocks_to_text, build_content_blocks
 from likhit.models import DocumentType, ExtractionResult, ParagraphBlock, Section
@@ -23,7 +23,9 @@ _LAYOUT_BLOCK_GAP_MIN = 18.0
 
 
 def _clean_paragraph(text: str) -> str:
-    cleaned = text.replace("\ufffd", " ")
+    # Marked CIDs are unmappable glyphs exactly as U+FFFD was before the CID
+    # flag; strip both rather than letting private-use code points through.
+    cleaned = strip_marked_cids(text, " ").replace("\ufffd", " ")
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
 
