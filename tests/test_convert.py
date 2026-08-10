@@ -451,6 +451,11 @@ def test_converter_reorders_two_column_fragments_before_rendering(
         "extract_text",
         lambda self, path: raw_document,
     )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_markdown_quality_score",
+        lambda markdown: 100 if "LEFT_1" in markdown else 0,
+    )
 
     with sample.open("rb") as stream:
         result = converter.convert(stream, stream_info)

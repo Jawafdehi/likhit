@@ -26,6 +26,12 @@ from markitdown_ocr import PdfConverterWithOCR
 from likhit.errors import ExtractionError
 from likhit.extractors.base import RawDocument, TextFragment
 from likhit.extractors.font_based import FontBasedStrategy, parse_page_range
+from likhit.extractors.numeric_boundaries import (
+    NumericBoundaryRepair,
+    collect_document_numeric_boundary_repairs,
+    repair_markdown_numeric_boundaries,
+    requires_geometry_aware_candidate,
+)
 from likhit.font_classifier import classify_fonts_from_stream
 from likhit.handlers.content_blocks import build_content_blocks
 from likhit.handlers.two_column_layout import TwoColumnLayoutHandler
@@ -41,7 +47,14 @@ _CID_GARBAGE_PATTERN = re.compile(r"\(cid:\d+\)")
 _SUSPICIOUS_LATIN_TOKEN_PATTERN = re.compile(
     r"""[\\\[\]\{\}\$^&*_+=<>]|[A-Za-z]\d|\d[A-Za-z]"""
 )
+_DOUBLED_MATRA_PATTERN = re.compile(r"[ा-ौ]{2,}")
+_ORPHAN_MATRA_PATTERN = re.compile(r"(?<![क-हक़-य़्])[ा-ौ]")
+_VIRAMA_MATRA_PATTERN = re.compile(r"्[ा-ौ]")
 _OCR_SERIAL_PATTERN = re.compile(r"^\s*([०-९0-9]{1,2}[.)।])\s+(.*\S)\s*$")
+_MAX_REASONABLE_WHITESPACE_RATIO = 0.35
+_MAX_REASONABLE_SINGLE_TOKEN_RATIO = 0.35
+_EXCESS_SINGLE_TOKEN_PENALTY = 6
+_MATRA_DAMAGE_PENALTY = 8
 _GEMINI_OPENAI_COMPAT_BASE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/openai/"
 )
@@ -88,17 +101,21 @@ class NepaliPdfConverter(DocumentConverter):
         if isinstance(pages, str) and pages.strip():
             raw = _slice_pdf_to_requested_pages(raw, pages)
 
+        numeric_repairs = _try_collect_numeric_boundary_repairs(raw)
         prefetched_likhit: DocumentConverterResult | None = None
         force_ocr = False
         classifications = classify_fonts_from_stream(io.BytesIO(raw))
         if _has_known_nepali_repair_font(classifications):
             logger.info(
-                "PDF converter: known Nepali repair fonts detected; using likhit extraction directly."
+                "PDF converter: known Nepali repair fonts detected; using geometry-aware likhit extraction directly."
             )
             likhit_result, likhit_needs_ocr = _try_convert_with_likhit(raw)
             if likhit_result is not None and not likhit_needs_ocr:
-                return likhit_result
-            if likhit_needs_ocr:
+                return _repair_result_numeric_boundaries(
+                    likhit_result,
+                    numeric_repairs,
+                )
+            elif likhit_needs_ocr:
                 # likhit dropped scanned/decoy pages; keep its result as a
                 # candidate but force OCR so that dropped content is still
                 # captured instead of silently vanishing.
@@ -114,8 +131,17 @@ class NepaliPdfConverter(DocumentConverter):
                 )
 
         logger.info("PDF converter: running default MarkItDown PDF extraction first.")
-        default_result = _run_default_pdf_converter(raw, stream_info)
-        candidates = [default_result]
+        default_result = _repair_result_numeric_boundaries(
+            _run_default_pdf_converter(raw, stream_info),
+            numeric_repairs,
+        )
+        prefer_geometry_aware = requires_geometry_aware_candidate(
+            numeric_repairs,
+            markdown=default_result.markdown,
+        )
+        candidates: list[tuple[DocumentConverterResult, bool]] = [
+            (default_result, False)
+        ]
 
         needs_ocr = pdf_likely_needs_ocr(raw) or force_ocr
         if needs_ocr:
@@ -129,7 +155,15 @@ class NepaliPdfConverter(DocumentConverter):
             )
             if ocr_result is not None:
                 logger.info("PDF converter: OCR candidate extracted successfully.")
-                candidates.append(ocr_result)
+                candidates.append(
+                    (
+                        _repair_result_numeric_boundaries(
+                            ocr_result,
+                            numeric_repairs,
+                        ),
+                        False,
+                    )
+                )
             else:
                 logger.warning(
                     "PDF converter: OCR appears necessary, but OCR is not configured. Set OPENAI_API_KEY or GEMINI_API_KEY, plus MARKITDOWN_OCR_MODEL, to enable markitdown-ocr."
@@ -138,15 +172,22 @@ class NepaliPdfConverter(DocumentConverter):
         if prefetched_likhit is not None:
             # Already extracted above (repair-font path); reuse it rather than
             # re-running likhit.
-            candidates.append(prefetched_likhit)
-        elif _default_pdf_result_needs_likhit(default_result.markdown):
-            logger.info(
-                "PDF converter: default extraction looks suspicious for Nepali text; retrying with likhit extraction."
-            )
+            candidates.append((prefetched_likhit, True))
+        elif prefer_geometry_aware or _default_pdf_result_needs_likhit(
+            default_result.markdown
+        ):
+            if prefer_geometry_aware:
+                logger.info(
+                    "PDF converter: plausible numeric cell merges require geometry-aware extraction."
+                )
+            else:
+                logger.info(
+                    "PDF converter: default extraction looks suspicious for Nepali text; retrying with likhit extraction."
+                )
             likhit_result, _ = _try_convert_with_likhit(raw)
             if likhit_result is not None:
                 logger.info("PDF converter: likhit re-extraction produced a candidate.")
-                candidates.append(likhit_result)
+                candidates.append((likhit_result, True))
             else:
                 logger.warning(
                     "PDF converter: likhit re-extraction did not produce usable text; keeping the existing candidates."
@@ -160,18 +201,52 @@ class NepaliPdfConverter(DocumentConverter):
             logger.info(
                 "PDF converter: returning the only available extraction result."
             )
-            return default_result
+            return candidates[0][0]
 
         scored_candidates = [
-            (result, _markdown_quality_score(result.markdown)) for result in candidates
+            (
+                result,
+                _markdown_quality_score(result.markdown),
+                geometry_aware
+                or not requires_geometry_aware_candidate(
+                    numeric_repairs,
+                    markdown=result.markdown,
+                ),
+            )
+            for result, geometry_aware in candidates
         ]
-        best_result, best_score = max(scored_candidates, key=lambda item: item[1])
+        best_result, best_score, _ = max(
+            scored_candidates,
+            key=lambda item: (item[1], item[2]),
+        )
         logger.info(
             "PDF converter: selected best candidate after comparison (candidates=%d, score=%d).",
             len(scored_candidates),
             best_score,
         )
         return best_result
+
+
+def _try_collect_numeric_boundary_repairs(
+    raw: bytes,
+) -> list[NumericBoundaryRepair]:
+    try:
+        return collect_document_numeric_boundary_repairs(raw)
+    except Exception as exc:  # noqa: BLE001 - degrade to no repairs, never fail
+        logger.debug("PDF converter: numeric boundary analysis failed: %s", exc)
+        return []
+
+
+def _repair_result_numeric_boundaries(
+    result: DocumentConverterResult,
+    repairs: list[NumericBoundaryRepair],
+) -> DocumentConverterResult:
+    if not repairs:
+        return result
+    markdown = repair_markdown_numeric_boundaries(result.markdown, repairs)
+    if markdown == result.markdown:
+        return result
+    return DocumentConverterResult(markdown=markdown, title=result.title)
 
 
 def _has_known_nepali_repair_font(classifications: dict[str, str]) -> bool:
@@ -643,6 +718,21 @@ def _markdown_quality_score(markdown: str) -> int:
     pipe_heavy_lines = sum(1 for line in markdown.splitlines() if line.count("|") >= 2)
     devanagari_chars = len(_DEVANAGARI_PATTERN.findall(markdown))
     cid_garbage_count = len(_CID_GARBAGE_PATTERN.findall(markdown))
+    whitespace_excess = max(
+        0,
+        sum(character.isspace() for character in markdown)
+        - int(len(markdown) * _MAX_REASONABLE_WHITESPACE_RATIO),
+    )
+    single_token_excess = max(
+        0,
+        sum(len(token) == 1 for token in tokens)
+        - int(len(tokens) * _MAX_REASONABLE_SINGLE_TOKEN_RATIO),
+    )
+    matra_damage_count = (
+        len(_DOUBLED_MATRA_PATTERN.findall(markdown))
+        + len(_ORPHAN_MATRA_PATTERN.findall(markdown))
+        + len(_VIRAMA_MATRA_PATTERN.findall(markdown))
+    )
     return (
         devanagari_chars * 3
         + len(tokens)
@@ -651,6 +741,9 @@ def _markdown_quality_score(markdown: str) -> int:
         - pipe_heavy_lines * 4
         - cid_garbage_count * 12
         - markdown.count("\ufffd") * 12
+        - whitespace_excess
+        - single_token_excess * _EXCESS_SINGLE_TOKEN_PENALTY
+        - matra_damage_count * _MATRA_DAMAGE_PENALTY
     )
 
 

@@ -28,6 +28,11 @@ from likhit.extractors.legacy_maps import (
     get_converter,
     get_converter_for_map,
 )
+from likhit.extractors.numeric_boundaries import (
+    apply_line_numeric_boundary_repairs,
+    collect_page_numeric_boundary_repairs,
+    group_repairs_by_line,
+)
 from likhit.extractors.tables import detect_page_tables, merge_continuation_tables
 from likhit.models import Table
 
@@ -675,6 +680,12 @@ class FontBasedStrategy(ExtractionStrategy):
                 continue
             page = doc[page_index]
             page_font_strategies = font_strategies_by_page.get(page_index + 1, {})
+            numeric_repairs = group_repairs_by_line(
+                collect_page_numeric_boundary_repairs(
+                    page,
+                    page_number=page_index + 1,
+                )
+            )
             page_dict = page.get_text("dict", flags=_TEXT_DICT_FLAGS)
             lines_by_key: dict[
                 tuple[int, int], list[tuple[float, float, float, float, str]]
@@ -715,6 +726,13 @@ class FontBasedStrategy(ExtractionStrategy):
             ):
                 ordered_words = sorted(line_words, key=lambda piece: piece[0])
                 line_text = join_spans_with_layout(ordered_words)
+                line_text = apply_line_numeric_boundary_repairs(
+                    line_text,
+                    numeric_repairs.get(
+                        (page_index + 1, block_number, line_number),
+                        (),
+                    ),
+                )
                 paragraph = normalize_press_release_paragraph(line_text)
                 if not paragraph:
                     previous_y1 = None

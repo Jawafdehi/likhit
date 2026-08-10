@@ -17,6 +17,11 @@ from likhit.extractors.kalimati import (
     reorder_devanagari,
 )
 from likhit.extractors.legacy_maps import get_converter
+from likhit.extractors.numeric_boundaries import (
+    apply_line_numeric_boundary_repairs,
+    collect_page_numeric_boundary_repairs,
+    group_repairs_by_line,
+)
 from likhit.extractors.tables import detect_page_tables, merge_continuation_tables
 from likhit.handlers.content_blocks import build_content_blocks, table_to_plain_text
 from likhit.models import TableBlock
@@ -150,6 +155,12 @@ def _extract_fragments_and_tables(
 
     for page_index in range(doc.page_count):
         page = doc[page_index]
+        numeric_repairs = group_repairs_by_line(
+            collect_page_numeric_boundary_repairs(
+                page,
+                page_number=page_index + 1,
+            )
+        )
         page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
         lines_by_key: dict[
             tuple[int, int], list[tuple[float, float, float, float, str]]
@@ -190,6 +201,13 @@ def _extract_fragments_and_tables(
         ):
             ordered_words = sorted(line_words, key=lambda piece: piece[0])
             line_text = "".join(piece[4] for piece in ordered_words)
+            line_text = apply_line_numeric_boundary_repairs(
+                line_text,
+                numeric_repairs.get(
+                    (page_index + 1, block_number, line_number),
+                    (),
+                ),
+            )
             paragraph = _normalize_line_text(line_text)
             if not paragraph:
                 previous_y1 = None
