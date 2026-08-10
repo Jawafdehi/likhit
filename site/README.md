@@ -32,8 +32,11 @@ Every document runs against three configurations:
 
 A configuration declares the backend it `requires`, and one whose backend is
 absent is **skipped rather than run** — otherwise a missing credential would be
-recorded as a Likhit defect. CI supplies neither backend, so the published build
-runs `likhit` alone and reports the other two as unavailable with a reason.
+recorded as a Likhit defect. That is what happens on a live build with no
+credentials: `likhit` runs alone and the other two are reported unavailable with a
+reason. The deployed site is not a live build — it replays a recording and
+publishes all three columns, taking availability from the record rather than from
+the runner; see [Recorded results](#recorded-results-snapshotjson).
 
 Point the hosted backend at a provider with `MARKITDOWN_OCR_MODEL` plus
 `OPENAI_API_KEY` (or `GEMINI_API_KEY`); see the root README for the full OCR
@@ -115,12 +118,21 @@ uv run python site/generate.py --output _site --skip-synthetic \
   --write-snapshot site/snapshot.json
 ```
 
-The two flags are mutually exclusive: reading a recording while writing one would
-produce a copy with a fresh timestamp and no new measurement. `--write-snapshot`
-prints the configurations it covered — check that line, because a snapshot
-recorded without a backend records it as unavailable and quietly drops that
-column from the published page. `test_committed_snapshot_covers_every_published_run_and_configuration`
-fails when the committed file stops covering the catalog.
+The two flags are mutually exclusive — `generate()` rejects the pair, not just the
+CLI — because reading a recording while writing one would copy it forward under a
+new timestamp without measuring anything, stamping the replaying build's commit
+onto numbers it never took. `--write-snapshot` prints the configurations it
+covered; check that line, because a snapshot recorded without a backend records
+that configuration as unavailable, and the published page then shows it as not
+run. `test_committed_snapshot_covers_every_published_run_and_configuration` fails
+when the committed file stops covering the catalog.
+
+Two unavailable configurations are **not** the same thing, and the artifact keeps
+them apart. One the recording covers as `available: false` had no backend when the
+recording was made, and carries that reason. One the recording never mentions —
+because the catalog gained it afterwards — has no measurement at all: its runs are
+named in `measured.missing_runs`, and its reason is "not covered by the recording"
+rather than a claim about credentials that says nothing about the gap.
 
 The committed snapshot holds the extracted text of every run (~700 KB). That is
 the evidence behind the numbers, and it is the same text already published to
@@ -128,14 +140,20 @@ Pages, so committing it exposes nothing new.
 
 Provenance is deliberately split in the artifact: `build` is the commit that
 published the page, `measured` is the commit whose behaviour the numbers describe.
-`measured.stale` marks the case where they differ, `measured.missing_runs` names
-catalog runs the recording predates, and the dashboard renders both above the
-summary. A live build sets `measured` to null.
+`measured.stale` marks the case where they differ and `measured.missing_runs` names
+catalog runs the recording predates; the dashboard renders both above the summary.
+A live build sets `measured` to null.
+
+`stale` is reported, not warned about. Committing a recording necessarily creates a
+commit later than the one it was recorded on, so it is true on effectively every
+deploy — warning on it would fire every time and teach readers to ignore the
+banner. The recorded commit and the published one are both named and left at that.
+`missing_runs` is the opposite case: a real gap, which does warn.
 
 ## Job summary
 
 `summarize.py` renders an artifact as Markdown for `$GITHUB_STEP_SUMMARY`, so the
-published numbers, the per-configuration outcomes and any stale-recording warning
+published numbers, the per-configuration outcomes and any missing-run warning
 appear on the Actions run itself rather than only in the deployed page:
 
 ```bash

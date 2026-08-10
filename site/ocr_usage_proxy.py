@@ -104,10 +104,15 @@ def build_handler(upstream: str, counter: Counter) -> type[BaseHTTPRequestHandle
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             """Silence per-request logging; the generator's output is the record."""
 
-        def _respond(self, status: int, body: bytes, content_type: str) -> None:
+        def _respond(
+            self, status: int, body: bytes, content_type: str, *, close: bool = False
+        ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            if close:
+                self.send_header("Connection", "close")
+                self.close_connection = True
             self.end_headers()
             self.wfile.write(body)
 
@@ -119,9 +124,28 @@ def build_handler(upstream: str, counter: Counter) -> type[BaseHTTPRequestHandle
             self._proxy(None)
 
         def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
+            if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
+                # Reading a chunked body would mean de-framing it here. No client
+                # in this benchmark sends one, and forwarding an empty body
+                # instead would look like a model that answered nothing.
+                self._respond(
+                    411,
+                    b'{"error":"chunked request bodies are not supported"}',
+                    "application/json",
+                    close=True,
+                )
+                return
             length = int(self.headers.get("Content-Length") or 0)
             if length > MAX_BODY_BYTES:
-                self._respond(413, b'{"error":"request too large"}', "application/json")
+                # The body is deliberately left unread, so this connection cannot
+                # be reused: under HTTP/1.1 keep-alive the leftover bytes would be
+                # parsed as the next request line.
+                self._respond(
+                    413,
+                    b'{"error":"request too large"}',
+                    "application/json",
+                    close=True,
+                )
                 return
             self._proxy(self.rfile.read(length) if length else b"")
 
@@ -139,7 +163,19 @@ def build_handler(upstream: str, counter: Counter) -> type[BaseHTTPRequestHandle
                     request.add_header(header, value)
             try:
                 with urllib.request.urlopen(request, timeout=1800) as response:
-                    payload = response.read(MAX_BODY_BYTES)
+                    # One byte past the limit distinguishes "exactly at the limit"
+                    # from "truncated". Returning a truncated body under the
+                    # upstream's 200 would hand the client unparseable JSON and
+                    # lose the usage block with it -- a silent miscount, which is
+                    # the one failure this proxy must not have.
+                    payload = response.read(MAX_BODY_BYTES + 1)
+                    if len(payload) > MAX_BODY_BYTES:
+                        self._respond(
+                            502,
+                            b'{"error":"upstream response too large"}',
+                            "application/json",
+                        )
+                        return
                     status = response.status
                     content_type = response.headers.get(
                         "Content-Type", "application/json"
@@ -147,7 +183,11 @@ def build_handler(upstream: str, counter: Counter) -> type[BaseHTTPRequestHandle
             except urllib.error.HTTPError as error:
                 # Pass the upstream's own error through: likhit's client needs to
                 # see the real status to fail the way it would without the proxy.
-                payload = error.read()
+                # Bounded like the success path -- an error body is no more
+                # trustworthy about its size.
+                payload = error.read(MAX_BODY_BYTES + 1)
+                if len(payload) > MAX_BODY_BYTES:
+                    payload = b'{"error":"upstream error response too large"}'
                 status, content_type = (
                     error.code,
                     error.headers.get("Content-Type", "application/json"),
@@ -180,6 +220,13 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+
+    # Fail here rather than per request: urllib reads "127.0.0.1:11434" as a URL
+    # of scheme "127.0.0.1" and raises URLError, which this proxy reports as a 502
+    # "upstream unreachable" on every call. Accurate, but it points at the
+    # upstream instead of at the flag that is actually wrong.
+    if not args.upstream.startswith(("http://", "https://")):
+        parser.error("--upstream must start with http:// or https://")
 
     counter = Counter()
     # The generator polls /usage while a conversion subprocess holds a request

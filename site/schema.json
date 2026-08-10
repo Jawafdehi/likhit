@@ -78,7 +78,7 @@
           }
         },
         "stale": {
-          "description": "Whether the recorded commit differs from the commit that published this build.",
+          "description": "Whether the recorded commit differs from the commit that published this build. Informational: committing a recording necessarily creates a commit later than the one it was recorded on, so this is true on effectively every deploy and is reported rather than warned about.",
           "type": "boolean"
         }
       }

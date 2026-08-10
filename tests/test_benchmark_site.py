@@ -1516,7 +1516,83 @@ def test_snapshot_run_absent_from_the_recording_is_skipped_and_named(
     assert dropped not in published
 
     # The job summary has to surface it too, or the warning dies in the artifact.
-    assert dropped in summarize.render(artifact)
+    # This is the one provenance case that still warns -- an older recorded commit
+    # is the normal case and deliberately does not -- so prove it warns.
+    rendered = summarize.render(artifact)
+    assert dropped in rendered
+    assert "[!WARNING]" in rendered
+
+
+def test_snapshot_configuration_absent_from_the_recording_is_named_not_just_skipped(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A whole configuration the recording predates must be as visible as one run.
+
+    A configuration missing from the recording resolves to unavailable, and an
+    unavailable configuration's runs are dropped ahead of the lookup that names an
+    uncovered run. Left alone, that makes `skipped` rise with nothing to explain
+    it -- and pins the blame on absent credentials, which is a claim about this
+    machine rather than about the gap in the recording.
+    """
+
+    _without_ocr_backends(monkeypatch)
+    data = _synthetic_snapshot()
+    dropped = "likhit-ocr-local"
+    del data["configurations"][dropped]
+    expected = sorted(key for key in data["runs"] if key.endswith(f"--{dropped}"))
+    assert expected, "the fixture must record runs of the configuration it drops"
+    snapshot = _write_snapshot(tmp_path / "snapshot.json", data)
+
+    artifact = generator.generate(
+        tmp_path / "site",
+        include_public=False,
+        snapshot=snapshot,
+        run_case=_unreachable_run_case,
+    )
+
+    assert artifact["measured"]["missing_runs"] == expected
+    assert artifact["summary"]["skipped"] == len(expected)
+
+    config = artifact["configurations"][dropped]
+    assert config["available"] is False
+    assert config["unavailable_reason"] == "not covered by the recording"
+
+    # A configuration the recording *does* cover as unavailable keeps its own
+    # reason, so the two cases stay distinguishable rather than both reading as
+    # a recording gap.
+    data = _synthetic_snapshot()
+    data["configurations"][dropped]["available"] = False
+    artifact = generator.generate(
+        tmp_path / "site2",
+        include_public=False,
+        snapshot=_write_snapshot(tmp_path / "snapshot2.json", data),
+        run_case=_unreachable_run_case,
+    )
+    recorded_unavailable = artifact["configurations"][dropped]["unavailable_reason"]
+    assert recorded_unavailable != "not covered by the recording"
+    assert "LIKHIT_LOCAL_OCR" in recorded_unavailable
+    assert artifact["measured"]["missing_runs"] == []
+
+
+def test_generate_refuses_to_record_a_replay(tmp_path: pathlib.Path) -> None:
+    """Replaying while recording would launder a recording as a fresh measurement.
+
+    The CLI's mutually-exclusive group covers the command line only. Held in
+    `generate` too, the invariant survives every other caller -- otherwise the
+    written snapshot would carry the replaying build's commit and a new
+    `recorded_at` over numbers nothing re-measured.
+    """
+
+    snapshot = _write_snapshot(tmp_path / "snapshot.json", _synthetic_snapshot())
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        generator.generate(
+            tmp_path / "site",
+            include_public=False,
+            snapshot=snapshot,
+            write_snapshot=tmp_path / "out.json",
+            run_case=_unreachable_run_case,
+        )
+    assert not (tmp_path / "out.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -1526,6 +1602,16 @@ def test_snapshot_run_absent_from_the_recording_is_skipped_and_named(
         (lambda data: data.pop("runs"), "runs"),
         (lambda data: data.pop("configurations"), "configurations"),
         (lambda data: data.pop("build"), "build"),
+        (lambda data: data.update(runs="not-a-mapping"), "runs"),
+        # A run recorded as something other than an object: `_replayed_payload`
+        # calls `.get` on it, so without this check the failure surfaces as an
+        # AttributeError mid-build instead of naming the file and the key.
+        (
+            lambda data: data["runs"].update(
+                {next(iter(data["runs"])): "not-an-object"}
+            ),
+            "not an object",
+        ),
     ],
 )
 def test_snapshot_refuses_a_shape_it_cannot_replay(
@@ -1544,7 +1630,15 @@ def test_snapshot_refuses_a_shape_it_cannot_replay(
     snapshot = _write_snapshot(tmp_path / "snapshot.json", data)
 
     with pytest.raises(ValueError, match=expected):
-        generator.generate(tmp_path / "site", include_public=False, snapshot=snapshot)
+        # `run_case` is supplied so that a regression in *when* validation runs
+        # shows up as this assertion failing, not as a slow real conversion of
+        # the whole synthetic corpus before the same failure.
+        generator.generate(
+            tmp_path / "site",
+            include_public=False,
+            snapshot=snapshot,
+            run_case=_unreachable_run_case,
+        )
 
 
 def test_replayed_artifact_keeps_measured_provenance_apart_from_the_build(
@@ -1572,7 +1666,7 @@ def test_replayed_artifact_keeps_measured_provenance_apart_from_the_build(
     assert artifact["measured"]["build"]["commit"] == RECORDED_COMMIT
     assert artifact["measured"]["recorded_at"] == "2026-08-01T00:00:00+00:00"
     assert artifact["measured"]["stale"] is True, (
-        "a recording from another commit is stale and must be flagged"
+        "a recording from another commit must be recorded as such"
     )
 
     # Same commit, same numbers: nothing to warn about.
@@ -1656,10 +1750,16 @@ def test_benchmark_workflow_replays_the_snapshot_and_reports_the_numbers() -> No
     assert summary["if"] == "always()"
 
 
-def test_job_summary_reports_configurations_and_flags_a_stale_recording(
+def test_job_summary_names_both_commits_without_warning_about_the_older_one(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The Actions summary is where a regression gets noticed, so it must be legible."""
+    """The Actions summary is where a regression gets noticed, so it must be legible.
+
+    The recorded commit is older than the published one on effectively every
+    deploy -- committing a recording creates a commit later than the one it was
+    recorded on -- so warning about it would fire every time and train readers to
+    scroll past the warnings that matter. It is named, not flagged.
+    """
 
     _without_ocr_backends(monkeypatch)
     snapshot = _write_snapshot(tmp_path / "snapshot.json", _synthetic_snapshot())
@@ -1678,7 +1778,10 @@ def test_job_summary_reports_configurations_and_flags_a_stale_recording(
     assert f"{artifact['summary']['runs']} runs" in rendered
     assert RECORDED_COMMIT[:8] in rendered, "the measured commit must be named"
     assert "b" * 8 in rendered, "the publishing commit must be named too"
-    assert "[!WARNING]" in rendered, "a stale recording must warn"
+    assert artifact["measured"]["stale"] is True
+    assert "[!WARNING]" not in rendered, (
+        "an older recorded commit is the normal case and must not warn"
+    )
 
     # A build that measured its own numbers says so, and warns about nothing.
     live = generator.generate(
@@ -1687,6 +1790,58 @@ def test_job_summary_reports_configurations_and_flags_a_stale_recording(
     live_summary = summarize.render(live)
     assert "Measured by this build" in live_summary
     assert "[!WARNING]" not in live_summary
+
+
+def test_job_summary_keeps_a_measured_zero_apart_from_an_uncounted_one() -> None:
+    """The distinction the dashboard makes has to hold in the Actions summary too.
+
+    Likhit adds an OCR candidate only for pages a text layer cannot serve, so most
+    documents spend nothing even with a backend configured -- `calls: 0` is the
+    common case. Reporting it the way an unreachable counter is reported would make
+    the ordinary result indistinguishable from lost measurement, in the one place a
+    reviewer actually looks.
+    """
+
+    def artifact(usage: dict[str, Any] | None) -> dict[str, Any]:
+        return {
+            "configurations": {
+                "likhit-ocr": {
+                    "label": "Likhit (with OCR)",
+                    "available": True,
+                    "model": "recorded-vision-model",
+                }
+            },
+            "documents": [
+                {
+                    "runs": [
+                        {"config": "likhit-ocr", "outcome": "pass", "ocr_usage": usage}
+                    ]
+                }
+            ],
+        }
+
+    measured_zero = summarize._configuration_rows(
+        artifact(
+            {
+                "calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "model": "recorded-vision-model",
+            }
+        )
+    )[0]
+    uncounted = summarize._configuration_rows(artifact(None))[0]
+
+    assert measured_zero != uncounted
+    assert "0 vision call(s), 0 tokens" in measured_zero
+    assert "not recorded" in uncounted
+
+    # A configuration with no vision model has no usage to report and reports none,
+    # rather than reading as a counter that failed.
+    no_ocr = artifact(None)
+    no_ocr["configurations"]["likhit-ocr"]["model"] = None
+    assert "not recorded" not in summarize._configuration_rows(no_ocr)[0]
 
 
 def test_job_summary_survives_a_build_that_produced_no_artifact(
@@ -2046,6 +2201,133 @@ def test_usage_proxy_forwards_and_counts_a_real_request(
         for server in (proxy, upstream):
             server.shutdown()
             server.server_close()
+
+
+def test_usage_proxy_does_not_leave_a_rejected_body_in_the_socket() -> None:
+    """A refused request must close the connection, not poison the next one.
+
+    The handler speaks HTTP/1.1, so the connection is reusable by default, and the
+    413 path deliberately never reads the body. Those bytes stay in the socket and
+    the next request line is parsed out of the middle of them -- so the failure
+    lands on a *later*, valid request, which is the hard kind to trace.
+    """
+
+    import http.server
+    import socket
+    import threading
+
+    proxy = http.server.ThreadingHTTPServer(
+        # Nothing is ever forwarded: both requests are refused before that.
+        ("127.0.0.1", 0),
+        usage_proxy.build_handler("http://127.0.0.1:1", usage_proxy.Counter()),
+    )
+    threading.Thread(target=proxy.serve_forever, daemon=True).start()
+    port = proxy.server_address[1]
+
+    try:
+        for headers, body in (
+            (b"Content-Length: %d\r\n" % (usage_proxy.MAX_BODY_BYTES + 1), b""),
+            (b"Transfer-Encoding: chunked\r\n", b"4\r\nnope\r\n0\r\n\r\n"),
+        ):
+            with socket.create_connection(("127.0.0.1", port), timeout=30) as client:
+                client.sendall(
+                    b"POST /v1/chat/completions HTTP/1.1\r\nHost: proxy\r\n"
+                    + headers
+                    + b"\r\n"
+                    + body
+                )
+                received = b""
+                while b"\r\n\r\n" not in received:
+                    chunk = client.recv(4096)
+                    if not chunk:
+                        break
+                    received += chunk
+                head = received.split(b"\r\n\r\n", 1)[0].lower()
+                assert b"connection: close" in head, head
+    finally:
+        proxy.shutdown()
+        proxy.server_close()
+
+
+def test_usage_proxy_refuses_an_oversized_upstream_body_rather_than_truncating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Truncating a response would lose the usage block silently.
+
+    Reading exactly `MAX_BODY_BYTES` cannot tell a body at the limit from one over
+    it, so an oversized response came back under the upstream's 200 with the JSON
+    cut mid-object -- unparseable for the caller, and with no `usage` left to
+    count. An undercount that reports success is the one failure a counting proxy
+    must not have.
+    """
+
+    import http.server
+    import threading
+    import urllib.error
+    import urllib.request
+
+    class Upstream(http.server.BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+            pass
+
+        def do_POST(self) -> None:  # noqa: N802
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            body = json.dumps(
+                {
+                    "usage": {"prompt_tokens": 40, "completion_tokens": 6},
+                    "pad": "x" * 512,
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    monkeypatch.setattr(usage_proxy, "MAX_BODY_BYTES", 64)
+    upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+    counter = usage_proxy.Counter()
+    proxy = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        usage_proxy.build_handler(
+            f"http://127.0.0.1:{upstream.server_address[1]}", counter
+        ),
+    )
+    for server in (upstream, proxy):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{proxy.server_address[1]}/v1/chat/completions",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=30)
+        assert caught.value.code == 502
+        assert b"too large" in caught.value.read()
+        # Nothing counted, and nothing claimed to have been counted.
+        assert counter.snapshot() == {
+            "calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }
+    finally:
+        for server in (proxy, upstream):
+            server.shutdown()
+            server.server_close()
+
+
+def test_usage_proxy_rejects_an_upstream_without_a_scheme() -> None:
+    """Point at the wrong flag, not at an innocent upstream.
+
+    `urllib` reads "127.0.0.1:11434" as a URL of scheme "127.0.0.1", so every
+    proxied request answers 502 "upstream unreachable" -- accurate about the
+    symptom and misleading about the cause.
+    """
+
+    with pytest.raises(SystemExit):
+        usage_proxy.main(["--port", "0", "--upstream", "127.0.0.1:11434"])
 
 
 def test_readme_and_landing_page_document_the_same_ocr_backends() -> None:

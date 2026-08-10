@@ -127,9 +127,14 @@ function renderIdentity() {
 
 // The benchmark cannot run on every commit: CI has no vision backend, and the
 // full corpus takes far longer than a Pages build. So a recorded snapshot is
-// replayed instead -- which is only honest if the page says so, names the commit
-// the numbers were measured at, and flags the case where that commit is no longer
-// the one being published.
+// replayed instead -- which is only honest if the page says so and names the
+// commit the numbers were measured at.
+//
+// That commit is almost always an older one, and deliberately not treated as a
+// problem: committing a recording necessarily creates a commit later than the one
+// it was recorded on, so a warning here would fire on every single deploy. It is
+// stated as a fact and left at that. Runs *missing* from the recording are a
+// different matter -- that is a real gap, and it warns.
 function renderMeasured() {
   const banner = byId("measured-banner");
   const measured = state.data.measured;
@@ -142,24 +147,26 @@ function renderMeasured() {
   const build = measured.build || {};
   const missing = measured.missing_runs || [];
   const notes = [];
-  if (measured.stale) {
-    notes.push(
-      `These numbers predate the published commit ${escapeHtml(shortSha(state.data.build.commit))}.`,
-    );
-  }
   if (missing.length) {
     notes.push(
-      `${formatNumber(missing.length)} catalog ${missing.length === 1 ? "run is" : "runs are"} newer than the recording and were skipped.`,
+      `${formatNumber(missing.length)} catalog ${
+        missing.length === 1
+          ? "run is newer than the recording and was"
+          : "runs are newer than the recording and were"
+      } skipped.`,
     );
   }
-  banner.classList.toggle("stale", Boolean(measured.stale) || missing.length > 0);
+  // Amber only for a recording that does not cover the catalog -- not for the
+  // older recorded commit, which is every deploy.
+  banner.classList.toggle("incomplete", missing.length > 0);
   banner.innerHTML = `
-    ${icon(measured.stale || missing.length ? "triangle-alert" : "history")}
+    ${icon(missing.length ? "triangle-alert" : "history")}
     <span>
       <strong>Recorded results.</strong>
       Measured at <code>${escapeHtml(shortSha(build.commit))}</code>
       on ${escapeHtml(formatNpt(measured.recorded_at))}
-      with Likhit ${escapeHtml(build.likhit ?? "unknown")}.
+      with Likhit ${escapeHtml(build.likhit ?? "unknown")},
+      and published from <code>${escapeHtml(shortSha(state.data.build.commit))}</code>.
       This build replayed them rather than re-running the benchmark.
       ${notes.join(" ")}
     </span>

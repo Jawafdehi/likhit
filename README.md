@@ -183,7 +183,7 @@ image-only scans need one.
 If OCR is left unconfigured, `likhit` still converts. It logs that a page needed
 OCR and returns the best result it could reach without it, rather than failing:
 
-```
+```text
 PDF converter: OCR appears necessary, but OCR is not configured.
 Set OPENAI_API_KEY or GEMINI_API_KEY, plus MARKITDOWN_OCR_MODEL, to enable markitdown-ocr.
 ```
