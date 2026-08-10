@@ -612,7 +612,7 @@ def _default_pdf_result_needs_likhit(markdown: str) -> bool:
     vowel_poor_tokens = [
         token for token in latin_tokens if _is_vowel_poor_latin_token(token)
     ]
-    pipe_heavy_lines = sum(1 for line in markdown.splitlines() if line.count("|") >= 2)
+    pipe_heavy_lines = _pipe_heavy_line_count(markdown)
 
     suspicious_ratio = len(suspicious_tokens) / len(latin_tokens)
     vowel_poor_ratio = len(vowel_poor_tokens) / len(latin_tokens)
@@ -620,6 +620,24 @@ def _default_pdf_result_needs_likhit(markdown: str) -> bool:
         suspicious_ratio >= 0.12
         or (suspicious_ratio >= 0.06 and vowel_poor_ratio >= 0.45)
         or (pipe_heavy_lines >= 4 and suspicious_ratio >= 0.05)
+    )
+
+
+def _pipe_heavy_line_count(markdown: str) -> int:
+    """Count lines carrying pipe spam, ignoring a row's enclosing delimiters.
+
+    The signal being measured is "too many columns for this to be prose", so it
+    counts the separators *between* values. Counting raw pipes instead would
+    make the score depend on whether a renderer encloses its rows in pipes:
+    `a | b` and `| a | b |` describe the same two columns, but the second has
+    two extra pipes and would cross the threshold on its own. Raw table rows
+    are enclosed (so leading and trailing blank cells stay visible), and
+    Markdown tables are too, so without this the same table scores differently
+    depending only on its delimiter style.
+    """
+
+    return sum(
+        1 for line in markdown.splitlines() if line.strip().strip("|").count("|") >= 2
     )
 
 
@@ -640,7 +658,7 @@ def _markdown_quality_score(markdown: str) -> int:
     vowel_poor_tokens = [
         token for token in latin_tokens if _is_vowel_poor_latin_token(token)
     ]
-    pipe_heavy_lines = sum(1 for line in markdown.splitlines() if line.count("|") >= 2)
+    pipe_heavy_lines = _pipe_heavy_line_count(markdown)
     devanagari_chars = len(_DEVANAGARI_PATTERN.findall(markdown))
     cid_garbage_count = len(_CID_GARBAGE_PATTERN.findall(markdown))
     return (

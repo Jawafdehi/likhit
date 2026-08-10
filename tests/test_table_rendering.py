@@ -52,6 +52,23 @@ def test_render_table_keeps_covered_colspan_positions():
     )
 
 
+def test_render_table_keeps_a_cell_anchored_inside_another_cells_span():
+    # A malformed table can anchor a cell inside another's span. The span must
+    # not blank it, because that silently drops text that was extracted.
+    table = Table(
+        row_count=1,
+        col_count=3,
+        cells=[
+            TableCell(row=0, col=0, text="शीर्षक", colspan=3),
+            TableCell(row=0, col=1, text="१००"),
+        ],
+    )
+
+    assert render_table_preformatted_markdown(table) == (
+        "```text\n| शीर्षक | १०० |  |\n```"
+    )
+
+
 def test_render_table_keeps_covered_rowspan_positions():
     table = Table(
         row_count=2,

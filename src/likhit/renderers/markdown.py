@@ -733,11 +733,16 @@ def _render_raw_table_lines(
 ) -> tuple[str, str | None]:
     grid = [["" for _ in range(table.col_count)] for _ in range(table.row_count)]
     covered = [[False for _ in range(table.col_count)] for _ in range(table.row_count)]
+    # A malformed table can anchor one cell inside another's span. Blanking such
+    # a position would silently drop text that was extracted, so anchors always
+    # win over coverage -- the same precedence `_expanded_grid` gets from its
+    # `if not grid[row][col]` guard.
+    anchored = {(cell.row, cell.col) for cell in table.cells}
     for cell in table.cells:
         grid[cell.row][cell.col] = cell.text
         for row in range(cell.row, min(cell.row + cell.rowspan, table.row_count)):
             for col in range(cell.col, min(cell.col + cell.colspan, table.col_count)):
-                if row != cell.row or col != cell.col:
+                if (row, col) not in anchored:
                     covered[row][col] = True
     lines: list[str] = []
 

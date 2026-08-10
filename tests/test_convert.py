@@ -480,6 +480,22 @@ def test_convert_renders_tables_as_raw_pipe_separated_rows() -> None:
     assert "- **उजुरीको व्यहोरा:**" not in markdown
 
 
+def test_quality_score_ignores_a_rows_enclosing_pipe_delimiters() -> None:
+    # Enclosing a row in pipes describes the same columns, so it must not move
+    # the score. Raw table rows are enclosed so leading and trailing blank
+    # cells stay visible; that must not read as pipe spam.
+    import likhit.converters.nepali_pdf as nepali_pdf_module
+
+    bare = "क्र.सं. | नाम\n1 | राम"
+    enclosed = "| क्र.सं. | नाम |\n| 1 | राम |"
+
+    assert nepali_pdf_module._pipe_heavy_line_count(
+        bare
+    ) == nepali_pdf_module._pipe_heavy_line_count(enclosed)
+    # Three columns is genuine pipe spam either way.
+    assert nepali_pdf_module._pipe_heavy_line_count("| a | b | c |") == 1
+
+
 def test_convert_preserves_pre_table_line_breaks_in_markdown() -> None:
     sample = ROOT / "samples" / "my-table.pdf"
 
