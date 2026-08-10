@@ -2225,9 +2225,35 @@ def test_usage_proxy_does_not_leave_a_rejected_body_in_the_socket() -> None:
     port = proxy.server_address[1]
 
     try:
-        for headers, body in (
-            (b"Content-Length: %d\r\n" % (usage_proxy.MAX_BODY_BYTES + 1), b""),
-            (b"Transfer-Encoding: chunked\r\n", b"4\r\nnope\r\n0\r\n\r\n"),
+        for label, headers, body, status in (
+            # Too large to accept: the body is deliberately never read.
+            (
+                "oversized",
+                b"Content-Length: %d\r\n" % (usage_proxy.MAX_BODY_BYTES + 1),
+                b"",
+                b"413",
+            ),
+            (
+                "chunked",
+                b"Transfer-Encoding: chunked\r\n",
+                b"4\r\nnope\r\n0\r\n\r\n",
+                b"400",
+            ),
+            # Any transfer coding, not only a bare "chunked" -- matching the exact
+            # string forwards an empty body and leaves the encoded one behind.
+            (
+                "chunked with a coding",
+                b"Transfer-Encoding: gzip, chunked\r\n",
+                b"4\r\nnope\r\n0\r\n\r\n",
+                b"400",
+            ),
+            # Unparseable: `int()` used to raise straight out of the handler, so
+            # the client got a dropped connection and no response at all.
+            ("malformed length", b"Content-Length: abc\r\n", b"", b"400"),
+            # Negative: reached `rfile.read(-1)`, which blocks the worker thread
+            # until the client disconnects. The 30s socket timeout below is what
+            # catches a regression here -- it would hang, not fail an assertion.
+            ("negative length", b"Content-Length: -1\r\n", b"", b"400"),
         ):
             with socket.create_connection(("127.0.0.1", port), timeout=30) as client:
                 client.sendall(
@@ -2243,7 +2269,8 @@ def test_usage_proxy_does_not_leave_a_rejected_body_in_the_socket() -> None:
                         break
                     received += chunk
                 head = received.split(b"\r\n\r\n", 1)[0].lower()
-                assert b"connection: close" in head, head
+                assert status in head, (label, head)
+                assert b"connection: close" in head, (label, head)
     finally:
         proxy.shutdown()
         proxy.server_close()
@@ -2318,16 +2345,63 @@ def test_usage_proxy_refuses_an_oversized_upstream_body_rather_than_truncating(
             server.server_close()
 
 
-def test_usage_proxy_rejects_an_upstream_without_a_scheme() -> None:
+@pytest.mark.parametrize(
+    "upstream",
+    [
+        # No scheme: urllib reads this as a URL of scheme "127.0.0.1", so every
+        # proxied request answers 502 -- accurate about the symptom, misleading
+        # about the cause.
+        "127.0.0.1:11434",
+        "ftp://127.0.0.1:11434",
+        # Scheme but no host: `_proxy` would build "http:/v1/chat/completions".
+        "http://",
+        "https://",
+        # A path, query or fragment silently prefixes every route -- `/usage` and
+        # `/v1/models` included -- which is not the server root this flag promises.
+        "http://127.0.0.1:11434/v1",
+        "http://127.0.0.1:11434?target=/v1",
+        "http://127.0.0.1:11434#fragment",
+    ],
+)
+def test_usage_proxy_rejects_an_upstream_that_is_not_a_server_root(
+    upstream: str,
+) -> None:
     """Point at the wrong flag, not at an innocent upstream.
 
-    `urllib` reads "127.0.0.1:11434" as a URL of scheme "127.0.0.1", so every
-    proxied request answers 502 "upstream unreachable" -- accurate about the
-    symptom and misleading about the cause.
+    A prefix check on "http://" passes every value here, and each one fails later:
+    either as a 502 on every request, or -- worse -- by quietly forwarding to a
+    path nobody asked for.
     """
 
+    assert usage_proxy._upstream_error(upstream), upstream
+    # And the wiring: main() must actually consult it rather than start serving.
     with pytest.raises(SystemExit):
-        usage_proxy.main(["--port", "0", "--upstream", "127.0.0.1:11434"])
+        usage_proxy.main(["--port", "0", "--upstream", upstream])
+
+
+def test_usage_proxy_accepts_the_server_roots_the_docs_recommend() -> None:
+    """The validation must not reject the forms actually documented.
+
+    `site/README.md`, this module's docstring and the root README all show a bare
+    host root, and a trailing slash is the same thing. Tightening the check until
+    it rejects those would trade one broken startup for another.
+    """
+
+    for upstream in (
+        "http://127.0.0.1:11434",
+        "http://127.0.0.1:11434/",
+        "http://127.0.0.1:8141",
+        "https://gateway.example",
+    ):
+        assert usage_proxy._upstream_error(upstream) is None, upstream
+
+    # And the documented example really does reach the handler's target builder.
+    documented = re.findall(
+        r"--upstream (\S+)", (SITE_DIR / "README.md").read_text(encoding="utf-8")
+    )
+    assert documented, "expected site/README.md to show an --upstream value"
+    for upstream in documented:
+        assert usage_proxy._upstream_error(upstream) is None, upstream
 
 
 def test_readme_and_landing_page_document_the_same_ocr_backends() -> None:

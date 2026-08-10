@@ -29,6 +29,7 @@ import argparse
 import json
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -124,22 +125,41 @@ def build_handler(upstream: str, counter: Counter) -> type[BaseHTTPRequestHandle
             self._proxy(None)
 
         def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
-            if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
-                # Reading a chunked body would mean de-framing it here. No client
-                # in this benchmark sends one, and forwarding an empty body
-                # instead would look like a model that answered nothing.
+            # Settle the framing before touching the body. Every rejection below
+            # leaves the body unread, so every one of them must also close the
+            # connection: under HTTP/1.1 keep-alive the leftover bytes are parsed
+            # as the next request line, and the failure then lands on a later,
+            # valid request rather than on the one that caused it.
+            if self.headers.get("Transfer-Encoding"):
+                # Any transfer coding, not just a bare "chunked": a value such as
+                # "gzip, chunked" is still a framing this proxy cannot de-frame,
+                # and matching the exact string would forward an empty body while
+                # leaving the encoded one in the socket.
                 self._respond(
-                    411,
-                    b'{"error":"chunked request bodies are not supported"}',
+                    400,
+                    b'{"error":"transfer-encoded request bodies are not supported"}',
                     "application/json",
                     close=True,
                 )
                 return
-            length = int(self.headers.get("Content-Length") or 0)
+            declared = self.headers.get("Content-Length")
+            try:
+                length = int(declared) if declared is not None else 0
+            except ValueError:
+                length = -1
+            if length < 0:
+                # Unparseable or negative. Left alone, `int()` raises out of the
+                # handler and the client gets a dropped connection with no
+                # response, and a negative length reaches `rfile.read(-1)`, which
+                # blocks the worker thread until the client disconnects.
+                self._respond(
+                    400,
+                    b'{"error":"invalid Content-Length"}',
+                    "application/json",
+                    close=True,
+                )
+                return
             if length > MAX_BODY_BYTES:
-                # The body is deliberately left unread, so this connection cannot
-                # be reused: under HTTP/1.1 keep-alive the leftover bytes would be
-                # parsed as the next request line.
                 self._respond(
                     413,
                     b'{"error":"request too large"}',
@@ -208,6 +228,34 @@ def build_handler(upstream: str, counter: Counter) -> type[BaseHTTPRequestHandle
     return Handler
 
 
+def _upstream_error(upstream: str) -> str | None:
+    """Why `upstream` is not a usable server root, or None if it is.
+
+    Checked at startup rather than per request: urllib reads "127.0.0.1:11434" as
+    a URL of scheme "127.0.0.1" and raises URLError, which this proxy reports as a
+    502 "upstream unreachable" on every call -- accurate about the symptom, and
+    pointing at the upstream instead of at the flag that is actually wrong.
+
+    Parsed rather than prefix-matched, because `_proxy` builds each target as
+    `upstream + self.path`. A "http://" prefix test passes `http://` on its own,
+    which forwards to `http:/v1/...`, and it passes a URL carrying a path, query
+    or fragment -- which silently prefixes *every* route, `/usage` and
+    `/v1/models` included, and so is not the server root this flag documents.
+    """
+
+    parsed = urllib.parse.urlsplit(upstream)
+    if parsed.scheme not in {"http", "https"}:
+        return "--upstream must start with http:// or https://"
+    if not parsed.netloc:
+        return "--upstream must name a host, e.g. http://127.0.0.1:11434"
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        return (
+            "--upstream must be a server root, with no path, query or fragment: "
+            "the request path is forwarded verbatim"
+        )
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, required=True)
@@ -221,12 +269,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # Fail here rather than per request: urllib reads "127.0.0.1:11434" as a URL
-    # of scheme "127.0.0.1" and raises URLError, which this proxy reports as a 502
-    # "upstream unreachable" on every call. Accurate, but it points at the
-    # upstream instead of at the flag that is actually wrong.
-    if not args.upstream.startswith(("http://", "https://")):
-        parser.error("--upstream must start with http:// or https://")
+    invalid = _upstream_error(args.upstream)
+    if invalid:
+        parser.error(invalid)
 
     counter = Counter()
     # The generator polls /usage while a conversion subprocess holds a request
