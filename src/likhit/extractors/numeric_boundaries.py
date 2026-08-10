@@ -7,12 +7,15 @@ from collections import defaultdict
 from dataclasses import dataclass
 from functools import lru_cache
 from itertools import combinations
+import logging
 from pathlib import Path
 import re
 from statistics import median
 from typing import Iterable
 
 import fitz
+
+logger = logging.getLogger(__name__)
 
 
 _DIGITS = frozenset("0123456789०१२३४५६७८९")
@@ -45,6 +48,10 @@ _EQUIVALENT_CHARACTER_PATTERNS = {
 _ADVANCE_OUTLIER_EM = 0.10
 _BBOX_GAP_OUTLIER_EM = 0.20
 _MIN_RULE_HEIGHT = 4.0
+# Ceiling on the segment count `_plausible_span_partition_cuts` will partition,
+# which it explores exponentially. Matches the spirit of the `> 12` guard in
+# `_select_minimal_rule_cuts`; 12 segments is at most 2048 groupings.
+_MAX_PARTITION_SEGMENTS = 12
 
 
 @dataclass(frozen=True)
@@ -195,10 +202,13 @@ def apply_line_numeric_boundary_repairs(
         matches = list(
             _script_equivalent_pattern(repair.merged_text).finditer(repaired)
         )
-        if not matches:
+        if repair.occurrence_index >= len(matches):
+            # Geometry proved a specific occurrence. If the line no longer holds
+            # that many, clamping to the last one would split a value geometry
+            # never examined, so decline -- an unrepaired figure beats a
+            # confidently wrong one.
             continue
-        occurrence = min(repair.occurrence_index, len(matches) - 1)
-        match = matches[occurrence]
+        match = matches[repair.occurrence_index]
         replacement = _split_matched_text(match.group(), repair.parts)
         repaired = repaired[: match.start()] + replacement + repaired[match.end() :]
     return repaired
@@ -217,6 +227,32 @@ def group_repairs_by_line(
             repair.line_number,
         ].append(repair)
     return dict(grouped)
+
+
+def collect_page_repairs_by_line(
+    page: object,
+    *,
+    page_number: int,
+) -> dict[tuple[int, int, int], list[NumericBoundaryRepair]]:
+    """Collect and index one page's repairs, degrading to none on failure.
+
+    Both extraction entry points call this rather than pairing the collector
+    with `group_repairs_by_line` themselves: a numeric-geometry failure must
+    cost the page its repairs, not fail the extraction, following the
+    `kalimati.py` precedent.
+    """
+
+    try:
+        return group_repairs_by_line(
+            collect_page_numeric_boundary_repairs(page, page_number=page_number)
+        )
+    except Exception as exc:  # noqa: BLE001 - degrade to no repair, never fail
+        logger.warning(
+            "Numeric boundary analysis failed for page=%s: %s",
+            page_number,
+            exc,
+        )
+        return {}
 
 
 def repair_markdown_numeric_boundaries(
@@ -377,11 +413,15 @@ def _extract_vertical_edges(page: object) -> list[_VerticalEdge]:
                 if not isinstance(rect, (list, tuple)) or len(rect) < 4:
                     continue
                 x0, y0, x1, y1 = (float(value) for value in rect[:4])
-                if y1 - y0 >= _MIN_RULE_HEIGHT:
+                # Normalize as the "l" branch below does: an unnormalized rect
+                # would give a negative height, silently yielding no edges for
+                # the whole page and disabling ruled-line detection there.
+                top, bottom = min(y0, y1), max(y0, y1)
+                if bottom - top >= _MIN_RULE_HEIGHT:
                     edges.extend(
                         (
-                            _VerticalEdge(x0, y0, y1),
-                            _VerticalEdge(x1, y0, y1),
+                            _VerticalEdge(x0, top, bottom),
+                            _VerticalEdge(x1, top, bottom),
                         )
                     )
             elif item[0] == "l" and len(item) >= 3:
@@ -542,6 +582,16 @@ def _plausible_span_partition_cuts(
     rule_cuts: set[int],
 ) -> set[int]:
     """Group fragmented spans into the least ambiguous valid numeric cells."""
+
+    # `visit` explores every way to group consecutive segments, so its cost is
+    # exponential in the segment count. Nothing prunes a run of bare digits,
+    # because every grouping of it is a plain number: measured on a run split
+    # one span per glyph, 21 segments cost 2.7s, 23 cost 10.8s and 25 cost
+    # 42.6s, all returning no repair. A PDF that positions each glyph
+    # separately would hang the conversion. Past the bound, decline instead --
+    # a fragmented run this ambiguous is not one geometry can resolve.
+    if len(segments) > _MAX_PARTITION_SEGMENTS:
+        return set()
 
     solutions: list[tuple[int, ...]] = []
 

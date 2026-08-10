@@ -48,7 +48,11 @@ _SUSPICIOUS_LATIN_TOKEN_PATTERN = re.compile(
     r"""[\\\[\]\{\}\$^&*_+=<>]|[A-Za-z]\d|\d[A-Za-z]"""
 )
 _DOUBLED_MATRA_PATTERN = re.compile(r"[ा-ौ]{2,}")
-_ORPHAN_MATRA_PATTERN = re.compile(r"(?<![क-हक़-य़्])[ा-ौ]")
+# U+093C NUKTA belongs in the lookbehind because NFC *decomposes* the
+# precomposed nukta consonants (क़ becomes क + U+093C), so canonical
+# Nepali writes the decomposed form. Without it the matra in क़ानून reads as
+# orphaned and clean text gets penalised.
+_ORPHAN_MATRA_PATTERN = re.compile(r"(?<![क-हक़-य़्\u093c])[ा-ौ]")
 _VIRAMA_MATRA_PATTERN = re.compile(r"्[ा-ौ]")
 _OCR_SERIAL_PATTERN = re.compile(r"^\s*([०-९0-9]{1,2}[.)।])\s+(.*\S)\s*$")
 _MAX_REASONABLE_WHITESPACE_RATIO = 0.35
@@ -215,14 +219,20 @@ class NepaliPdfConverter(DocumentConverter):
             )
             for result, geometry_aware in candidates
         ]
-        best_result, best_score, _ = max(
+        # Safety outranks score. A candidate flagged unsafe still carries a
+        # merged value that a global replacement could rewrite into a wrong
+        # figure, and a wrong figure is worse than a lower-scoring page --
+        # ranking on score first would leave this preference deciding nothing
+        # but exact ties.
+        best_result, best_score, best_safe = max(
             scored_candidates,
-            key=lambda item: (item[1], item[2]),
+            key=lambda item: (item[2], item[1]),
         )
         logger.info(
-            "PDF converter: selected best candidate after comparison (candidates=%d, score=%d).",
+            "PDF converter: selected best candidate after comparison (candidates=%d, score=%d, geometry_safe=%s).",
             len(scored_candidates),
             best_score,
+            best_safe,
         )
         return best_result
 

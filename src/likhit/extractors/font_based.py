@@ -30,8 +30,7 @@ from likhit.extractors.legacy_maps import (
 )
 from likhit.extractors.numeric_boundaries import (
     apply_line_numeric_boundary_repairs,
-    collect_page_numeric_boundary_repairs,
-    group_repairs_by_line,
+    collect_page_repairs_by_line,
 )
 from likhit.extractors.tables import detect_page_tables, merge_continuation_tables
 from likhit.models import Table
@@ -680,11 +679,9 @@ class FontBasedStrategy(ExtractionStrategy):
                 continue
             page = doc[page_index]
             page_font_strategies = font_strategies_by_page.get(page_index + 1, {})
-            numeric_repairs = group_repairs_by_line(
-                collect_page_numeric_boundary_repairs(
-                    page,
-                    page_number=page_index + 1,
-                )
+            numeric_repairs = collect_page_repairs_by_line(
+                page,
+                page_number=page_index + 1,
             )
             page_dict = page.get_text("dict", flags=_TEXT_DICT_FLAGS)
             lines_by_key: dict[

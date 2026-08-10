@@ -11,13 +11,18 @@ import pytest
 import likhit.converters.nepali_pdf as nepali_pdf_module
 from likhit.converters.nepali_pdf import NepaliPdfConverter
 from likhit.extractors.font_based import FontBasedStrategy
+import likhit.extractors.numeric_boundaries as numeric_boundaries_module
 from likhit.extractors.numeric_boundaries import (
     _Character,
+    _extract_vertical_edges,
+    _MAX_PARTITION_SEGMENTS,
+    _plausible_span_partition_cuts,
     _select_minimal_rule_cuts,
     NumericBoundaryRepair,
     apply_line_numeric_boundary_repairs,
     collect_document_numeric_boundary_repairs,
     collect_page_numeric_boundary_repairs,
+    collect_page_repairs_by_line,
     repair_markdown_numeric_boundaries,
     requires_geometry_aware_candidate,
 )
@@ -698,3 +703,158 @@ def test_converter_prefers_geometry_candidate_for_ambiguous_short_merge(
     result = converter.convert(io.BytesIO(raw), stream_info)
 
     assert result.markdown == "legitimate 12500\nmerged 1 | 2500"
+
+
+def _one_span_per_glyph(text: str) -> tuple[list[_Character], list[tuple[int, int]]]:
+    characters = [
+        _Character(
+            text=character,
+            origin_x=index * 6.0,
+            bbox=(index * 6.0, 0.0, index * 6.0 + 5.0, 10.0),
+            font="F0",
+            size=10.0,
+            span_number=index,
+        )
+        for index, character in enumerate(text)
+    ]
+    return characters, [(index, index + 1) for index in range(len(text))]
+
+
+def test_partition_declines_a_pathologically_fragmented_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Grouping is explored exponentially and a bare digit run prunes nothing,
+    # so a PDF that positions every glyph separately would hang the conversion.
+    # Past the bound the run must be declined without being explored at all.
+    consulted: list[str] = []
+    real = numeric_boundaries_module._looks_like_plausible_single_number
+    monkeypatch.setattr(
+        numeric_boundaries_module,
+        "_looks_like_plausible_single_number",
+        lambda text: consulted.append(text) or real(text),
+    )
+
+    characters, segments = _one_span_per_glyph("1" * (_MAX_PARTITION_SEGMENTS + 1))
+
+    assert _plausible_span_partition_cuts(characters, segments, set()) == set()
+    assert consulted == []
+
+
+def test_partition_still_groups_a_run_within_the_bound() -> None:
+    characters, segments = _one_span_per_glyph("123.45678.90")
+
+    # Within the bound the search still runs; it just may find no unique answer.
+    assert isinstance(_plausible_span_partition_cuts(characters, segments, set()), set)
+
+
+def test_line_repair_declines_an_occurrence_the_line_no_longer_has() -> None:
+    # Geometry proved the third occurrence. Only one is left, so splitting it
+    # would rewrite a value geometry never examined.
+    repair = _repair("12500", ("1", "2500"), occurrence_index=2)
+
+    assert (
+        apply_line_numeric_boundary_repairs("legitimate 12500 only", [repair])
+        == "legitimate 12500 only"
+    )
+
+
+def test_page_repair_collection_degrades_instead_of_failing() -> None:
+    class ExplodingPage:
+        # KeyError deliberately: the collector already swallows the
+        # AttributeError/RuntimeError/TypeError/ValueError family around
+        # `get_text`, so raising one of those would pass without the wrapper.
+        def get_text(self, *_args: object, **_kwargs: object) -> object:
+            raise KeyError("synthetic geometry failure")
+
+        def get_cdrawings(self) -> object:
+            return []
+
+    assert collect_page_repairs_by_line(ExplodingPage(), page_number=1) == {}
+
+
+def test_font_based_extraction_survives_numeric_geometry_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def explode(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("synthetic geometry failure")
+
+    monkeypatch.setattr(
+        numeric_boundaries_module,
+        "collect_page_numeric_boundary_repairs",
+        explode,
+    )
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "123.45 678.90")
+    sample = tmp_path / "numbers.pdf"
+    doc.save(str(sample))
+    doc.close()
+
+    result = FontBasedStrategy().extract_text(str(sample))
+
+    assert "123.45" in result.raw_text
+
+
+def test_vertical_edges_accept_an_unnormalized_rect() -> None:
+    class RectPage:
+        def get_cdrawings(self) -> list[dict[str, object]]:
+            # y1 above y0: the same ruling, stored the other way round.
+            return [{"items": [("re", (100.0, 90.0, 101.0, 40.0))]}]
+
+    assert _extract_vertical_edges(RectPage())
+
+
+def test_orphan_matra_pattern_accepts_a_decomposed_nukta() -> None:
+    # NFC decomposes क़ into क + U+093C, so canonical Nepali uses this form.
+    decomposed = "क़ानून"
+
+    assert nepali_pdf_module._ORPHAN_MATRA_PATTERN.findall(decomposed) == []
+
+
+def test_converter_prefers_a_safe_candidate_over_a_higher_scoring_unsafe_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The unsafe candidate still holds the merged value, so it must lose even
+    # though it scores higher.
+    raw = _ruled_numeric_pdf("12500", cuts=(1,))
+    converter = NepaliPdfConverter()
+    stream_info = SimpleNamespace(extension=".pdf", mimetype="application/pdf")
+
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "classify_fonts_from_stream",
+        lambda _stream: {"Helvetica": "correct"},
+    )
+    monkeypatch.setattr(nepali_pdf_module, "pdf_likely_needs_ocr", lambda _raw: False)
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_try_collect_numeric_boundary_repairs",
+        lambda _raw: [_repair("12500", ("1", "2500"))],
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_repair_result_numeric_boundaries",
+        lambda result, _repairs: result,
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_run_default_pdf_converter",
+        lambda _raw, _info: DocumentConverterResult(markdown="merged 12500 padding"),
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_try_convert_with_likhit",
+        lambda _raw: (DocumentConverterResult(markdown="split 1 | 2500"), []),
+    )
+    scores = {"merged 12500 padding": 500, "split 1 | 2500": 10}
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_markdown_quality_score",
+        lambda markdown: scores[markdown],
+    )
+
+    result = converter.convert(io.BytesIO(raw), stream_info)
+
+    assert result.markdown == "split 1 | 2500"
