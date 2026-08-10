@@ -40,19 +40,16 @@ def _provenance(artifact: dict[str, Any]) -> list[str]:
             f"with Likhit {build.get('likhit')}.",
         ]
 
+    # The recorded commit is stated, not warned about: committing a recording
+    # necessarily creates a commit later than the one it was recorded on, so
+    # `stale` is true on effectively every deploy and a warning would only teach
+    # readers to ignore warnings. Missing runs are a real gap and still warn.
     recorded = measured["build"]
     lines = [
         f"Replayed from a recording measured at `{_short(recorded.get('commit'))}` "
         f"on {measured['recorded_at']} with Likhit {recorded.get('likhit')}; "
         f"published from `{_short(build.get('commit'))}`.",
     ]
-    if measured.get("stale"):
-        lines.append(
-            "> [!WARNING]\n"
-            "> The recorded commit is not the commit being published. These "
-            "numbers describe older behaviour — refresh `site/snapshot.json` if "
-            "conversion behaviour changed."
-        )
     if measured.get("missing_runs"):
         missing = measured["missing_runs"]
         lines.append(
@@ -85,16 +82,23 @@ def _configuration_rows(artifact: dict[str, Any]) -> list[str]:
 
     # Tokens per configuration, so the spend of each OCR backend is attributable.
     # Runs that made no vision call contribute a measured zero rather than being
-    # dropped, which is why this sums `calls` as well as tokens.
+    # dropped, which is why this sums `calls` as well as tokens -- and why it
+    # counts how many runs were measured at all. Zero calls is the common case,
+    # not a gap; reporting it the same way as an unreachable counter would make
+    # the two indistinguishable here, which is the distinction the dashboard and
+    # `site/README.md` both go out of their way to keep.
     spend: dict[str, dict[str, int]] = {
-        name: {"calls": 0, "tokens": 0} for name in artifact["configurations"]
+        name: {"calls": 0, "tokens": 0, "counted": 0}
+        for name in artifact["configurations"]
     }
     for document in artifact["documents"]:
         for run in document["runs"]:
             usage = run.get("ocr_usage")
-            if usage and run["config"] in spend:
-                spend[run["config"]]["calls"] += usage["calls"]
-                spend[run["config"]]["tokens"] += usage["total_tokens"]
+            if usage is None or run["config"] not in spend:
+                continue
+            spend[run["config"]]["calls"] += usage["calls"]
+            spend[run["config"]]["tokens"] += usage["total_tokens"]
+            spend[run["config"]]["counted"] += 1
 
     rows = []
     for name, config in artifact["configurations"].items():
@@ -102,11 +106,20 @@ def _configuration_rows(artifact: dict[str, Any]) -> list[str]:
         total = sum(counts.values())
         if config.get("available"):
             note = f"{total} run(s)"
+            # Only a configuration with a vision model has usage to report; the
+            # no-OCR one has nothing to say and says nothing.
             if config.get("model"):
                 note += f" · `{config['model']}`"
-            calls = spend[name]["calls"]
-            if calls:
-                note += f" · {calls} vision call(s), {spend[name]['tokens']:,} tokens"
+                counted = spend[name]["counted"]
+                if not counted:
+                    note += " · token usage not recorded"
+                else:
+                    note += (
+                        f" · {spend[name]['calls']} vision call(s), "
+                        f"{spend[name]['tokens']:,} tokens"
+                    )
+                    if counted < total:
+                        note += f" (counted on {counted} of {total})"
         else:
             note = f"not run — {config.get('unavailable_reason') or 'unavailable'}"
         cells = " | ".join(

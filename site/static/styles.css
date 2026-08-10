@@ -2000,7 +2000,7 @@ main {
   line-height: 1.6;
 }
 
-.measured-banner.stale {
+.measured-banner.incomplete {
   background: var(--amber-soft);
   color: var(--amber);
 }
@@ -2013,7 +2013,7 @@ main {
   color: var(--blue);
 }
 
-.measured-banner.stale svg {
+.measured-banner.incomplete svg {
   color: var(--amber);
 }
 

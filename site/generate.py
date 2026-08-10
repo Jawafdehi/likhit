@@ -660,6 +660,14 @@ def _load_snapshot(path: pathlib.Path) -> dict[str, Any]:
         # and then fail deep in the build with an AttributeError.
         if not isinstance(snapshot.get(field), dict):
             raise ValueError(f"{path} is missing required field {field!r}")
+    for key, recorded in snapshot["runs"].items():
+        # One level deeper, for the same reason: `_replayed_payload` calls
+        # `.get` on each record, so a non-object run fails mid-build rather
+        # than here, where the file being wrong is still the obvious cause.
+        if not isinstance(recorded, dict):
+            raise ValueError(
+                f"{path} records run {key!r} as {type(recorded).__name__}, not an object"
+            )
     return snapshot
 
 
@@ -975,6 +983,16 @@ def generate(
     snapshot: pathlib.Path | None = None,
     write_snapshot: pathlib.Path | None = None,
 ) -> dict[str, Any]:
+    # The CLI's mutually-exclusive group covers the command line; this covers
+    # every other caller. Recording a replay would stamp the replaying build's
+    # commit and a fresh `recorded_at` onto numbers it never measured, which is
+    # exactly the provenance confusion `measured` exists to prevent.
+    if snapshot is not None and write_snapshot is not None:
+        raise ValueError(
+            "snapshot and write_snapshot are mutually exclusive: recording a "
+            "replay would copy the recording forward under a new timestamp "
+            "without measuring anything"
+        )
     catalog = _load_catalog()
     snapshot_data = _load_snapshot(snapshot) if snapshot is not None else None
     _validate_output_target(output)
@@ -996,6 +1014,14 @@ def generate(
         # runs that spent nothing -- which is most of them -- and for a backend
         # with no token counter at all. Read from the environment on a live build,
         # from the recording on a replay.
+        #
+        # A configuration the recording predates is not the same thing as one whose
+        # backend was absent when the recording was made: the first has no
+        # measurement at all, the second has a reason. Both end up unavailable, so
+        # track which is which -- otherwise those runs would be dropped by the
+        # availability check below, ahead of the lookup that names an uncovered
+        # run, and `skipped` would rise with nothing named to explain it.
+        unrecorded_configurations: set[str] = set()
         if snapshot_data is None:
             availability = {
                 name: _ocr_backend_available(config)
@@ -1015,6 +1041,9 @@ def generate(
                 name: recorded_configurations.get(name, {}).get("model")
                 for name in catalog["configurations"]
             }
+            unrecorded_configurations = set(catalog["configurations"]) - set(
+                recorded_configurations
+            )
         skipped_runs = 0
         recordings: dict[str, Any] = {}
         missing_runs: list[str] = []
@@ -1040,10 +1069,14 @@ def generate(
             thumbnail, pages = _render_thumbnail(source, staging / "previews")
             runs: list[dict[str, Any]] = []
             for run in spec["runs"]:
+                key = _snapshot_key(spec["id"], run["id"])
                 if not availability[run["config"]]:
                     skipped_runs += 1
+                    if run["config"] in unrecorded_configurations:
+                        # Uncovered for want of a recording, not for want of a
+                        # backend -- the same case as a missing run, one level up.
+                        missing_runs.append(key)
                     continue
-                key = _snapshot_key(spec["id"], run["id"])
                 recorded = None
                 if snapshot_data is not None:
                     recorded = snapshot_data["runs"].get(key)
@@ -1139,6 +1172,11 @@ def generate(
                     "unavailable_reason": (
                         None
                         if availability[name]
+                        # Don't blame a missing backend for a gap in the recording:
+                        # on a replay the backend's configuration here says nothing
+                        # about a configuration the snapshot never covered.
+                        else "not covered by the recording"
+                        if name in unrecorded_configurations
                         else _UNAVAILABLE_REASONS.get(
                             config.get("requires"), "backend not configured"
                         )
