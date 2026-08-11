@@ -243,6 +243,8 @@ def test_public_catalog_is_hash_pinned_and_described() -> None:
         "gcf-country-programme",
         "industry-annual-return-notice",
         "npc-press-note",
+        "oag-banglachuli-audit-cover",
+        "oag-rapti-audit-scope",
         "seed-rules-2081",
     }
     assert {document["kind"] for document in public} == {"pdf", "docx", "doc"}
@@ -258,6 +260,8 @@ def test_public_catalog_is_hash_pinned_and_described() -> None:
         "ciaa-ebulletin-himali",
         "economic-act-2083",
         "gcf-country-programme",
+        "oag-banglachuli-audit-cover",
+        "oag-rapti-audit-scope",
         "seed-rules-2081",
     }
     for document in public:

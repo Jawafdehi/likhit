@@ -1543,6 +1543,245 @@
           ]
         }
       ]
+    },
+    {
+      "id": "oag-banglachuli-audit-cover",
+      "title": "Banglachuli Rural Municipality audit report, FY 2080/81",
+      "summary": "Three-page excerpt of an Auditor General local-level audit report whose Lohit-Devanagari subsets carry a broken ToUnicode CMap, so conjuncts and matras drop out of the text layer entirely -- the cover reads 'महालेखापरी कको काया लय'.",
+      "kind": "pdf",
+      "url": "https://oag.gov.np/site_uploads/bgalcal-gaupalka-1216323625.pdf",
+      "sha256": "3c9fd51a9db0ed7273cfc10625d5a1379c42721bf05c97d0db92842438e63f79",
+      "publisher": "Office of the Auditor General, Nepal",
+      "origin": "public-institutional",
+      "privacy": "public-institutional",
+      "content_note": "Public audit report; the excerpt covers the report cover and the auditor's vision statement.",
+      "publish_pages": "1-3",
+      "sanitization": "Three-page benchmark excerpt; source document metadata removed.",
+      "tags": [
+        "oag",
+        "lohit",
+        "broken-cmap",
+        "born-digital",
+        "audit-report"
+      ],
+      "runs": [
+        {
+          "id": "likhit",
+          "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "महालेखापरीक्षकको कार्यालय",
+              "label": "Conjunct क्ष and repha reordering recovered"
+            },
+            {
+              "kind": "contains",
+              "value": "राष्ट्रलाई स्वतन्त्र एवं गुणस्तरीय",
+              "label": "Below-form ra (rakar) recovered in ष्ट्र"
+            },
+            {
+              "kind": "contains",
+              "value": "जवाफदेहिता, पारदर्शिता र निष्ठा",
+              "label": "i-matra placed after its consonant"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 200,
+              "label": "Cover text decoded rather than dropped"
+            },
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "महालेखापरीक्षकको कार्यालय",
+              "label": "Conjunct क्ष and repha reordering recovered"
+            },
+            {
+              "kind": "contains",
+              "value": "राष्ट्रलाई स्वतन्त्र एवं गुणस्तरीय",
+              "label": "Below-form ra (rakar) recovered in ष्ट्र"
+            },
+            {
+              "kind": "contains",
+              "value": "जवाफदेहिता, पारदर्शिता र निष्ठा",
+              "label": "i-matra placed after its consonant"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 200,
+              "label": "Cover text decoded rather than dropped"
+            },
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "महालेखापरीक्षकको कार्यालय",
+              "label": "Conjunct क्ष and repha reordering recovered"
+            },
+            {
+              "kind": "contains",
+              "value": "राष्ट्रलाई स्वतन्त्र एवं गुणस्तरीय",
+              "label": "Below-form ra (rakar) recovered in ष्ट्र"
+            },
+            {
+              "kind": "contains",
+              "value": "जवाफदेहिता, पारदर्शिता र निष्ठा",
+              "label": "i-matra placed after its consonant"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 200,
+              "label": "Cover text decoded rather than dropped"
+            },
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "oag-rapti-audit-scope",
+      "title": "Rapti Rural Municipality audit report, FY 2080/81",
+      "summary": "Three-page excerpt of the audit scope and methodology sections of an Auditor General local-level report, exercising the same broken Lohit-Devanagari subsets across running prose and figures rather than a title page.",
+      "kind": "pdf",
+      "url": "https://oag.gov.np/site_uploads/rapata-gaupalka-58699233.pdf",
+      "sha256": "2cce51f4c67ef7e7e88a94b8020ba32caa4a78ff88d8bcca4c3449967476e2df",
+      "publisher": "Office of the Auditor General, Nepal",
+      "origin": "public-institutional",
+      "privacy": "public-institutional",
+      "content_note": "Public audit report; the excerpt covers the introduction, audit scope and methodology, and the summary financial figures. It names institutions and offices, not individuals.",
+      "publish_pages": "9-11",
+      "sanitization": "Three-page benchmark excerpt; source document metadata removed.",
+      "tags": [
+        "oag",
+        "lohit",
+        "broken-cmap",
+        "born-digital",
+        "audit-report",
+        "prose"
+      ],
+      "runs": [
+        {
+          "id": "likhit",
+          "config": "likhit",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "कार्यालय परिचय",
+              "label": "Repha and i-matra recovered in running prose"
+            },
+            {
+              "kind": "contains",
+              "value": "जोखिममा आधारित लेखापरीक्षण योजना",
+              "label": "Audit methodology sentence decoded intact"
+            },
+            {
+              "kind": "contains",
+              "value": "विश्लेषणात्मक",
+              "label": "Stacked conjunct श्ल recovered"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 2100,
+              "label": "Scope and methodology pages decoded rather than dropped"
+            },
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr",
+          "config": "likhit-ocr",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "कार्यालय परिचय",
+              "label": "Repha and i-matra recovered in running prose"
+            },
+            {
+              "kind": "contains",
+              "value": "जोखिममा आधारित लेखापरीक्षण योजना",
+              "label": "Audit methodology sentence decoded intact"
+            },
+            {
+              "kind": "contains",
+              "value": "विश्लेषणात्मक",
+              "label": "Stacked conjunct श्ल recovered"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 2100,
+              "label": "Scope and methodology pages decoded rather than dropped"
+            },
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        },
+        {
+          "id": "likhit-ocr-local",
+          "config": "likhit-ocr-local",
+          "expectation": "pass",
+          "checks": [
+            {
+              "kind": "contains",
+              "value": "कार्यालय परिचय",
+              "label": "Repha and i-matra recovered in running prose"
+            },
+            {
+              "kind": "contains",
+              "value": "जोखिममा आधारित लेखापरीक्षण योजना",
+              "label": "Audit methodology sentence decoded intact"
+            },
+            {
+              "kind": "contains",
+              "value": "विश्लेषणात्मक",
+              "label": "Stacked conjunct श्ल recovered"
+            },
+            {
+              "kind": "min_devanagari",
+              "value": 2100,
+              "label": "Scope and methodology pages decoded rather than dropped"
+            },
+            {
+              "kind": "max_replacement",
+              "value": 0,
+              "label": "No replacement-character corruption"
+            }
+          ]
+        }
+      ]
     }
   ],
   "configurations": {
