@@ -10,8 +10,32 @@ import yaml
 from likhit.models import ExtractionResult, ParagraphBlock, Section, Table, TableBlock
 from likhit.renderers.base import OutputRenderer
 
+#: Marks where a source page begins. An HTML comment, so it is invisible in
+#: rendered Markdown while staying greppable; namespaced, so it cannot collide
+#: with a comment that was already in the source document. Page-keyed data (OCR
+#: results, per-page provenance) has nothing to attach to without these.
+PAGE_ANCHOR_PATTERN = re.compile(r"<!-- likhit:page (\d+) -->")
+
 _SERIAL_PATTERN = re.compile(r"^[०-९0-9]+(?:[.)।])?$")
 _DATE_CASE_PATTERN = re.compile(r"(?:/.*(?:CR-|२०८|208)|(?:CR-|२०८|208).*/)")
+
+
+def page_anchor(page_number: int) -> str:
+    """Render the anchor marking the start of `page_number`."""
+
+    return f"<!-- likhit:page {page_number} -->"
+
+
+def page_anchor_numbers(markdown: str) -> list[int]:
+    """Return the anchored page numbers in the order they appear."""
+
+    return [int(match.group(1)) for match in PAGE_ANCHOR_PATTERN.finditer(markdown)]
+
+
+def strip_page_anchors(markdown: str) -> str:
+    """Remove page anchors, for consumers that must not see them."""
+
+    return PAGE_ANCHOR_PATTERN.sub("", markdown)
 
 
 def _clean_text(text: str) -> str:

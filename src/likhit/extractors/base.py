@@ -34,6 +34,10 @@ class RawDocument:
     # 1-based page numbers whose text layer was absent or suppressed as a
     # scanned-raster decoy; these pages carry no born-digital text and need OCR.
     needs_ocr_pages: list[int] = field(default_factory=list)
+    # Every 1-based page number this extraction covered, in order -- not just the
+    # pages that yielded text. A page whose text layer is empty still has to be
+    # anchored in the output, because that is exactly where OCR gets merged in.
+    page_numbers: list[int] = field(default_factory=list)
 
 
 class ExtractionStrategy(ABC):

@@ -92,9 +92,15 @@ class Table:
 
 @dataclass(slots=True)
 class ParagraphBlock:
-    """A paragraph content block."""
+    """A paragraph content block.
+
+    `page_number` is the 1-based source page the paragraph came from, or 0 when
+    the producer has no page concept (a DOCX, say). It exists so rendered output
+    can be anchored back to the page it was read from.
+    """
 
     text: str
+    page_number: int = 0
 
 
 @dataclass(slots=True)

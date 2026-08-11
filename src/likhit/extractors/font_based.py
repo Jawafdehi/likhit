@@ -431,6 +431,12 @@ def _raw_document_from_fragments(
         raw_text="\n\n".join(paragraphs).strip(),
         fragments=fragments,
         tables=merge_continuation_tables(tables),
+        # This path has no document handle, so the pages it covered can only be
+        # recovered from what it produced.
+        page_numbers=sorted(
+            {fragment.page_number for fragment in fragments}
+            | {region.page_number for table in tables for region in table.regions}
+        ),
     )
 
 
@@ -757,6 +763,11 @@ class FontBasedStrategy(ExtractionStrategy):
                 )
 
             raw_document.needs_ocr_pages = needs_ocr_pages
+            # The requested range is authoritative, not the pages that happened
+            # to yield text. A suppressed scanned-raster page produces no
+            # fragments, so deriving this from output would drop exactly the
+            # pages `needs_ocr_pages` says need OCR merged in.
+            raw_document.page_numbers = list(in_range)
 
             if not raw_document.raw_text:
                 if needs_ocr_pages:
@@ -893,6 +904,7 @@ class FontBasedStrategy(ExtractionStrategy):
             raw_text="\n\n".join(paragraphs).strip(),
             fragments=fragments,
             tables=merge_continuation_tables(tables),
+            page_numbers=list(range(page_start + 1, page_end + 2)),
         )
 
     def _convert_span_text(
