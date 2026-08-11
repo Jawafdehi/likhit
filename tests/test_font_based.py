@@ -16,6 +16,10 @@ import likhit.extractors.font_based as font_based_module
 import likhit.extractors.kalimati as kalimati_module
 from likhit.extractors.font_based import (
     FontBasedStrategy,
+    count_marked_cids,
+    get_cid_marked_page_dict,
+    mark_unmappable_cids,
+    strip_marked_cids,
     _choose_fragment_text,
     _has_severe_noise,
     _is_garbled_orphan,
@@ -723,7 +727,19 @@ def test_normalize_extracted_word_keeps_space_before_prebase_marker_word() -> No
     assert line == "सञ्चालक विशाल"
 
 
-@pytest.mark.parametrize("marker", ["\ufffd", "\x83"])
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "\ufffd",
+        # Marked CIDs, not raw ones: extraction marks unmappable glyphs, so the
+        # normalizer matches the marker range instead of enumerating code points.
+        # 0x83 is the law-report sample's bullet; 0x7a is that same sample's other
+        # unmappable glyph, an ASCII "z" no literal class would ever have covered.
+        mark_unmappable_cids("\x83"),
+        mark_unmappable_cids("z"),
+    ],
+    ids=["replacement-char", "marked-cid-0x83", "marked-cid-0x7a"],
+)
 def test_normalize_press_release_paragraph_turns_leading_unknown_glyph_into_bullet(
     marker: str,
 ) -> None:
@@ -832,3 +848,56 @@ def test_merge_fragment_variants_keeps_clean_unpaired_fragment() -> None:
     texts = [fragment.text for fragment in merged]
 
     assert clean_orphan.text in texts
+
+
+def test_marked_cids_restore_the_damage_signal_raw_cids_erase() -> None:
+    # A raw CID is invisible to every garble heuristic: the values PyMuPDF emits
+    # (0x4a9, 0xd6b, 0xed3, 0x1233 here) are ordinary letters in other scripts,
+    # not U+FFFD and not private-use. Marking them puts them back in range.
+    doc = fitz.open(stream=_build_zeroed_tounicode_pdf(), filetype="pdf")
+    try:
+        page_dict = get_cid_marked_page_dict(doc[0])
+    finally:
+        doc.close()
+
+    text = "".join(
+        span["text"]
+        for block in page_dict["blocks"]
+        if "lines" in block
+        for line in block["lines"]
+        for span in line["spans"]
+    ).strip()
+
+    assert count_marked_cids(text) == 4
+    assert len(set(text)) == 4, "distinct glyphs must stay distinct"
+    assert "�" not in text
+    assert _text_quality_penalty(text) == 4 * 12
+    assert _has_severe_noise(text)
+    assert _is_garbled_orphan(text)
+
+
+def test_cid_marking_leaves_a_clean_page_untouched() -> None:
+    doc = fitz.open()
+    try:
+        page = doc.new_page()
+        page.insert_text((72, 72), "काठमाडौं", fontname="helv")
+        page_dict = get_cid_marked_page_dict(page)
+    finally:
+        doc.close()
+
+    text = "".join(
+        span["text"]
+        for block in page_dict["blocks"]
+        if "lines" in block
+        for line in block["lines"]
+        for span in line["spans"]
+    )
+
+    assert count_marked_cids(text) == 0
+
+
+def test_strip_marked_cids_renders_them_visible() -> None:
+    marked = mark_unmappable_cids("z")
+
+    assert strip_marked_cids(f"a{marked}b") == "a�b"
+    assert strip_marked_cids(f"a{marked}b", " ") == "a b"

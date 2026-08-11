@@ -25,7 +25,11 @@ from markitdown_ocr import PdfConverterWithOCR
 
 from likhit.errors import ExtractionError
 from likhit.extractors.base import RawDocument, TextFragment
-from likhit.extractors.font_based import FontBasedStrategy, parse_page_range
+from likhit.extractors.font_based import (
+    FontBasedStrategy,
+    count_marked_cids,
+    parse_page_range,
+)
 from likhit.extractors.numeric_boundaries import (
     NumericBoundaryRepair,
     collect_document_numeric_boundary_repairs,
@@ -768,7 +772,7 @@ def _markdown_quality_score(markdown: str) -> int:
         - len(vowel_poor_tokens) * 3
         - pipe_heavy_lines * 4
         - cid_garbage_count * 12
-        - markdown.count("\ufffd") * 12
+        - (markdown.count("\ufffd") + count_marked_cids(markdown)) * 12
         - whitespace_excess
         - single_token_excess * _EXCESS_SINGLE_TOKEN_PENALTY
         - matra_damage_count * _MATRA_DAMAGE_PENALTY

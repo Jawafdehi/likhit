@@ -41,6 +41,15 @@ SPAN_GAP_THRESHOLD = 0.75
 # Zeroed ToUnicode maps otherwise collapse every unknown glyph to the same
 # replacement character. Raw CIDs keep those glyphs distinct for later repair.
 _TEXT_DICT_FLAGS = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_USE_CID_FOR_UNKNOWN_UNICODE
+# A raw CID is an arbitrary code point: observed values include 0x7a, an ordinary
+# ASCII "z". Nothing distinguishes one from real text, so the glyphs stay
+# distinct (which is the point) but every garble heuristic stops seeing them.
+# Marked CIDs are offset into Supplementary Private Use Area A, which keeps them
+# distinct AND inside the private-use range `_private_use_count` already counts.
+# Plane 15 holds 0xFFFE code points, so any 16-bit CID fits.
+_CID_MARK_BASE = 0xF0000
+_MAX_MARKABLE_CID = 0xFFFD
+_MARKED_CID_PATTERN = re.compile(r"[\U000F0000-\U000FFFFD]")
 _PREFIX_IKAR_PATTERN = re.compile(r"(?:(?<=^)|(?<=[\s(]))ि(?=[\u0915-\u0939])")
 _INVALID_IKAR_PATTERN = re.compile(r"ि(?=[ािीुूृॄेैोौंःँ])")
 _HALANT_IKAR_PATTERN = re.compile(r"्ि")
@@ -84,14 +93,87 @@ def parse_page_range(spec: str, total_pages: int) -> tuple[int, int]:
     return start - 1, end - 1
 
 
+def _iter_dict_spans(page_dict: dict) -> list[dict]:
+    """Flatten a page dict to its spans in document order."""
+
+    return [
+        span
+        for block in page_dict.get("blocks", [])
+        if "lines" in block
+        for line in block["lines"]
+        for span in line["spans"]
+    ]
+
+
+def mark_unmappable_cids(text: str) -> str:
+    """Offset every character of `text` into the marked-CID range."""
+
+    return "".join(
+        chr(_CID_MARK_BASE + ord(char)) if ord(char) <= _MAX_MARKABLE_CID else char
+        for char in text
+    )
+
+
+def strip_marked_cids(text: str, replacement: str = "�") -> str:
+    """Render marked CIDs back to a visible replacement character."""
+
+    return _MARKED_CID_PATTERN.sub(replacement, text)
+
+
+def count_marked_cids(text: str) -> int:
+    return len(_MARKED_CID_PATTERN.findall(text))
+
+
+def get_cid_marked_page_dict(page: fitz.Page) -> dict:
+    """Extract a page dict whose unmappable glyphs are marked as private-use.
+
+    A page with nothing unmappable is extracted once, exactly as before. Only a
+    page that actually decodes some glyph to U+FFFD pays a second extraction, and
+    the two are paired to learn *which* characters the CID flag substituted --
+    the flag alone cannot tell us, because a raw CID is indistinguishable from
+    real text.
+
+    Pairing is positional over spans in document order. Measured across every
+    sample, the two extractions agree on span count and per-span length; the
+    `(block, line, span)` indices do *not* always agree, because dropping the
+    flag can regroup blocks, so those are deliberately not used as the key. Each
+    pair is still checked against its bbox, and any span that fails to line up
+    keeps its raw CID text rather than being guessed at.
+    """
+
+    plain_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+    plain_spans = _iter_dict_spans(plain_dict)
+    if not any("�" in str(span["text"]) for span in plain_spans):
+        return plain_dict
+
+    cid_dict = page.get_text("dict", flags=_TEXT_DICT_FLAGS)
+    cid_spans = _iter_dict_spans(cid_dict)
+    if len(cid_spans) != len(plain_spans):
+        return cid_dict
+
+    for plain_span, cid_span in zip(plain_spans, cid_spans):
+        plain_text, cid_text = str(plain_span["text"]), str(cid_span["text"])
+        if "�" not in plain_text:
+            continue
+        if len(plain_text) != len(cid_text) or plain_span["bbox"] != cid_span["bbox"]:
+            continue
+        cid_span["text"] = "".join(
+            mark_unmappable_cids(cid_char) if plain_char == "�" else cid_char
+            for plain_char, cid_char in zip(plain_text, cid_text)
+        )
+    return cid_dict
+
+
 def normalize_press_release_paragraph(text: str) -> str:
     text = text.strip()
     if not text:
         return ""
 
     normalized = text
-    # CID preservation exposes the law-report sample's unknown bullet as 0x83.
-    normalized = re.sub(r"^[\ufffd\x83](?=\s)", "-", normalized)
+    # Any unmappable glyph opening a list item is a bullet, whatever CID it came
+    # from. Enumerating CIDs does not converge: the law-report sample alone emits
+    # two (0x83 and 0x7a, an ASCII "z" that no literal class would ever cover).
+    normalized = re.sub(r"^[\ufffd\U000F0000-\U000FFFFD](?=\s)", "-", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     normalized = re.sub(r"\s+([।,:;])", r"\1", normalized)
     if re.fullmatch(r"प्रेस\s+विज्ञ\S*", normalized):
@@ -145,7 +227,15 @@ def _line_key(fragment: TextFragment) -> tuple[int, int, int]:
 
 
 def _private_use_count(text: str) -> int:
-    return sum(1 for char in text if 0xE000 <= ord(char) <= 0xF8FF)
+    # Plane 15 is included because marked CIDs live there: a glyph the font could
+    # not map is damage whether it arrived as a private-use code point from a
+    # legacy map or as a CID we marked.
+    return sum(
+        1
+        for char in text
+        if 0xE000 <= ord(char) <= 0xF8FF
+        or _CID_MARK_BASE <= ord(char) <= _CID_MARK_BASE + _MAX_MARKABLE_CID
+    )
 
 
 def _contains_private_use_marker(text: str) -> bool:
@@ -484,7 +574,7 @@ def detect_content_legacy_fonts(
     # one must not corrupt the other's spans.
     text_by_font: dict[str, list[str]] = defaultdict(list)
     for page_index in considered_pages:
-        page_dict = doc[page_index].get_text("dict", flags=_TEXT_DICT_FLAGS)
+        page_dict = get_cid_marked_page_dict(doc[page_index])
         for block in page_dict["blocks"]:
             if "lines" not in block:
                 continue
@@ -683,7 +773,7 @@ class FontBasedStrategy(ExtractionStrategy):
                 page,
                 page_number=page_index + 1,
             )
-            page_dict = page.get_text("dict", flags=_TEXT_DICT_FLAGS)
+            page_dict = get_cid_marked_page_dict(page)
             lines_by_key: dict[
                 tuple[int, int], list[tuple[float, float, float, float, str]]
             ] = defaultdict(list)

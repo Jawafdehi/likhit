@@ -10,6 +10,7 @@ import fitz
 
 from likhit.errors import ExtractionError, ValidationError
 from likhit.extractors.base import TextFragment
+from likhit.extractors.font_based import get_cid_marked_page_dict
 from likhit.extractors.font_classifier import scan_pdf_fonts
 from likhit.extractors.kalimati import (
     fix_kalimati_cmap,
@@ -158,7 +159,7 @@ def _extract_fragments_and_tables(
             page,
             page_number=page_index + 1,
         )
-        page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+        page_dict = get_cid_marked_page_dict(page)
         lines_by_key: dict[
             tuple[int, int], list[tuple[float, float, float, float, str]]
         ] = defaultdict(list)
