@@ -471,12 +471,34 @@ def test_convert_renders_tables_as_raw_pipe_separated_rows() -> None:
     markdown = _convert_text(sample)
 
     assert "तालिका २.१९" in markdown
-    assert "क्र.सं. | उजुरीको व्यहोरा | अनुसन्धानबाट पुष्टि भएको | आयोगको निर्णय" in markdown
-    assert "व्यहोरा | बमोजिम कसुर/सजाय" in markdown
-    assert "1 | आन्तरिक | प्रतिवादीहरूको | 2081/04/24," in markdown
-    assert "मामिला | मिलेमतोमा | 2081/04/31," in markdown
+    assert (
+        "| क्र.सं. | उजुरीको व्यहोरा |  |  | अनुसन्धानबाट पुष्टि भएको |  |  |  | "
+        "आयोगको निर्णय |  | प्रतिवादीको नाम, पद र कार्यालय |  |  | "
+        "भ्रष्टाचार निवारण ऐन, २०५९ |  |  |"
+    ) in markdown
+    assert (
+        "|  |  |  |  | व्यहोरा |  |  |  |  |  |  |  |  | बमोजिम कसुर/सजाय |  |  |"
+    ) in markdown
+    assert ("| 1 |  | आन्तरिक |  | प्रतिवादीहरूको |  |  | 2081/04/24, |") in markdown
+    assert ("|  |  | मामिला |  | मिलेमतोमा |  |  | 2081/04/31, |") in markdown
     assert "**1**" not in markdown
     assert "- **उजुरीको व्यहोरा:**" not in markdown
+
+
+def test_quality_score_ignores_a_rows_enclosing_pipe_delimiters() -> None:
+    # Enclosing a row in pipes describes the same columns, so it must not move
+    # the score. Raw table rows are enclosed so leading and trailing blank
+    # cells stay visible; that must not read as pipe spam.
+    import likhit.converters.nepali_pdf as nepali_pdf_module
+
+    bare = "क्र.सं. | नाम\n1 | राम"
+    enclosed = "| क्र.सं. | नाम |\n| 1 | राम |"
+
+    assert nepali_pdf_module._pipe_heavy_line_count(
+        bare
+    ) == nepali_pdf_module._pipe_heavy_line_count(enclosed)
+    # Three columns is genuine pipe spam either way.
+    assert nepali_pdf_module._pipe_heavy_line_count("| a | b | c |") == 1
 
 
 def test_convert_preserves_pre_table_line_breaks_in_markdown() -> None:

@@ -732,30 +732,48 @@ def _render_raw_table_lines(
     include_caption: bool = True,
 ) -> tuple[str, str | None]:
     grid = [["" for _ in range(table.col_count)] for _ in range(table.row_count)]
+    covered = [[False for _ in range(table.col_count)] for _ in range(table.row_count)]
+    # A malformed table can anchor one cell inside another's span. Blanking such
+    # a position would silently drop text that was extracted, so anchors always
+    # win over coverage -- the same precedence `_expanded_grid` gets from its
+    # `if not grid[row][col]` guard.
+    anchored = {(cell.row, cell.col) for cell in table.cells}
     for cell in table.cells:
         grid[cell.row][cell.col] = cell.text
+        for row in range(cell.row, min(cell.row + cell.rowspan, table.row_count)):
+            for col in range(cell.col, min(cell.col + cell.colspan, table.col_count)):
+                if (row, col) not in anchored:
+                    covered[row][col] = True
     lines: list[str] = []
 
     if include_caption and table.caption:
         lines.append(table.caption)
         lines.append("")
 
-    for row in grid:
+    for row_index, row in enumerate(grid):
         cell_lines = [
-            [_clean_text(part) for part in cell.splitlines() if _clean_text(part)]
-            for cell in row
+            (
+                []
+                if covered[row_index][col_index]
+                else [
+                    _clean_text(part) for part in cell.splitlines() if _clean_text(part)
+                ]
+            )
+            for col_index, cell in enumerate(row)
         ]
-        max_line_count = max((len(parts) for parts in cell_lines), default=0)
+        max_line_count = max(
+            (len(parts) for parts in cell_lines),
+            default=0,
+        )
         if max_line_count == 0:
             continue
         for line_index in range(max_line_count):
             values = [
-                parts[line_index]
+                parts[line_index] if line_index < len(parts) else ""
                 for parts in cell_lines
-                if line_index < len(parts) and parts[line_index]
             ]
-            if values:
-                lines.append(" | ".join(values))
+            if any(values):
+                lines.append(f"| {' | '.join(values)} |")
 
     return "\n".join(lines).strip(), None
 
