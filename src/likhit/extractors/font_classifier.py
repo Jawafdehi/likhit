@@ -12,7 +12,15 @@ from . import legacy_maps
 
 logger = logging.getLogger(__name__)
 
-_KNOWN_BROKEN_CMAP = {"kalimati"}
+# Font families whose embeds in this corpus routinely ship a broken ToUnicode
+# CMap, so a document using one is extracted a second time after repair.
+#
+# Naming a family here only *attempts* the repair; it does not force one. The
+# rewrite is gated on the reconstructed mapping actually disagreeing with the
+# PDF's own CMap (see kalimati.fix_kalimati_cmap), so a document carrying one of
+# these fonts with a correct CMap is left byte-identical -- it just pays for the
+# second extraction pass.
+_KNOWN_BROKEN_CMAP = {"kalimati", "lohit"}
 
 # Page-level OCR markers. A "scanned_decoy_text" page is a full-page raster whose
 # only text layer is non-embedded core-font garbage (see cib-press-release
