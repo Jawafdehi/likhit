@@ -783,14 +783,24 @@ def _markdown_quality_score(markdown: str) -> int:
     # A bare "|" is table structure, not per-character garble. Counting it as a
     # single-character token made this penalty scale with a candidate's column
     # count, so the candidate that renders explicit cell boundaries paid for
-    # doing so: on the OAG corpus 94.6% of likhit's single-character tokens were
-    # table pipes, costing it up to 57,828 points against a candidate carrying
-    # the same words with less structure. Pipe-heavy output is still charged, by
-    # pipe_heavy_lines above -- the term that is actually about tables.
+    # doing so: measured on two OAG documents, 94.6% and 94.3% of likhit's
+    # single-character tokens were table pipes.
+    #
+    # Pipes are excluded from BOTH sides of the ratio, which is the whole point.
+    # Dropping them from the count alone would leave them in the population that
+    # sets the allowance, so each added pipe would raise the tolerated number of
+    # single-character tokens by _MAX_REASONABLE_SINGLE_TOKEN_RATIO and refund
+    # 2.1 points of garble penalty -- enough that a candidate splitting every
+    # syllable into its own cell outscored one carrying the same characters as
+    # whole words, simply by padding empty columns. This term asks what share of
+    # a candidate's *content* tokens are lone characters, so table syntax
+    # belongs in neither the numerator nor the denominator. Pipe-heavy output is
+    # still charged, by pipe_heavy_lines above -- the term about tables.
+    content_tokens = [token for token in tokens if token != "|"]
     single_token_excess = max(
         0,
-        sum(len(token) == 1 and token != "|" for token in tokens)
-        - int(len(tokens) * _MAX_REASONABLE_SINGLE_TOKEN_RATIO),
+        sum(len(token) == 1 for token in content_tokens)
+        - int(len(content_tokens) * _MAX_REASONABLE_SINGLE_TOKEN_RATIO),
     )
     matra_damage_count = (
         len(_DOUBLED_MATRA_PATTERN.findall(markdown))
@@ -806,13 +816,30 @@ def _markdown_quality_score(markdown: str) -> int:
         - cid_garbage_count * 12
         # Marked CIDs are deliberately absent from this comparison. Marking is a
         # likhit feature -- every rival candidate comes from pdfminer or the OCR
-        # converter and can never carry a mark (measured: 0 of 58 candidate
-        # pairs) -- so the term has a constant sign and only ever taxes the
-        # candidate that labels its unmappable glyphs. The rival carries the
-        # same damage disguised as ASCII: where likhit emits ूारि<mark>भक the
-        # rival emits ूारिWभक for that word. Charging 12 per label and nothing
-        # per disguise ranks hidden damage above declared damage. U+FFFD stays
-        # charged: any candidate can emit it, so it still discriminates.
+        # converter and can never carry a mark (measured over 58 cached candidate
+        # pairs drawn from 38 OAG documents: 0 marks on the non-likhit side) --
+        # so the term had a constant sign and only ever taxed the candidate that
+        # labels its unmappable glyphs.
+        #
+        # The rival carries the same damage disguised as ASCII: for the word
+        # likhit renders as marked glyphs, the rival emits `ूारिWभक`. A mark is
+        # a Plane-15 private-use code point (chr(0xF0000 + ord(c)), see
+        # font_based.py), not any kind of tag -- worth stating because the
+        # bracket class in _SUSPICIOUS_LATIN_TOKEN_PATTERN would charge a literal
+        # markup tag 8 per token, which is not what happens here. The disguise is
+        # not free either: `ूारिWभक` is a vowel-poor Latin token, so it costs 3.
+        # But 12 per marked *character* against 3 per disguised *token* ranked
+        # hidden damage above declared damage, which is backwards.
+        #
+        # Not charging a mark is not the same as neutrality: against absent text
+        # a marked token still collects the generic +1 token credit above. What
+        # makes that sound is that a marked glyph forfeits the +3 Devanagari
+        # credit it would have earned decoded, so a candidate that decodes always
+        # outranks one that labels -- pinned by
+        # test_marking_never_beats_decoding_the_same_glyphs.
+        #
+        # U+FFFD stays charged: any candidate can emit it, so it still
+        # discriminates.
         - markdown.count("\ufffd") * 12
         - whitespace_excess
         - single_token_excess * _EXCESS_SINGLE_TOKEN_PENALTY
