@@ -357,6 +357,55 @@ def _is_ra_virama_swap(old_value: str, new_value: str) -> bool:
     return False
 
 
+_DESCENDANT_REFERENCE = re.compile(r"/DescendantFonts\s*\[?\s*(\d+)\s+\d+\s+R")
+_DESCRIPTOR_REFERENCE = re.compile(r"/FontDescriptor\s+(\d+)\s+\d+\s+R")
+_FONTFILE2_REFERENCE = re.compile(r"/FontFile2\s+(\d+)\s+\d+\s+R")
+_ARRAY_REFERENCE = re.compile(r"(\d+)\s+\d+\s+R")
+
+
+def _resolve_fontfile2_xref(doc: fitz.Document, type0_xref: int) -> Optional[int]:
+    """The xref of a Type0 font's embedded TrueType program, or None.
+
+    `/DescendantFonts` is a one-element array whose element may be written either
+    as an indirect reference or as the CIDFont dictionary itself, and that
+    dictionary's `/FontDescriptor` may likewise be either. Insisting on the
+    indirect form skipped every font written the other way, whatever its program
+    held: no correction map, and every glyph left unmapped. Measured over 6,223
+    OAG transcripts, fonts written that way account for 834,146 unmapped glyphs
+    (29.65% of all of them), and 808,710 of those are in fonts that had kept a
+    usable `cmap` -- most also `GSUB` -- and so were recoverable all along.
+
+    Whichever form the dictionaries take, the program is a stream and so an object
+    of its own, meaning the reference to it is always indirect. A hop that cannot
+    be followed is therefore a hop that was written inline, and its contents are
+    already part of the text in hand -- so keep reading from that text rather than
+    giving up.
+
+    Reaching the program is necessary but not sufficient for those fonts: they are
+    named `CIDFont+F1`-style, so `font_classifier.classify_font` cannot recognise
+    them and `_meaningful_cmap_diff_count`'s guard skips a font not named
+    "kalimati". Both gates are untouched here.
+    """
+
+    def follow(xref: int) -> int:
+        obj = doc.xref_object(xref, compressed=False).strip()
+        if obj.startswith("["):
+            match = _ARRAY_REFERENCE.search(obj)
+            if match:
+                return int(match.group(1))
+        return xref
+
+    text = doc.xref_object(type0_xref, compressed=False)
+    descendant = _DESCENDANT_REFERENCE.search(text)
+    if descendant:
+        text = doc.xref_object(follow(int(descendant.group(1))), compressed=False)
+    descriptor = _DESCRIPTOR_REFERENCE.search(text)
+    if descriptor:
+        text = doc.xref_object(int(descriptor.group(1)), compressed=False)
+    fontfile = _FONTFILE2_REFERENCE.search(text)
+    return int(fontfile.group(1)) if fontfile else None
+
+
 def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, str]:
     try:
         from fontTools.ttLib import TTFont
@@ -366,34 +415,11 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
         )
 
     try:
-
-        def _follow_xref(xref: int) -> int:
-            obj = doc.xref_object(xref, compressed=False).strip()
-            if obj.startswith("["):
-                match = re.search(r"(\d+)\s+\d+\s+R", obj)
-                if match:
-                    return int(match.group(1))
-            return xref
-
-        type0_dict = doc.xref_object(type0_xref, compressed=False)
-        descendant_match = re.search(
-            r"/DescendantFonts\s*\[?\s*(\d+)\s+\d+\s+R", type0_dict
-        )
-        if not descendant_match:
-            return {}
-        cidfont_xref = _follow_xref(int(descendant_match.group(1)))
-        cid_dict = doc.xref_object(cidfont_xref, compressed=False)
-        descriptor_match = re.search(r"/FontDescriptor\s+(\d+)\s+\d+\s+R", cid_dict)
-        if not descriptor_match:
-            return {}
-        descriptor_dict = doc.xref_object(
-            int(descriptor_match.group(1)), compressed=False
-        )
-        fontfile_match = re.search(r"/FontFile2\s+(\d+)\s+\d+\s+R", descriptor_dict)
-        if not fontfile_match:
+        fontfile_xref = _resolve_fontfile2_xref(doc, type0_xref)
+        if fontfile_xref is None:
             return {}
 
-        font_data = doc.xref_stream(int(fontfile_match.group(1)))
+        font_data = doc.xref_stream(fontfile_xref)
         temp_path: str | None = None
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".ttf") as tmp:
@@ -440,33 +466,7 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
 
 def _get_fontfile_xref(doc: fitz.Document, type0_xref: int) -> Optional[int]:
     try:
-
-        def _follow_xref(xref: int) -> int:
-            obj = doc.xref_object(xref, compressed=False).strip()
-            if obj.startswith("["):
-                match = re.search(r"(\d+)\s+\d+\s+R", obj)
-                if match:
-                    return int(match.group(1))
-            return xref
-
-        type0_dict = doc.xref_object(type0_xref, compressed=False)
-        descendant_match = re.search(
-            r"/DescendantFonts\s*\[?\s*(\d+)\s+\d+\s+R", type0_dict
-        )
-        if not descendant_match:
-            return None
-        cidfont_xref = _follow_xref(int(descendant_match.group(1)))
-        cid_dict = doc.xref_object(cidfont_xref, compressed=False)
-        descriptor_match = re.search(r"/FontDescriptor\s+(\d+)\s+\d+\s+R", cid_dict)
-        if not descriptor_match:
-            return None
-        descriptor_dict = doc.xref_object(
-            int(descriptor_match.group(1)), compressed=False
-        )
-        fontfile_match = re.search(r"/FontFile2\s+(\d+)\s+\d+\s+R", descriptor_dict)
-        if not fontfile_match:
-            return None
-        return int(fontfile_match.group(1))
+        return _resolve_fontfile2_xref(doc, type0_xref)
     except Exception:  # noqa: BLE001 - unparsable xref object means no FontFile2
         return None
 
