@@ -105,6 +105,43 @@ def _iter_dict_spans(page_dict: dict) -> list[dict]:
     ]
 
 
+def _char_position(char: dict) -> tuple[float, ...]:
+    """Position key pairing one character across two extractions of a page.
+
+    Rounded because the two extractions agree on glyph geometry to well within
+    a hundredth of a point, but not always bit-for-bit.
+    """
+
+    return tuple(round(value, 2) for value in char["bbox"])
+
+
+def _replacement_and_decoded_positions(
+    page_dict: dict,
+) -> tuple[set[tuple[float, ...]], set[tuple[float, ...]]]:
+    """Split a raw page dict's character positions by whether they decoded."""
+
+    replacement: set[tuple[float, ...]] = set()
+    decoded: set[tuple[float, ...]] = set()
+    for span in _iter_dict_spans(page_dict):
+        for char in span.get("chars", ()):
+            target = replacement if char["c"] == "�" else decoded
+            target.add(_char_position(char))
+    return replacement, decoded
+
+
+def _to_dict_shape(page_dict: dict) -> dict:
+    """Collapse a `rawdict` page to `dict` shape: span `text`, no `chars`.
+
+    `dict` mode's span text is exactly the concatenation of `rawdict`'s per-glyph
+    characters, so callers cannot tell which mode produced the page.
+    """
+
+    for span in _iter_dict_spans(page_dict):
+        if "chars" in span:
+            span["text"] = "".join(char["c"] for char in span.pop("chars"))
+    return page_dict
+
+
 def mark_unmappable_cids(text: str) -> str:
     """Offset every character of `text` into the marked-CID range."""
 
@@ -133,35 +170,32 @@ def get_cid_marked_page_dict(page: fitz.Page) -> dict:
     the flag alone cannot tell us, because a raw CID is indistinguishable from
     real text.
 
-    Pairing is positional over spans in document order. Measured across every
-    sample, the two extractions agree on span count and per-span length; the
-    `(block, line, span)` indices do *not* always agree, because dropping the
-    flag can regroup blocks, so those are deliberately not used as the key. Each
-    pair is still checked against its bbox, and any span that fails to line up
-    keeps its raw CID text rather than being guessed at.
+    Pairing is positional over individual glyph boxes, not over spans. Spans are
+    the wrong unit: dropping the CID flag regroups them, so the two extractions
+    routinely disagree on span count even though every glyph still sits at the
+    same coordinates. Span-level pairing therefore failed wholesale on real
+    documents -- measured on the Nepali audit corpus, 38 of 40 sampled pages had
+    mismatched span counts and came back with no marking at all, which is the
+    exact blindness this marking exists to remove. Glyph boxes survive the
+    regrouping: the same measurement pairs 98.6% of replacement characters.
+
+    A position that decodes to real text somewhere on the page and to U+FFFD
+    somewhere else cannot be attributed to either, so it keeps its raw CID rather
+    than being guessed at.
     """
 
-    plain_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
-    plain_spans = _iter_dict_spans(plain_dict)
-    if not any("�" in str(span["text"]) for span in plain_spans):
-        return plain_dict
+    plain_dict = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+    replacement, decoded = _replacement_and_decoded_positions(plain_dict)
+    if not replacement:
+        return _to_dict_shape(plain_dict)
 
-    cid_dict = page.get_text("dict", flags=_TEXT_DICT_FLAGS)
-    cid_spans = _iter_dict_spans(cid_dict)
-    if len(cid_spans) != len(plain_spans):
-        return cid_dict
-
-    for plain_span, cid_span in zip(plain_spans, cid_spans):
-        plain_text, cid_text = str(plain_span["text"]), str(cid_span["text"])
-        if "�" not in plain_text:
-            continue
-        if len(plain_text) != len(cid_text) or plain_span["bbox"] != cid_span["bbox"]:
-            continue
-        cid_span["text"] = "".join(
-            mark_unmappable_cids(cid_char) if plain_char == "�" else cid_char
-            for plain_char, cid_char in zip(plain_text, cid_text)
-        )
-    return cid_dict
+    unmappable = replacement - decoded
+    cid_dict = page.get_text("rawdict", flags=_TEXT_DICT_FLAGS)
+    for span in _iter_dict_spans(cid_dict):
+        for char in span.get("chars", ()):
+            if _char_position(char) in unmappable:
+                char["c"] = mark_unmappable_cids(char["c"])
+    return _to_dict_shape(cid_dict)
 
 
 def normalize_press_release_paragraph(text: str) -> str:

@@ -20,6 +20,10 @@ from likhit.extractors.font_based import (
     get_cid_marked_page_dict,
     mark_unmappable_cids,
     strip_marked_cids,
+    _char_position,
+    _iter_dict_spans,
+    _replacement_and_decoded_positions,
+    _to_dict_shape,
     _choose_fragment_text,
     _has_severe_noise,
     _is_garbled_orphan,
@@ -156,7 +160,7 @@ def test_font_based_strategy_auto_detects_and_converts_legacy_fonts(
             return [(1, "ttf", "Type0", "ABCDEF+Preeti", "Identity-H")]
 
         def get_text(self, mode: str, flags: int | None = None) -> dict[str, object]:
-            assert mode == "dict"
+            assert mode == "rawdict"
             del flags
             return {
                 "blocks": [
@@ -166,7 +170,20 @@ def test_font_based_strategy_auto_detects_and_converts_legacy_fonts(
                                 "spans": [
                                     {
                                         "font": "ABCDEF+Preeti",
-                                        "text": "abc",
+                                        "chars": [
+                                            {
+                                                "c": "a",
+                                                "bbox": (10.0, 20.0, 20.0, 35.0),
+                                            },
+                                            {
+                                                "c": "b",
+                                                "bbox": (20.0, 20.0, 30.0, 35.0),
+                                            },
+                                            {
+                                                "c": "c",
+                                                "bbox": (30.0, 20.0, 40.0, 35.0),
+                                            },
+                                        ],
                                         "bbox": (10.0, 20.0, 40.0, 35.0),
                                     }
                                 ]
@@ -206,7 +223,7 @@ def test_extract_from_document_can_skip_table_detection(
 
     class FakePage:
         def get_text(self, mode: str, flags: int | None = None) -> dict[str, object]:
-            assert mode == "dict"
+            assert mode == "rawdict"
             del flags
             return {
                 "blocks": [
@@ -216,7 +233,18 @@ def test_extract_from_document_can_skip_table_detection(
                                 "spans": [
                                     {
                                         "font": "Kalimati",
-                                        "text": "परीक्षण",
+                                        "chars": [
+                                            {
+                                                "c": char,
+                                                "bbox": (
+                                                    10.0 + 8.0 * index,
+                                                    20.0,
+                                                    18.0 + 8.0 * index,
+                                                    35.0,
+                                                ),
+                                            }
+                                            for index, char in enumerate("परीक्षण")
+                                        ],
                                         "bbox": (10.0, 20.0, 70.0, 35.0),
                                     }
                                 ]
@@ -901,3 +929,135 @@ def test_strip_marked_cids_renders_them_visible() -> None:
 
     assert strip_marked_cids(f"a{marked}b") == "a�b"
     assert strip_marked_cids(f"a{marked}b", " ") == "a b"
+
+
+def _raw_span(glyphs: list[tuple[str, tuple[float, float, float, float]]]) -> dict:
+    return {
+        "font": "Lohit-Devanagari",
+        "size": 11.0,
+        "bbox": glyphs[0][1],
+        "chars": [{"c": char, "bbox": bbox} for char, bbox in glyphs],
+    }
+
+
+def _raw_page(spans: list[list[tuple[str, tuple[float, float, float, float]]]]) -> dict:
+    return {"blocks": [{"lines": [{"spans": [_raw_span(g) for g in spans]}]}]}
+
+
+class _StubPage:
+    """A page whose two extractions group the same glyphs into different spans."""
+
+    def __init__(self, plain: dict, cid: dict) -> None:
+        self._plain = plain
+        self._cid = cid
+
+    def get_text(self, mode: str, flags: int = 0) -> dict:
+        import copy
+
+        assert mode == "rawdict"
+        source = (
+            self._cid if flags & fitz.TEXT_USE_CID_FOR_UNKNOWN_UNICODE else self._plain
+        )
+        return copy.deepcopy(source)
+
+
+def _page_text(page_dict: dict) -> str:
+    return "".join(span["text"] for span in _iter_dict_spans(page_dict))
+
+
+def test_marking_survives_span_regrouping() -> None:
+    # The regression this fixes: dropping the CID flag regroups spans, so the two
+    # extractions disagree on span count while every glyph keeps its coordinates.
+    # Pairing on spans gave up here and returned raw CIDs, invisible to every
+    # garble heuristic; pairing on glyph boxes marks them.
+    a, b, c = (0.0, 0.0, 5.0, 10.0), (5.0, 0.0, 10.0, 10.0), (10.0, 0.0, 15.0, 10.0)
+    plain = _raw_page([[("क", a), ("�", b), ("य", c)]])
+    cid = _raw_page([[("क", a)], [("à", b), ("य", c)]])
+
+    marked = get_cid_marked_page_dict(_StubPage(plain, cid))
+    text = _page_text(marked)
+
+    assert count_marked_cids(text) == 1
+    assert "�" not in text
+    assert strip_marked_cids(text) == "क�य"
+
+
+def test_marking_attributes_only_the_unmappable_glyph() -> None:
+    a, b = (0.0, 0.0, 5.0, 10.0), (5.0, 0.0, 10.0, 10.0)
+    plain = _raw_page([[("क", a), ("�", b)]])
+    cid = _raw_page([[("क", a), ("à", b)]])
+
+    text = _page_text(get_cid_marked_page_dict(_StubPage(plain, cid)))
+
+    # The mappable glyph must survive untouched, not be marked alongside.
+    assert text[0] == "क"
+    assert count_marked_cids(text) == 1
+
+
+def test_ambiguous_position_keeps_its_raw_cid() -> None:
+    # The same box decodes to real text in one place and U+FFFD in another, so it
+    # cannot be attributed to either and must not be guessed at.
+    shared = (0.0, 0.0, 5.0, 10.0)
+    plain = _raw_page([[("�", shared)], [("क", shared)]])
+    cid = _raw_page([[("à", shared)], [("क", shared)]])
+
+    text = _page_text(get_cid_marked_page_dict(_StubPage(plain, cid)))
+
+    assert count_marked_cids(text) == 0
+    assert "à" in text
+
+
+def test_a_page_with_nothing_unmappable_is_extracted_once() -> None:
+    calls: list[int] = []
+    clean = _raw_page([[("क", (0.0, 0.0, 5.0, 10.0))]])
+
+    class _CountingPage(_StubPage):
+        def get_text(self, mode: str, flags: int = 0) -> dict:
+            calls.append(flags)
+            return super().get_text(mode, flags)
+
+    page = _CountingPage(clean, _raw_page([[("x", (0.0, 0.0, 5.0, 10.0))]]))
+    text = _page_text(get_cid_marked_page_dict(page))
+
+    assert len(calls) == 1, "a clean page must not pay for a second extraction"
+    assert text == "क"
+
+
+def test_char_position_rounds_to_hundredths() -> None:
+    # The two extractions agree on geometry to well within a hundredth of a
+    # point, but not always bit-for-bit, so the key must tolerate that.
+    assert _char_position({"bbox": (1.0004, 2.0, 3.0, 4.0)}) == _char_position(
+        {"bbox": (1.0, 2.0, 3.0, 4.0)}
+    )
+    assert _char_position({"bbox": (1.02, 2.0, 3.0, 4.0)}) != _char_position(
+        {"bbox": (1.0, 2.0, 3.0, 4.0)}
+    )
+
+
+def test_replacement_and_decoded_positions_split_by_glyph() -> None:
+    a, b = (0.0, 0.0, 5.0, 10.0), (5.0, 0.0, 10.0, 10.0)
+    replacement, decoded = _replacement_and_decoded_positions(
+        _raw_page([[("�", a), ("क", b)]])
+    )
+
+    assert replacement == {_char_position({"bbox": a})}
+    assert decoded == {_char_position({"bbox": b})}
+
+
+def test_to_dict_shape_matches_dict_mode_exactly() -> None:
+    # Callers consume `span["text"]`; they must not be able to tell that the page
+    # was extracted in rawdict mode.
+    doc = fitz.open(stream=_build_zeroed_tounicode_pdf(), filetype="pdf")
+    try:
+        page = doc[0]
+        expected = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+        converted = _to_dict_shape(
+            page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+        )
+    finally:
+        doc.close()
+
+    assert [span["text"] for span in _iter_dict_spans(converted)] == [
+        span["text"] for span in _iter_dict_spans(expected)
+    ]
+    assert all("chars" not in span for span in _iter_dict_spans(converted))
