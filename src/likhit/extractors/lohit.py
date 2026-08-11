@@ -44,16 +44,21 @@ here) but cannot repair a value that *begins* with the pair, because there is no
 preceding base consonant to anchor the swap. Those three glyphs are corrected;
 in corpus terms this is the difference between ``स्टर्ीट`` and ``स्ट्रीट``.
 
-Known gaps, both left alone deliberately rather than guessed at. Of 8,093,837
-Lohit glyph instances measured across 150 corpus documents, the table covers
-8,093,710 -- 99.998%. The remainder is CID 292, an i-matra that also carries a
-repha (``पार्किङ्ग``): decoding it needs *two* reordering markers for one glyph,
-which ``kalimati.reorder_devanagari`` has no way to interpret. CID 229
-(``u095E_u0930_u094D.blwf.vatu``, ``फ़्र``) keeps the same inverted pair as CID
-227 but in a trailing position, where a glyph name cannot distinguish an
-inverted rakar from a legitimate half-form -- it does not occur in the corpus at
-all. An uncovered CID keeps whatever the PDF's own broken CMap said, so both
-degrade to the status quo rather than to new, confident errors.
+Whatever this table does not cover is left alone rather than guessed at: an
+uncovered CID keeps whatever the PDF's own broken CMap said, so it degrades to the
+status quo rather than to a new, confident error. Of 8,093,837 Lohit glyph
+instances measured across 150 corpus documents, the uncovered remainder is 127.
+
+CID 229 (``u095E_u0930_u094D.blwf.vatu``, ``फ़्र``) was one such gap until
+``_analyze_gsub``'s ra-virama swap learned to look past a nukta: its base is the
+precomposed ``फ़`` (U+095E), which the swap did not recognise as a base, so the
+inverted pair survived. It derives correctly now and needs no correction.
+
+The 127 remaining instances are CID 292. This paragraph deliberately does not say
+whether that one is coverable -- the branch that decodes it is separate work, and
+an earlier version of this text asserted it was not, on the incorrect grounds that
+it is an i-matra needing two reordering markers. If a ``GSUB_VARIANT_ADDITIONS``
+dict is present below, 292 is covered and this note is spent.
 
 Applying the table to the wrong font would silently emit confident nonsense, so
 :func:`is_known_lohit_subset` gates it twice: the ``name``/``head`` records
@@ -392,7 +397,7 @@ GID_TO_UNICODE: dict[int, str] = {
     225: "\u0930\u094d\u0902",  # u0930_u094D.rphf_u0902.abvs -> र्ं
     227: "\u094d\u0930",  # u0930_u094D.blwf -> ्र
     228: "\u0936\u094d\u0930",  # u0936_u0930_u094D.blwf.vatu -> श्र
-    229: "\u095e\u0930\u094d",  # u095E_u0930_u094D.blwf.vatu -> फ़र्
+    229: "\u095e\u094d\u0930",  # u095E_u0930_u094D.blwf.vatu -> फ़्र
     230: "\u0924\u094d\u0924",  # u0924_u094D.half_u0924.pres -> त्त
     231: "\u0915\u094d\u0937",  # u0915_u094D_u0937.akhn -> क्ष
     232: "\u091c\u094d\u091e",  # u091C_u094D_u091E.akhn -> ज्ञ

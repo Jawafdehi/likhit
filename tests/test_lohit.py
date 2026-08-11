@@ -122,6 +122,9 @@ def test_reordering_markers_match_kalimati() -> None:
         (301, "क्र"),  # क्र
         (306, "त्र"),  # त्र
         (308, "प्र"),  # प्र
+        # A rakar behind a precomposed nukta letter. Derived wrongly as `फ़र्`
+        # until the ra-virama swap learned to look past the nukta.
+        (229, "\u095e\u094d\u0930"),  # फ़्र -- precomposed U+095E, not फ + nukta
         (276, "त्र्"),  # त्र् -- a half-form, not a repha
     ],
 )
