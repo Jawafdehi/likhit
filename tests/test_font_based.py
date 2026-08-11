@@ -35,7 +35,11 @@ from likhit.extractors.font_based import (
     normalize_press_release_paragraph,
     parse_page_range,
 )
-from likhit.extractors.kalimati import _get_font_correction_map
+from likhit.extractors.kalimati import (
+    _get_font_correction_map,
+    _get_fontfile_xref,
+    _resolve_fontfile2_xref,
+)
 from likhit.handlers.single_column_notice import SingleColumnNoticeHandler
 from likhit.models import Table
 
@@ -425,6 +429,123 @@ def test_kalimati_fix_requires_fonttools(monkeypatch: pytest.MonkeyPatch) -> Non
 
     with pytest.raises(ExtractionError, match="fonttools is required"):
         _get_font_correction_map(None, 1)  # type: ignore[arg-type]
+
+
+class _FontObjectDoc:
+    """A document whose font objects are whatever the test says they are."""
+
+    def __init__(self, objects: dict[int, str], stream: bytes = b"font-data") -> None:
+        self._objects = objects
+        self._stream = stream
+        self.requested: list[int] = []
+
+    def xref_object(self, xref: int, compressed: bool = False) -> str:
+        del compressed
+        self.requested.append(xref)
+        return self._objects[xref]
+
+    def xref_stream(self, xref: int) -> bytes:
+        return self._stream
+
+
+def test_fontfile2_is_found_through_a_fully_indirect_chain() -> None:
+    doc = _FontObjectDoc(
+        {
+            1: "<< /DescendantFonts [2 0 R] >>",
+            2: "<< /FontDescriptor 3 0 R >>",
+            3: "<< /FontFile2 4 0 R >>",
+        }
+    )
+    assert _resolve_fontfile2_xref(doc, 1) == 4  # type: ignore[arg-type]
+
+
+def test_fontfile2_is_found_when_the_descendant_dictionary_is_inline() -> None:
+    # `/DescendantFonts` may hold the CIDFont dictionary itself rather than a
+    # reference to it. Following only `N 0 R` skipped these fonts entirely, so
+    # they got no correction map and every glyph stayed unmapped.
+    doc = _FontObjectDoc(
+        {
+            1: (
+                "<< /BaseFont /CIDFont+F1 /DescendantFonts [ << /BaseFont /CIDFont+F1"
+                " /CIDToGIDMap /Identity /FontDescriptor << /Flags 6"
+                " /FontFile2 33 0 R >> >> ] >>"
+            )
+        }
+    )
+    assert _resolve_fontfile2_xref(doc, 1) == 33  # type: ignore[arg-type]
+    assert doc.requested == [1], "an inline dictionary is not a separate object"
+
+
+def test_fontfile2_is_found_when_only_the_descriptor_is_inline() -> None:
+    doc = _FontObjectDoc(
+        {
+            1: "<< /DescendantFonts [2 0 R] >>",
+            2: "<< /CIDToGIDMap /Identity /FontDescriptor << /FontFile2 9 0 R >> >>",
+        }
+    )
+    assert _resolve_fontfile2_xref(doc, 1) == 9  # type: ignore[arg-type]
+
+
+def test_a_font_with_no_embedded_truetype_program_resolves_to_none() -> None:
+    # A CFF program lives in /FontFile3, which this repair cannot read, and a
+    # non-embedded font has no program at all. Both must stay unresolved rather
+    # than resolving to something else in the object.
+    cff = _FontObjectDoc(
+        {1: "<< /DescendantFonts [ << /FontDescriptor << /FontFile3 7 0 R >> >> ] >>"}
+    )
+    assert _resolve_fontfile2_xref(cff, 1) is None  # type: ignore[arg-type]
+    bare = _FontObjectDoc({1: "<< /BaseFont /Times-Roman >>"})
+    assert _resolve_fontfile2_xref(bare, 1) is None  # type: ignore[arg-type]
+
+
+def test_get_fontfile_xref_reports_none_for_an_unreadable_object() -> None:
+    class Exploding:
+        def xref_object(self, xref: int, compressed: bool = False) -> str:
+            raise RuntimeError("unparsable")
+
+    assert _get_fontfile_xref(Exploding(), 1) is None  # type: ignore[arg-type]
+
+
+def test_get_font_correction_map_reads_an_inline_descendant_font(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeFont:
+        def getGlyphOrder(self) -> list[str]:
+            return ["glyph0", "ka"]
+
+        def __contains__(self, key: str) -> bool:
+            return key == "cmap"
+
+        def __getitem__(self, key: str) -> object:
+            assert key == "cmap"
+
+            class Cmap:
+                def getBestCmap(self) -> dict[int, str]:
+                    return {0x0915: "ka"}
+
+            return Cmap()
+
+        def close(self) -> None:
+            return None
+
+    doc = _FontObjectDoc(
+        {
+            1: (
+                "<< /BaseFont /CIDFont+F1 /DescendantFonts [ << /FontDescriptor"
+                " << /FontFile2 33 0 R >> >> ] >>"
+            )
+        }
+    )
+    fake_fonttools = types.ModuleType("fontTools")
+    fake_ttlib = types.ModuleType("fontTools.ttLib")
+    fake_ttlib.TTFont = lambda _path: FakeFont()
+    fake_fonttools.ttLib = fake_ttlib
+    monkeypatch.setitem(sys.modules, "fontTools", fake_fonttools)
+    monkeypatch.setitem(sys.modules, "fontTools.ttLib", fake_ttlib)
+    monkeypatch.setattr(kalimati_module, "_infer_mark_variants", lambda *_: {})
+    monkeypatch.setattr(kalimati_module, "_analyze_gsub", lambda *_: {})
+
+    assert _get_font_correction_map(doc, 1) == {1: "क"}  # type: ignore[arg-type]
 
 
 def test_get_font_correction_map_returns_empty_when_font_has_no_cmap(
