@@ -8,6 +8,7 @@ emitting Markdown.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import io
 import logging
 import os
@@ -41,7 +42,12 @@ from likhit.handlers.content_blocks import build_content_blocks
 from likhit.handlers.two_column_layout import TwoColumnLayoutHandler
 from likhit.models import ParagraphBlock, TableBlock
 from likhit.pdf_page_analysis import pdf_likely_needs_ocr
-from likhit.renderers.markdown import _caption_key, _render_table
+from likhit.renderers.markdown import (
+    _caption_key,
+    _render_table,
+    page_anchor,
+    strip_page_anchors,
+)
 
 logger = logging.getLogger(__name__)
 _TOKEN_PATTERN = re.compile(r"\S+")
@@ -739,6 +745,9 @@ def _is_vowel_poor_latin_token(token: str) -> bool:
 
 
 def _markdown_quality_score(markdown: str) -> int:
+    # Anchors are structural, not content. Scoring them would let the page
+    # count sway which candidate conversion wins.
+    markdown = strip_page_anchors(markdown)
     tokens = _TOKEN_PATTERN.findall(markdown)
     latin_tokens = [token for token in tokens if _LATIN_PATTERN.search(token)]
     suspicious_tokens = [
@@ -785,14 +794,53 @@ def _render_layout_preserving_markdown(raw_document: RawDocument) -> str:
             raw_document.fragments,
             raw_document.tables,
             _build_layout_paragraphs,
-        )
+        ),
+        raw_document.page_numbers,
     )
 
 
-def _render_markdown_from_blocks(blocks: list[ParagraphBlock | TableBlock]) -> str:
-    rendered: list[str] = []
+def _block_page_number(block: ParagraphBlock | TableBlock) -> int:
+    if isinstance(block, TableBlock):
+        return block.table.page_number
+    return block.page_number
+
+
+def _assemble_with_page_anchors(
+    parts: list[tuple[int, str]],
+    page_numbers: Sequence[int],
+) -> str:
+    """Interleave rendered parts with one anchor per source page.
+
+    Every page gets an anchor, including pages that produced nothing: a page
+    whose text layer is empty is precisely where page-keyed OCR has to be merged
+    in, so it needs a position in the document even though it has no content.
+    """
+
+    if not page_numbers:
+        return "\n\n".join(part for _page, part in parts if part).strip()
+
+    chunks: list[str] = []
+    pending = list(parts)
+    for page_number in page_numbers:
+        chunks.append(page_anchor(page_number))
+        # `<=` so a part whose page is unknown (0) or already passed still lands
+        # under the earliest anchor rather than being dropped.
+        while pending and pending[0][0] <= page_number:
+            _page, part = pending.pop(0)
+            if part:
+                chunks.append(part)
+    chunks.extend(part for _page, part in pending if part)
+    return "\n\n".join(chunks).strip()
+
+
+def _render_markdown_from_blocks(
+    blocks: list[ParagraphBlock | TableBlock],
+    page_numbers: Sequence[int] = (),
+) -> str:
+    rendered: list[tuple[int, str]] = []
     previous_table_key: str | None = None
     for index, block in enumerate(blocks):
+        page_number = _block_page_number(block)
         if isinstance(block, ParagraphBlock):
             if _looks_like_page_furniture(block.text) and (
                 (index > 0 and isinstance(blocks[index - 1], TableBlock))
@@ -802,7 +850,7 @@ def _render_markdown_from_blocks(blocks: list[ParagraphBlock | TableBlock]) -> s
                 )
             ):
                 continue
-            rendered.append(_render_paragraph_markdown(block.text))
+            rendered.append((page_number, _render_paragraph_markdown(block.text)))
             previous_table_key = None
         elif isinstance(block, TableBlock):
             include_caption = True
@@ -822,8 +870,8 @@ def _render_markdown_from_blocks(blocks: list[ParagraphBlock | TableBlock]) -> s
                 continuation_key=previous_table_key,
             )
             if rendered_table.strip():
-                rendered.append(f"```text\n{rendered_table}\n```")
-    return "\n\n".join(part for part in rendered if part).strip()
+                rendered.append((page_number, f"```text\n{rendered_table}\n```"))
+    return _assemble_with_page_anchors(rendered, page_numbers)
 
 
 def _looks_like_page_furniture(text: str) -> bool:
@@ -855,7 +903,7 @@ def _render_two_column_markdown(
 ) -> str:
     del ordered_fragments
     blocks = handler._build_blocks(raw_document)
-    return _render_markdown_from_blocks(blocks)
+    return _render_markdown_from_blocks(blocks, raw_document.page_numbers)
 
 
 def _render_structure_aware_markdown(raw_document: RawDocument) -> str:

@@ -6,9 +6,12 @@ import platform
 import shutil
 import subprocess
 from pathlib import Path
+import re
 
 from markitdown import MarkItDown
 import pytest
+
+from likhit.renderers.markdown import strip_page_anchors
 
 from likhit.save_cli import main as save_cli_main
 
@@ -142,7 +145,9 @@ class TestPluginConversion:
             pytest.skip("Notice-style PDF sample not found")
 
         markdown = _md().convert(str(notice_pdf)).text_content
-        first_lines = markdown.splitlines()[:7]
+        # Page anchors are structural; this asserts the content stream.
+        content = re.sub(r"\n{3,}", "\n\n", strip_page_anchors(markdown)).strip()
+        first_lines = content.splitlines()[:7]
 
         assert first_lines == [
             "अख्तियार दुरुपयोग अनुसन्धान आयोग",

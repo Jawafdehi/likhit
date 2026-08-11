@@ -63,7 +63,9 @@ def build_content_blocks(
                 insertion_cursor < len(insertions)
                 and insertions[insertion_cursor][0] == index
             ):
-                _flush_paragraph_chunk(blocks, current_chunk, paragraph_builder)
+                _flush_paragraph_chunk(
+                    blocks, current_chunk, paragraph_builder, page_number
+                )
                 blocks.append(TableBlock(insertions[insertion_cursor][1]))
                 insertion_cursor += 1
 
@@ -73,7 +75,7 @@ def build_content_blocks(
             if index not in excluded_indexes:
                 current_chunk.append(page_fragments[index])
 
-        _flush_paragraph_chunk(blocks, current_chunk, paragraph_builder)
+        _flush_paragraph_chunk(blocks, current_chunk, paragraph_builder, page_number)
 
     return blocks
 
@@ -99,13 +101,16 @@ def _flush_paragraph_chunk(
     blocks: list[ContentBlock],
     chunk: list[TextFragment],
     paragraph_builder: ParagraphBuilder,
+    page_number: int = 0,
 ) -> None:
     if not chunk:
         return
 
     paragraphs = paragraph_builder(chunk)
     blocks.extend(
-        ParagraphBlock(text=paragraph) for paragraph in paragraphs if paragraph
+        ParagraphBlock(text=paragraph, page_number=page_number)
+        for paragraph in paragraphs
+        if paragraph
     )
     chunk.clear()
 

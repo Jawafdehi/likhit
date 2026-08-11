@@ -4,6 +4,7 @@ from functools import lru_cache
 import io
 import logging
 from pathlib import Path
+import re
 import subprocess
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ import pytest
 
 from likhit.converters.nepali_docx import NepaliDocxConverter
 from likhit.converters.nepali_pdf import NepaliPdfConverter
+from likhit.renderers.markdown import strip_page_anchors
 from likhit.markdown_assembly import assemble_markdown
 from likhit.models import RepairedBlock, Table, TableCell, TableRegion
 from likhit.nepali_pdf_repair import needs_nepali_pdf_repair
@@ -328,6 +330,17 @@ def test_converter_logs_when_ocr_is_needed_but_not_configured(
     assert "OCR appears necessary, but OCR is not configured" in caplog.text
 
 
+def _content_lines(markdown: str) -> list[str]:
+    """Lines of `markdown` with page anchors, and the gap each leaves, removed.
+
+    These assertions are about text and reading order, not about anchors, so
+    they compare the content stream rather than the raw output.
+    """
+
+    stripped = strip_page_anchors(markdown)
+    return re.sub(r"\n{3,}", "\n\n", stripped).strip().splitlines()
+
+
 def test_convert_repairs_broken_cmap_sample() -> None:
     sample = ROOT / "samples" / "pressrelease.pdf"
 
@@ -339,7 +352,7 @@ def test_convert_repairs_broken_cmap_sample() -> None:
     assert "प्रष्ट्रिधध" in raw_markitdown
     assert "प्रष्ट्रिधध" not in repaired
     assert not repaired.startswith("---")
-    assert repaired.splitlines()[:6] == [
+    assert _content_lines(repaired)[:6] == [
         "अख्तियार दुरुपयोग अनुसन्धान आयोग",
         "टङ्गाल, काठमाडौं",
         "मिति: २०८१।१०। २४ गते।",
@@ -532,7 +545,7 @@ def test_convert_keeps_aarop_patra_title_lines_readable() -> None:
     assert "श्री विशेष अदालत, काठमाडौं समक्ष पेस गरेको" in markdown
     assert "आरोप-पत्र" in markdown
     assert "श्री ववशेष अदालत, काठमाड� समक्ष पेस गरेको" not in markdown
-    assert markdown.splitlines()[:4] == [
+    assert _content_lines(markdown)[:4] == [
         "(महाशाखा नं. ९)",
         "श्री विशेष अदालत, काठमाडौं समक्ष पेस गरेको",
         "आरोप-पत्र",
