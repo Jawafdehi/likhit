@@ -12,6 +12,7 @@ from typing import Optional
 import fitz
 
 from likhit.errors import ExtractionError
+from likhit.extractors.lohit import lohit_correction_map
 
 logger = logging.getLogger(__name__)
 
@@ -406,8 +407,14 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
         glyph_order = font.getGlyphOrder()
         best_cmap = _safe_get_best_cmap(font)
         if not best_cmap:
+            # The subsetter emptied the font's own cmap, so there is nothing
+            # here to reconstruct a mapping from. Fall back to a table derived
+            # from the upstream release, which is valid because subsetting
+            # preserves glyph order -- see likhit.extractors.lohit. Returns
+            # empty for any font we have no reference for, i.e. no repair.
+            reference_map = lohit_correction_map(font)
             font.close()
-            return {}
+            return reference_map
         name_to_unicode = {name: codepoint for codepoint, name in best_cmap.items()}
 
         gid_to_correct: dict[int, str] = {}
