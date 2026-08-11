@@ -26,11 +26,7 @@ from markitdown_ocr import PdfConverterWithOCR
 
 from likhit.errors import ExtractionError
 from likhit.extractors.base import RawDocument, TextFragment
-from likhit.extractors.font_based import (
-    FontBasedStrategy,
-    count_marked_cids,
-    parse_page_range,
-)
+from likhit.extractors.font_based import FontBasedStrategy, parse_page_range
 from likhit.extractors.numeric_boundaries import (
     NumericBoundaryRepair,
     collect_document_numeric_boundary_repairs,
@@ -764,9 +760,16 @@ def _markdown_quality_score(markdown: str) -> int:
         sum(character.isspace() for character in markdown)
         - int(len(markdown) * _MAX_REASONABLE_WHITESPACE_RATIO),
     )
+    # A bare "|" is table structure, not per-character garble. Counting it as a
+    # single-character token made this penalty scale with a candidate's column
+    # count, so the candidate that renders explicit cell boundaries paid for
+    # doing so: on the OAG corpus 94.6% of likhit's single-character tokens were
+    # table pipes, costing it up to 57,828 points against a candidate carrying
+    # the same words with less structure. Pipe-heavy output is still charged, by
+    # pipe_heavy_lines above -- the term that is actually about tables.
     single_token_excess = max(
         0,
-        sum(len(token) == 1 for token in tokens)
+        sum(len(token) == 1 and token != "|" for token in tokens)
         - int(len(tokens) * _MAX_REASONABLE_SINGLE_TOKEN_RATIO),
     )
     matra_damage_count = (
@@ -781,7 +784,16 @@ def _markdown_quality_score(markdown: str) -> int:
         - len(vowel_poor_tokens) * 3
         - pipe_heavy_lines * 4
         - cid_garbage_count * 12
-        - (markdown.count("\ufffd") + count_marked_cids(markdown)) * 12
+        # Marked CIDs are deliberately absent from this comparison. Marking is a
+        # likhit feature -- every rival candidate comes from pdfminer or the OCR
+        # converter and can never carry a mark (measured: 0 of 58 candidate
+        # pairs) -- so the term has a constant sign and only ever taxes the
+        # candidate that labels its unmappable glyphs. The rival carries the
+        # same damage disguised as ASCII: where likhit emits ूारि<mark>भक the
+        # rival emits ूारिWभक for that word. Charging 12 per label and nothing
+        # per disguise ranks hidden damage above declared damage. U+FFFD stays
+        # charged: any candidate can emit it, so it still discriminates.
+        - markdown.count("\ufffd") * 12
         - whitespace_excess
         - single_token_excess * _EXCESS_SINGLE_TOKEN_PENALTY
         - matra_damage_count * _MATRA_DAMAGE_PENALTY
