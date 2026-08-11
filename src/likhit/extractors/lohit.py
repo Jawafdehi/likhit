@@ -140,6 +140,26 @@ BELOW_FORM_RA_CORRECTIONS: dict[int, tuple[str, str]] = {
     ),  # u0930_u094D.blwf_u0942.blws: र्ू -> ्रू
 }
 
+# ``{CID: (source CID, value)}`` for glyphs the derivation cannot reach at all.
+#
+# ``_analyze_gsub`` gives up on this font -- "GSUB ligature resolution did not
+# converge within 177 passes over 176 rule(s); font has conflicting ligature
+# substitutions" -- so a handful of glyphs it would otherwise have named come out
+# missing, among them three unnamed ones (``glyph237``/``238``/``239``) that no
+# glyph name can speak for either.
+#
+# A ``SingleSubst`` rule names them anyway: it substitutes one glyph for another
+# that *is* known, which makes the pair a positional variant carrying the same
+# text. Only such pairs belong here, and each is recorded with its source so the
+# test can check that the rule still exists in the reference font rather than
+# trusting the value typed below.
+GSUB_VARIANT_ADDITIONS: dict[int, tuple[int, str]] = {
+    # lookup 82: u0940_u0930_u094D.rphf.abvs (288) -> glyph238 (292). 2,843
+    # glyphs across the OAG corpus, every one of them in a document whose Lohit
+    # subsets verify, which makes it the largest single gap left in this table.
+    292: (288, "\u0940\u0930\u094d"),  # glyph238 -> ीर्
+}
+
 # ``{CID: Unicode}`` for Lohit-Devanagari 2.5.3. Values are the font's plain
 # Unicode semantics, so that this stays a faithful record of the reference font
 # and can be checked against it. :func:`with_reordering_markers` is what turns
@@ -433,6 +453,7 @@ GID_TO_UNICODE: dict[int, str] = {
     288: "\u0940\u0930\u094d",  # u0940_u0930_u094D.rphf.abvs -> ीर्
     289: "\u0940\u0930\u094d\u0902",  # u0940_u0930_u094D.rphf.abvs_u0902.abvs -> ीर्ं
     290: "\u0940",  # glyph236 -> ी
+    292: "\u0940\u0930\u094d",  # glyph238 -> ीर् (SingleSubst variant of 288)
     294: "\u094d\u0930\u0941",  # u0930_u094D.blwf_u0941.blws -> ्रु
     295: "\u094d\u0930\u0942",  # u0930_u094D.blwf_u0942.blws -> ्रू
     296: "\u0941",  # glyph242 -> ु
