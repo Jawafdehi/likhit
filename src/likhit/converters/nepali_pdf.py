@@ -185,8 +185,20 @@ class NepaliPdfConverter(DocumentConverter):
 
         if prefetched_likhit is not None:
             # Already extracted above (repair-font path); reuse it rather than
-            # re-running likhit.
-            candidates.append((prefetched_likhit, True))
+            # re-running likhit. It still needs the numeric-boundary repairs:
+            # geometry-aware extraction rebuilds cell boundaries the *text layer*
+            # erased, which is not the same as applying the document-level
+            # repairs collected above, and the early return at the top of this
+            # method applies them to a likhit result for exactly that reason.
+            candidates.append(
+                (
+                    _repair_result_numeric_boundaries(
+                        prefetched_likhit,
+                        numeric_repairs,
+                    ),
+                    True,
+                )
+            )
         elif prefer_geometry_aware or _default_pdf_result_needs_likhit(
             default_result.markdown
         ):
@@ -201,7 +213,15 @@ class NepaliPdfConverter(DocumentConverter):
             likhit_result, _ = _try_convert_with_likhit(raw)
             if likhit_result is not None:
                 logger.info("PDF converter: likhit re-extraction produced a candidate.")
-                candidates.append((likhit_result, True))
+                candidates.append(
+                    (
+                        _repair_result_numeric_boundaries(
+                            likhit_result,
+                            numeric_repairs,
+                        ),
+                        True,
+                    )
+                )
             else:
                 logger.warning(
                     "PDF converter: likhit re-extraction did not produce usable text; keeping the existing candidates."
