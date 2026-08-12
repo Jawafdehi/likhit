@@ -23,6 +23,7 @@ from likhit.extractors.font_based import (
     FontBasedStrategy,
     _is_probably_legacy_ascii,
     _nepali_validity,
+    _passes_content_legacy_gate,
     choose_legacy_map,
     detect_content_legacy_fonts,
 )
@@ -34,7 +35,7 @@ from likhit.extractors.font_classifier import (
     is_core_font_name,
     scan_ocr_pages,
 )
-from likhit.extractors.legacy_maps import get_converter_for_map
+from likhit.extractors.legacy_maps import ALL_MAP_KEYS, get_converter_for_map
 from tests.synthetic_pdfs import (
     build_legacy_then_english_pdf,
     build_mislabeled_preeti_pdf,
@@ -303,6 +304,111 @@ def test_spins_does_not_steal_genuine_preeti() -> None:
     # them: the dictionary evidence is the whole of the margin, and it is small.
     assert _nepali_validity(spins_read)["penalty_per_deva"] == 0.0
     assert _nepali_validity(spins_read)["hits"] < _nepali_validity(preeti_read)["hits"]
+
+
+# --- Part B, VOL-77: what may and may not decide a tie -------------------------
+#
+# The three cases below are a partition of "the dictionary and the penalty are
+# level". Each is a miniature of a shape measured on the OAG corpus, and each
+# behaved differently before the fix -- all three chose Preeti, because Preeti is
+# ALL_MAP_KEYS[0] and the loop kept the first strict maximum.
+
+_TIE_PREFIX = "g]kfn ;/sf/ cbfnt"  # नेपाल सरकार अदालत -- read the same by every map
+
+
+def test_devanagari_ratio_breaks_a_hits_and_penalty_tie() -> None:
+    # The Ghiring shape (`3585__...Ghiring Gaunpalika`, font "Spins", 303 chars):
+    # every map ties at hits=3, penalty=0.0, and only the Devanagari ratio
+    # separates them, because the keystrokes ";_Vof" land entirely inside
+    # Devanagari under Spins and leave a literal ")" under every other map.
+    keystrokes = f"{_TIE_PREFIX} ;_Vof"
+    per_map = {
+        candidate: _nepali_validity(get_converter_for_map(candidate)(keystrokes))
+        for candidate in ALL_MAP_KEYS
+    }
+    assert len({validity["hits"] for validity in per_map.values()}) == 1
+    assert {validity["penalty_per_deva"] for validity in per_map.values()} == {0.0}
+    assert per_map["Spins"]["ratio"] > per_map["Preeti"]["ratio"]
+
+    assert choose_legacy_map(keystrokes)[0] == "Spins"
+    # The point of the fix, stated as text rather than as a ranking: the word is
+    # संख्या ("number"), and Preeti spells it स)ख्या -- well-formed Devanagari, the
+    # wrong word, invisible to every purity axis and to a reader.
+    assert get_converter_for_map("Spins")(keystrokes).endswith("संख्या")
+    assert get_converter_for_map("Preeti")(keystrokes).endswith("स)ख्या")
+
+
+def test_choose_legacy_map_abstains_when_every_axis_ties() -> None:
+    # "X" is ह् under Preeti and हृ under Kantipur: both pure Devanagari, both two
+    # code points, so hits, penalty, ratio and Devanagari count are all identical
+    # and the two readings still differ. Nothing but tuple position could pick a
+    # winner, so there is no winner to pick.
+    keystrokes = f"{_TIE_PREFIX} X"
+    readings = {
+        get_converter_for_map(candidate)(keystrokes) for candidate in ALL_MAP_KEYS
+    }
+    assert len(readings) > 1
+
+    map_key, best = choose_legacy_map(keystrokes)
+    assert map_key is None
+    # Abstention is NOT the gate declining: the best candidate clears it. The
+    # keystrokes stay visibly undecoded, which is recoverable; a confident wrong
+    # word is not.
+    assert best is not None and _passes_content_legacy_gate(best)
+
+
+def test_identical_readings_are_not_an_ambiguity() -> None:
+    # The converse, and the reason abstention compares text rather than counting
+    # tied candidates: all six maps tie on every axis here too, but they all
+    # decode to the SAME string. Abstaining would throw away a correct decode over
+    # a distinction without a difference.
+    keystrokes = _TIE_PREFIX
+    readings = {
+        get_converter_for_map(candidate)(keystrokes) for candidate in ALL_MAP_KEYS
+    }
+    assert readings == {"नेपाल सरकार अदालत"}
+
+    assert choose_legacy_map(keystrokes)[0] == "Preeti"
+
+
+def test_all_map_keys_order_does_not_decide_the_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The invariant behind all three cases above, asserted against the tuple
+    # itself rather than through a fixture: reversing the walk order must not
+    # change what any document ends up SAYING. If it does, order is evidence again.
+    #
+    # The invariant is on the text, not on the map key, and the third case is why.
+    # When tied candidates decode identically, which of their names is returned is
+    # still positional -- reversing turns "Preeti" into "Spins" there. That is
+    # harmless by construction (the readings are equal, so the transcript cannot
+    # differ) but it does mean the recorded map name is not a stable label for
+    # such spans. Asserting on the key would either fail on a harmless difference
+    # or force an arbitrary tie-break back into the chooser.
+    from likhit.extractors import font_based as font_based_module
+
+    def decode(keystrokes: str) -> str | None:
+        map_key, _validity = choose_legacy_map(keystrokes)
+        return get_converter_for_map(map_key)(keystrokes) if map_key else None
+
+    cases = [f"{_TIE_PREFIX} ;_Vof", f"{_TIE_PREFIX} X", _TIE_PREFIX]
+    before_text = [decode(case) for case in cases]
+    assert before_text == [
+        "नेपाल सरकार अदालत संख्या",  # ratio decided it
+        None,  # abstained
+        "नेपाल सरकार अदालत",  # every map agrees
+    ]
+
+    # Reversing must actually move Preeti off the head, or this proves nothing.
+    reversed_keys = tuple(reversed(ALL_MAP_KEYS))
+    assert ALL_MAP_KEYS[0] == "Preeti" and reversed_keys[0] != "Preeti"
+
+    monkeypatch.setattr(font_based_module, "ALL_MAP_KEYS", reversed_keys)
+    assert [decode(case) for case in cases] == before_text
+    # The evidence-decided cases pin the key too: only the identical-text one is
+    # allowed to relabel.
+    assert choose_legacy_map(cases[0])[0] == "Spins"
+    assert choose_legacy_map(cases[1])[0] is None
 
 
 def test_detect_content_legacy_fonts_ignores_english() -> None:

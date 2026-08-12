@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import replace
+import hashlib
 import re
 from pathlib import Path
 
@@ -719,18 +720,67 @@ def _passes_content_legacy_gate(validity: dict[str, float]) -> bool:
     )
 
 
+def _map_ranking_key(validity: dict[str, float]) -> tuple[float, float, float, float]:
+    """Evidence axes for a candidate map, most decisive first, higher is better.
+
+    ``hits`` and ``penalty_per_deva`` are the calibrated primary axes.
+    ``ratio`` and ``devanagari`` are tie-breaks only: a map that fits the face
+    maps every keystroke onto Devanagari, so the residue a *wrong* map leaves
+    behind shows up as non-Devanagari characters. That is what separates Spins
+    from Preeti on a small span — Preeti reads Spins' ``_`` as a literal ``)``
+    where Spins produces the anusvara ``ं``.
+
+    They sit strictly below ``penalty`` because a high Devanagari ratio on its
+    own is a mirage (``test_nepali_validity_flags_garble_low``): converting ASCII
+    digits into Devanagari digits also raises it, which is exactly what the
+    ``Spins_EXT`` companion faces do under the map that is wrong for them. Those
+    are excluded by ``hits``, not by this key.
+    """
+
+    return (
+        validity["hits"],
+        -validity["penalty_per_deva"],
+        validity["ratio"],
+        validity["devanagari"],
+    )
+
+
 def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
     """Pick the best legacy map for ``text`` if one validates, else ``(None, best)``.
 
-    Tries every :data:`ALL_MAP_KEYS` map and keeps the candidate with the most
-    dictionary hits (ties broken by lower penalty). Returns the winning map key
-    only when it clears :func:`_passes_content_legacy_gate`; otherwise the map
-    key is ``None`` (the second element is the best-scoring validity for
-    diagnostics).
+    Tries every :data:`ALL_MAP_KEYS` map and ranks the candidates by
+    :func:`_map_ranking_key`. Returns the winning map key only when it clears
+    :func:`_passes_content_legacy_gate`; otherwise the map key is ``None`` (the
+    second element is the best-scoring validity for diagnostics).
+
+    **The order of ALL_MAP_KEYS is not a tie-break.** It used to be, implicitly:
+    the loop kept the first strict maximum, so two maps level on every axis were
+    separated by whichever the tuple happened to list first. On small spans that
+    decided real documents — a 303-character face in one OAG municipality report
+    tied all six maps at ``hits=3, penalty=0.0`` and was decoded as Preeti purely
+    because Preeti is index 0, rendering ``;_Vof`` as ``स)ख्या`` where the correct
+    Spins read gives ``संख्या`` (VOL-77). Position in a tuple is not evidence, so
+    a tie that survives every axis abstains instead: leaving the keystrokes
+    visibly undecoded is recoverable, while well-formed Devanagari spelling the
+    wrong word is not detectable by any purity axis or by a reader.
+
+    Maps that produce *identical* text are not an ambiguity and do not abstain.
+    Preeti, Kantipur and Sagarmatha decode much ordinary text the same way, and
+    refusing to choose between two readings that do not differ would throw away
+    a correct decode over a distinction without a difference.
+
+    One consequence, deliberately left in place: for such a span the returned map
+    *name* is still whichever of the equal candidates comes first in
+    :data:`ALL_MAP_KEYS`. The decoded text cannot depend on that choice — the
+    readings are equal by definition — so no transcript is affected, but the
+    recorded map name is not a stable label for those spans and should not be read
+    as an identification of the face. Making it stable would mean inventing a
+    tie-break, which is the thing this function stopped doing.
     """
 
-    best_key: str | None = None
-    best: dict[str, float] | None = None
+    scored: list[
+        tuple[tuple[float, float, float, float], str, dict[str, float], str]
+    ] = []
     for map_key in ALL_MAP_KEYS:
         try:
             converted = get_converter_for_map(map_key)(text)
@@ -742,12 +792,20 @@ def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
         except Exception:  # noqa: BLE001 - this map does not fit; try the next
             continue
         validity = _nepali_validity(converted)
-        if best is None or (validity["hits"], -validity["penalty_per_deva"]) > (
-            best["hits"],
-            -best["penalty_per_deva"],
-        ):
-            best, best_key = validity, map_key
-    if best is not None and _passes_content_legacy_gate(best):
+        digest = hashlib.blake2b(converted.encode("utf-8"), digest_size=16).hexdigest()
+        scored.append((_map_ranking_key(validity), map_key, validity, digest))
+    if not scored:
+        return None, None
+
+    # Stable sort on the evidence alone, so candidates level on every axis keep
+    # their walk order and the tie below is detected rather than resolved by it.
+    scored.sort(key=lambda candidate: candidate[0], reverse=True)
+    best_key, best, best_digest = scored[0][1], scored[0][2], scored[0][3]
+    tied = [candidate for candidate in scored[1:] if candidate[0] == scored[0][0]]
+    if any(candidate[3] != best_digest for candidate in tied):
+        return None, best
+
+    if _passes_content_legacy_gate(best):
         return best_key, best
     return None, best
 
