@@ -165,13 +165,88 @@ def _extract_cell_text(
     matching.sort(key=lambda fragment: (fragment.y0, fragment.x0))
 
     lines: list[str] = []
-    for fragment in matching:
-        text = _normalize_cell_text(fragment.text)
+    for visual_line in _group_into_visual_lines(matching):
+        text = _join_visual_line(visual_line)
         if not text:
             continue
         if not lines or lines[-1] != text:
             lines.append(text)
     return "\n".join(lines)
+
+
+def _group_into_visual_lines(
+    fragments: list[TextFragment],
+) -> list[list[TextFragment]]:
+    """Split y-sorted fragments into the visual lines they were printed on.
+
+    A fragment is one *line* of one text block, so a cell whose grid the detector
+    resolved holds one fragment per visual line and every group below has exactly
+    one member -- the output is then identical to joining the fragments directly.
+
+    A cell whose bbox swallowed a nested sub-table holds one fragment per inner
+    *cell*, several to a line. Emitting one output line each would put every value
+    on its own row, destroying the inner row that says what the value belongs to,
+    and dropping its x position destroys the column too. The fragments still carry
+    that geometry here, so group by it instead.
+    """
+
+    groups: list[list[TextFragment]] = []
+    for fragment in fragments:
+        if groups and _shares_visual_line(groups[-1][0], fragment):
+            groups[-1].append(fragment)
+            continue
+        groups.append([fragment])
+    for group in groups:
+        group.sort(key=lambda fragment: fragment.x0)
+    return groups
+
+
+def _shares_visual_line(anchor: TextFragment, fragment: TextFragment) -> bool:
+    """Do two fragments sit on the same printed line?
+
+    Decided by vertical overlap against the line's *first* fragment rather than
+    its running extent, so a column of tightly-spaced lines cannot chain into one
+    band through a series of small overlaps.
+    """
+
+    overlap = min(anchor.y1, fragment.y1) - max(anchor.y0, fragment.y0)
+    shortest = min(anchor.y1 - anchor.y0, fragment.y1 - fragment.y0)
+    if shortest <= 0:
+        return abs(anchor.y0 - fragment.y0) <= _EDGE_TOLERANCE
+    return overlap > shortest / 2
+
+
+def _join_visual_line(fragments: list[TextFragment]) -> str:
+    """Join one visual line's fragments, left to right.
+
+    The separator is a single space, and deliberately not the alternatives:
+
+    * `|` would terminate the cell in the enclosing Markdown table.
+    * an empty separator would splice two adjacent figures into one number and
+      manufacture the >=15-digit runs `verify_numeric_boundaries.py` gates.
+
+    Overprinted text -- the same string drawn twice at the same place -- was
+    suppressed by the caller's line-level dedupe while one fragment meant one
+    line. It has to be suppressed here too, but only where the two fragments
+    overlap horizontally: a figure legitimately repeats across columns of a
+    register, and `7980 7980` in two different columns is data, not overprint.
+    """
+
+    parts: list[str] = []
+    kept: list[TextFragment] = []
+    for fragment in fragments:
+        text = _normalize_cell_text(fragment.text)
+        if not text:
+            continue
+        if kept and parts[-1] == text and _overlaps_horizontally(kept[-1], fragment):
+            continue
+        parts.append(text)
+        kept.append(fragment)
+    return " ".join(parts)
+
+
+def _overlaps_horizontally(left: TextFragment, right: TextFragment) -> bool:
+    return min(left.x1, right.x1) - max(left.x0, right.x0) > 0
 
 
 def _normalize_cell_text(text: str) -> str:
