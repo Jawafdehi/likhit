@@ -43,6 +43,24 @@ def _mark(text: str) -> str:
     return "".join(chr(_CID_MARK_BASE + ord(char)) for char in text)
 
 
+def _padding_crossover(limit: int = 2000) -> int | None:
+    """Pad columns at which per-character garble first outscores intact words.
+
+    Read from the shipping scorer rather than from a restatement of one of its
+    terms: a helper that recomputes the term cannot notice the term changing,
+    which is precisely the regression this file exists to catch.
+    """
+    intact = _markdown_quality_score(_table(blank_cells=0))
+    return next(
+        (
+            pad
+            for pad in range(limit + 1)
+            if _markdown_quality_score(_per_character_table(pad)) > intact
+        ),
+        None,
+    )
+
+
 def test_explicit_blank_table_cells_do_not_lower_the_score() -> None:
     # Rendering a table with explicit empty cells adds bare "|" tokens and
     # nothing else -- same words, same rows, same Devanagari. Counting those
@@ -124,19 +142,31 @@ def test_padding_empty_columns_cannot_refund_the_garble_penalty() -> None:
     """Pipes must leave the ratio's denominator, not just its numerator.
 
     Excluding `|` from the count alone leaves it in the population that sets the
-    allowance, so each added pipe raises the tolerated number of lone characters
-    and refunds 2.1 points of penalty. A candidate that split every syllable
-    into its own cell could then outscore one carrying the same characters as
-    whole words purely by padding empty columns -- measured at 3801 against 3750
-    with 60 pad columns, on byte-identical Devanagari.
-    """
-    intact = _table(blank_cells=0)
+    allowance, so each added pipe raised the tolerated number of lone characters
+    and refunded 2.1 points of penalty. A candidate that split every syllable into
+    its own cell could then outscore one carrying the same characters as whole
+    words purely by padding empty columns -- 3801 against 3750 at 60 pad columns,
+    on byte-identical Devanagari.
 
-    for blank_cells in (0, 20, 40, 60, 120):
-        garbled = _per_character_table(blank_cells=blank_cells)
-        assert _markdown_quality_score(garbled) < _markdown_quality_score(intact), (
-            f"per-character garble outscored intact words at {blank_cells} pad columns"
-        )
+    Padding can still win eventually, and that is deliberately not asserted away:
+    `+len(tokens)` credits +1 per pipe with no bound, which is F05's half of the
+    problem and what `test_pipe_heavy_output_is_still_penalised` xfails on. What
+    the fix buys is that the *penalty* stops shrinking, which moves the crossover
+    from 70 pad columns to 292 -- so the crossover itself is the measurement, and
+    it collapses if the refund returns.
+    """
+    intact = _markdown_quality_score(_table(blank_cells=0))
+
+    # 120 columns is past where the refund let garble win (70) and well short of
+    # where the unbounded token credit does (292).
+    assert _markdown_quality_score(_per_character_table(120)) < intact
+
+    crossover = _padding_crossover()
+    assert crossover is not None, "the token credit should still win eventually"
+    assert crossover > 240, (
+        f"garble outscored intact words at only {crossover} pad columns; the "
+        f"single-token penalty is being refunded by padding again"
+    )
 
 
 @pytest.mark.xfail(
