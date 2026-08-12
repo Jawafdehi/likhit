@@ -245,8 +245,11 @@ def _join_visual_line(fragments: list[TextFragment]) -> str:
     Overprinted text -- the same string drawn twice at the same place -- was
     suppressed by the caller's line-level dedupe while one fragment meant one
     line. It has to be suppressed here too, but only where the two fragments
-    overlap horizontally: a figure legitimately repeats across columns of a
-    register, and `7980 7980` in two different columns is data, not overprint.
+    occupy the *same* horizontal position, which is what overprint means. Merely
+    overlapping is not enough: adjacent columns of a register overlap by a point
+    or two, and on
+    `3172__1613896170विराटनगर महानगरपालिका` an overlap test deleted a genuine
+    repeat of `- डिल्लि धिमाल`.
     """
 
     parts: list[str] = []
@@ -255,15 +258,18 @@ def _join_visual_line(fragments: list[TextFragment]) -> str:
         text = _normalize_cell_text(fragment.text)
         if not text:
             continue
-        if kept and parts[-1] == text and _overlaps_horizontally(kept[-1], fragment):
+        if kept and parts[-1] == text and _same_horizontal_position(kept[-1], fragment):
             continue
         parts.append(text)
         kept.append(fragment)
     return " ".join(parts)
 
 
-def _overlaps_horizontally(left: TextFragment, right: TextFragment) -> bool:
-    return min(left.x1, right.x1) - max(left.x0, right.x0) > 0
+def _same_horizontal_position(left: TextFragment, right: TextFragment) -> bool:
+    return (
+        abs(left.x0 - right.x0) <= _EDGE_TOLERANCE
+        and abs(left.x1 - right.x1) <= _EDGE_TOLERANCE
+    )
 
 
 def _normalize_cell_text(text: str) -> str:

@@ -133,6 +133,21 @@ def test_overprinted_duplicate_on_one_line_is_suppressed() -> None:
     assert text == "७९८०"
 
 
+def test_a_repeat_in_a_barely_overlapping_column_survives() -> None:
+    # Overprint means the same horizontal position, not merely an overlapping
+    # one. Adjacent columns of a register overlap by a point or two, and treating
+    # that as overprint deleted a genuine repeat of `- डिल्लि धिमाल` on
+    # `3172__1613896170विराटनगर महानगरपालिका`.
+    fragments = [
+        fragment("- डिल्लि धिमाल", 100.0, 100.0, 200.0, 109.0),
+        fragment("- डिल्लि धिमाल", 190.0, 100.0, 290.0, 109.0),
+    ]
+
+    text = _extract_cell_text(fragments, (90.0, 90.0, 300.0, 120.0))
+
+    assert text == "- डिल्लि धिमाल - डिल्लि धिमाल"
+
+
 def test_a_figure_repeated_across_columns_survives() -> None:
     # The other side of that dedupe: a register legitimately prints the same
     # amount in two different columns of one row, and eating the second would
