@@ -16,6 +16,7 @@ import pytest
 import likhit.converters.nepali_pdf as nepali_pdf_module
 from likhit.converters.nepali_pdf import NepaliPdfConverter, _markdown_quality_score
 from likhit.extractors.font_based import _CID_MARK_BASE
+from likhit.extractors.numeric_boundaries import NumericBoundaryEvidence
 
 CELLS = ("काठमाडौँ", "महानगरपालिका", "लेखापरीक्षण", "प्रतिवेदन")
 ROWS = 40
@@ -275,8 +276,8 @@ def test_the_production_comparison_picks_the_marked_candidate_over_the_disguise(
     """
     monkeypatch.setattr(
         nepali_pdf_module,
-        "_try_collect_numeric_boundary_repairs",
-        lambda _raw: [],
+        "_try_collect_numeric_boundary_evidence",
+        lambda _raw: NumericBoundaryEvidence(tuple([]), frozenset()),
     )
     monkeypatch.setattr(
         nepali_pdf_module,
