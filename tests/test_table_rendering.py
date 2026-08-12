@@ -115,6 +115,72 @@ def test_render_table_does_not_join_a_swallowed_sub_table():
     assert len(rendered.splitlines()) == 10  # fence, 8 rows, fence
 
 
+def test_render_table_does_not_join_a_figure_carrying_a_stray_pipe():
+    # The OCR text of a figure sometimes carries a stray `|` -- `८५०००|` rather
+    # than `८५०००`. It is still a bare figure, and the swallowed-sub-table guard
+    # has to see it as one: `रकम` above it is a header, not a sentence this value
+    # continues, so joining would mash a header onto its own datum.
+    #
+    # Found in the corpus, not invented: `local-level-report/3876__NoRKt...भानु
+    # नगरपालीका, २०७८` is the one document in 3,690 whose `figure_one_cell` count
+    # moved under the VOL-71 fix, and this was why. The renderer read the raw cell
+    # text `८५०००|` and called it prose, while every consumer reads the emitted
+    # line *after* splitting on `|` and so sees a clean figure -- the two sides
+    # disagreed about the same value.
+    table = Table(
+        row_count=1,
+        col_count=3,
+        cells=[
+            TableCell(row=0, col=0, text="क"),
+            TableCell(row=0, col=1, text="रकम\n८५०००|"),
+        ],
+    )
+
+    rendered = render_table_preformatted_markdown(table)
+
+    assert "रकम ८५०००" not in rendered
+    assert rendered == "```text\n| क | रकम |  |\n|  | ८५०००| |  |\n```"
+
+
+def test_render_table_does_not_join_a_pipe_separated_date():
+    # `१०|२०७६|९|१३` is a voucher date written with `|` as the field separator. It
+    # is not a wrapped sentence either, so the same guard must refuse it -- the
+    # conservative direction, since leaving a row transposed only preserves the
+    # status quo while joining is unrecoverable.
+    table = Table(
+        row_count=1,
+        col_count=3,
+        cells=[
+            TableCell(row=0, col=0, text="क"),
+            TableCell(row=0, col=1, text="गो.भौ.न,मिति\n१०|२०७६|९|१३"),
+        ],
+    )
+
+    rendered = render_table_preformatted_markdown(table)
+
+    assert "गो.भौ.न,मिति १०" not in rendered
+    assert len(rendered.splitlines()) == 4  # fence, 2 rows, fence
+
+
+def test_render_table_still_joins_prose_containing_a_pipe():
+    # Admitting `|` to the bare-figure test must not turn every pipe-bearing line
+    # into a refusal. A wrapped line with letters in it is still prose and is
+    # still rejoined; only a line that is *nothing but* figures and separators is
+    # protected.
+    table = Table(
+        row_count=1,
+        col_count=3,
+        cells=[
+            TableCell(row=0, col=0, text="लक्ष्मी श्रेष्ठ|दिपेश विष्ट\nसञ्चिता घिमिरे"),
+            TableCell(row=0, col=1, text="एक"),
+        ],
+    )
+
+    assert render_table_preformatted_markdown(table) == (
+        "```text\n| लक्ष्मी श्रेष्ठ|दिपेश विष्ट सञ्चिता घिमिरे | एक |  |\n```"
+    )
+
+
 def test_render_table_keeps_covered_colspan_positions():
     table = Table(
         row_count=2,

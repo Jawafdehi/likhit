@@ -753,7 +753,16 @@ def _merge_continuation_rows(
 #: A line that is nothing but a figure -- `verify_table_integrity.py`'s own
 #: definition, so "is this line a bare figure" means the same in the renderer as
 #: in the instrument that measures the renderer.
-_BARE_FIGURE = re.compile(r"^[\s0-9०-९,.।-]+$")
+#:
+#: `|` is in the class, which that instrument's copy does not need. The instrument
+#: reads a *rendered* line and splits it on `|` first, so a stray pipe in the cell
+#: text has already become a column separator by the time it classifies the value.
+#: Here the raw cell text is all there is, so without `|` the two sides disagree
+#: about the same value: `८५०००|` reads as prose to the renderer and as a bare
+#: figure to everything downstream. Measured, not hypothetical -- it is why
+#: `local-level-report/3876__NoRKt...भानु नगरपालीका, २०७८` had a swallowed
+#: sub-table joined into a narrative cell.
+_BARE_FIGURE = re.compile(r"^[\s0-9०-९,.।|-]+$")
 _ANY_DIGIT = re.compile(r"[0-9०-९]")
 #: A line whose last token is a figure. This is the tell that separates a REGISTER ROW
 #: from a wrapped sentence, and it is needed because the bare-figure test below cannot
@@ -786,9 +795,10 @@ def _wrapped_lines_are_one_row(cell_lines: list[list[str]]) -> bool:
     could, and `_extract_cell_text` has discarded them by this point. When two or
     more columns wrap, a real pairing may exist and collapsing would destroy it.
 
-    **None of that column's lines is a bare figure.** A line that is only a number
-    is not a sentence continuation, and joining it would corrupt one of two things
-    this corpus is full of:
+    **None of that column's lines is a bare figure**, where a stray `|` in the text
+    counts as a separator rather than as content -- see `_BARE_FIGURE`. A line that
+    is only a number is not a sentence continuation, and joining it would corrupt
+    one of two things this corpus is full of:
 
     - a figure split across visual lines (`185929593.` + `20` is one amount). A
       space join yields `185929593. 20`; a bare concatenation builds the >=15-digit
