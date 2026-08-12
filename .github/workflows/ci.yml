@@ -60,5 +60,33 @@ jobs:
       - name: Type check (ty, advisory — does not fail the build)
         run: uv run ty check || true
 
+      # The Lohit table in src/likhit/extractors/lohit.py is derived from one
+      # exact upstream build, and tests/test_lohit.py can re-derive it and check
+      # its GSUB provenance -- but only with that font present, and those tests
+      # skip without it. Skipping meant the drift guard the module advertises
+      # never actually ran: a mistype applied consistently to the table, the
+      # addition record and the source value passes every unconditional test.
+      #
+      # OFL-1.1, so redistribution in CI is fine, and snapshot.debian.org is an
+      # archival URL. The sha256 is the one lohit.py declares; verifying it means
+      # a substituted artifact fails loudly instead of testing the wrong font.
+      # continue-on-error so a network outage degrades to today's skip rather
+      # than breaking the build on something unrelated to the change under test.
+      - name: Fetch the Lohit-Devanagari 2.5.3 reference font
+        id: lohit
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          url=https://snapshot.debian.org/archive/debian/20130601T160308Z/pool/main/f/fonts-lohit-deva/fonts-lohit-deva_2.5.3-1_all.deb
+          mkdir -p "$RUNNER_TEMP/lohit" && cd "$RUNNER_TEMP/lohit"
+          curl -sSLo lohit.deb --retry 3 --retry-delay 2 "$url"
+          ar x lohit.deb && tar -xf data.tar.*
+          ttf=usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf
+          echo "fcc1bfc221ca7b610ce6f36301bd5ac79c81124bc2a70a90872048df27c6416f  $ttf" \
+            | sha256sum -c -
+          echo "ttf=$PWD/$ttf" >> "$GITHUB_OUTPUT"
+
       - name: Run tests
+        env:
+          LIKHIT_LOHIT_REFERENCE_TTF: ${{ steps.lohit.outputs.ttf }}
         run: uv run pytest
