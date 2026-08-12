@@ -122,6 +122,9 @@ def test_reordering_markers_match_kalimati() -> None:
         (301, "क्र"),  # क्र
         (306, "त्र"),  # त्र
         (308, "प्र"),  # प्र
+        # A rakar behind a precomposed nukta letter. Derived wrongly as `फ़र्`
+        # until the ra-virama swap learned to look past the nukta.
+        (229, "\u095e\u094d\u0930"),  # फ़्र -- precomposed U+095E, not फ + nukta
         (276, "त्र्"),  # त्र् -- a half-form, not a repha
     ],
 )
@@ -439,14 +442,34 @@ def test_gsub_variant_additions_are_what_the_table_ships() -> None:
 
 
 def test_a_variant_addition_reorders_exactly_like_its_source() -> None:
-    """The value is handed out through the same marker rules, not around them."""
+    """The value is handed out through the same marker rules, not around them.
 
-    for cid, (source, value) in lohit.GSUB_VARIANT_ADDITIONS.items():
+    This is the property that matters, and it is the only one asserted per
+    entry. An earlier version also required the transform to be a *change*,
+    which held for CID 292 only because its value carries a repha -- the
+    transform is a no-op on CID 291's ``ीं`` and on CID 293's ``ीर्ं``, so that
+    assertion over-fitted to one entry and would have blocked its two
+    legitimate siblings.
+    """
+
+    for cid, (source, _value) in lohit.GSUB_VARIANT_ADDITIONS.items():
         assert lohit.with_reordering_markers(
             lohit.GID_TO_UNICODE[cid]
         ) == lohit.with_reordering_markers(lohit.GID_TO_UNICODE[source])
-        # ...and that is not a no-op: this value carries a repha to move.
-        assert lohit.with_reordering_markers(value) != value
+
+
+def test_the_repha_carrying_variant_does_reorder() -> None:
+    """Kept from the per-entry check above, as a claim about CID 292 alone.
+
+    CID 292 is the entry the corpus actually needs, so its repha must still be
+    moved to the front of the cluster. Stated for that CID rather than for every
+    addition, which is what made the general form wrong.
+    """
+
+    value = lohit.GID_TO_UNICODE[292]
+
+    assert lohit.with_reordering_markers(value) != value
+    assert lohit.with_reordering_markers(value) == "ी" + lohit._PUA_REPH
 
 
 @pytest.mark.skipif(
@@ -456,23 +479,92 @@ def test_a_variant_addition_reorders_exactly_like_its_source() -> None:
 def test_variant_additions_rest_on_a_single_subst_rule_in_the_font() -> None:
     """The provenance, checked against the font rather than taken on trust.
 
-    Without this the additions would be values typed by hand. With it, a font
-    that does not substitute source for target fails the build.
+    Two halves, and the second is the load-bearing one. That *a* SingleSubst maps
+    source to target only makes them related; what makes them the *same text* is
+    the feature it sits under. `psts` is post-base positional substitution, so
+    the pair is one glyph drawn differently. An `aalt`/`salt`/`ss01` rule would
+    be a stylistic alternate, and a future release could add one of those while
+    repurposing the target glyph entirely -- which the source-to-target check
+    alone would wave through.
+
+    This test is env-gated on the reference font, and CI sets no such variable,
+    so it is skipped there. It does not fail the build; it fails *this* check when
+    someone runs it with the font present. The two unconditional tests above check
+    the table's self-consistency, which is a different and weaker property: a
+    consistent mistype across the table, the addition record and the shipped
+    value passes both of them.
     """
+
+    positional_features = {"psts", "pres", "abvs", "blws", "half", "rphf", "vatu"}
 
     font = _reference_font()
     assert font is not None
     glyph_order = font.getGlyphOrder()
-    substitutions: dict[str, set[str]] = {}
-    for lookup in font["GSUB"].table.LookupList.Lookup:
+    gsub = font["GSUB"].table
+
+    # feature tag -> the lookups it reaches, directly or as a nested lookup of a
+    # contextual rule. Lookup 82 is reachable only via the second path.
+    direct: dict[int, set[str]] = {}
+    for record in gsub.FeatureList.FeatureRecord:
+        for index in record.Feature.LookupListIndex:
+            direct.setdefault(index, set()).add(record.FeatureTag)
+
+    def _nested_indices(subtable: object) -> set[int]:
+        found: set[int] = set()
+        for records in _substitution_record_lists(subtable):
+            for record in records:
+                found.add(record.LookupListIndex)
+        return found
+
+    reaching: dict[int, set[str]] = {index: set(tags) for index, tags in direct.items()}
+    for index, lookup in enumerate(gsub.LookupList.Lookup):
+        for subtable in lookup.SubTable:
+            for nested in _nested_indices(subtable):
+                reaching.setdefault(nested, set()).update(direct.get(index, set()))
+
+    substitutions: dict[str, set[tuple[str, int]]] = {}
+    for index, lookup in enumerate(gsub.LookupList.Lookup):
         for subtable in lookup.SubTable:
             if subtable.__class__.__name__ != "SingleSubst":
                 continue
             for source_name, target_name in subtable.mapping.items():
-                substitutions.setdefault(target_name, set()).add(source_name)
+                substitutions.setdefault(target_name, set()).add((source_name, index))
 
     for cid, (source, _value) in lohit.GSUB_VARIANT_ADDITIONS.items():
         target_name = glyph_order[cid]
-        assert glyph_order[source] in substitutions.get(target_name, set()), (
+        source_name = glyph_order[source]
+        rules = {
+            index
+            for name, index in substitutions.get(target_name, set())
+            if name == source_name
+        }
+        assert rules, (
             f"no SingleSubst produces {target_name} (CID {cid}) from CID {source}"
         )
+        tags = {tag for index in rules for tag in reaching.get(index, set())}
+        assert tags & positional_features, (
+            f"CID {source} -> {cid} is reached only by {sorted(tags)}, none of "
+            f"which means 'same text, different position'"
+        )
+
+
+def _substitution_record_lists(subtable: object) -> list[list[object]]:
+    """Every `SubstLookupRecord` list a contextual subtable can hold.
+
+    fontTools spells these differently per format, and lookup 82 is reached only
+    through Format-3 `ChainContextSubst`, whose records hang off the subtable
+    directly rather than off a rule.
+    """
+
+    lists: list[list[object]] = []
+    records = getattr(subtable, "SubstLookupRecord", None)
+    if records:
+        lists.append(list(records))
+    for container in ("ChainSubClassSet", "SubRuleSet", "ChainSubRuleSet"):
+        for entry in getattr(subtable, container, None) or []:
+            for attribute in ("ChainSubClassRule", "SubRule", "ChainSubRule"):
+                for rule in getattr(entry, attribute, None) or []:
+                    rule_records = getattr(rule, "SubstLookupRecord", None)
+                    if rule_records:
+                        lists.append(list(rule_records))
+    return lists

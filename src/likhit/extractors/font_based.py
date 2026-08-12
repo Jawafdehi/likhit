@@ -158,6 +158,14 @@ def strip_marked_cids(text: str, replacement: str = "�") -> str:
 
 
 def count_marked_cids(text: str) -> int:
+    """Count marked CIDs in `text`.
+
+    Kept deliberately, though nothing in `src/` calls it since marks stopped
+    being charged in the candidate comparison. It is the only way to observe how
+    much a page failed to decode without re-deriving the mark range, which is
+    what the tests and the corpus instruments use it for.
+    """
+
     return len(_MARKED_CID_PATTERN.findall(text))
 
 

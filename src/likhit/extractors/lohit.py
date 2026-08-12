@@ -31,9 +31,10 @@ The table is not hand-written: it is what
 ``kalimati._get_font_correction_map``'s own derivation (``cmap`` reversal,
 :func:`~likhit.extractors.kalimati._infer_mark_variants`, then
 :func:`~likhit.extractors.kalimati._analyze_gsub`) produces when handed that
-font, with one class of correction applied on top --
-:data:`BELOW_FORM_RA_CORRECTIONS`. ``tests/test_lohit.py`` re-derives the table
-and asserts that equality, so the two cannot drift.
+font, with two classes of correction applied on top --
+:data:`BELOW_FORM_RA_CORRECTIONS` and :data:`GSUB_VARIANT_ADDITIONS`.
+``tests/test_lohit.py`` re-derives the table and asserts that equality, so the
+two cannot drift.
 
 ``_analyze_gsub`` reads below-form (``blwf``) semantics only from single
 substitutions, and Lohit builds its ra below-form with a *ligature* rule, so a
@@ -44,16 +45,29 @@ here) but cannot repair a value that *begins* with the pair, because there is no
 preceding base consonant to anchor the swap. Those three glyphs are corrected;
 in corpus terms this is the difference between ``स्टर्ीट`` and ``स्ट्रीट``.
 
-Known gaps, both left alone deliberately rather than guessed at. Of 8,093,837
-Lohit glyph instances measured across 150 corpus documents, the table covers
-8,093,710 -- 99.998%. The remainder is CID 292, an i-matra that also carries a
-repha (``पार्किङ्ग``): decoding it needs *two* reordering markers for one glyph,
-which ``kalimati.reorder_devanagari`` has no way to interpret. CID 229
-(``u095E_u0930_u094D.blwf.vatu``, ``फ़्र``) keeps the same inverted pair as CID
-227 but in a trailing position, where a glyph name cannot distinguish an
-inverted rakar from a legitimate half-form -- it does not occur in the corpus at
-all. An uncovered CID keeps whatever the PDF's own broken CMap said, so both
-degrade to the status quo rather than to new, confident errors.
+Nothing in this table is a guess, and after the two corrections below nothing is
+left uncovered either. Of 8,093,837 Lohit glyph instances measured across 150
+corpus documents, the table now accounts for all of them. Should a later font
+present a CID this table does not hold, that CID keeps whatever the PDF's own
+broken CMap said -- it degrades to the status quo rather than to a new, confident
+error. The table is still not one entry per glyph: 14 GIDs below 407 have no
+value, but none of them occurs in the corpus.
+
+Two entries used to be listed here as unmappable, and both were wrong.
+
+CID 229 (``u095E_u0930_u094D.blwf.vatu``, ``फ़्र``) was said to keep the same
+inverted pair as CID 227 in a position where a glyph name cannot distinguish an
+inverted rakar from a legitimate half-form. In fact ``_analyze_gsub``'s ra-virama
+swap simply could not see past a nukta: the base is the precomposed ``फ़``
+(U+095E), which the swap did not recognise as a base at all, so the inverted pair
+survived. With that fixed the glyph derives correctly and needs no correction.
+
+The lookup-82 family (CIDs 291-293) was said to need two reordering markers for
+one glyph, which ``kalimati.reorder_devanagari`` could not interpret. Wrong on
+both counts: these are ii-matra variants rather than i-matra, and
+:func:`with_reordering_markers` already handles a single trailing repha. They are
+decoded through :data:`GSUB_VARIANT_ADDITIONS` -- see that dict for the
+provenance, and for the one limitation CIDs 289 and 293 share.
 
 Applying the table to the wrong font would silently emit confident nonsense, so
 :func:`is_known_lohit_subset` gates it twice: the ``name``/``head`` records
@@ -142,22 +156,50 @@ BELOW_FORM_RA_CORRECTIONS: dict[int, tuple[str, str]] = {
 
 # ``{CID: (source CID, value)}`` for glyphs the derivation cannot reach at all.
 #
-# ``_analyze_gsub`` gives up on this font -- "GSUB ligature resolution did not
-# converge within 177 passes over 176 rule(s); font has conflicting ligature
-# substitutions" -- so a handful of glyphs it would otherwise have named come out
-# missing, among them three unnamed ones (``glyph237``/``238``/``239``) that no
-# glyph name can speak for either.
+# The reason the derivation cannot reach them is structural, not a tuning
+# problem. ``_analyze_gsub`` reads single substitutions from ``gid_to_correct``
+# only -- the ``cmap`` reversal it was handed -- and it does so in the same pass
+# that *collects* the ligature rules, before the ligature fixpoint runs. The
+# sources below are ligature outputs, so they are never in ``gid_to_correct``,
+# and the single-substitution pass never re-runs once they become known. The
+# targets are unnamed glyphs (``glyph237``/``238``/``239``), so no glyph name can
+# speak for them either.
+#
+# This font does also fail to converge ("GSUB ligature resolution did not
+# converge within 177 passes over 176 rule(s)"), but that is a red herring:
+# raising the bound to 100,000 passes gives byte-identical output -- 177 derived
+# entries, all three of these still absent. Do not go looking for these glyphs by
+# relaxing that bound, and do not remove it: it is a hang guard.
 #
 # A ``SingleSubst`` rule names them anyway: it substitutes one glyph for another
 # that *is* known, which makes the pair a positional variant carrying the same
 # text. Only such pairs belong here, and each is recorded with its source so the
-# test can check that the rule still exists in the reference font rather than
-# trusting the value typed below.
+# test can check that the rule still exists in the reference font, under a
+# feature that means "positional variant", rather than trusting the value typed
+# below.
+#
+# All three come from lookup 82, a 4-entry ``SingleSubst`` reached only as a
+# nested lookup from the thirteen ``ChainContextSubst`` lookups L63-L75, under
+# feature ``psts`` (post-base substitution) -- not ``aalt``/``salt``/``ss01``,
+# which would mean a stylistic alternate rather than the same text. Its fourth
+# entry, 114 -> 290, already derives on its own. Side-bearings corroborate the
+# reading: sources 287-289 share ``lsb`` -220 with ii-matra ``u0940``, and
+# 290-293 share -439, reaching further left to span a wider base, while every
+# ``ि`` variant in this table shares -13 with ``u093F`` instead.
 GSUB_VARIANT_ADDITIONS: dict[int, tuple[int, str]] = {
+    # lookup 82: u0940_u0902.abvs (287) -> glyph237 (291).
+    291: (287, "\u0940\u0902"),  # glyph237 -> ीं
     # lookup 82: u0940_u0930_u094D.rphf.abvs (288) -> glyph238 (292). 2,843
     # glyphs across the OAG corpus, every one of them in a document whose Lohit
     # subsets verify, which makes it the largest single gap left in this table.
     292: (288, "\u0940\u0930\u094d"),  # glyph238 -> ीर्
+    # lookup 82: u0940_u0930_u094D.rphf.abvs_u0902.abvs (289) -> glyph239 (293).
+    # This one inherits a limitation from its source rather than adding one:
+    # :func:`with_reordering_markers` only rewrites a repha when the value is
+    # exactly ``_REPHA`` plus one character, so CID 289's own repha is already
+    # left in place on ``main``. The value is still the font's semantics, and an
+    # unreordered cluster beats an undecoded hole.
+    293: (289, "\u0940\u0930\u094d\u0902"),  # glyph239 -> ीर्ं
 }
 
 # ``{CID: Unicode}`` for Lohit-Devanagari 2.5.3. Values are the font's plain
@@ -392,7 +434,7 @@ GID_TO_UNICODE: dict[int, str] = {
     225: "\u0930\u094d\u0902",  # u0930_u094D.rphf_u0902.abvs -> र्ं
     227: "\u094d\u0930",  # u0930_u094D.blwf -> ्र
     228: "\u0936\u094d\u0930",  # u0936_u0930_u094D.blwf.vatu -> श्र
-    229: "\u095e\u0930\u094d",  # u095E_u0930_u094D.blwf.vatu -> फ़र्
+    229: "\u095e\u094d\u0930",  # u095E_u0930_u094D.blwf.vatu -> फ़्र
     230: "\u0924\u094d\u0924",  # u0924_u094D.half_u0924.pres -> त्त
     231: "\u0915\u094d\u0937",  # u0915_u094D_u0937.akhn -> क्ष
     232: "\u091c\u094d\u091e",  # u091C_u094D_u091E.akhn -> ज्ञ
@@ -453,7 +495,9 @@ GID_TO_UNICODE: dict[int, str] = {
     288: "\u0940\u0930\u094d",  # u0940_u0930_u094D.rphf.abvs -> ीर्
     289: "\u0940\u0930\u094d\u0902",  # u0940_u0930_u094D.rphf.abvs_u0902.abvs -> ीर्ं
     290: "\u0940",  # glyph236 -> ी
+    291: "\u0940\u0902",  # glyph237 -> ीं (SingleSubst variant of 287)
     292: "\u0940\u0930\u094d",  # glyph238 -> ीर् (SingleSubst variant of 288)
+    293: "\u0940\u0930\u094d\u0902",  # glyph239 -> ीर्ं (SingleSubst variant of 289)
     294: "\u094d\u0930\u0941",  # u0930_u094D.blwf_u0941.blws -> ्रु
     295: "\u094d\u0930\u0942",  # u0930_u094D.blwf_u0942.blws -> ्रू
     296: "\u0941",  # glyph242 -> ु

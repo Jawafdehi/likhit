@@ -7,12 +7,17 @@ import logging
 import os
 import re
 import tempfile
+from collections.abc import Container
 from typing import Optional
 
 import fitz
 
 from likhit.errors import ExtractionError
-from likhit.extractors.lohit import lohit_correction_map
+from likhit.extractors.kalimati_reference import (
+    in_line_ra_cids,
+    kalimati_reference_map,
+)
+from likhit.extractors.lohit import lohit_correction_map, with_reordering_markers
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +26,24 @@ _PUA_IKAR = "\uf001"
 _VIRAMA = "\u094d"
 _RA = "\u0930"
 _IKAR = "\u093f"
+_NUKTA = "\u093c"
 _DEVANAGARI_PATTERN = re.compile(r"[\u0900-\u097F]")
 
 
 def _is_devanagari_consonant(char: str) -> bool:
     return "\u0915" <= char <= "\u0939"
+
+
+def _is_rakar_base(char: str) -> bool:
+    """True for a consonant a below-form ra can attach under.
+
+    Covers the precomposed nukta letters (U+0958-U+095F: ``क़``, ``ढ़``, ``फ़``)
+    as well as the plain range, because a font may spell a nukta'd base either
+    way and the below-form ra attaches to both. Ra itself is excluded: ra plus a
+    below-form ra is not a cluster this swap can reason about.
+    """
+
+    return (_is_devanagari_consonant(char) or "क़" <= char <= "य़") and char != _RA
 
 
 def _is_devanagari_matra(char: str) -> bool:
@@ -181,7 +199,7 @@ def _analyze_gsub(
                     elif features & {"blwf"}:
                         derived[to_gid] = _VIRAMA + from_unicode
                     elif features & {"nukt"}:
-                        derived[to_gid] = from_unicode + "\u093c"
+                        derived[to_gid] = from_unicode + _NUKTA
                     else:
                         derived[to_gid] = from_unicode
 
@@ -258,13 +276,18 @@ def _analyze_gsub(
 
     for gid, value in list(derived.items()):
         for index in range(len(value) - 2):
-            if (
-                _is_devanagari_consonant(value[index])
-                and value[index] != _RA
-                and value[index + 1] == _RA
-                and value[index + 2] == _VIRAMA
-            ):
-                derived[gid] = value[: index + 1] + _VIRAMA + _RA + value[index + 3 :]
+            if not _is_rakar_base(value[index]):
+                continue
+            # A nukta binds to the consonant in front of it, so it sits between a
+            # base and its below-form ra without separating the two. Skipping it
+            # is what lets the swap reach a nukta'd base; without this the
+            # ligature `छ़` + rakar keeps the component order `छ़र्` instead of
+            # `छ़्र`.
+            cursor = index + 1
+            if value[cursor : cursor + 1] == _NUKTA:
+                cursor += 1
+            if value[cursor : cursor + 2] == _RA + _VIRAMA:
+                derived[gid] = value[:cursor] + _VIRAMA + _RA + value[cursor + 2 :]
                 break
 
     return derived
@@ -406,6 +429,35 @@ def _resolve_fontfile2_xref(doc: fitz.Document, type0_xref: int) -> Optional[int
     return int(fontfile.group(1)) if fontfile else None
 
 
+def _kalimati_reference_map(font, skip: Container[int] = frozenset()) -> dict[int, str]:
+    """Reference-derived ``{CID: Unicode}`` for ``font``, carrying markers.
+
+    :mod:`likhit.extractors.kalimati_reference` records plain Unicode, so the
+    visual-order marks are turned into reordering markers here rather than left
+    to :func:`_patch_single_cmap`: every marker rule there is conditioned on the
+    value the PDF's *broken* CMap supplied, which says nothing useful about a
+    value that came from a reference table. Same reasoning, and the same
+    transform, as :func:`likhit.extractors.lohit.lohit_correction_map`.
+
+    The one exception is the in-line half-form of ra. It decodes to the same
+    ``ra + virama`` string as a repha, so :func:`with_reordering_markers`, which
+    keys on the value, would mark it for reordering -- and moving it to the front
+    of its cluster turns ``प्र`` into ``र्प``. The reference tells the two apart by
+    geometry; see :data:`~likhit.extractors.kalimati_reference.IN_LINE_RA_DIGESTS`.
+    """
+
+    reference = kalimati_reference_map(font, skip=skip)
+    repha_valued = {
+        gid for gid, value in reference.items() if value.startswith(_RA + _VIRAMA)
+    }
+    exempt = in_line_ra_cids(font, repha_valued) if repha_valued else set()
+
+    return {
+        gid: value if gid in exempt else with_reordering_markers(value)
+        for gid, value in reference.items()
+    }
+
+
 def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, str]:
     try:
         from fontTools.ttLib import TTFont
@@ -434,25 +486,45 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
         best_cmap = _safe_get_best_cmap(font)
         if not best_cmap:
             # The subsetter emptied the font's own cmap, so there is nothing
-            # here to reconstruct a mapping from. Fall back to a table derived
-            # from the upstream release, which is valid because subsetting
-            # preserves glyph order -- see likhit.extractors.lohit. Returns
-            # empty for any font we have no reference for, i.e. no repair.
-            reference_map = lohit_correction_map(font)
+            # here to reconstruct a mapping from. Fall back to a reference
+            # table. Lohit's is keyed on CID, which holds because subsetting
+            # preserves glyph order and every Lohit subset here descends from
+            # one build; Kalimati's is keyed on the glyph outline, because its
+            # subsets come from two lineages whose orders disagree -- see
+            # likhit.extractors.lohit and .kalimati_reference. Both return empty
+            # for a font they do not recognise, i.e. no repair.
+            reference_map = lohit_correction_map(font) or _kalimati_reference_map(font)
             font.close()
             return reference_map
         name_to_unicode = {name: codepoint for codepoint, name in best_cmap.items()}
 
-        gid_to_correct: dict[int, str] = {}
+        from_cmap: dict[int, str] = {}
         for gid, glyph_name in enumerate(glyph_order):
             if glyph_name in name_to_unicode:
-                gid_to_correct[gid] = chr(name_to_unicode[glyph_name])
+                from_cmap[gid] = chr(name_to_unicode[glyph_name])
 
-        gid_to_correct.update(_infer_mark_variants(font, glyph_order, gid_to_correct))
+        inferred = _infer_mark_variants(font, glyph_order, from_cmap)
+        gid_to_correct = {**from_cmap, **inferred}
 
         derived = _analyze_gsub(font, glyph_order, gid_to_correct)
+        # A subset can keep its cmap and still have GSUB stripped, and GSUB is
+        # where the conjuncts and half-forms live -- so the base letters resolve
+        # from the cmap above while every conjunct stays unmapped. A reference
+        # table fills those, but it only ever speaks for glyphs this font could
+        # not resolve itself: skip whatever the font's own cmap or its own GSUB
+        # already answered.
+        reference = _kalimati_reference_map(font, skip=set(from_cmap) | set(derived))
+
         full_map = dict(derived)
-        full_map.update(gid_to_correct)
+        full_map.update(inferred)
+        # An outline match is exact -- identical contours are the same drawing --
+        # where _infer_mark_variants only matched a glyph's metrics against five
+        # candidate marks. So the reference outranks an inferred value, and never
+        # the font's own cmap or GSUB.
+        for gid, value in reference.items():
+            if gid not in from_cmap and gid not in derived:
+                full_map[gid] = value
+        full_map.update(from_cmap)
         font.close()
         return full_map
     except Exception as exc:  # noqa: BLE001 - degrade to no repair, never fail
