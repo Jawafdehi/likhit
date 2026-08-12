@@ -7,11 +7,15 @@ in CI without shipping the sensitive originals:
 - a scanned raster whose only text is a non-embedded core-font "decoy" layer,
 - a pure image-only raster with no text layer,
 - a bare Latin core font that actually carries legacy (Preeti) keystrokes,
+- the same legacy keystrokes under a subsetter-generated font name, the Spins
+  layout under that name, and the negative (ordinary English under it),
 - a mixed document with one scanned page and one born-digital page.
 
 Everything is generated with PyMuPDF's built-in Helvetica (a non-embedded
 standard-14 core font, exactly like the CIB decoy) and a flat gray placeholder
-image, so no real document, font file, or personal data is involved.
+image, so no real document, font file, or personal data is involved. The
+subset-named builders additionally rewrite ``/BaseFont`` after the fact, which
+changes the name and nothing else.
 """
 
 from __future__ import annotations
@@ -38,6 +42,36 @@ _PREETI_LINES = (
     "e|i6frf/ ;DjGwdf sf7df8f}+ lhNnf",
     "cg';Gwfg cfof]udf btf{ ePsf] d'2f",
 )
+
+# Keystrokes in the Spins layout, which is Preeti with three key pairs rotated.
+# Every line here carries a "+" -- the repha in Spins, an anusvara in Preeti --
+# so the two maps disagree on the words that matter: कार्यालय/कायांलय,
+# अर्थ/अथं, निर्णय/निणंय, वार्षिक/वाषिंक.
+_SPINS_LINES = (
+    "cy+ dGqfnosf] sfof+nodf /x]sf] /sd",
+    "cg';f/ lg0f+o ePsf] 5 . jflif+s k|ltj]bg",
+)
+
+
+# A subsetter-generated font name, of the kind the OAG annual reports carry. It
+# is neither a standard-14 core family nor anything the legacy-font name registry
+# knows, so a document using it can only be recognised from its bytes.
+_SUBSET_STYLE_FONT_NAME = "TT339t00"
+
+
+def _rename_base_fonts(doc: fitz.Document, new_name: str) -> None:
+    """Rewrite every font object's ``/BaseFont`` to ``new_name``.
+
+    PyMuPDF can only *write* text in one of its built-in core fonts, so renaming
+    afterwards is the only way to build a page whose font carries an
+    unrecognisable name without shipping a font binary. Nothing else changes: the
+    subtype, the encoding, the content stream and therefore the extracted bytes
+    are identical to the core-font original.
+    """
+
+    for xref in range(1, doc.xref_length()):
+        if doc.xref_get_key(xref, "Type")[1] == "/Font":
+            doc.xref_set_key(xref, "BaseFont", f"/{new_name}")
 
 
 def _fill_page_with_image(page: fitz.Page) -> None:
@@ -116,6 +150,70 @@ def build_legacy_then_english_pdf() -> bytes:
             ),
             start_y=100.0,
         )
+        return doc.tobytes()
+    finally:
+        doc.close()
+
+
+def build_subset_named_preeti_pdf() -> bytes:
+    """Preeti keystrokes under a subset-style font name, not a core-font name.
+
+    The shape of OAG's older annual reports: the body font's ``/BaseFont`` is a
+    name the producer's subsetter invented (``TT339t00`` in the 2070 report), so
+    nothing about the name says "legacy Devanagari" — only the bytes do.
+    """
+
+    doc = fitz.open()
+    try:
+        page = doc.new_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        _write_lines(page, _PREETI_LINES, start_y=100.0)
+        _rename_base_fonts(doc, _SUBSET_STYLE_FONT_NAME)
+        return doc.tobytes()
+    finally:
+        doc.close()
+
+
+def build_subset_named_spins_pdf() -> bytes:
+    """Spins-layout keystrokes under a subset-style font name.
+
+    The 2067-2072 annual reports' body font. Recognising it as legacy is only
+    half the job: read with the Preeti map it decodes to well-formed Devanagari
+    that spells the wrong words, so this fixture exists to pin the *choice* of
+    map, not just the detection.
+    """
+
+    doc = fitz.open()
+    try:
+        page = doc.new_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        _write_lines(page, _SPINS_LINES, start_y=100.0)
+        _rename_base_fonts(doc, _SUBSET_STYLE_FONT_NAME)
+        return doc.tobytes()
+    finally:
+        doc.close()
+
+
+def build_subset_named_english_pdf() -> bytes:
+    """Ordinary English under the same subset-style font name.
+
+    The negative of :func:`build_subset_named_preeti_pdf`: an unrecognisable font
+    name is not evidence of anything, so content-based detection must decline
+    this one. Real instance in the corpus — OAG's 2081 annual report sets Latin
+    text in a font called ``Spins``, the same name its 2072 report uses for
+    Preeti keystrokes.
+    """
+
+    doc = fitz.open()
+    try:
+        page = doc.new_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        _write_lines(
+            page,
+            (
+                "Ordinary English catalogue reference line one.",
+                "Second English line with plain readable words.",
+            ),
+            start_y=100.0,
+        )
+        _rename_base_fonts(doc, _SUBSET_STYLE_FONT_NAME)
         return doc.tobytes()
     finally:
         doc.close()

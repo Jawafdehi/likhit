@@ -41,6 +41,9 @@ from tests.synthetic_pdfs import (
     build_mixed_scan_and_text_pdf,
     build_pure_scan_pdf,
     build_scanned_decoy_pdf,
+    build_subset_named_english_pdf,
+    build_subset_named_preeti_pdf,
+    build_subset_named_spins_pdf,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -204,6 +207,102 @@ def test_detect_content_legacy_fonts_on_mislabeled_preeti() -> None:
         assert detect_content_legacy_fonts(doc) == {"Helvetica": "Preeti"}
     finally:
         doc.close()
+
+
+def test_detect_content_legacy_fonts_on_subset_named_font() -> None:
+    # The OAG annual-report shape: the font name is subsetter noise ("TT339t00"),
+    # so neither the standard-14 core list nor the legacy-name registry sees it.
+    # Only the bytes say Preeti, and that has to be enough.
+    doc = fitz.open(stream=build_subset_named_preeti_pdf(), filetype="pdf")
+    try:
+        assert not is_core_font_name("TT339t00")
+        assert detect_content_legacy_fonts(doc) == {"TT339t00": "Preeti"}
+    finally:
+        doc.close()
+
+
+def test_detect_content_legacy_fonts_declines_subset_named_english() -> None:
+    # The converse: an unrecognisable font name is not evidence. English under
+    # "TT339t00" must be left alone, or the widened candidate set would remap
+    # every Latin font whose name we do not recognise.
+    doc = fitz.open(stream=build_subset_named_english_pdf(), filetype="pdf")
+    try:
+        assert detect_content_legacy_fonts(doc) == {}
+    finally:
+        doc.close()
+
+
+def test_subset_named_preeti_pdf_extracts_as_nepali(tmp_path: Path) -> None:
+    path = _write_pdf(tmp_path, build_subset_named_preeti_pdf())
+
+    result = FontBasedStrategy().extract_text(path)
+
+    assert "नेपाल सरकार" in result.raw_text
+    assert "प्रतिवादी" in result.raw_text
+    assert "g]kfn" not in result.raw_text
+
+
+def test_subset_named_english_pdf_survives_extraction(tmp_path: Path) -> None:
+    path = _write_pdf(tmp_path, build_subset_named_english_pdf())
+
+    result = FontBasedStrategy().extract_text(path)
+
+    assert "English catalogue reference" in result.raw_text
+    assert not _has_devanagari(result.raw_text)
+
+
+def test_detect_content_legacy_fonts_picks_spins_over_preeti() -> None:
+    # Detecting "this is legacy" is only half the job: the 2067-2072 annual
+    # reports are the Spins layout, and the Preeti map reads their bytes as
+    # well-formed Devanagari spelling the WRONG words. Pin the choice, not just
+    # the detection.
+    doc = fitz.open(stream=build_subset_named_spins_pdf(), filetype="pdf")
+    try:
+        assert detect_content_legacy_fonts(doc) == {"TT339t00": "Spins"}
+    finally:
+        doc.close()
+
+
+def test_subset_named_spins_pdf_recovers_repha(tmp_path: Path) -> None:
+    # The six codes Spins rotates put the repha (र्) where Preeti has the
+    # anusvara (ं), so every repha-bearing word is where the two maps visibly
+    # disagree. Assert both directions: the right spellings present AND the
+    # Preeti misreadings absent, since a purity axis passes either one.
+    path = _write_pdf(tmp_path, build_subset_named_spins_pdf())
+
+    result = FontBasedStrategy().extract_text(path)
+
+    for correct in ("अर्थ", "कार्यालय", "निर्णय", "वार्षिक"):
+        assert correct in result.raw_text
+    for preeti_misread in ("अथं", "कायांलय", "निणंय", "वाषिंक"):
+        assert preeti_misread not in result.raw_text
+
+
+def test_spins_does_not_steal_genuine_preeti() -> None:
+    # The converse guard on widening ALL_MAP_KEYS: real Preeti keystrokes must
+    # still choose Preeti. Reading them as Spins corrupts the other direction
+    # (काठमाडौं -> काठमार्डौ, दर्ता -> दता)), so a Spins win here would be a
+    # regression on every document the name registry already handled.
+    doc = fitz.open(stream=build_mislabeled_preeti_pdf(), filetype="pdf")
+    try:
+        assert detect_content_legacy_fonts(doc) == {"Helvetica": "Preeti"}
+    finally:
+        doc.close()
+
+    # Genuine Preeti keystrokes: here the anusvara is "+" and the repha is "{".
+    # Spins is the same layout with those two rolled on by one key, so the SAME
+    # bytes read as Spins corrupt exactly the words Spins would otherwise fix.
+    preeti_bytes = "g]kfn ;/sf/ cbfnt cg';Gwfg k|ltjfbL sf7df8f}+ lhNnf btf{ lg0f{o"
+    assert choose_legacy_map(preeti_bytes)[0] == "Preeti"
+
+    preeti_read = get_converter_for_map("Preeti")(preeti_bytes)
+    spins_read = get_converter_for_map("Spins")(preeti_bytes)
+    assert "काठमाडौं" in preeti_read and "दर्ता" in preeti_read
+    assert "काठमाडौं" not in spins_read and "दर्ता" not in spins_read
+    # Both reads are pure Devanagari at zero penalty, so purity cannot separate
+    # them: the dictionary evidence is the whole of the margin, and it is small.
+    assert _nepali_validity(spins_read)["penalty_per_deva"] == 0.0
+    assert _nepali_validity(spins_read)["hits"] < _nepali_validity(preeti_read)["hits"]
 
 
 def test_detect_content_legacy_fonts_ignores_english() -> None:

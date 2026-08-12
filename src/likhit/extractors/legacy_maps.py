@@ -91,14 +91,41 @@ _REGISTRY: dict[str, str] = {
     "arap": "FONTASY_HIMALI_TT",
 }
 
-# The full set of npttf2utf map keys, used by content-based (name-agnostic)
-# legacy-font detection to try every known legacy encoding against a span.
+#: Map key for the Spins layout, which npttf2utf does not ship. It is not an
+#: npttf2utf key, so everything that consumes a map key must go through
+#: :func:`get_converter_for_map`.
+SPINS_MAP_KEY = "Spins"
+
+#: The npttf2utf map the Spins layout is a permutation of.
+_SPINS_BASE_MAP_KEY = "Preeti"
+
+# Spins reads as Preeti except on three keyboard pairs, which are rotated: its
+# "-" is Preeti's "=", its "=" is Preeti's "[", its "[" is Preeti's "-", and the
+# shifted forms rotate the same way. So the layout is expressed by translating
+# those six codes and then running the Preeti map.
+#
+# Derived by measurement on OAG's annual reports, not from a font specification.
+# On the 2070 report's 113k-character body font, the rotation takes canonical-term
+# findability from 10/17 to 17/17 -- it is what recovers the repha in वार्षिक,
+# कार्यालय and अर्थ, the anusvara in संस्था, the ृ in स्वीकृत, and the decimal point in
+# every figure (५९(९८ -> ५९.९८) -- while dictionary hits rise 22 -> 25 and the
+# garble penalty per Devanagari falls 0.030 -> 0.012. Independent of any word
+# list: parentheses go from 1,978 "(" against 368 ")" to a balanced 102/102, which
+# is what a rotation that had put the real "." on the "(" key would produce.
+_SPINS_TO_PREETI_KEYS = str.maketrans(
+    {"-": "=", "=": "[", "[": "-", "_": "+", "+": "{", "{": "_"}
+)
+
+# Every legacy map content-based (name-agnostic) detection tries against a span.
+# Order matters only for exact ties, which the first entry wins -- Spins is last
+# so it has to beat Preeti outright to be chosen.
 ALL_MAP_KEYS: tuple[str, ...] = (
     "Preeti",
     "Kantipur",
     "PCS NEPALI",
     "FONTASY_HIMALI_TT",
     "Sagarmatha",
+    SPINS_MAP_KEY,
 )
 
 # No legacy keyboard layout in _REGISTRY puts its own bracket glyph on the
@@ -397,6 +424,18 @@ def get_converter_for_map(map_key: str) -> Callable[[str], str]:
     # identical -- this function is what both the scoring and output paths call.
     if map_key.lower() == "unicode":
         return lambda text: text
+
+    # SPINS_MAP_KEY is synthesised rather than shipped: npttf2utf has no Spins
+    # layout, so its keystrokes are translated onto Preeti's and decoded with Preeti's
+    # map. Placed in the RAW converter deliberately -- this is the scoring primitive,
+    # and choose_legacy_map has to be able to score Spins against the shipped maps.
+    if map_key == SPINS_MAP_KEY:
+        base_convert = get_converter_for_map(_SPINS_BASE_MAP_KEY)
+
+        def _convert_spins(text: str) -> str:
+            return base_convert(text.translate(_SPINS_TO_PREETI_KEYS))
+
+        return _convert_spins
 
     return _get_compiled_map(map_key).convert
 
