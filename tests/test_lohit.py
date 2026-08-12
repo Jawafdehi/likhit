@@ -402,6 +402,10 @@ def test_table_re_derives_from_the_reference_font() -> None:
     for cid, (was, now) in lohit.BELOW_FORM_RA_CORRECTIONS.items():
         assert expected[cid] == was, f"CID {cid} no longer derives as {was!r}"
         expected[cid] = now
+    for cid, (source, value) in lohit.GSUB_VARIANT_ADDITIONS.items():
+        assert cid not in expected, f"CID {cid} now derives on its own"
+        assert expected[source] == value, f"CID {source} no longer derives as {value!r}"
+        expected[cid] = value
 
     assert expected == lohit.GID_TO_UNICODE
 
@@ -421,3 +425,54 @@ def test_reference_font_matches_the_declared_identity_and_anchors() -> None:
     for gid, expected_digest in lohit._ANCHOR_OUTLINES.items():
         assert lohit._outline_digest(font, glyph_order[gid]) == expected_digest
     assert lohit.is_known_lohit_subset(font) is True
+
+
+def test_gsub_variant_additions_are_what_the_table_ships() -> None:
+    """Each addition carries its source's value, and the table agrees."""
+
+    assert lohit.GSUB_VARIANT_ADDITIONS
+    for cid, (source, value) in lohit.GSUB_VARIANT_ADDITIONS.items():
+        assert lohit.GID_TO_UNICODE[cid] == value
+        # A positional variant is the same text as the glyph it substitutes for;
+        # anything else does not belong in this dict.
+        assert lohit.GID_TO_UNICODE[source] == value
+
+
+def test_a_variant_addition_reorders_exactly_like_its_source() -> None:
+    """The value is handed out through the same marker rules, not around them."""
+
+    for cid, (source, value) in lohit.GSUB_VARIANT_ADDITIONS.items():
+        assert lohit.with_reordering_markers(
+            lohit.GID_TO_UNICODE[cid]
+        ) == lohit.with_reordering_markers(lohit.GID_TO_UNICODE[source])
+        # ...and that is not a no-op: this value carries a repha to move.
+        assert lohit.with_reordering_markers(value) != value
+
+
+@pytest.mark.skipif(
+    _reference_font() is None,
+    reason="set LIKHIT_LOHIT_REFERENCE_TTF to the upstream Lohit-Devanagari 2.5.3 TTF",
+)
+def test_variant_additions_rest_on_a_single_subst_rule_in_the_font() -> None:
+    """The provenance, checked against the font rather than taken on trust.
+
+    Without this the additions would be values typed by hand. With it, a font
+    that does not substitute source for target fails the build.
+    """
+
+    font = _reference_font()
+    assert font is not None
+    glyph_order = font.getGlyphOrder()
+    substitutions: dict[str, set[str]] = {}
+    for lookup in font["GSUB"].table.LookupList.Lookup:
+        for subtable in lookup.SubTable:
+            if subtable.__class__.__name__ != "SingleSubst":
+                continue
+            for source_name, target_name in subtable.mapping.items():
+                substitutions.setdefault(target_name, set()).add(source_name)
+
+    for cid, (source, _value) in lohit.GSUB_VARIANT_ADDITIONS.items():
+        target_name = glyph_order[cid]
+        assert glyph_order[source] in substitutions.get(target_name, set()), (
+            f"no SingleSubst produces {target_name} (CID {cid}) from CID {source}"
+        )
