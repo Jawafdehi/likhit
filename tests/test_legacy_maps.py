@@ -44,9 +44,12 @@ def test_ascii_bracketed_marker_preserves_surrounding_whitespace():
 @pytest.mark.parametrize(
     ("font", "raw", "expected"),
     [
-        # Plain numeral runs (no brackets) already decode correctly through
+        # A plain digit run (no brackets) already decodes correctly through
         # FONTASY_HIMALI_TT's own digit row -- must stay on that path.
         ("Fontasy Himali", "100", "१००"),
+        # Not asserting this is *correct* ('.' and '%' are shifted-row
+        # characters this issue does not investigate) -- only that this fix
+        # does not change it, since the whole span is not a bare "(N)" shape.
         ("Fontasy Himali", "33.8%", "३३।८छ"),
         # The layout's REAL bracket-producing keys ('-'/'_') must still go
         # through the full map: this is the same list-marker semantics as
