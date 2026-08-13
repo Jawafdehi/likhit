@@ -2943,7 +2943,8 @@ def detect_latin_acronym_survivors(
     This is the document-scope evidence the third Latin veto needs (VOL-180 §8).
     "Text the remap does not rewrite" is three things, and all three count:
 
-    1. spans of a font that is not a content-legacy candidate at all;
+    1. spans of a font that is not a content-legacy candidate **and not a legacy font
+       by name either**;
     2. spans of a run `27d74f0` vetoes (:func:`_reads_as_latin_text`);
     3. spans `5084fb8` vetoes (:func:`_reads_as_latin_words`).
 
@@ -2963,6 +2964,28 @@ def detect_latin_acronym_survivors(
     A surviving token additionally has to be **pure** -- not itself a legacy keystroke
     word -- or the vocabulary attests Nepali as English. See VOL-212 and
     :func:`_decodes_as_legacy_devanagari`.
+
+    (1)'s second clause is the fix for VOL-247's one measured false positive, and it
+    is a whole second remap this pass was blind to. `detect_content_legacy_fonts`
+    only ever considers fonts the name classifier calls ``"correct"``, so a font like
+    `Preeti` is never a *content*-legacy candidate — but
+    :meth:`_convert_span_text` routes it down ``strategy == "legacy_remap"`` to
+    :func:`get_converter`, which rewrites it just the same. Counting those spans as
+    survivors lets a keystroke sequence attest itself: on `11129` the token `PG6L` is
+    `एन्टी` ("anti"), attested from two `Preeti` spans, and the veto it licensed
+    would have shipped **91 characters of fluent Nepali** as raw keystrokes. That is
+    the same self-attestation the strict tokenizer closes for `w/f}6L` -> `6L`;
+    closing it there was necessary and not sufficient.
+
+    Measured over the 74 documents that can fire (`runs/vol126r/`): without this
+    clause 26 fires, 25 genuine and that one false positive; with it 25 fires, 25/25
+    genuine, 0 Nepali touched. No genuine fire depends on name-legacy evidence.
+
+    VOL-212's token clause and (1)'s second clause close the SAME measured fire by
+    different mechanisms and neither subsumes the other: a name-legacy span can yield
+    a token that does not decode as a Devanagari word (token clause admits it, (1)
+    drops it), and a non-name-legacy span can yield one that does ((1) admits it, the
+    token clause drops it). Both are present deliberately. See VOL-197.
 
     (2) is why this pass has to exist separately and has to run **after** the first
     veto: `QOC`'s own survivor evidence is *created* by `27d74f0` firing on
@@ -2996,7 +3019,13 @@ def detect_latin_acronym_survivors(
                     text = str(span["text"])
                     if not text.strip():
                         continue
-                    choice = content_legacy_maps.get(str(span["font"]))
+                    font_name = str(span["font"])
+                    # The name-based remap. Checked FIRST and unconditionally: it is
+                    # decided per font name with no per-span veto, so a legacy-named
+                    # font's spans are always rewritten and can never be survivors.
+                    if is_legacy_font(_span_base_font(font_name)):
+                        continue
+                    choice = content_legacy_maps.get(font_name)
                     rewritten = (
                         choice is not None
                         and choice.map_key is not None

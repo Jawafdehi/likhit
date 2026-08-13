@@ -8,11 +8,17 @@ there is no surrounding context in any of the three to be judged on. The evidenc
 to come from outside the run, at document scope.
 
 **Why the shape alone cannot be the rule, which is what these tests mostly guard.**
-Corpus-wide (`runs/vol180/strict-calibration-635286f0.json`) 7,864 remapped runs hold
-a short all-caps ASCII token that both shipped vetoes miss — 41x the whole of
-`27d74f0`. Vetoing on that shape would be a licence to stop decoding wherever two
-capitals appear. It is only the candidate generator; the document-scope survivor
-condition is what cuts 7,864 to **16 fires, 16/16 genuine English, 0 Nepali touched**.
+Corpus-wide over the 469,357-run label set, a short all-caps ASCII token that both
+shipped vetoes miss occurs in **7,864** remapped runs under the *loose* tokenizer a
+first pass used (`considered` in `runs/vol180/strict-calibration-635286f0.json`) and
+in **386** under the strict one that shipped (`shape_ok` in the same record;
+independently re-derived in `runs/vol126r/RESULT-01-instrument-proof-6788a030.md`).
+Those two numbers belong to two different tokenizers and must not be swapped: 7,864 is
+41x the whole of `27d74f0`, 386 is **2.0x**. So the tokenizer narrowings below —
+whitespace delimitation and the two-uppercase-letter floor — do ~95% of the
+narrowing, and the document-scope survivor condition does the last 386 -> 25. Reading
+the 41x as the strict shape's promiscuity over-credits the survivor axis, which is
+exactly the mistake that hides how load-bearing these tokenizer tests are.
 
 **The keystroke fragments below are the calibration's real failure mode, not
 decoration.** A first pass tokenized on a punctuation class and produced 37 fires of
@@ -29,18 +35,20 @@ from __future__ import annotations
 
 import pytest
 
+from likhit.extractors import font_based
 from likhit.extractors.font_based import (
     _ACRONYM_EDGE,
     _ACRONYM_FORBIDDEN,
     LegacyMapChoice,
+    _acronym_shaped,
     _acronym_tokens,
     _content_legacy_veto_flags,
     _decodes_as_legacy_devanagari,
     _is_wellformed_devanagari,
     _reads_as_latin_text,
-    _acronym_shaped,
     _reads_as_latin_words,
     count_marked_cids,
+    detect_latin_acronym_survivors,
     unmark_cids,
 )
 from likhit.extractors.legacy_maps import get_converter_for_map
@@ -647,3 +655,99 @@ def test_a_document_with_no_candidate_map_has_no_purity_opinion() -> None:
     assert not _decodes_as_legacy_devanagari(
         "PG6L", {"Spins": LegacyMapChoice(map_key=None, validity=None)}
     )
+
+
+# --- the survivor VOCABULARY, and the second remap it was blind to (VOL-247) -------
+#
+# The 13 tests above all exercise `_content_legacy_veto_flags`, which takes the
+# survivor set as a parameter. None of them reaches `detect_latin_acronym_survivors`,
+# which is what *builds* that set — and that is where VOL-247 found the axis's one
+# measured false positive, over the 74 corpus documents that can fire.
+#
+# `detect_content_legacy_fonts` only ever considers fonts the name classifier calls
+# "correct", so `Preeti` is never a CONTENT-legacy candidate. But
+# `_convert_span_text` routes it down `strategy == "legacy_remap"` to
+# `get_converter`, so it is remapped all the same. Counting its spans as "text the
+# remap does not rewrite" let `PG6L` — which is `एन्टी`, "anti" — attest itself from
+# two Preeti spans on `11129` p329 and license a veto over 91 characters of fluent
+# Nepali. Records: `runs/vol126r/RESULT-02-fires-and-fpr-6788a030.md`.
+#
+# These use a synthetic page dict rather than a PDF fixture because the unit under
+# test is which spans may contribute, not PyMuPDF's extraction.
+
+
+class _StubPage:
+    pass
+
+
+class _StubDoc:
+    page_count = 1
+
+    def __getitem__(self, index: int) -> _StubPage:
+        return _StubPage()
+
+
+def _survivors_for(monkeypatch, spans: list[dict[str, str]]) -> frozenset[str]:
+    page_dict = {"blocks": [{"lines": [{"spans": spans}]}]}
+    monkeypatch.setattr(font_based, "get_cid_marked_page_dict", lambda page: page_dict)
+    return detect_latin_acronym_survivors(_StubDoc(), SPINS_CHOICE)
+
+
+def test_a_name_legacy_font_never_attests_a_survivor(monkeypatch) -> None:
+    """The regression VOL-247 measured: `Preeti` is rewritten by the NAME path.
+
+    `PG6L` is a keystroke sequence, not an acronym. Before this guard it attested
+    itself out of Preeti text and the veto shipped 91 characters of correct Nepali as
+    raw keystrokes.
+    """
+
+    # `11129` p329, verbatim. Of the two Preeti spans there holding `PG6L`, this is
+    # the one that actually attests: in the other, `PG6L/]leh` is nine characters and
+    # the strict tokenizer already refuses it on length. Using that one instead makes
+    # this test pass whether or not the guard exists — checked by mutation.
+    nepali_in_preeti = 'yk Jooef/ — PG6L :g]s e]gd ;]/dsf] nflu Ps cfk"t{s;Fu '
+    assert _acronym_tokens(nepali_in_preeti) == frozenset({"PG6L"})
+    assert (
+        _survivors_for(monkeypatch, [_span("Preeti", nepali_in_preeti)]) == frozenset()
+    )
+
+
+def test_a_subset_prefixed_name_legacy_font_is_also_excluded(monkeypatch) -> None:
+    """Producers emit `ABCDEF+Preeti`; the guard reads the base name like the remap."""
+
+    assert (
+        _survivors_for(
+            monkeypatch, [_span("BCDEEE+Preeti", "yk Jooef/ PG6L :g]s e]gd ")]
+        )
+        == frozenset()
+    )
+
+
+def test_a_genuinely_non_legacy_font_still_attests(monkeypatch) -> None:
+    """The guard must not cost the evidence the axis exists to read.
+
+    None of the 25 genuine fires VOL-247 measured depends on name-legacy evidence, so
+    narrowing to genuinely-untouched fonts keeps every one of them.
+    """
+
+    assert _survivors_for(
+        monkeypatch, [_span("Helvetica", "the ECOD system (QOC), MIS")]
+    ) == frozenset({"ECOD", "QOC", "MIS"})
+
+
+def test_a_candidate_run_vetoed_as_latin_still_attests(monkeypatch) -> None:
+    """`QOC`'s evidence is *created* by axis 1 firing — the documented reason this
+    pass runs after the structural veto rather than before it."""
+
+    english = "Quality Of Care, QOC "
+    assert _reads_as_latin_text(english, SPINS(english)) is True
+    assert "QOC" in _survivors_for(monkeypatch, [_span("Spins", english)])
+
+
+def test_a_remapped_candidate_run_does_not_attest(monkeypatch) -> None:
+    """The original self-attestation guard still holds: a run that IS remapped is not
+    a survivor source, whatever acronym shapes its raw keystrokes happen to contain."""
+
+    keystrokes = "ljj/0fx? oyfy+ b]lvg] cj:yf 5}g . ;fy}, PG6L "
+    assert _reads_as_latin_text(keystrokes, SPINS(keystrokes)) is False
+    assert _survivors_for(monkeypatch, [_span("Spins", keystrokes)]) == frozenset()
