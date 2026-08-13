@@ -706,6 +706,13 @@ def _nepali_validity(text: str) -> dict[str, float]:
     return {
         "devanagari": devanagari,
         "ratio": devanagari / non_space,
+        # Both forms of the garble measure, because they answer different
+        # questions and are not interchangeable. ``penalty`` is the raw weighted
+        # artifact count, comparable between two decodes OF THE SAME span;
+        # ``penalty_per_deva`` normalises it so one span can be compared against
+        # an absolute ceiling. See :func:`_map_ranking_key` for why using the
+        # normalised form to rank candidates is a bug.
+        "penalty": penalty,
         "penalty_per_deva": penalty / devanagari if devanagari else float("inf"),
         "hits": hits,
     }
@@ -723,23 +730,45 @@ def _passes_content_legacy_gate(validity: dict[str, float]) -> bool:
 def _map_ranking_key(validity: dict[str, float]) -> tuple[float, float, float, float]:
     """Evidence axes for a candidate map, most decisive first, higher is better.
 
-    ``hits`` and ``penalty_per_deva`` are the calibrated primary axes.
-    ``ratio`` and ``devanagari`` are tie-breaks only: a map that fits the face
-    maps every keystroke onto Devanagari, so the residue a *wrong* map leaves
-    behind shows up as non-Devanagari characters. That is what separates Spins
-    from Preeti on a small span — Preeti reads Spins' ``_`` as a literal ``)``
-    where Spins produces the anusvara ``ं``.
+    ``hits`` and ``penalty`` are the calibrated primary axes. ``ratio`` and
+    ``devanagari`` are tie-breaks only: a map that fits the face maps every
+    keystroke onto Devanagari, so the residue a *wrong* map leaves behind shows up
+    as non-Devanagari characters. That is what separates Spins from Preeti on a
+    small span — Preeti reads Spins' ``_`` as a literal ``)`` where Spins produces
+    the anusvara ``ं``.
 
     They sit strictly below ``penalty`` because a high Devanagari ratio on its
     own is a mirage (``test_nepali_validity_flags_garble_low``): converting ASCII
     digits into Devanagari digits also raises it, which is exactly what the
     ``Spins_EXT`` companion faces do under the map that is wrong for them. Those
-    are excluded by ``hits``, not by this key.
+    are excluded by ``hits``, not by this key. One OAG municipality report
+    (``4487__…बसबरिया गाउँपालिका``, font ``Spins``, 2,156 characters) is a live
+    instance: ``Spins`` there reads 0.69 Devanagari against ``PCS NEPALI``'s 0.68
+    and is nonetheless the wrong map, carrying 48 penalty points to PCS NEPALI's
+    zero. So ``ratio`` must not be promoted above the garble axis (VOL-89).
+
+    **The garble axis is the raw count, not the per-Devanagari rate (VOL-89).**
+    Every candidate here decodes *the same input span*, so the counts are already
+    on a common scale and normalising them adds nothing — worse, it injects the
+    denominator as a phantom signal. With the numerator held equal,
+    ``penalty_per_deva`` is a monotone function of the Devanagari *count*, so it
+    silently becomes the ``devanagari`` axis while ranking above both ``ratio``
+    and ``devanagari``. That is not hypothetical: on
+    ``3222__…faktalung ga.pa`` (font ``Spins``, 757 characters) all six maps score
+    an identical raw penalty of **18**, and ``PCS NEPALI`` won only because
+    18/576 < 18/562 — a denominator difference, not a garble difference — which
+    rendered ``;_Vof`` as ``स)ख्या`` where the correct Spins read is ``संख्या``.
+
+    Ranking on the raw count makes equal evidence an exact tie, so ``ratio``
+    decides those spans, and it needs no epsilon or threshold to do it.
+    ``penalty_per_deva`` remains the right statistic for
+    :func:`_passes_content_legacy_gate`, which compares one span against an
+    absolute ceiling and therefore does need cross-span comparability.
     """
 
     return (
         validity["hits"],
-        -validity["penalty_per_deva"],
+        -validity["penalty"],
         validity["ratio"],
         validity["devanagari"],
     )
