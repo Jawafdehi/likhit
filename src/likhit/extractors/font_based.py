@@ -883,6 +883,88 @@ _LEGACY_KEYSTROKE_SYMBOLS = frozenset("][{}|~^@+_=")
 _ASCII_VOWELS = frozenset("aeiouAEIOU")
 _MEDIAL_CAPS = re.compile(r"[a-z][A-Z]")
 
+# The SECOND, independent Latin-side veto (VOL-146, VOL-163). Both this one and
+# :func:`_reads_as_latin_text` are ONE-SIDED -- each only ever declines to remap --
+# so they compose as a disjunction rather than competing, and v13 carries both.
+# They certify Latin on different evidence at different granularities, and each
+# one's blind spot is the other's strength: the structural test reaches a bare
+# technical noun phrase (`Quality Of Care, QOC`) carrying no function word, and the
+# word test reaches prose whose letter statistics look like short keystroke words.
+# Containment measured corpus-wide over one shared label set: runs/vol163/.
+# Latin-side veto for the content-legacy pass. `detect_content_legacy_fonts`
+# decides candidacy per font NAME over that font's whole-document aggregate, then
+# every span of that font is remapped -- so genuine English set in the same face
+# as the keystrokes is destroyed too. On one OAG report that cost 1,362 characters
+# of an English appendix (VOL-126, VOL-134). The candidacy decision is correct and
+# stays: `hits >= 2` over the aggregate is what excludes the digit companions
+# (`Spins_EXT`, `TT33At00`), so it cannot be moved to a finer unit or relaxed.
+# The veto therefore reads the RAW ASCII, before the decode, and only ever
+# *declines* to remap.
+#
+# It must read the raw text because no post-decode axis can help: a character map
+# turns ASCII letters into Devanagari letters whether or not the input was Nepali,
+# so genuine English decodes to penalty 0 and ratio ~1.0 exactly like real
+# keystrokes (VOL-134 §3).
+#
+# **Why a word list and not a structural measure.** Measured over all 469,357
+# same-font runs in the 6,236-document OAG corpus, no structural axis reaches a
+# usable operating point: `alpha_ratio`, `vowel_ratio`, ratio-of-legacy-punctuation
+# and a conjunction of them all fire on short keystroke words, which are pure
+# letters containing vowels and so structurally indistinguishable from short
+# English words -- `ljifo` (विषय), `JolQmut` (व्यक्तिगत), `cWoIf` (अध्यक्ष). The
+# conjunction read 17% precise. Word identity is the only signal that separates
+# them.
+#
+# **Why three letters or more.** The obvious list -- English function words -- is
+# unusable with its two-letter entries in: they are the commonest Preeti digraphs.
+# `If]q` (क्षेत्र, ubiquitous in audit prose) tokenises to `If` -> "if"; `of]`
+# (यो/या) -> "of"; `On]S6«f]lgs` -> "on"; `To:tf]` -> "to". Over the 33,112 runs
+# that provably decode to Nepali (>= 2 dictionary words), `of` occurs in 12.4% and
+# `if` in 6.2%, while not one word of three letters or more occurs at all.
+#
+# This is English grammar, not a corpus frequency table, so it is a legitimate
+# constant for a general library. Closed, and short enough to audit by eye.
+_LATIN_VETO_WORDS: frozenset[str] = frozenset(
+    """also and are been but can for from has have into may not should such than
+    that the their then there these this those when which who will with""".split()
+)
+
+# Share of a span's multi-letter tokens that must be one of the above. A *share*,
+# not a count: a long keystroke run accumulates accidental collisions (`/l;but`
+# contains "but", `can` and `aNd` occur as tokens), and normalising by length
+# dilutes them while genuine English prose keeps a high function-word density.
+# At this cut the veto fires on 93 runs corpus-wide, of which 93 are genuine Latin
+# when every one is read (VOL-138).
+_LATIN_VETO_MIN_SHARE = 0.1
+
+# Tokens are only counted when their casing is one English actually uses. `aNd` is
+# a Preeti keystroke sequence, not a word: a legacy layout puts shifted glyphs
+# mid-word, so mixed case is a keystroke signature. This guard is what removes the
+# single false positive the share cut leaves.
+_LATIN_VETO_TOKEN = re.compile(r"[A-Za-z]+(?:[-'][A-Za-z]+)*")
+
+
+def _reads_as_latin_words(text: str) -> bool:
+    """True if ``text`` is genuine Latin prose rather than legacy keystrokes.
+
+    One-sided by construction: it certifies Latin, never keystrokes, so a span it
+    declines is decoded exactly as before. See ``_LATIN_VETO_WORDS`` for why the
+    test is word identity at a three-letter minimum rather than any structural
+    measure of the raw ASCII.
+    """
+
+    tokens = _LATIN_VETO_TOKEN.findall(text)
+    multi_letter = [token for token in tokens if len(token) > 1]
+    if not multi_letter:
+        return False
+    hits = sum(
+        1
+        for token in tokens
+        if token.lower() in _LATIN_VETO_WORDS
+        and (token.islower() or token.istitle() or token.isupper())
+    )
+    return hits / len(multi_letter) >= _LATIN_VETO_MIN_SHARE
+
 
 def _span_base_font(font_name: str) -> str:
     """Base font name with any subset prefix stripped (matches _convert_span_text)."""
@@ -1654,6 +1736,12 @@ class FontBasedStrategy(ExtractionStrategy):
         if content_legacy_maps and not skip_content_legacy:
             content_map_key = content_legacy_maps.get(font_name)
             if content_map_key is not None:
+                # Candidacy was decided per font over the whole document, so this
+                # span may be genuine Latin that merely shares the face. Leaving
+                # readable English alone is strictly better than remapping it into
+                # well-formed Devanagari that spells nothing.
+                if _reads_as_latin_words(text):
+                    return text
                 # Output, not scoring, so this takes the gated converter -- same
                 # as the name-based branch below. choose_legacy_map keeps using
                 # the raw get_converter_for_map to compare candidates (VOL-166).

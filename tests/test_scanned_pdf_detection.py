@@ -30,6 +30,7 @@ from likhit.extractors.font_based import (
     _nepali_validity,
     _passes_content_legacy_gate,
     _RANKING_IKAR_NASAL_FORGIVENESS,
+    _reads_as_latin_words,
     _text_quality_penalty,
     choose_legacy_map,
     detect_content_legacy_fonts,
@@ -46,6 +47,7 @@ from likhit.extractors.legacy_maps import ALL_MAP_KEYS, get_converter_for_map
 from tests.synthetic_pdfs import (
     build_legacy_then_english_pdf,
     build_mislabeled_preeti_pdf,
+    build_mixed_preeti_and_english_pdf,
     build_mixed_scan_and_text_pdf,
     build_pure_scan_pdf,
     build_scanned_decoy_pdf,
@@ -257,6 +259,89 @@ def test_subset_named_english_pdf_survives_extraction(tmp_path: Path) -> None:
 
     assert "English catalogue reference" in result.raw_text
     assert not _has_devanagari(result.raw_text)
+
+
+def test_reads_as_latin_words_accepts_english_prose() -> None:
+    assert _reads_as_latin_words(
+        "improving patient safety should lead the implementation process."
+    )
+    assert _reads_as_latin_words("and instruction of the Engineer.")
+    assert _reads_as_latin_words("students are a very valuable resource and can help")
+
+
+def test_reads_as_latin_words_declines_real_keystrokes() -> None:
+    assert not _reads_as_latin_words("g]kfn ;/sf/ cbfnt cg';Gwfg k|ltjfbL")
+    assert not _reads_as_latin_words("cy+ dGqfnosf] sfof+nodf /x]sf] /sd")
+    assert not _reads_as_latin_words("")
+    assert not _reads_as_latin_words("!@#$%")
+
+
+def test_reads_as_latin_words_is_immune_to_two_letter_digraph_collisions() -> None:
+    # The reason the word list starts at three letters. `If]q` (क्षेत्र) tokenises
+    # to `If` -> "if" and `of]` (यो/या) to "of"; over the 33,112 OAG runs that
+    # provably decode to Nepali, `of` occurs in 12.4% and `if` in 6.2%. With
+    # two-letter function words in the list these all score as English and the
+    # veto destroys correct Nepali instead of saving English (VOL-138 §4).
+    for keystrokes in (
+        "If]q 3f]if0ff",
+        ";_/If0f sf]if",
+        "u|fld0f If]q ljsf; s]Gb|",
+        "of] jif+ ;_j}wflgs",
+        "r'/] If]qsf] ;_/If0f",
+    ):
+        assert not _reads_as_latin_words(keystrokes), keystrokes
+
+
+def test_reads_as_latin_words_requires_english_casing() -> None:
+    # A legacy layout puts shifted glyphs mid-word, so `aNd` is a keystroke
+    # sequence rather than the word "and". This was the single false positive left
+    # over the whole corpus once the three-letter minimum was in place.
+    assert not _reads_as_latin_words("aNd ^f]n jftfj<)f ;'wf< ;ldlt clUgzfn")
+    assert _reads_as_latin_words("And the report")
+    assert _reads_as_latin_words("AND THE REPORT")
+
+
+def test_reads_as_latin_words_dilutes_accidental_collisions_in_long_runs() -> None:
+    # A share, not a count: one accidental hit in a long keystroke run must not
+    # fire. `/l;but` contains "but" and `can` occurs as a bare token.
+    assert not _reads_as_latin_words(
+        "cfGtl/s cfosf] /l;but clen]v g/fv]s]f, Pj b}lgs cfDbfgL vftf, "
+        "a}Fs bflvnf vftf nufotsf"
+    )
+    assert not _reads_as_latin_words(
+        "jf b:t'/ lng] Joj:yf x'g'kb+5 . hUufsf] juL+s/0f can, bf]od, l;d, "
+        "rfx/sf] ?kdf eO/x]sf]df"
+    )
+
+
+def test_mixed_document_decodes_keystrokes_and_spares_the_english_appendix(
+    tmp_path: Path,
+) -> None:
+    # VOL-126's defect end to end. Candidacy is decided per font over the whole
+    # document, so the appendix -- same face, same producer -- used to be remapped
+    # into well-formed Devanagari spelling nothing.
+    raw = build_mixed_preeti_and_english_pdf()
+
+    # The precondition has to hold or this test proves nothing: the font must
+    # still be a content-legacy candidate even with the English mixed in.
+    doc = fitz.open(stream=raw, filetype="pdf")
+    try:
+        assert detect_content_legacy_fonts(doc) == {"TT339t00": "Preeti"}
+    finally:
+        doc.close()
+
+    result = FontBasedStrategy().extract_text(_write_pdf(tmp_path, raw))
+
+    # The keystrokes still decode.
+    assert "नेपाल सरकार" in result.raw_text
+    assert "g]kfn" not in result.raw_text
+    # And the English is untouched, not remapped into Devanagari.
+    assert "improving patient safety should lead the implementation process." in (
+        result.raw_text
+    )
+    assert "students are a very valuable resource and can help support the" in (
+        result.raw_text
+    )
 
 
 def test_detect_content_legacy_fonts_picks_spins_over_preeti() -> None:

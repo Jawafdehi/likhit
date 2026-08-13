@@ -52,6 +52,16 @@ _SPINS_LINES = (
     "cg';f/ lg0f+o ePsf] 5 . jflif+s k|ltj]bg",
 )
 
+# Genuine English prose sharing a face with the keystrokes above. Quoted from the
+# shape of OAG's 2077 performance-audit appendix, which the per-font decode
+# destroyed (VOL-126, VOL-134): ordinary sentences, no acronyms needed to make the
+# point, since the damage was two pages of prose rather than three initialisms.
+_ENGLISH_APPENDIX_LINES = (
+    "improving patient safety should lead the implementation process.",
+    "students are a very valuable resource and can help support the",
+    "briefing and debriefing at the end of the list rather than before.",
+)
+
 
 # A subsetter-generated font name, of the kind the OAG annual reports carry. It
 # is neither a standard-14 core family nor anything the legacy-font name registry
@@ -227,6 +237,30 @@ def build_subset_named_spins_pdf() -> bytes:
     try:
         page = doc.new_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
         _write_lines(page, _SPINS_LINES, start_y=100.0)
+        _rename_base_fonts(doc, _SUBSET_STYLE_FONT_NAME)
+        return doc.tobytes()
+    finally:
+        doc.close()
+
+
+def build_mixed_preeti_and_english_pdf() -> bytes:
+    """One legacy font carrying Preeti keystrokes AND a genuine English appendix.
+
+    The shape of the defect VOL-126 found: candidacy is decided per font name over
+    the whole document, so the English pages -- set in the same face by the same
+    producer -- were remapped into well-formed Devanagari spelling nothing. On OAG's
+    2077 performance audit that destroyed 1,362 characters, 42% of the font's text.
+
+    Both halves must survive the same extraction: the keystrokes have to decode,
+    and the English has to be left exactly as it is.
+    """
+
+    doc = fitz.open()
+    try:
+        page = doc.new_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        _write_lines(page, _PREETI_LINES, start_y=100.0)
+        appendix = doc.new_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        _write_lines(appendix, _ENGLISH_APPENDIX_LINES, start_y=100.0)
         _rename_base_fonts(doc, _SUBSET_STYLE_FONT_NAME)
         return doc.tobytes()
     finally:
