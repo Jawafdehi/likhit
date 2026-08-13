@@ -202,6 +202,23 @@ _RANKING_DOUBLET_FORGIVENESS = 1
 # `5023__नौकुण्ड`/`LiberationSerif` is a face this programme tracks separately. **None of
 # those five has been adjudicated**, and that is stated here rather than left implied.
 _RANKING_STRANDED_FORGIVENESS = 1
+# The third floor, on the garble axis itself, for the third time the same reason
+# applies (VOL-226). `_text_quality_penalty` measures WELL-FORMEDNESS, and a wrong
+# legacy map does not emit malformed Devanagari -- it emits well-formed Devanagari
+# spelling the wrong word. So a small garble margin between two candidate maps is not
+# evidence about which of them read the span, while it is large enough to veto the two
+# axes that are (`stranded`, `attested`).
+#
+# 12 is one hit of the heaviest single pattern in `_text_quality_penalty` -- a
+# replacement char or a PUA code point at 12 points each -- so the floor forgives at
+# most ONE artifact of ANY kind and no more. It is not fitted to a document: measured
+# over all 6,236 corpus PDFs, the ONLY font decision that a floor is meant to move
+# carries a margin of 6 (`3843__...Godawari finale`), the nearest decision that must
+# NOT move carries 51, and the other five carry 117 to 966. Every value in [6, 50]
+# produces the identical corpus outcome; 12 is chosen inside that plateau on the
+# pattern-weight argument rather than for the margin.
+# `oag-corpus/runs/vol226/floor-sweep-88a30e76.txt` is the sweep.
+_RANKING_GARBLE_FORGIVENESS = 12
 # Two identical adjacent consonants are a real garble signal, but adjacency ALONE
 # is mostly wrong: in Nepali a stem ending in a consonant plus a suffix beginning
 # with the same one is ordinary morphology. Measured over all 6,223 documents of
@@ -2587,6 +2604,50 @@ def _map_ranking_key(
     calibrated absolute meaning goes first — and the sweep that would settle it is still
     owed. Anything reordering these two must run it rather than cite 4487.
 
+    **The garble axis forgives a bounded margin, and that is what lets the two axes
+    below it be reached (VOL-226).** ``penalty`` measures *well-formedness*, and a
+    wrong legacy map does not emit malformed Devanagari — it emits well-formed
+    Devanagari spelling the wrong word. So a *small* garble margin between two
+    candidates is not evidence about which of them read the span, while it is more
+    than enough to veto ``stranded`` and ``attested``, which are that evidence.
+    :data:`_RANKING_GARBLE_FORGIVENESS` levels those margins so the decision falls
+    through, exactly as the other two floors do for their own weak tells.
+
+    On ``3843__…Godawari finale`` (font ``Spins``, 1,340 characters) the better
+    ``Spins`` reading scores ``penalty`` **6** against ``Preeti``'s **0**, while
+    carrying ``stranded`` **0** against ``Preeti``'s **4** and ``attested`` **44**
+    against **40**. Both axes that identify the map pointed at ``Spins`` and both were
+    vetoed by a 6-point margin, so the span was read with the ``Preeti`` map —
+    mis-reading the rotated codes of :data:`_SPINS_TO_PREETI_KEYS`
+    (``संख्या``->``स)ख्या`` ×3, ``कर्मचारी``->``कमंचारी``, ``सि.नं.``->``सि(न)(``) and
+    leaving ``X`` raw through the residual tie (``ह्युम``->``Xयुम`` ×3). Forgiven, the
+    two candidates level at the garble axis, ``stranded`` decides 0 against 4, and the
+    span repairs 7 corrupt forms while losing no correct word.
+
+    **Those 6 points are a TRUE positive, and the distinction is why this is a floor
+    and not a reordering.** They are one ``_INVALID_IKAR_PATTERN`` hit on one genuinely
+    malformed token, because the span **mixes both keyboard layouts**: ``l;=g+=`` is
+    typed in the Preeti layout and reads ``सि.नं.`` under ``Preeti`` against a
+    malformed ``सिृर्नृ`` under ``Spins``, while ``;_Vof`` is typed in the Spins layout
+    and reads ``संख्या`` under ``Spins`` against ``स)ख्या`` under ``Preeti``. Neither
+    map is right for the whole aggregate, so the choice is a majority judgement, and
+    ``penalty`` cannot make it — one malformed token dominates an absolute damage count
+    while seven wrong-but-well-formed words cost it nothing.
+
+    **Promoting ``stranded`` above ``penalty`` was the obvious alternative and is
+    measurably wrong.** Swept over all 6,236 corpus PDFs (``runs/vol226/``), it moves 7
+    font decisions: it repairs ``3843`` and it breaks the other six, costing
+    ``निर्माण`` **87 occurrences** and driving **three** documents — 31,338 characters
+    of legacy text — to abstain outright, because the candidate it promotes then fails
+    :func:`_passes_content_legacy_gate`. ``attested`` separates all seven cases (it
+    rises only on ``3843``); a gate-aware axis separates only the three abstentions.
+    The margin separates them too and needs no new instrument: the one decision that
+    should move carries **6**, the nearest that must not carries **51**, and the rest
+    carry 117 to 966. Hence a bounded floor, with the axis left where VOL-89 and
+    VOL-131 put it. ``_text_quality_penalty``'s patterns are likewise untouched —
+    VOL-135 measured 2 of its 8 firing on correct Nepali, but this hit is not one of
+    those, and every other consumer of the penalty would move with a change to them.
+
     **``attested`` sits between ``stranded`` and ``ratio`` (VOL-185).** It counts how
     many distinct high-frequency Nepali word-forms a reading actually produces, and it
     is placed exactly where the axes stop being evidence: everything above it ties on
@@ -2621,19 +2682,25 @@ def _map_ranking_key(
 
     return (
         validity["hits"],
-        # The raw count, minus a bounded forgiveness for the ikar+nasal term only. That
-        # term is a GATE signal (its sites are otherwise invisible and the miss
-        # fails-open), but between two decodes of ONE span a single site can be evidence
-        # about the source rather than about the map: the same region decodes malformed
-        # under every candidate and only some orderings match the pattern. Six points is
-        # then enough to settle a span before the stranded-bracket tell below -- let
-        # alone `ratio` -- is consulted. See `_RANKING_IKAR_NASAL_FORGIVENESS` for the
-        # measured instance and why one is the right bound.
-        -(
-            validity["penalty"]
-            - min(validity["ikar_nasal"], _RANKING_IKAR_NASAL_FORGIVENESS)
-            * _IKAR_NASAL_WEIGHT
-        ),
+        # The raw count, minus a bounded forgiveness -- the one-artifact floor.
+        # `penalty` measures WELL-FORMEDNESS, and a wrong legacy map does not emit
+        # malformed Devanagari; it emits well-formed Devanagari spelling the wrong word.
+        # So a small garble margin between two decodes of ONE span is not evidence about
+        # which map read it, while it is more than enough to veto `stranded` and
+        # `attested`, which are that evidence. See `_RANKING_GARBLE_FORGIVENESS`, and the
+        # restoration of the raw count below `attested` that bounds it.
+        #
+        # 🛑 **This GENERALISES the ikar+nasal forgiveness it replaces, and the
+        # generalisation is exact where that term fired.** The old form subtracted
+        # `_IKAR_NASAL_WEIGHT` when `_IMPOSSIBLE_IKAR_NASAL_PATTERN` matched at all;
+        # since that pattern contributes exactly that weight per site, `penalty` is
+        # always >= it when the term fired, so the floor below subtracts the same 6 in
+        # every one of those cases. What it adds is the margins the pattern does NOT
+        # explain -- `3843` and `5143` both carry 6 points of `_INVALID_IKAR_PATTERN`
+        # with `ikar_nasal` at 0, so the old term left them vetoed. `ikar_nasal` is still
+        # reported: it is the measured instance that motivated the floor, and the gate
+        # statistic `penalty_per_deva` still charges it in full.
+        -max(validity["penalty"] - _RANKING_GARBLE_FORGIVENESS, 0),
         # VOL-185: a single stranded bracket is forgiven for the same reason a single
         # doublet is -- see `_RANKING_STRANDED_FORGIVENESS`.
         -max(validity["stranded"] - _RANKING_STRANDED_FORGIVENESS, 0),
