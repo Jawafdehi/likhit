@@ -1634,6 +1634,65 @@ _LEGACY_KEYSTROKE_SYMBOLS = frozenset("][{}|~^@+_=")
 _ASCII_VOWELS = frozenset("aeiouAEIOU")
 _MEDIAL_CAPS = re.compile(r"[a-z][A-Z]")
 
+# The THIRD Latin-side veto (VOL-180, calibrated in `runs/vol180/` on all 6,236 OAG
+# corpus documents). It exists because the two above are both decided on the run's
+# *own* text, and the residue they leave is runs that are nothing but a bare
+# acronym -- `QOC` (3 chars), `ECOD ` (5 chars) -- which carry no in-run context to
+# be judged on. The evidence has to come from outside the run, at document scope:
+# an acronym that is genuine Latin here almost always also appears somewhere in
+# this document in text the remap never rewrites.
+#
+# Calibration, from `runs/vol180/strict-calibration-635286f0.json`: 7,864 runs hold
+# a short all-caps ASCII token that both shipped vetoes miss. Vetoing on that shape
+# alone would be 41x the whole of `27d74f0` -- a licence to stop decoding wherever
+# two capitals appear -- so the shape is only the candidate generator. Requiring
+# document-scope survivor evidence cuts 7,864 to **16 fires, 16/16 genuine English,
+# 0 Nepali touched**, every one read individually.
+#
+# Three things the calibration forces that the issue's sketch did not say:
+#
+#   1. `>= 2 uppercase LETTERS`, not "letters or digits". `36L` is घटी -- a real
+#      whitespace-delimited all-caps ASCII keystroke word holding one letter.
+#   2. `_ACRONYM_FORBIDDEN` must never be stripped as edge punctuation. Stripping
+#      `]` turns `;]G6/` into `G6` and reintroduces 20 of 21 spurious fires. The
+#      assertion below keeps the two sets disjoint so that cannot regress.
+#   3. The survivor vocabulary must be built with this same strict tokenizer. Built
+#      loosely, `6L` attests itself from undecoded keystrokes elsewhere in the
+#      document (`w/f}6L` = धरौटी split at `}`), and survival is only evidence of
+#      Latin if the surviving occurrence is itself Latin-shaped.
+_ACRONYM_EDGE = ',.;:()“”‘’"?!'  # punctuation English puts against a word
+_ACRONYM_FORBIDDEN = frozenset("][{}|~^@+_=\\/'&*<>%$#«»")
+_ACRONYM_MIN_LEN = 2
+_ACRONYM_MAX_LEN = 5
+_ACRONYM_MIN_UPPER = 2
+# Note 2, made executable: if these ever intersect, stripping an edge could remove
+# a forbidden character and let a keystroke fragment qualify.
+assert not (_ACRONYM_FORBIDDEN & frozenset(_ACRONYM_EDGE))
+
+
+def _acronym_tokens(text: str) -> frozenset[str]:
+    """The qualifying acronym-shaped tokens of ``text`` (VOL-180 §8).
+
+    Whitespace-delimited, because the defect this replaces came from tokenizing on
+    a punctuation class: `[A-Za-z0-9/&().,:;+\\-]+` splits `w/f}6L` at `}` and
+    hands back `6L` as though it were a word.
+    """
+
+    tokens: set[str] = set()
+    for raw in text.split():
+        token = raw.strip(_ACRONYM_EDGE)
+        if not _ACRONYM_MIN_LEN <= len(token) <= _ACRONYM_MAX_LEN:
+            continue
+        if any(char in _ACRONYM_FORBIDDEN for char in token):
+            continue
+        if not all(("A" <= char <= "Z") or ("0" <= char <= "9") for char in token):
+            continue
+        if sum(1 for char in token if "A" <= char <= "Z") < _ACRONYM_MIN_UPPER:
+            continue
+        tokens.add(token)
+    return frozenset(tokens)
+
+
 # The SECOND, independent Latin-side veto (VOL-146, VOL-163). Both this one and
 # :func:`_reads_as_latin_text` are ONE-SIDED -- each only ever declines to remap --
 # so they compose as a disjunction rather than competing, and v13 carries both.
@@ -2425,12 +2484,71 @@ def detect_content_legacy_fonts(
     return content_maps
 
 
+def detect_latin_acronym_survivors(
+    doc: fitz.Document,
+    content_legacy_maps: dict[str, LegacyMapChoice] | None,
+    skip_pages: frozenset[int] = frozenset(),
+) -> frozenset[str]:
+    """Acronym-shaped tokens this document carries in text the remap leaves alone.
+
+    This is the document-scope evidence the third Latin veto needs (VOL-180 §8).
+    "Text the remap does not rewrite" is three things, and all three count:
+
+    1. spans of a font that is not a content-legacy candidate at all;
+    2. spans of a run `27d74f0` vetoes (:func:`_reads_as_latin_text`);
+    3. spans `5084fb8` vetoes (:func:`_reads_as_latin_words`).
+
+    (2) is why this pass has to exist separately and has to run **after** the first
+    veto: `QOC`'s own survivor evidence is *created* by `27d74f0` firing on
+    `Quality Of Care, QOC` two pages earlier. Build the vocabulary before that veto
+    is decided and the axis reaches none of the three residual runs it is for.
+
+    Returns an empty set when the document has no candidate font, which is the
+    common case (1,245 of the 6,236 corpus documents carry one), so the extra
+    text-dict pass is paid only where it can change an outcome.
+    """
+
+    if not content_legacy_maps:
+        return frozenset()
+
+    survivors: set[str] = set()
+    for page_index in range(doc.page_count):
+        if (page_index + 1) in skip_pages:
+            continue
+        page_dict = get_cid_marked_page_dict(doc[page_index])
+        for block in page_dict["blocks"]:
+            if "lines" not in block:
+                continue
+            for line in block["lines"]:
+                spans = list(line["spans"])
+                # Deliberately the DEFAULT (survivor-free) call: this is the state
+                # of the veto before the third axis exists, which is exactly the
+                # evidence the third axis is allowed to read. Passing the set being
+                # built would make the vocabulary self-attesting.
+                flags = _content_legacy_veto_flags(spans, content_legacy_maps)
+                for index, span in enumerate(spans):
+                    text = str(span["text"])
+                    if not text.strip():
+                        continue
+                    choice = content_legacy_maps.get(str(span["font"]))
+                    rewritten = (
+                        choice is not None
+                        and choice.map_key is not None
+                        and not flags[index]
+                        and not _reads_as_latin_words(text)
+                    )
+                    if not rewritten:
+                        survivors |= _acronym_tokens(text)
+    return frozenset(survivors)
+
+
 def _content_legacy_veto_flags(
     spans: list[dict],
     # VOL-163: `aa4caff` widened this map's values from a bare map key to a
     # `LegacyMapChoice`. This helper is `27d74f0`'s and was written against the old
     # `str`; unwidened it would hand a dataclass to `get_converter_for_map`.
     content_legacy_maps: dict[str, LegacyMapChoice] | None,
+    acronym_survivors: frozenset[str] = frozenset(),
 ) -> list[bool]:
     """Per span: does the Latin-side veto apply to it? (VOL-138)
 
@@ -2491,6 +2609,15 @@ def _content_legacy_veto_flags(
                 # `test_an_extraction_error_from_the_veto_is_not_swallowed` pins that.
                 decoded = get_converter_for_map(choice.map_key)(raw_text)
                 if _reads_as_latin_text(raw_text, decoded):
+                    for index in range(start, end):
+                        flags[index] = True
+                elif acronym_survivors and (
+                    _acronym_tokens(run_text) & acronym_survivors
+                ):
+                    # VOL-180's third axis, and it is deliberately in the `elif`:
+                    # §8 requires it to be a SECOND pass, decided only on runs the
+                    # structural veto has already declined. Same run unit, so a
+                    # vetoed acronym run is kept whole like any other.
                     for index in range(start, end):
                         flags[index] = True
         start = end
@@ -2555,6 +2682,16 @@ class FontBasedStrategy(ExtractionStrategy):
                 page for page in range(1, doc.page_count + 1) if page not in in_range
             )
             content_legacy_maps = detect_content_legacy_fonts(doc, skip_for_content)
+            # VOL-180's third Latin veto reads document-scope evidence, so its
+            # vocabulary is built once here and shared by every extraction pass
+            # below -- including the broken-CMap repaired pass, which is the same
+            # document's content and must not disagree with the first pass about
+            # which acronyms this document attests.
+            acronym_survivors = detect_latin_acronym_survivors(
+                doc,
+                content_legacy_maps,
+                skip_for_content,
+            )
 
             # On a broken-CMap PDF this document is extracted twice, before and
             # after the ToUnicode repair, and the merge below keeps the repaired
@@ -2579,6 +2716,7 @@ class FontBasedStrategy(ExtractionStrategy):
                 needs_reorder=False,
                 decoy_pages=decoy_pages,
                 content_legacy_maps=content_legacy_maps,
+                acronym_survivors=acronym_survivors,
                 detect_tables=detect_tables,
             )
             if has_broken_cmap:
@@ -2599,6 +2737,7 @@ class FontBasedStrategy(ExtractionStrategy):
                     needs_reorder=needs_reorder,
                     decoy_pages=decoy_pages,
                     content_legacy_maps=content_legacy_maps,
+                    acronym_survivors=acronym_survivors,
                 )
                 tables = repaired_document.tables
                 if not tables:
@@ -2613,6 +2752,7 @@ class FontBasedStrategy(ExtractionStrategy):
                         needs_reorder=False,
                         decoy_pages=decoy_pages,
                         content_legacy_maps=content_legacy_maps,
+                        acronym_survivors=acronym_survivors,
                     ).tables
                 raw_document = _raw_document_from_fragments(
                     _merge_fragment_variants(
@@ -2659,6 +2799,7 @@ class FontBasedStrategy(ExtractionStrategy):
         needs_reorder: bool,
         decoy_pages: frozenset[int] = frozenset(),
         content_legacy_maps: dict[str, LegacyMapChoice] | None = None,
+        acronym_survivors: frozenset[str] = frozenset(),
         detect_tables: bool = True,
     ) -> RawDocument:
         paragraphs: list[str] = []
@@ -2690,6 +2831,7 @@ class FontBasedStrategy(ExtractionStrategy):
                     latin_veto = _content_legacy_veto_flags(
                         spans,
                         content_legacy_maps,
+                        acronym_survivors,
                     )
                     for span_index, span in enumerate(spans):
                         text = self._convert_span_text(
