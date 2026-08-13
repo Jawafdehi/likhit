@@ -22,11 +22,13 @@ from likhit.errors import ScannedPdfError
 from likhit.extractors.font_based import (
     _LATIN_VETO_WORDS,
     FontBasedStrategy,
+    _attested_word_count,
     _choose_fragment_text,
     _has_severe_noise,
     _IKAR_NASAL_WEIGHT,
     _IMPOSSIBLE_IKAR_NASAL_PATTERN,
     _is_probably_legacy_ascii,
+    _legacy_map_garble,
     _map_ranking_key,
     _nepali_validity,
     _passes_content_legacy_gate,
@@ -840,6 +842,7 @@ def _validity(
     ratio: float,
     stranded: int = 0,
     ikar_nasal: int = 0,
+    attested: int = 0,
 ) -> dict[str, float]:
     """A validity dict as `_nepali_validity` would return it, for ranking tests.
 
@@ -848,6 +851,9 @@ def _validity(
     penalties. It is spelled out rather than omitted so `_map_ranking_key` can read
     the key strictly: a validity dict built without it is a bug, not a dict to be
     tolerated with `.get`.
+
+    `attested` defaults to 0 for the same reason: the tests below are about the axes
+    above it, so they must tie on it and reach the axis they actually assert (VOL-185).
     """
 
     return {
@@ -858,6 +864,7 @@ def _validity(
         "devanagari": devanagari,
         "ratio": ratio,
         "stranded": stranded,
+        "attested": attested,
     }
 
 
@@ -1100,6 +1107,99 @@ def test_a_real_garble_difference_still_outranks_the_stranded_count() -> None:
     spins = _validity(hits=2, penalty=48, devanagari=655, ratio=0.688025, stranded=0)
     assert spins["stranded"] < pcs["stranded"]
     assert _map_ranking_key(pcs) > _map_ranking_key(spins)
+
+
+# --- VOL-185: the repha->anusvara regression -------------------------------------
+
+
+def test_doublet_is_charged_to_the_gate_but_not_to_the_map_ranking() -> None:
+    # The split that repairs 8 of VOL-185's 11 documents. `खररद` is a doubled-र garble
+    # of `खरिद` ("purchase") and `_duplicate_consonant_count` charges it 3 points --
+    # NOT `अध्ययन`, which `bad7fe2` exempted as a lexeme and which therefore proves
+    # nothing here. Between two candidate MAPS the charge is noise, but the accept
+    # gate's 0.05 ceiling was calibrated against the full measure, so only the ranking
+    # axis may drop it.
+    word = "खररद"
+    assert _text_quality_penalty(word) == 3, "the doublet must still be charged"
+    assert _legacy_map_garble(word) == 0, "and must not reach the ranking axis"
+
+    validity = _nepali_validity(word)
+    assert validity["penalty"] == 0, "ranking axis: doublet-free"
+    # The gate keeps the full measure, so `penalty_per_deva` still sees the 3 points.
+    assert validity["penalty_per_deva"] == 3 / validity["devanagari"]
+
+
+def test_the_doublet_split_does_not_loosen_the_accept_gate() -> None:
+    # `ecc5338` made this same subtraction and fed it to BOTH the ranking axis and
+    # `penalty_per_deva`, which lowered the gate's numerator, admitted spans that were
+    # correctly rejected, and cost `3219__...रामधुनी नगरपालिका` 1,723 attested
+    # occurrences -- which is why VOL-163 reverted it. A span whose ONLY penalty is
+    # doublets must still be measured against the ceiling with them counted.
+    doublets = "खररद " * 40
+    validity = _nepali_validity(doublets)
+    assert validity["penalty"] == 0, "ranking axis sees no garble"
+    assert validity["penalty_per_deva"] > 0, "the gate must still see the doublets"
+    assert (
+        validity["penalty_per_deva"]
+        == _text_quality_penalty(doublets) / (validity["devanagari"])
+    )
+
+
+def test_the_token_chooser_keeps_the_full_penalty() -> None:
+    # The other half of `ecc5338`'s reasoning, and the half that was right: two
+    # readings of the SAME token are separated by a doublet, so `_choose_token_text`
+    # must keep charging it. `ववशेष` is a doubled-व garble of `विशेष`; with the term
+    # gone from the general measure both score 0 and the garble wins the tie.
+    assert _text_quality_penalty("ववशेष") > _text_quality_penalty("विशेष")
+
+
+def test_attested_words_decide_when_garble_and_stranding_tie() -> None:
+    # `2424__...Ramechhap Nagarpalika`, font `Spins`, 283 characters -- the span this
+    # issue was filed on. `PCS NEPALI` beat `Spins` on `ratio` by 0.000249, inside the
+    # band the docstring records as always wrong, and rendered twelve repha as a
+    # misplaced anusvara. `Spins` produces 12 attested Nepali forms there to 7.
+    pcs = _validity(
+        hits=3, penalty=0, devanagari=217, ratio=0.981900, stranded=0, attested=7
+    )
+    spins = _validity(
+        hits=3, penalty=0, devanagari=214, ratio=0.981651, stranded=0, attested=12
+    )
+    assert pcs["ratio"] > spins["ratio"], "ratio alone still favours the wrong map"
+    assert _map_ranking_key(spins)[:3] == _map_ranking_key(pcs)[:3], "tied above"
+    assert _map_ranking_key(spins) > _map_ranking_key(pcs), "attested must decide"
+
+
+def test_attested_words_do_not_outrank_garble_or_stranding() -> None:
+    # `attested` sits BELOW `penalty` and `stranded` so it cannot disturb either
+    # calibration. A candidate with more attested words must still lose to one with
+    # less garble, and to one with less stranding.
+    garbled = _validity(
+        hits=2, penalty=48, devanagari=655, ratio=0.688, stranded=0, attested=30
+    )
+    clean = _validity(
+        hits=2, penalty=0, devanagari=658, ratio=0.679, stranded=0, attested=2
+    )
+    assert _map_ranking_key(clean) > _map_ranking_key(garbled), "penalty outranks it"
+
+    stranded = _validity(
+        hits=2, penalty=0, devanagari=600, ratio=0.90, stranded=6, attested=30
+    )
+    unstranded = _validity(
+        hits=2, penalty=0, devanagari=600, ratio=0.90, stranded=0, attested=2
+    )
+    assert _map_ranking_key(unstranded) > _map_ranking_key(stranded), "stranded too"
+
+
+def test_attested_word_count_is_distinct_tokens_not_substrings() -> None:
+    # Counting by set intersection, not substring: a substring test lets one long
+    # garbled token satisfy several short entries. `आर्थिक` is in the list; the garble
+    # `आथिंक` that VOL-185's wrong map produces is not, and cannot be -- its document
+    # frequency is 108 against a floor of 5,000.
+    assert _attested_word_count("आर्थिक वर्ष") >= 1
+    assert _attested_word_count("आथिंक वषं") == 0
+    # A repeated form counts once, so a garble that happens to repeat cannot outvote
+    # a reading that produces several different real words.
+    assert _attested_word_count("आर्थिक आर्थिक आर्थिक") == _attested_word_count("आर्थिक")
 
 
 def test_stranded_count_excludes_devanagari_digits() -> None:

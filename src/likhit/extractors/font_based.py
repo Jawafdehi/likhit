@@ -662,17 +662,25 @@ def _legacy_map_garble(text: str) -> int:
     The term is real evidence when two readings of the **same token** are compared, and
     noise when candidate **maps** are compared, for the reason the file already gives
     about `_STRANDED_BRACKET_PATTERN`: adjacency alone does not distinguish Nepali
-    morphology from garble, so it charges readings that are correct. As a map
-    discriminator it mostly does not discriminate -- on `3544__…Thasang Ga. Pa.` it
-    charges all six candidates 3 points for `अध्ययन` ("study") -- and where it *does*
-    move a decision it can move it the wrong way, because the charge lands on whichever
-    reading happens to spell a doublet.
+    morphology from garble, so it charges readings that are correct. Where it moves a
+    map decision it can move it the wrong way, because the charge lands on whichever
+    reading happens to spell a doublet -- and a *correct* reading of Nepali spells more
+    of them than a garbled one does.
 
-    That is the whole of VOL-185's regression on eight of its eleven documents. With
-    `a5cfd4a` having removed the `_INVALID_IKAR_PATTERN` counterweight, the correct
-    `Spins` reading of those spans carries exactly one doublet hit, **3** points, and the
-    map that misreads them carries none -- so the wrong map wins the `penalty` axis by
-    that margin and `र्` is emitted as a misplaced `ं` (`वर्ष`->`वषं`, `आर्थिक`->`आथिंक`).
+    That is the whole of VOL-185's regression on eight of its eleven documents. Measured
+    on each of their `Spins` font aggregates: the correct `Spins` reading carries exactly
+    one narrowed doublet hit, **3** points, and the map that misreads the span carries
+    **0** -- so with `a5cfd4a` having removed the `_INVALID_IKAR_PATTERN` counterweight
+    the wrong map wins the `penalty` axis by that margin, and `र्` is emitted as a
+    misplaced `ं` (`वर्ष`->`वषं`, `आर्थिक`->`आथिंक`). Subtracting the term levels those
+    eight at 0 and 0, so the axes below decide instead.
+
+    Note `ecc5338`'s version of this docstring cited `3544__…Thasang Ga. Pa.` charging
+    all six candidates 3 points for `अध्ययन` ("study"). That is no longer true and must
+    not be re-copied: `bad7fe2` (VOL-135) added `अध्ययन` to
+    :data:`_DOUBLED_CONSONANT_LEXEMES`, so `_duplicate_consonant_count` scores it 0.
+    The live examples are damage forms the narrowing keeps -- `खररद`, `ववरण`,
+    `आन्तररक` -- each still charged 3.
 
     **This is used for the ranking axis ONLY, never for the accept gate.**
     `ecc5338` made the same subtraction and fed it to both, because
