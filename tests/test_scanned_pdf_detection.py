@@ -34,6 +34,8 @@ from likhit.extractors.font_based import (
     _reads_as_latin_words,
     _text_quality_penalty,
     choose_legacy_map,
+    choose_legacy_map_detailed,
+    decode_with_legacy_map,
     detect_content_legacy_fonts,
 )
 from likhit.extractors.font_classifier import (
@@ -181,6 +183,17 @@ def test_scan_ocr_pages_empty_for_born_digital_sample() -> None:
 # --- Part B: content-based legacy-font detection ------------------------------
 
 
+def _chosen_maps(detected: dict) -> dict[str, str]:
+    """`{font: map_key}` from `detect_content_legacy_fonts`, dropping the mask.
+
+    The mask matters wherever a tie survived (VOL-156); these cases assert which
+    map was chosen, and each one carries an empty mask, which
+    :func:`_no_font_carries_a_mask` pins separately.
+    """
+
+    return {font: choice.map_key for font, choice in detected.items()}
+
+
 def test_choose_legacy_map_accepts_real_preeti() -> None:
     # Real Preeti keystrokes decoding to several dictionary words.
     keystrokes = "g]kfn ;/sf/ cbfnt cg';Gwfg k|ltjfbL e|i6frf/"
@@ -215,7 +228,7 @@ def test_is_probably_legacy_ascii() -> None:
 def test_detect_content_legacy_fonts_on_mislabeled_preeti() -> None:
     doc = fitz.open(stream=build_mislabeled_preeti_pdf(), filetype="pdf")
     try:
-        assert detect_content_legacy_fonts(doc) == {"Helvetica": "Preeti"}
+        assert _chosen_maps(detect_content_legacy_fonts(doc)) == {"Helvetica": "Preeti"}
     finally:
         doc.close()
 
@@ -227,7 +240,7 @@ def test_detect_content_legacy_fonts_on_subset_named_font() -> None:
     doc = fitz.open(stream=build_subset_named_preeti_pdf(), filetype="pdf")
     try:
         assert not is_core_font_name("TT339t00")
-        assert detect_content_legacy_fonts(doc) == {"TT339t00": "Preeti"}
+        assert _chosen_maps(detect_content_legacy_fonts(doc)) == {"TT339t00": "Preeti"}
     finally:
         doc.close()
 
@@ -361,7 +374,7 @@ def test_detect_content_legacy_fonts_picks_spins_over_preeti() -> None:
     # the detection.
     doc = fitz.open(stream=build_subset_named_spins_pdf(), filetype="pdf")
     try:
-        assert detect_content_legacy_fonts(doc) == {"TT339t00": "Spins"}
+        assert _chosen_maps(detect_content_legacy_fonts(doc)) == {"TT339t00": "Spins"}
     finally:
         doc.close()
 
@@ -388,7 +401,7 @@ def test_spins_does_not_steal_genuine_preeti() -> None:
     # regression on every document the name registry already handled.
     doc = fitz.open(stream=build_mislabeled_preeti_pdf(), filetype="pdf")
     try:
-        assert detect_content_legacy_fonts(doc) == {"Helvetica": "Preeti"}
+        assert _chosen_maps(detect_content_legacy_fonts(doc)) == {"Helvetica": "Preeti"}
     finally:
         doc.close()
 
@@ -500,23 +513,79 @@ def test_the_ratio_axis_outranks_the_devanagari_count_and_that_order_decides() -
     assert _map_ranking_key(spins) > _map_ranking_key(worse_ratio_higher_count)
 
 
-def test_choose_legacy_map_abstains_when_every_axis_ties() -> None:
+def test_surviving_tie_masks_only_the_ambiguous_code_points() -> None:
     # "X" is ह् under Preeti and हृ under Kantipur: both pure Devanagari, both two
     # code points, so hits, penalty, ratio and Devanagari count are all identical
     # and the two readings still differ. Nothing but tuple position could pick a
-    # winner, so there is no winner to pick.
+    # winner between them, so nothing does.
+    #
+    # VOL-156: the remedy applies to "X" and to nothing else. The candidates agree
+    # about every other code point in the span, so decoding those commits to
+    # nothing -- there is no choice being made there. Discarding them too is what
+    # cost the OAG corpus 59,867 Devanagari characters across 50 documents.
     keystrokes = f"{_TIE_PREFIX} X"
     readings = {
         get_converter_for_map(candidate)(keystrokes) for candidate in ALL_MAP_KEYS
     }
     assert len(readings) > 1
 
-    map_key, best = choose_legacy_map(keystrokes)
-    assert map_key is None
-    # Abstention is NOT the gate declining: the best candidate clears it. The
-    # keystrokes stay visibly undecoded, which is recoverable; a confident wrong
-    # word is not.
-    assert best is not None and _passes_content_legacy_gate(best)
+    choice = choose_legacy_map_detailed(keystrokes)
+    assert choice.map_key is not None
+    assert choice.ambiguous == frozenset({"X"})
+    # The ambiguous keystroke survives as itself -- recoverable, and visibly not a
+    # reading. Everything the candidates agree on is decoded.
+    assert decode_with_legacy_map(keystrokes, choice) == "नेपाल सरकार अदालत X"
+    # Masking is not the gate declining: the reading clears it.
+    assert choice.validity is not None and _passes_content_legacy_gate(choice.validity)
+
+
+def test_a_disagreement_that_masking_cannot_localise_still_abstains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The safety valve, with the fault injected so the check is shown to bite.
+    # These maps reorder, so "the candidates differ only at code point c" is a
+    # per-character *hypothesis*; masking is only allowed to rescue a span when
+    # masking actually removes the disagreement. Here two candidates read every
+    # single code point identically in isolation and still disagree in context, so
+    # the mask comes out empty and there is nothing to decode on.
+    from likhit.extractors import font_based as font_based_module
+
+    real = get_converter_for_map("Preeti")
+    # "kp" decodes to कप, two Devanagari characters outside any dictionary word, so
+    # transposing them holds hits, penalty, ratio and the Devanagari count exactly
+    # level -- (3, 0, 1.0, 17) either way. A tie no axis can break.
+    keystrokes = f"{_TIE_PREFIX} sk"
+
+    def contextual(text: str) -> str:
+        # Byte-identical to Preeti on every code point READ ALONE, and different in
+        # context. That is the case a per-code-point comparison cannot see, and the
+        # reason the localisation is verified on the whole span instead of trusted.
+        out = real(text)
+        if len(text) <= 1 or len(out) < 2:
+            return out
+        return out[:-2] + out[-1] + out[-2]
+
+    def fake_get_converter_for_map(map_key: str):
+        return contextual if map_key == "Kantipur" else real
+
+    monkeypatch.setattr(
+        font_based_module, "get_converter_for_map", fake_get_converter_for_map
+    )
+    monkeypatch.setattr(font_based_module, "ALL_MAP_KEYS", ("Preeti", "Kantipur"))
+
+    # The fault is real: the two candidates tie on every axis and disagree.
+    assert _map_ranking_key(_nepali_validity(real(keystrokes))) == _map_ranking_key(
+        _nepali_validity(contextual(keystrokes))
+    )
+    assert real(keystrokes) != contextual(keystrokes)
+
+    choice = font_based_module.choose_legacy_map_detailed(keystrokes)
+    # No code point differs in isolation, so there is nothing to mask -- and
+    # masking nothing would decode the disagreement as if it were settled.
+    assert choice.ambiguous == frozenset()
+    assert choice.map_key is None
+    # And it abstained over a real ambiguity, not a gate refusal.
+    assert choice.validity is not None and _passes_content_legacy_gate(choice.validity)
 
 
 def test_identical_readings_are_not_an_ambiguity() -> None:
@@ -549,15 +618,19 @@ def test_all_map_keys_order_does_not_decide_the_text(
     # or force an arbitrary tie-break back into the chooser.
     from likhit.extractors import font_based as font_based_module
 
+    # Through the production decode path, because the mask is part of the decision:
+    # converting with the bare map key would read the ambiguous code point after
+    # all, and the invariant would fail -- correctly. VOL-156's mask is what keeps
+    # the text order-independent on a surviving tie.
     def decode(keystrokes: str) -> str | None:
-        map_key, _validity = choose_legacy_map(keystrokes)
-        return get_converter_for_map(map_key)(keystrokes) if map_key else None
+        choice = choose_legacy_map_detailed(keystrokes)
+        return decode_with_legacy_map(keystrokes, choice) if choice.map_key else None
 
     cases = [f"{_TIE_PREFIX} ;_Vof", f"{_TIE_PREFIX} X", _TIE_PREFIX]
     before_text = [decode(case) for case in cases]
     assert before_text == [
         "नेपाल सरकार अदालत संख्या",  # ratio decided it
-        None,  # abstained
+        "नेपाल सरकार अदालत X",  # tie survived: agreed text decoded, "X" left raw
         "नेपाल सरकार अदालत",  # every map agrees
     ]
 
@@ -567,10 +640,10 @@ def test_all_map_keys_order_does_not_decide_the_text(
 
     monkeypatch.setattr(font_based_module, "ALL_MAP_KEYS", reversed_keys)
     assert [decode(case) for case in cases] == before_text
-    # The evidence-decided cases pin the key too: only the identical-text one is
-    # allowed to relabel.
+    # The evidence-decided case pins the key too. The other two may relabel: their
+    # tied candidates read the span identically once the ambiguity is masked, which
+    # is exactly why the text above cannot move.
     assert choose_legacy_map(cases[0])[0] == "Spins"
-    assert choose_legacy_map(cases[1])[0] is None
 
 
 # --- Part B, VOL-89: which form of the garble measure may decide ---------------

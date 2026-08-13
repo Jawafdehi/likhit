@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import hashlib
 import re
 from pathlib import Path
@@ -1317,13 +1317,86 @@ def _map_ranking_key(
     )
 
 
-def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
-    """Pick the best legacy map for ``text`` if one validates, else ``(None, best)``.
+@dataclass(frozen=True)
+class LegacyMapChoice:
+    """What ranking every legacy map against one span decided.
 
-    Tries every :data:`ALL_MAP_KEYS` map and ranks the candidates by
-    :func:`_map_ranking_key`. Returns the winning map key only when it clears
-    :func:`_passes_content_legacy_gate`; otherwise the map key is ``None`` (the
-    second element is the best-scoring validity for diagnostics).
+    ``ambiguous`` is the set of *input* code points the tied candidates read
+    differently. It is empty unless a tie survived every evidence axis, and when
+    it is non-empty those code points are left as raw keystrokes by
+    :func:`decode_with_legacy_map` — see :func:`choose_legacy_map_detailed`.
+    """
+
+    map_key: str | None
+    validity: dict[str, float] | None
+    ambiguous: frozenset[str] = frozenset()
+
+
+def _ambiguous_code_points(
+    text: str,
+    convert_best,
+    convert_tied: list,
+) -> frozenset[str]:
+    """Input code points that ``convert_best`` and any of ``convert_tied`` disagree on.
+
+    Compared one code point at a time, which is a *candidate* set only: these maps
+    reorder (a pre-base vowel sign moves across its consonant), so a per-character
+    comparison is not by itself proof that the disagreement is confined to these
+    code points. :func:`choose_legacy_map_detailed` verifies that claim on the
+    whole span before relying on it, and abstains when it does not hold.
+    """
+
+    ambiguous = set()
+    for code_point in set(text):
+        try:
+            best_reading = convert_best(code_point)
+        except Exception:  # noqa: BLE001 - cannot read it alone; treat as ambiguous
+            ambiguous.add(code_point)
+            continue
+        for convert in convert_tied:
+            try:
+                if convert(code_point) != best_reading:
+                    ambiguous.add(code_point)
+                    break
+            except Exception:  # noqa: BLE001 - same
+                ambiguous.add(code_point)
+                break
+    return frozenset(ambiguous)
+
+
+def _decode_masking(text: str, convert, masked: frozenset[str]) -> str:
+    """Convert ``text`` with ``convert``, leaving every code point in ``masked`` raw.
+
+    Splits on the masked code points and converts each run between them, so a
+    masked keystroke survives as itself and everything around it is decoded. The
+    split also bounds each conversion's context at the masked position, which is
+    intended: that position is where the candidates disagree, so it is not a
+    place to carry reordering context across.
+    """
+
+    if not masked:
+        return convert(text)
+    out: list[str] = []
+    run: list[str] = []
+    for char in text:
+        if char in masked:
+            if run:
+                out.append(convert("".join(run)))
+                run = []
+            out.append(char)
+        else:
+            run.append(char)
+    if run:
+        out.append(convert("".join(run)))
+    return "".join(out)
+
+
+def choose_legacy_map_detailed(text: str) -> LegacyMapChoice:
+    """Rank every :data:`ALL_MAP_KEYS` map against ``text`` and decide what to read.
+
+    Returns the winning map key only when the reading clears
+    :func:`_passes_content_legacy_gate`; otherwise ``map_key`` is ``None`` (the
+    ``validity`` is the best-scoring candidate's, for diagnostics).
 
     **The order of ALL_MAP_KEYS is not a tie-break.** It used to be, implicitly:
     the loop kept the first strict maximum, so two maps level on every axis were
@@ -1331,54 +1404,50 @@ def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
     decided real documents — a 303-character face in one OAG municipality report
     tied all six maps at ``hits=3, penalty=0.0`` and was decoded as Preeti purely
     because Preeti is index 0, rendering ``;_Vof`` as ``स)ख्या`` where the correct
-    Spins read gives ``संख्या`` (VOL-77).
+    Spins read gives ``संख्या`` (VOL-77). Position in a tuple is not evidence.
 
-    ⚠️ **That document is fixed by the two added AXES, not by abstention, and the
-    two remedies must not be run together in one story.** Measured: it decodes as
-    ``Spins``, resolved by ``ratio``; the abstention branch never executes on it.
-    Someone debugging it from this docstring would read the wrong branch. The axes
-    fixed VOL-77; abstention handles the residue that no axis separates.
+    ⚠️ **That document is fixed by the two added AXES, not by the tie remedy below,
+    and the two must not be run together in one story.** Measured: it decodes as
+    ``Spins``, resolved by ``ratio``. Neither VOL-77's abstention nor VOL-156's
+    scope-masking ever runs on it, so someone debugging it from this docstring
+    would read the wrong branch. The axes fixed VOL-77; what follows handles the
+    residue no axis separates.
 
-    Abstention is the second remedy: position in a tuple is not evidence, so a tie
-    that survives every axis declines to choose. Well-formed Devanagari spelling the
-    wrong word is not detectable by any purity axis or by a reader, while undecoded
-    keystrokes are at least visible.
+    Maps that produce *identical* text are not an ambiguity at all and are decided
+    on the shared reading. Preeti, Kantipur and Sagarmatha decode much ordinary
+    text the same way.
 
-    🛑 **Abstaining is not free, and on this corpus it is a net regression until
-    #84 lands.** "Recoverable" describes the failure mode, not the cost. Measured
-    over all 6,236 OAG documents plus all 35 CIAA reports: 481 winner changes (the
-    win — 470 of them ``Preeti``→``Spins``, repairing systematically lost repha),
-    but also **46 fonts in 46 documents lose a gate-passing decode, 44,108
-    Devanagari characters that a build without abstention produces**. #84 measures
-    the same shape at 50 documents / 59,867 characters and fixes it by narrowing the
-    scope, and its diagnosis — right reasoning applied at the wrong scope — is
-    correct.
+    **A tie that survives every axis is resolved at the scope of the ambiguity,
+    not by discarding the span (VOL-156).** VOL-77's remedy for such a tie was to
+    return ``None`` for the whole font, on the reasoning that raw keystrokes are
+    recoverable where well-formed Devanagari spelling the wrong word is not. That
+    reasoning is right and was applied at the wrong scope: the tied candidates
+    agree about almost every code point, and *decoding what they agree on commits
+    to nothing*, because there is no choice being made there.
 
-    The ties are structural, not unlucky. ``Preeti`` and ``Sagarmatha`` differ on
-    **0** printable-ASCII keys; ``Preeti`` and ``Kantipur`` on **2** (``F`` is
-    ``ँ``/``ा``, ``X`` is ``ह्``/``हृ``); ``PCS NEPALI`` and
-    ``FONTASY_HIMALI_TT`` on **5**. Such pairs tie on every axis by construction —
-    both readings are pure Devanagari of the same length, and no dictionary word
-    contains ``ँ`` or ``ह्`` — so one poison keystroke anywhere abstains the whole
-    font. And because this is called **once per font on the document aggregate**,
-    a longer aggregate is *more* likely to abstain, not less: ``F`` is the
-    candrabindu in ``गाउँपालिका``, which titles most of these reports.
+    So a surviving tie now decodes with the ranking winner and leaves only the
+    code points the tied candidates read differently as raw keystrokes. On the
+    OAG corpus the difference is stark — on
+    ``11104__Sangathit Sangrachana 2073`` (font ``Nepali``, 4,916 characters)
+    ``PCS NEPALI`` and ``FONTASY_HIMALI_TT`` tie on all four axes to the last
+    digit and disagree about **one** code point, ``?``, which one reads ``रू`` and
+    the other ``रु`` — the rupee abbreviation with a long or a short vowel, 19
+    occurrences, 0.39% of the span. Abstaining discarded 4,433 Devanagari
+    characters, the whole of that document's v11 → v12 regression, to avoid
+    choosing a vowel length. Corpus-wide that shape accounts for 59,867 Devanagari
+    characters across 50 documents whose decode would have passed the content gate.
 
-    **So this must not land alone.** Either land it with #84 or accept 46-50
-    documents temporarily worse than the parent.
+    The localisation is **verified, not assumed**. These maps reorder, so a
+    per-code-point comparison cannot prove the disagreement is confined to those
+    code points. After masking, every tied candidate must produce a byte-identical
+    reading of the whole span; when one does not, the ambiguity is not localised
+    and the span abstains exactly as before.
 
-    Maps that produce *identical* text are not an ambiguity and do not abstain.
-    Preeti, Kantipur and Sagarmatha decode much ordinary text the same way, and
-    refusing to choose between two readings that do not differ would throw away
-    a correct decode over a distinction without a difference.
-
-    One consequence, deliberately left in place: for such a span the returned map
-    *name* is still whichever of the equal candidates comes first in
-    :data:`ALL_MAP_KEYS`. The decoded text cannot depend on that choice — the
-    readings are equal by definition — so no transcript is affected, but the
-    recorded map name is not a stable label for those spans and should not be read
-    as an identification of the face. Making it stable would mean inventing a
-    tie-break, which is the thing this function stopped doing.
+    One consequence, deliberately left in place: where candidates read a span
+    identically the returned map *name* is still whichever comes first in
+    :data:`ALL_MAP_KEYS`. The decoded text cannot depend on that choice, so no
+    transcript is affected, but the recorded name is not a stable label for those
+    spans and should not be read as an identification of the face.
     """
 
     # `tuple[float, ...]`, not a fixed arity: this used to spell out four floats and was
@@ -1400,26 +1469,76 @@ def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
         digest = hashlib.blake2b(converted.encode("utf-8"), digest_size=16).hexdigest()
         scored.append((_map_ranking_key(validity), map_key, validity, digest))
     if not scored:
-        return None, None
+        return LegacyMapChoice(None, None)
 
     # Stable sort on the evidence alone, so candidates level on every axis keep
     # their walk order and the tie below is detected rather than resolved by it.
     scored.sort(key=lambda candidate: candidate[0], reverse=True)
     best_key, best, best_digest = scored[0][1], scored[0][2], scored[0][3]
     tied = [candidate for candidate in scored[1:] if candidate[0] == scored[0][0]]
+
+    masked: frozenset[str] = frozenset()
     if any(candidate[3] != best_digest for candidate in tied):
-        return None, best
+        convert_best = get_converter_for_map(best_key)
+        converters = [get_converter_for_map(candidate[1]) for candidate in tied]
+        masked = _ambiguous_code_points(text, convert_best, converters)
+        try:
+            readings = {
+                _decode_masking(text, convert, masked)
+                for convert in [convert_best, *converters]
+            }
+        except Exception:  # noqa: BLE001 - cannot mask this span; abstain as before
+            return LegacyMapChoice(None, best)
+        if not masked or len(readings) != 1:
+            # The disagreement is not confined to those code points, so masking
+            # them does not remove it. No evidence is left to choose on: abstain.
+            return LegacyMapChoice(None, best)
+        # Gate the text that will actually be emitted, not the unmasked reading.
+        best = _nepali_validity(readings.pop())
 
     if _passes_content_legacy_gate(best):
-        return best_key, best
-    return None, best
+        return LegacyMapChoice(best_key, best, masked)
+    return LegacyMapChoice(None, best)
+
+
+def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
+    """``(map_key, validity)`` for ``text`` — see :func:`choose_legacy_map_detailed`.
+
+    Kept as the two-element view for callers that only need the decision. Anything
+    that goes on to *decode* the span must use
+    :func:`choose_legacy_map_detailed`, because the masked code points are part of
+    the decision and dropping them would decode an ambiguity as if it were settled.
+    """
+
+    choice = choose_legacy_map_detailed(text)
+    return choice.map_key, choice.validity
+
+
+def decode_with_legacy_map(text: str, choice: LegacyMapChoice) -> str:
+    """Decode ``text`` under ``choice``, leaving its ambiguous code points raw."""
+
+    if choice.map_key is None:
+        return text
+    # The GATED converter, and the un-lift, because this is an output path: its only
+    # caller in src/ is the content-legacy branch, which emits final text. Both used to
+    # be applied at that call site, and moving the decode into this helper would have
+    # dropped them -- reintroducing "(1)" -> "ढ१ण्" and leaving ARAP 11's 0xF000-lifted
+    # bytes unconverted. choose_legacy_map keeps using the RAW get_converter_for_map to
+    # compare candidates, which is the distinction that matters here.
+    return _decode_masking(
+        text,
+        lambda part: get_output_converter_for_map(choice.map_key)(
+            unlift_symbol_pua(part)
+        ),
+        choice.ambiguous,
+    )
 
 
 def detect_content_legacy_fonts(
     doc: fitz.Document,
     skip_pages: frozenset[int] = frozenset(),
-) -> dict[str, str]:
-    """Map base-font name -> legacy map key for mislabeled legacy fonts.
+) -> dict[str, LegacyMapChoice]:
+    """Map base-font name -> the legacy-map choice for mislabeled legacy fonts.
 
     Considers every font the name-based classifier calls "correct" whose
     aggregate span text reads as raw legacy keystrokes and then validates as
@@ -1467,7 +1586,7 @@ def detect_content_legacy_fonts(
                 for span in line["spans"]:
                     text_by_font[str(span["font"])].append(str(span["text"]))
 
-    content_maps: dict[str, str] = {}
+    content_maps: dict[str, LegacyMapChoice] = {}
     for font_name, parts in text_by_font.items():
         # A font the name-based classifier already routes (legacy_remap, or a
         # broken-CMap family) is left to that path; this is only for fonts it
@@ -1477,15 +1596,18 @@ def detect_content_legacy_fonts(
         aggregate = "".join(parts)
         if not _is_probably_legacy_ascii(aggregate):
             continue
-        map_key, _validity = choose_legacy_map(aggregate)
-        if map_key is not None:
-            content_maps[font_name] = map_key
+        choice = choose_legacy_map_detailed(aggregate)
+        if choice.map_key is not None:
+            content_maps[font_name] = choice
     return content_maps
 
 
 def _content_legacy_veto_flags(
     spans: list[dict],
-    content_legacy_maps: dict[str, str] | None,
+    # VOL-163: `aa4caff` widened this map's values from a bare map key to a
+    # `LegacyMapChoice`. This helper is `27d74f0`'s and was written against the old
+    # `str`; unwidened it would hand a dataclass to `get_converter_for_map`.
+    content_legacy_maps: dict[str, LegacyMapChoice] | None,
 ) -> list[bool]:
     """Per span: does the Latin-side veto apply to it? (VOL-138)
 
@@ -1509,8 +1631,8 @@ def _content_legacy_veto_flags(
         end = start + 1
         while end < len(spans) and str(spans[end]["font"]) == font_name:
             end += 1
-        map_key = content_legacy_maps.get(font_name)
-        if map_key is not None:
+        choice = content_legacy_maps.get(font_name)
+        if choice is not None and choice.map_key is not None:
             run_text = "".join(str(spans[index]["text"]) for index in range(start, end))
             # `spans` come straight from `get_cid_marked_page_dict`, so this run can
             # carry marked CIDs. Decode the UNMARKED text: a converter passes a marked
@@ -1518,7 +1640,10 @@ def _content_legacy_veto_flags(
             # Devanagari and silently disables the veto's dictionary axis.
             raw_text = unmark_cids(run_text)
             if raw_text.strip():
-                decoded = get_converter_for_map(map_key)(raw_text)
+                # The unmasked decode is right here: this is the *evidence* for
+                # "would decoding this run produce Nepali words", not the output. The
+                # mask (VOL-156) applies when the span is actually written.
+                decoded = get_converter_for_map(choice.map_key)(raw_text)
                 if _reads_as_latin_text(raw_text, decoded):
                     for index in range(start, end):
                         flags[index] = True
@@ -1687,7 +1812,7 @@ class FontBasedStrategy(ExtractionStrategy):
         page_end: int,
         needs_reorder: bool,
         decoy_pages: frozenset[int] = frozenset(),
-        content_legacy_maps: dict[str, str] | None = None,
+        content_legacy_maps: dict[str, LegacyMapChoice] | None = None,
         detect_tables: bool = True,
     ) -> RawDocument:
         paragraphs: list[str] = []
@@ -1808,7 +1933,10 @@ class FontBasedStrategy(ExtractionStrategy):
         font_name: str,
         font_strategies: dict[str, str],
         needs_reorder: bool,
-        content_legacy_maps: dict[str, str] | None = None,
+        # VOL-163: `aa4caff` widened the value type from `str` to `LegacyMapChoice`
+        # (it carries the ambiguous code points), and `27d74f0` added the veto flag.
+        # Both, not either.
+        content_legacy_maps: dict[str, LegacyMapChoice] | None = None,
         skip_content_legacy: bool = False,
     ) -> str:
         base = _span_base_font(font_name)
@@ -1818,25 +1946,34 @@ class FontBasedStrategy(ExtractionStrategy):
         # pages are skipped wholesale), so no span-level decoy branch is needed.
         # Content-legacy maps are keyed by full font name (subset prefix included)
         # so only the exact mislabeled font resource is remapped.
-        # `skip_content_legacy` is the Latin-side veto (VOL-138), decided by
-        # _content_legacy_veto_flags over this span's whole same-font run. A vetoed
-        # span falls through to the strategy branches below, which is what returns
-        # its raw text unchanged for a font the name classifier calls "correct".
+        # Three guards now stand between a candidate font and its remap, and VOL-163
+        # composes all of them. They are independent and ordered cheapest-first:
+        #
+        #   1. `skip_content_legacy` -- the structural Latin veto (`27d74f0`),
+        #      decided by `_content_legacy_veto_flags` over this span's whole
+        #      same-font run.
+        #   2. `_reads_as_latin_words` -- the word-identity Latin veto (`5084fb8`),
+        #      decided on this span. Corpus-wide it spares 14 runs (409 chars) that
+        #      (1) misses, all 14 genuine English (runs/vol163/), which is why both
+        #      ship rather than one.
+        #   3. `decode_with_legacy_map` -- the tie mask (`aa4caff`). Where a tie
+        #      survived every evidence axis, only the *disputed* code points stay
+        #      raw; the rest decode, because the tied candidates agree about them
+        #      and decoding an agreed code point commits to nothing (VOL-156).
+        #
+        # 1 and 2 decline the remap entirely; 3 narrows it. A span vetoed by 1 or 2
+        # falls through to the strategy branches below, which return its raw text
+        # unchanged for a font the name classifier calls "correct".
         if content_legacy_maps and not skip_content_legacy:
-            content_map_key = content_legacy_maps.get(font_name)
-            if content_map_key is not None:
+            content_choice = content_legacy_maps.get(font_name)
+            if content_choice is not None:
                 # Candidacy was decided per font over the whole document, so this
                 # span may be genuine Latin that merely shares the face. Leaving
                 # readable English alone is strictly better than remapping it into
                 # well-formed Devanagari that spells nothing.
                 if _reads_as_latin_words(text):
                     return text
-                # Output, not scoring, so this takes the gated converter -- same
-                # as the name-based branch below. choose_legacy_map keeps using
-                # the raw get_converter_for_map to compare candidates (VOL-166).
-                return get_output_converter_for_map(content_map_key)(
-                    unlift_symbol_pua(text)
-                )
+                return decode_with_legacy_map(text, content_choice)
 
         if strategy == "legacy_remap":
             converter = get_converter(font_name)
