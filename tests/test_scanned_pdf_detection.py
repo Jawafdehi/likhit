@@ -472,6 +472,77 @@ def test_all_map_keys_order_does_not_decide_the_text(
     assert choose_legacy_map(cases[1])[0] is None
 
 
+# --- Part B, VOL-89: which form of the garble measure may decide ---------------
+#
+# VOL-77 stopped ALL_MAP_KEYS order from deciding a tie. VOL-89 is the residual it
+# does not reach: two candidates that are NOT tied under the old key, separated
+# only because the garble count was divided by two different Devanagari counts.
+#
+# Both fixtures carry the numbers measured on the OAG corpus rather than a
+# synthetic span, because the shape needs a map that produces *fewer* Devanagari
+# characters and a *higher* Devanagari ratio than its rival, which hand-built
+# keystrokes do not reproduce at a penalty the gate still admits. Provenance:
+# `runs/vol89/evidence-stride14.json`, re-derived in `FINDING-03-root-cause.md`.
+
+
+def _validity(
+    hits: int, penalty: int, devanagari: int, ratio: float
+) -> dict[str, float]:
+    """A validity dict as `_nepali_validity` would return it, for ranking tests."""
+
+    return {
+        "hits": hits,
+        "penalty": penalty,
+        "penalty_per_deva": penalty / devanagari if devanagari else float("inf"),
+        "devanagari": devanagari,
+        "ratio": ratio,
+    }
+
+
+def test_equal_garble_counts_do_not_decide_however_they_normalise() -> None:
+    # `3222__...faktalung ga.pa`, font "Spins", 757 characters. All six maps score
+    # an identical raw penalty of 18; PCS NEPALI won only because 18/576 is less
+    # than 18/562. That is a denominator difference, not a garble difference, and
+    # it outranked a 1.1-point Devanagari-ratio difference that is real.
+    pcs = _validity(hits=5, penalty=18, devanagari=576, ratio=0.966443)
+    spins = _validity(hits=5, penalty=18, devanagari=562, ratio=0.977391)
+    assert pcs["penalty_per_deva"] < spins["penalty_per_deva"]  # the phantom margin
+
+    # The garble axis must see these as level, so `ratio` is reached and decides.
+    assert _map_ranking_key(pcs)[:2] == _map_ranking_key(spins)[:2]
+    assert _map_ranking_key(spins) > _map_ranking_key(pcs)
+
+
+def test_a_real_difference_in_garble_still_outranks_the_ratio() -> None:
+    # The control, and the reason `ratio` is NOT promoted above the garble axis:
+    # `4487__...बसबरिया गाउँपालिका`, font "Spins", 2,156 characters. Spins reads a
+    # higher Devanagari ratio there and is still the wrong map -- 48 penalty points
+    # against PCS NEPALI's zero, and it leaves a stranded ")" inside दनवा)टोल.
+    # A ratio-first key would pick Spins here, then lose the span entirely when it
+    # failed the gate.
+    pcs = _validity(hits=2, penalty=0, devanagari=658, ratio=0.679752)
+    spins = _validity(hits=2, penalty=48, devanagari=655, ratio=0.688025)
+    assert spins["ratio"] > pcs["ratio"]
+
+    assert _map_ranking_key(pcs) > _map_ranking_key(spins)
+    # And Spins could not have been used anyway: normalised, its garble is over
+    # the gate's ceiling. The ranking and the gate are separate judgements.
+    assert not _passes_content_legacy_gate(spins)
+    assert _passes_content_legacy_gate(pcs)
+
+
+def test_nepali_validity_reports_both_forms_of_the_garble_measure() -> None:
+    # The ranking compares candidates on one span, so it uses the raw count; the
+    # gate compares one span against an absolute ceiling, so it needs the rate.
+    # Both must be present, and the rate must remain the quotient of the count.
+    garble = "���" + "नेपाल"
+    validity = _nepali_validity(garble)
+    assert validity["penalty"] == pytest.approx(
+        validity["penalty_per_deva"] * validity["devanagari"]
+    )
+    assert isinstance(validity["penalty"], int)
+
+
 def test_detect_content_legacy_fonts_ignores_english() -> None:
     doc = fitz.open(stream=build_mixed_scan_and_text_pdf(), filetype="pdf")
     try:
