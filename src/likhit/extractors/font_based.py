@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, replace
+from functools import lru_cache
 import hashlib
+import os
 import re
 from pathlib import Path
 
@@ -28,6 +30,7 @@ from likhit.extractors.legacy_maps import (
     get_converter,
     get_converter_for_map,
     get_output_converter_for_map,
+    is_legacy_font,
 )
 from likhit.extractors.numeric_boundaries import (
     apply_line_numeric_boundary_repairs,
@@ -442,6 +445,146 @@ def unmark_cids(text: str) -> str:
     )
 
 
+# Latin subsets whose glyph ids sit a uniform offset from ASCII decode losslessly
+# once that offset is known, so text a missing /ToUnicode would otherwise throw
+# away can be read back exactly. Recovery is deliberately hemmed in on four
+# independent sides, because the failure mode is not "recovers less" -- it is
+# "invents English that was never on the page".
+#
+# 1. The font name must say Latin. This is a POSITIVE requirement, not merely the
+#    absence of a legacy name, because the corpus also carries fonts whose script
+#    is undetermined (`CIDFont+F1..F5`, `TT3CBt00`, `SymbolMT`); their glyph order
+#    is unknown, so reading them as ASCII would fabricate text.
+# 2. The font must not be one the legacy-map registry recognises. Devanagari
+#    keystroke fonts hold real ASCII bytes -- Preeti read as raw CIDs *is* ASCII,
+#    and ASCII of Nepali Preeti accidentally contains English words, which is the
+#    same trap as the Preeti digraphs `of]`/`If]q` reading as "of"/"if". Measured:
+#    without this gate the rule accepts `n]fk/LIf0fsf]k|tj]gdf pNn]vt Joxf]fsf `
+#    as English on two audit bulletins.
+# 3. Only two offsets are tried. A wide search is what lets a repeated boilerplate
+#    span reach 99.7% per-font offset coherence and still decode to
+#    `RQPONMPLKJIPOHGFEKEDEK...`; coherence across repeated content is not
+#    evidence of a correct decode.
+# 4. The decode must read as English against an EXTERNAL lexicon. A vocabulary
+#    derived from the corpus would be scored against text produced by the same
+#    extractor whose failures are being repaired.
+_LATIN_CID_FONT_FAMILIES = re.compile(
+    r"times|arial|calibri|garamond|cambria|courier|helvetica|book|acumin|dejavu|"
+    r"verdana|tahoma|georgia|palatino|century|candara|consolas|corbel|segoe|roboto|"
+    r"franklin|gill|futura|myriad|minion",
+    re.I,
+)
+# k=0 is the identity mapping and the modal case: the CID already *is* the ASCII
+# code and the only defect is the missing /ToUnicode. k=29 is the standard
+# glyph-order subset where glyph 3 is the space. Nothing else is tried.
+_CID_RECOVERY_OFFSETS = (0, 29)
+_CID_RECOVERY_WORD = re.compile(r"[A-Za-z]+")
+# Tokens shorter than 3 characters are the commonest accidental dictionary hit.
+_CID_RECOVERY_MIN_TOKEN = 3
+# Two dictionary words settle it alone. The one-word leg needs the word to
+# dominate the span, and BOTH legs are load-bearing: coverage alone rejects
+# `(based on INTOSAI SAI-PMF Pilot Version, 2013)` at cov=0.425, because
+# acronyms, digits and punctuation are not dictionary characters -- so a
+# coverage-only rule cannot see one of this defect's founding examples.
+_CID_RECOVERY_MIN_HITS = 2
+_CID_RECOVERY_MIN_COV_ONE_HIT = 0.5
+# Hunspell ships these; `/usr/share/dict/words` is absent on this host, which is
+# what the note in the corpus' gate_latin_loss.py is actually describing.
+# Override with a colon-separated LIKHIT_LATIN_LEXICON. No lexicon means no
+# recovery: the transform fails closed rather than guessing.
+_CID_RECOVERY_LEXICON_ENV = "LIKHIT_LATIN_LEXICON"
+_CID_RECOVERY_LEXICON_PATHS = (
+    "/usr/share/hunspell/en_US.dic",
+    "/usr/share/hunspell/en_GB.dic",
+)
+
+
+@lru_cache(maxsize=1)
+def _latin_cid_lexicon() -> frozenset[str]:
+    """Load the external English word list once per process."""
+
+    override = os.environ.get(_CID_RECOVERY_LEXICON_ENV)
+    paths = override.split(":") if override else _CID_RECOVERY_LEXICON_PATHS
+    words: set[str] = set()
+    for name in paths:
+        path = Path(name)
+        if not path.is_file():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for index, line in enumerate(lines):
+            if index == 0 and line.strip().isdigit():
+                continue  # hunspell header = entry count
+            word = line.split("/", 1)[0].strip()
+            if word.isalpha() and len(word) >= 2:
+                words.add(word.lower())
+    return frozenset(words)
+
+
+def _latin_cid_score(text: str) -> tuple[int, float]:
+    """(dictionary hits among long-enough alpha tokens, dictionary char coverage)."""
+
+    lexicon = _latin_cid_lexicon()
+    tokens = [
+        token
+        for token in _CID_RECOVERY_WORD.findall(text)
+        if len(token) >= _CID_RECOVERY_MIN_TOKEN
+    ]
+    hits = [token for token in tokens if token.lower() in lexicon]
+    nonspace = sum(1 for char in text if not char.isspace())
+    coverage = sum(len(token) for token in hits) / nonspace if nonspace else 0.0
+    return len(hits), coverage
+
+
+def is_latin_cid_font(font_name: str) -> bool:
+    """True if this font's undecodable glyphs may be read as offset ASCII."""
+
+    if not font_name or is_legacy_font(font_name):
+        return False
+    base = font_name.split("+", 1)[-1] if "+" in font_name else font_name
+    return bool(_LATIN_CID_FONT_FAMILIES.search(base))
+
+
+def recover_latin_cid_text(cids: list[int], font_name: str) -> str | None:
+    """Read a run of undecodable Latin glyph ids back as text, or decline.
+
+    Returns text only when a uniform offset lands the whole run in printable
+    ASCII *and* the result reads as English. Declining is the common case and is
+    not a failure: the caller then marks the run as an unmappable CID exactly as
+    before, so a document this cannot read is left byte-identical.
+    """
+
+    if not cids or not is_latin_cid_font(font_name):
+        return None
+    if not _latin_cid_lexicon():
+        return None
+
+    low, high = min(cids), max(cids)
+    best_text: str | None = None
+    best_score = (0, 0.0)
+    for offset in _CID_RECOVERY_OFFSETS:
+        # The whole run must land in printable ASCII. This range test is what
+        # keeps the transform away from Devanagari glyph ids, which sit far above
+        # the band at both offsets.
+        if low + offset < 0x20 or high + offset > 0x7E:
+            continue
+        text = "".join(chr(cid + offset) for cid in cids)
+        score = _latin_cid_score(text)
+        if score > best_score:
+            best_text, best_score = text, score
+
+    if best_text is None:
+        return None
+    hits, coverage = best_score
+    if hits >= _CID_RECOVERY_MIN_HITS or (
+        hits >= 1 and coverage >= _CID_RECOVERY_MIN_COV_ONE_HIT
+    ):
+        return best_text
+    return None
+
+
 def strip_marked_cids(text: str, replacement: str = "�") -> str:
     """Render marked CIDs back to a visible replacement character."""
 
@@ -481,6 +624,11 @@ def get_cid_marked_page_dict(page: fitz.Page) -> dict:
     A position that decodes to real text somewhere on the page and to U+FFFD
     somewhere else cannot be attributed to either, so it keeps its raw CID rather
     than being guessed at.
+
+    A run of unmappable glyphs in a Latin font is offered to
+    `recover_latin_cid_text` first: for those subsets the glyph ids are a uniform
+    offset from ASCII, so the text is present and merely unmapped. Only a run that
+    decodes to English is taken; everything else is marked exactly as before.
     """
 
     # Bit 128 is dropped here on purpose: this pass detects unmappable glyphs BY
@@ -494,10 +642,54 @@ def get_cid_marked_page_dict(page: fitz.Page) -> dict:
     unmappable = replacement - decoded
     cid_dict = page.get_text("rawdict", flags=_TEXT_DICT_FLAGS)
     for span in _iter_dict_spans(cid_dict):
-        for char in span.get("chars", ()):
-            if _char_position(char) in unmappable:
-                char["c"] = mark_unmappable_cids(char["c"])
+        _recover_or_mark_unmappable_span(span, unmappable)
     return _to_dict_shape(cid_dict)
+
+
+def _unmappable_runs(
+    span: dict, unmappable: set[tuple[float, ...]]
+) -> list[list[dict]]:
+    """Group a span's unmappable characters into maximal consecutive runs.
+
+    Runs, not individual glyphs, because a uniform-offset decode can only be
+    judged as English over a stretch of text. A decoded glyph interrupting the
+    stretch ends the run: the surviving text is real, so the two sides were set
+    with different mappings and must be scored apart.
+    """
+
+    runs: list[list[dict]] = []
+    current: list[dict] = []
+    for char in span.get("chars", ()):
+        if _char_position(char) in unmappable:
+            current.append(char)
+        elif current:
+            runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+    return runs
+
+
+def _recover_or_mark_unmappable_span(
+    span: dict, unmappable: set[tuple[float, ...]]
+) -> None:
+    """Recover each unmappable run as offset ASCII where possible, else mark it."""
+
+    font_name = span.get("font") or ""
+    for run in _unmappable_runs(span, unmappable):
+        recovered: str | None = None
+        # One code point per glyph is the shape the offset arithmetic assumes; a
+        # multi-character glyph is left to the marking path rather than guessed at.
+        if all(len(char["c"]) == 1 for char in run):
+            recovered = recover_latin_cid_text(
+                [ord(char["c"]) for char in run], font_name
+            )
+        if recovered is not None and len(recovered) == len(run):
+            for char, decoded_char in zip(run, recovered):
+                char["c"] = decoded_char
+        else:
+            for char in run:
+                char["c"] = mark_unmappable_cids(char["c"])
 
 
 def normalize_press_release_paragraph(text: str) -> str:

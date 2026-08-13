@@ -36,6 +36,16 @@ from likhit.extractors.font_based import (
     normalize_extracted_word,
     normalize_press_release_paragraph,
     parse_page_range,
+    recover_latin_cid_text,
+    is_latin_cid_font,
+    _latin_cid_score,
+    _latin_cid_lexicon,
+    _CID_RECOVERY_MIN_HITS,
+    _CID_RECOVERY_MIN_COV_ONE_HIT,
+    _CID_RECOVERY_LEXICON_ENV,
+    _LATIN_CID_FONT_FAMILIES,
+    _unmappable_runs,
+    _recover_or_mark_unmappable_span,
 )
 from likhit.extractors.kalimati import (
     _get_font_correction_map,
@@ -1522,3 +1532,195 @@ def test_the_latin_veto_is_not_blind_to_cid_marked_text() -> None:
     keystrokes = "kl/R5]b ;'\\][ cAdM"
     assert not _reads_as_latin_words(keystrokes)
     assert not _reads_as_latin_words(mark_unmappable_cids(keystrokes))
+
+
+# --- Latin cid uniform-offset recovery -------------------------------------
+#
+# Every cid sequence below is a real one, taken from the four corpus documents
+# that carry this defect (VOL-160 measured the class; VOL-170 fixes it). At k=0
+# the cid IS the ASCII code, so `_cids("text")` reproduces what the PDF holds.
+
+
+def _cids(text: str, offset: int = 0) -> list[int]:
+    return [ord(char) - offset for char in text]
+
+
+def test_latin_cid_recovery_reads_back_the_reports_own_title() -> None:
+    # 11392's title block, the founding case, at the standard-glyph-order offset.
+    title = "SAI Performance Measurement Report"
+    assert recover_latin_cid_text(_cids(title, 29), "TimesNewRomanPS-BoldMT") == title
+
+
+def test_latin_cid_recovery_takes_the_identity_offset() -> None:
+    # k=0 is the modal case: 136 of VOL-160's 146 confident recoveries.
+    for text, font in (
+        (
+            "Auditing Preparedness for the Implementation of the Sustainable ",
+            "TimesNewRomanPSMT",
+        ),
+        (
+            "We strive to be a credible institution in promoting accountability",
+            "TimesNewRomanPSMT,Italic",
+        ),
+        ("Professional Course on Management and Development", "TimesNewRomanPSMT"),
+    ):
+        assert recover_latin_cid_text(_cids(text), font) == text
+
+
+def test_latin_cid_recovery_keeps_a_span_a_coverage_rule_would_drop() -> None:
+    # cov=0.425 -- acronyms, digits and punctuation are not dictionary characters.
+    # The `hits >= 2` leg is the only reason this founding block survives, so a
+    # coverage-only acceptance rule cannot see one of the defect's own examples.
+    text = "(based on INTOSAI SAI-PMF Pilot Version, 2013)"
+    hits, coverage = _latin_cid_score(text)
+    assert hits >= _CID_RECOVERY_MIN_HITS
+    assert coverage < _CID_RECOVERY_MIN_COV_ONE_HIT
+    assert recover_latin_cid_text(_cids(text, 29), "TimesNewRomanPS-BoldMT") == text
+
+
+def test_latin_cid_recovery_refuses_preeti_read_as_ascii() -> None:
+    # THE regression this gate exists for. Preeti keystroke bytes ARE ASCII, so
+    # this real span from an audit bulletin scores as English (two dictionary
+    # words fall out by chance) and would ship as fabricated Latin text.
+    garble = "n]fk/LIf0fsf]k|tj]gdf pNn]vt Joxf]fsf "
+    hits, _coverage = _latin_cid_score(garble)
+    assert hits >= _CID_RECOVERY_MIN_HITS, "premise: this scores as English"
+    assert recover_latin_cid_text(_cids(garble), "Preeti") is None
+    assert recover_latin_cid_text(_cids(garble), "ABCDEF+Preeti") is None
+
+
+@pytest.mark.parametrize(
+    "font",
+    ["Preeti", "Himalb", "Kantipur", "Sagarmatha", "PCS NEPALI", "FONTASY_HIMALI_TT"],
+)
+def test_latin_cid_font_gate_excludes_legacy_registry_fonts(font: str) -> None:
+    assert is_latin_cid_font(font) is False
+
+
+@pytest.mark.parametrize(
+    "font",
+    ["TimesPreeti", "Preeti-TimesNewRoman", "ArialHimalb", "Times New Roman Kantipur"],
+)
+def test_latin_cid_font_gate_excludes_a_legacy_font_named_after_a_latin_family(
+    font: str,
+) -> None:
+    # These match the Latin family regex, so the legacy-registry check is the ONLY
+    # thing keeping them out; without it the names above would be read as ASCII.
+    # No such hybrid name is attested in this corpus -- this pins the gate that
+    # makes the two conditions independent rather than reporting a sighting.
+    assert _LATIN_CID_FONT_FAMILIES.search(font), "premise: the name looks Latin"
+    assert is_latin_cid_font(font) is False
+
+
+@pytest.mark.parametrize(
+    "font",
+    # Not in the legacy registry, so the POSITIVE Latin requirement is what stops
+    # them. `Kalimati` reaches this path as broken_cmap, and the corpus' residual
+    # holds fonts whose script was never determined.
+    [
+        "Kalimati",
+        "Lohit-Devanagari",
+        "SymbolMT",
+        "Ganess",
+        "BikuRegularThin",
+        "CIDFont+F1",
+        "TT3CBt00",
+        "",
+    ],
+)
+def test_latin_cid_font_gate_excludes_non_latin_and_undetermined(font: str) -> None:
+    assert is_latin_cid_font(font) is False
+
+
+@pytest.mark.parametrize(
+    "font",
+    [
+        "TimesNewRomanPSMT",
+        "TimesNewRomanPSMT,Bold",
+        "TimesNewRomanPS-BoldMT",
+        "ArialMT",
+        "Calibri-Bold",
+        "ABCDEF+Garamond-Bold",
+        "AcuminVariableConcept",
+    ],
+)
+def test_latin_cid_font_gate_admits_latin_families(font: str) -> None:
+    assert is_latin_cid_font(font) is True
+
+
+def test_latin_cid_recovery_declines_offsets_it_does_not_try() -> None:
+    # AcuminVariableConcept reads 99.7% per-font offset-coherent at k=74 and
+    # decodes to `RQPONMPLKJIPOHGFEKEDEK...`. Only k=0 and k=29 are tried, so a
+    # run that needs any other offset is declined rather than invented.
+    text = "Auditing Preparedness for the Implementation"
+    assert recover_latin_cid_text(_cids(text, 74), "AcuminVariableConcept") is None
+    assert recover_latin_cid_text(_cids(text, 1), "TimesNewRomanPSMT") is None
+
+
+def test_latin_cid_recovery_declines_glyphs_outside_printable_ascii() -> None:
+    # Devanagari glyph ids sit far above the printable band at both offsets, so
+    # the range test alone keeps the transform off them.
+    assert (
+        recover_latin_cid_text([0x4A9, 0xD6B, 0xED3, 0x1233], "TimesNewRomanPSMT")
+        is None
+    )
+
+
+def test_latin_cid_recovery_declines_text_that_is_not_english() -> None:
+    assert recover_latin_cid_text(_cids("qxzjvk wgtplm"), "TimesNewRomanPSMT") is None
+    assert recover_latin_cid_text([], "TimesNewRomanPSMT") is None
+
+
+def test_latin_cid_recovery_needs_a_lexicon_and_fails_closed(monkeypatch) -> None:
+    _latin_cid_lexicon.cache_clear()
+    monkeypatch.setenv(_CID_RECOVERY_LEXICON_ENV, "/nonexistent/en_US.dic")
+    try:
+        assert _latin_cid_lexicon() == frozenset()
+        title = "SAI Performance Measurement Report"
+        assert (
+            recover_latin_cid_text(_cids(title, 29), "TimesNewRomanPS-BoldMT") is None
+        )
+    finally:
+        _latin_cid_lexicon.cache_clear()
+
+
+def _span(text: str, unmappable_text: str, font: str) -> tuple[dict, set]:
+    """A span dict shaped like rawdict's, with `unmappable_text`'s glyphs flagged."""
+    chars = [
+        {"c": char, "bbox": (float(index), 0.0, float(index) + 1.0, 1.0)}
+        for index, char in enumerate(text)
+    ]
+    start = text.index(unmappable_text)
+    unmappable = {
+        _char_position(char) for char in chars[start : start + len(unmappable_text)]
+    }
+    return {"font": font, "chars": chars}, unmappable
+
+
+def test_unmappable_runs_split_on_a_decoded_glyph() -> None:
+    span, unmappable = _span("abXcd", "ab", "TimesNewRomanPSMT")
+    unmappable |= {_char_position(span["chars"][3]), _char_position(span["chars"][4])}
+    runs = _unmappable_runs(span, unmappable)
+    assert ["".join(char["c"] for char in run) for run in runs] == ["ab", "cd"]
+
+
+def test_recover_or_mark_span_emits_recovered_text_not_marks() -> None:
+    title = "SAI Performance Measurement Report"
+    encoded = "".join(chr(ord(char) - 29) for char in title)
+    span, unmappable = _span(encoded, encoded, "TimesNewRomanPS-BoldMT")
+    _recover_or_mark_unmappable_span(span, unmappable)
+    recovered = "".join(char["c"] for char in span["chars"])
+    assert recovered == title
+    assert count_marked_cids(recovered) == 0
+
+
+def test_recover_or_mark_span_marks_what_it_cannot_read() -> None:
+    # Identical bytes, legacy font: the marking behaviour must be exactly what it
+    # was before recovery existed.
+    title = "SAI Performance Measurement Report"
+    encoded = "".join(chr(ord(char) - 29) for char in title)
+    span, unmappable = _span(encoded, encoded, "Preeti")
+    _recover_or_mark_unmappable_span(span, unmappable)
+    marked = "".join(char["c"] for char in span["chars"])
+    assert marked == mark_unmappable_cids(encoded)
+    assert count_marked_cids(marked) == len(encoded)
