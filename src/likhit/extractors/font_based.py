@@ -27,6 +27,7 @@ from likhit.extractors.legacy_maps import (
     ALL_MAP_KEYS,
     get_converter,
     get_converter_for_map,
+    get_output_converter_for_map,
 )
 from likhit.extractors.numeric_boundaries import (
     apply_line_numeric_boundary_repairs,
@@ -933,7 +934,10 @@ class FontBasedStrategy(ExtractionStrategy):
         if content_legacy_maps:
             content_map_key = content_legacy_maps.get(font_name)
             if content_map_key is not None:
-                return get_converter_for_map(content_map_key)(text)
+                # Output, not scoring, so this takes the gated converter -- same
+                # as the name-based branch below. choose_legacy_map keeps using
+                # the raw get_converter_for_map to compare candidates (VOL-166).
+                return get_output_converter_for_map(content_map_key)(text)
 
         if strategy == "legacy_remap":
             converter = get_converter(font_name)

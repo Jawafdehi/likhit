@@ -114,6 +114,43 @@ def get_converter(font_name: str) -> Callable[[str], str] | None:
     map_key = _match_font(font_name)
     if map_key is None:
         return None
+    return get_output_converter_for_map(map_key)
+
+
+def get_converter_for_map(map_key: str) -> Callable[[str], str]:
+    """Return the **raw** converter for an explicit npttf2utf map key.
+
+    This is the scoring primitive. :func:`choose_legacy_map` runs every candidate
+    map over a span and keeps the best-scoring one, and that comparison has to see
+    each map's unmodified output -- a gate applied here would change which map
+    wins, not just what the winner emits. So this deliberately does **not** carry
+    the bracketed-marker gate.
+
+    Anything producing *final text* wants :func:`get_output_converter_for_map`
+    instead. The two call sites are easy to conflate, which is how VOL-166's fix
+    first shipped covering only one of them: `font_based._convert_span_text` calls
+    the content-based path before the name-based one and returns from it directly,
+    so an ungated call there reintroduces `"(1)" -> "ढ१ण्"` even with
+    :func:`get_converter` fixed.
+    """
+
+    mapper = _get_mapper()
+
+    def _convert(text: str) -> str:
+        return mapper.map_to_unicode(text, from_font=map_key)
+
+    return _convert
+
+
+def get_output_converter_for_map(map_key: str) -> Callable[[str], str]:
+    """Return the converter to use when emitting final text for ``map_key``.
+
+    :func:`get_converter_for_map` plus the bracketed-list-marker gate described
+    at :data:`_ASCII_BRACKETED_NUMBER`. Use this from every path that produces
+    output, whether the map was chosen by font name or by span content; use the
+    raw converter only for scoring.
+    """
+
     base_convert = get_converter_for_map(map_key)
 
     def _convert(text: str) -> str:
@@ -121,21 +158,6 @@ def get_converter(font_name: str) -> Callable[[str], str] | None:
         if decoded is not None:
             return decoded
         return base_convert(text)
-
-    return _convert
-
-
-def get_converter_for_map(map_key: str) -> Callable[[str], str]:
-    """Return a converter for an explicit npttf2utf map key.
-
-    Used by content-based legacy detection, which chooses the map from the span
-    text rather than the (unreliable) font name.
-    """
-
-    mapper = _get_mapper()
-
-    def _convert(text: str) -> str:
-        return mapper.map_to_unicode(text, from_font=map_key)
 
     return _convert
 

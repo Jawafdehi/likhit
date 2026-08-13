@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+from likhit.extractors.font_based import FontBasedStrategy
 from likhit.extractors.legacy_maps import (
     _decode_ascii_bracketed_number,
     get_converter,
     get_converter_for_map,
+    get_output_converter_for_map,
     is_legacy_font,
 )
 
@@ -94,9 +96,58 @@ def test_kalimati_never_reaches_the_legacy_map():
 
 
 def test_get_converter_for_map_is_unaffected_by_the_bracket_gate():
-    # The bracket gate lives in get_converter (the name-based path) only.
-    # get_converter_for_map is the primitive content-based detection scores
-    # candidates with (choose_legacy_map in font_based.py); it must keep
-    # returning the raw, ungated conversion.
+    # get_converter_for_map is the SCORING primitive: choose_legacy_map runs every
+    # candidate map over a span and keeps the best, so that comparison must see
+    # each map's raw output. Gating here would change which map wins, not just
+    # what the winner emits. Output paths use get_output_converter_for_map.
     convert = get_converter_for_map("FONTASY_HIMALI_TT")
     assert convert("(1)") == "ढ१ण्"
+
+
+def test_output_converter_for_map_carries_the_gate():
+    # The output counterpart of the scoring primitive above.
+    convert = get_output_converter_for_map("FONTASY_HIMALI_TT")
+    assert convert("(1)") == "(१)"
+    assert convert("(12)") == "(१२)"
+    # ...without disturbing anything that is not the bare marker shape.
+    assert convert("-1_") == "(१)"
+    assert convert("100") == "१००"
+
+
+def test_content_based_span_conversion_is_gated_too():
+    """The content-based path must not reintroduce the corruption.
+
+    VOL-166's fix first shipped wired only into ``get_converter`` (the
+    name-based path). ``_convert_span_text`` checks ``content_legacy_maps``
+    *first* and returns from that branch directly, so a font detected by content
+    rather than by name still produced ``"(1)" -> "ढ१ण्"``. That branch is not
+    reachable in the CIAA corpus -- ``detect_content_legacy_fonts`` returns ``{}``
+    for all 13 PDFs, measured -- so no corpus check could have caught it, and
+    ``fix/content-legacy-name-agnostic`` widens exactly this path. Pinned here
+    because it is invisible to every corpus gate we have.
+    """
+
+    strategy = FontBasedStrategy()
+    # A mislabeled font: the name classifier calls it "correct", content
+    # detection is what identifies it as legacy.
+    content_maps = {"ABCDE+Helvetica": "FONTASY_HIMALI_TT"}
+    converted = strategy._convert_span_text(
+        "(1)",
+        "ABCDE+Helvetica",
+        {"Helvetica": "correct"},
+        needs_reorder=False,
+        content_legacy_maps=content_maps,
+    )
+    assert converted == "(१)"
+
+    # Real prose on that same content-detected path still decodes in full.
+    assert (
+        strategy._convert_span_text(
+            "kl/R5]b",
+            "ABCDE+Times",
+            {"Times": "correct"},
+            needs_reorder=False,
+            content_legacy_maps={"ABCDE+Times": "Preeti"},
+        )
+        == "परिच्छेद"
+    )
