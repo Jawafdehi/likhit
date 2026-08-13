@@ -166,6 +166,10 @@ _RANKING_IKAR_NASAL_FORGIVENESS = 1
 _IKAR_NASAL_WEIGHT = 6
 _HALANT_IKAR_PATTERN = re.compile(r"्ि")
 _DUPLICATE_CONSONANT_PATTERN = re.compile(r"([क-ह])\1")
+# Named because `_legacy_map_garble` subtracts this exact term back out for map
+# ranking. If the penalty ever adds the narrowed count at one weight while the
+# subtraction removes it at another, the ranking measure runs low or negative.
+_DUPLICATE_CONSONANT_WEIGHT = 3
 # Two identical adjacent consonants are a real garble signal, but adjacency ALONE
 # is mostly wrong: in Nepali a stem ending in a consonant plus a suffix beginning
 # with the same one is ordinary morphology. Measured over all 6,223 documents of
@@ -645,8 +649,49 @@ def _text_quality_penalty(text: str) -> int:
         + len(_INVALID_IKAR_PATTERN.findall(text)) * 6
         + len(_IMPOSSIBLE_IKAR_NASAL_PATTERN.findall(text)) * _IKAR_NASAL_WEIGHT
         + len(_HALANT_IKAR_PATTERN.findall(text)) * 4
-        + _duplicate_consonant_count(text) * 3
+        + _duplicate_consonant_count(text) * _DUPLICATE_CONSONANT_WEIGHT
         + len(_SUSPICIOUS_ARTIFACT_PATTERN.findall(text)) * 8
+    )
+
+
+def _legacy_map_garble(text: str) -> int:
+    """Garble measure for RANKING candidate legacy maps -- comparative, not absolute.
+
+    :func:`_text_quality_penalty` minus the doubled-consonant term (VOL-185).
+
+    The term is real evidence when two readings of the **same token** are compared, and
+    noise when candidate **maps** are compared, for the reason the file already gives
+    about `_STRANDED_BRACKET_PATTERN`: adjacency alone does not distinguish Nepali
+    morphology from garble, so it charges readings that are correct. As a map
+    discriminator it mostly does not discriminate -- on `3544__…Thasang Ga. Pa.` it
+    charges all six candidates 3 points for `अध्ययन` ("study") -- and where it *does*
+    move a decision it can move it the wrong way, because the charge lands on whichever
+    reading happens to spell a doublet.
+
+    That is the whole of VOL-185's regression on eight of its eleven documents. With
+    `a5cfd4a` having removed the `_INVALID_IKAR_PATTERN` counterweight, the correct
+    `Spins` reading of those spans carries exactly one doublet hit, **3** points, and the
+    map that misreads them carries none -- so the wrong map wins the `penalty` axis by
+    that margin and `र्` is emitted as a misplaced `ं` (`वर्ष`->`वषं`, `आर्थिक`->`आथिंक`).
+
+    **This is used for the ranking axis ONLY, never for the accept gate.**
+    `ecc5338` made the same subtraction and fed it to both, because
+    :func:`_nepali_validity` derived `penalty` and `penalty_per_deva` from one number.
+    `_passes_content_legacy_gate` compares one span against an *absolute* ceiling of
+    0.05, so lowering that numerator loosens the gate, admits spans that were correctly
+    rejected, and cost `3219__…रामधुनी नगरपालिका` 9,670 Devanagari characters and 1,723
+    attested occurrences -- which is why VOL-163 reverted it in `677fa95`. The
+    comparative half was never the problem; only the substitution's reach was.
+
+    The counter must be the SAME one `_text_quality_penalty` adds -- the narrowed
+    `_duplicate_consonant_count`, not `_DUPLICATE_CONSONANT_PATTERN.findall`. The raw
+    count is >= the narrowed count on every input, so subtracting it would remove more
+    than was ever added and drive this measure below the true penalty, silently.
+    """
+
+    return (
+        _text_quality_penalty(text)
+        - _duplicate_consonant_count(text) * _DUPLICATE_CONSONANT_WEIGHT
     )
 
 
@@ -878,6 +923,582 @@ _CONTENT_LEGACY_DICTIONARY: frozenset[str] = frozenset(
         "मिति",
     }
 )
+
+# High-frequency Nepali word-forms, used ONLY as the `attested` ranking tie-break in
+# :func:`_map_ranking_key` -- never by the accept gate, never by the Latin veto. It is
+# deliberately a separate set from :data:`_CONTENT_LEGACY_DICTIONARY`: that one is read
+# by `_passes_content_legacy_gate` and `_reads_as_latin_text`, both calibrated against
+# their own populations, and adding words to it would loosen the gate and weaken the
+# veto at the same time.
+#
+# Derived by a RULE, not hand-picked, because a hand-list of the forms a bug was
+# reported on repairs exactly those forms: Devanagari-only, >= 4 code
+# points, and document frequency >= 5,000 of the 6,223 documents of published
+# `markdown-quality-v12` -- v12 and not v13, because v13 is the tree under suspicion
+# and must not certify its own vocabulary. 536 forms.
+# Instruments: `oag-corpus/runs/vol185/derive_attested_5f0833fc.py` and
+# `emit_attested_block_5f0833fc.py`.
+#
+# Garble cannot satisfy this. The forms VOL-185's wrong map produces sit three orders
+# of magnitude below the floor -- `आथिंक` df 108, `कायंविधि` df 128, `गनुंपनें` df 276,
+# `कमंचारी` df 291, and `खचं`/`वषं` df **0** -- and the derivation asserts that, fatally,
+# rather than assuming it. A systematically garbled form is still rare across
+# documents, which is exactly what `gate_attested_nepali.py`'s df >= 20 bar is too low
+# to see (VOL-175).
+_ATTESTED_NEPALI_WORDS: frozenset[str] = frozenset(
+    {
+        "अख्तियारी",
+        "अद्यावधिक",
+        "अधिकार",
+        "अधिकृत",
+        "अध्यक्ष",
+        "अनियमित",
+        "अनुगमन",
+        "अनुगमनका",
+        "अनुदान",
+        "अनुदानको",
+        "अनुमान",
+        "अनुरुप",
+        "अनुशासन",
+        "अनुसार",
+        "अनुसारको",
+        "अनुसूची",
+        "अन्तर्गत",
+        "अन्तिम",
+        "अन्य",
+        "अभिलेख",
+        "अभिवृद्धि",
+        "अवधि",
+        "अवलम्बन",
+        "अवस्था",
+        "अवस्थामा",
+        "असार",
+        "असुल",
+        "असुली",
+        "आएको",
+        "आगामी",
+        "आधार",
+        "आधारका",
+        "आधारभुत",
+        "आधारमा",
+        "आधारित",
+        "आन्तरिक",
+        "आफ्नो",
+        "आम्दानी",
+        "आयको",
+        "आयोजना",
+        "आयोजनाको",
+        "आर्थिक",
+        "आवश्यक",
+        "आश्वस्तता",
+        "आषाढ",
+        "उक्त",
+        "उचित",
+        "उत्तरदायित्व",
+        "उद्देश्य",
+        "उपभोक्ता",
+        "उपयुक्त",
+        "उपयोग",
+        "उपलब्ध",
+        "उपलव्ध",
+        "उल्लेख",
+        "उल्लेखित",
+        "एउटै",
+        "एकिन",
+        "एकीकृत",
+        "एण्ड",
+        "ऐनको",
+        "ऐनमा",
+        "कट्टा",
+        "कट्टी",
+        "कमजोर",
+        "करार",
+        "करोड",
+        "कर्मचारी",
+        "कर्मचारीको",
+        "कर्मचारीले",
+        "कागजात",
+        "कानुन",
+        "कानून",
+        "कामको",
+        "काममा",
+        "कायम",
+        "कारण",
+        "कारोबार",
+        "कारोबारको",
+        "कारोवारको",
+        "कार्य",
+        "कार्यको",
+        "कार्यक्रम",
+        "कार्यक्रमको",
+        "कार्यक्रममा",
+        "कार्यदक्षता",
+        "कार्यमा",
+        "कार्यरत",
+        "कार्यविधि",
+        "कार्यसम्पन्न",
+        "कार्यसम्पादन",
+        "कार्यान्वयन",
+        "कार्यान्वयनमा",
+        "कार्यालय",
+        "कार्यालयका",
+        "कार्यालयको",
+        "कार्यालयबाट",
+        "कार्यालयमा",
+        "कार्यालयले",
+        "कुनै",
+        "कुरामा",
+        "कृषि",
+        "केही",
+        "कैफियत",
+        "कोषको",
+        "कोषमा",
+        "क्रममा",
+        "क्षमता",
+        "क्षेत्र",
+        "क्षेत्रमा",
+        "खण्डमा",
+        "खरिद",
+        "खर्च",
+        "खर्चको",
+        "खर्चमा",
+        "खाता",
+        "खातामा",
+        "खानेपानी",
+        "गएको",
+        "गराई",
+        "गराउँदा",
+        "गराउन",
+        "गराउनु",
+        "गराउने",
+        "गराएको",
+        "गरिएका",
+        "गरिएको",
+        "गरिने",
+        "गरेका",
+        "गरेको",
+        "गरेकोमा",
+        "गरेकोले",
+        "गरेर",
+        "गर्दछ",
+        "गर्दा",
+        "गर्दै",
+        "गर्न",
+        "गर्नु",
+        "गर्नुपर्दछ",
+        "गाउँ",
+        "गाउँपालिका",
+        "गुणस्तर",
+        "गुणस्तरीय",
+        "चालु",
+        "चित्रण",
+        "चौमासिक",
+        "छनौट",
+        "छलफल",
+        "जटिल",
+        "जनसहभागिता",
+        "जम्मा",
+        "जवाफदेहिता",
+        "जस्ता",
+        "जानकारी",
+        "जारी",
+        "जिन्सी",
+        "जिम्मेवार",
+        "जिम्मेवारी",
+        "जिल्ला",
+        "ठेक्का",
+        "ढाँचामा",
+        "तयार",
+        "तर्जुमा",
+        "तर्फ",
+        "तसर्थ",
+        "तहका",
+        "तहको",
+        "तहमा",
+        "तहले",
+        "तालिम",
+        "तोकिए",
+        "तोकिएको",
+        "तोकेको",
+        "त्यसैगरी",
+        "त्यस्तो",
+        "दरबन्दी",
+        "दरले",
+        "दर्ता",
+        "दाखिला",
+        "दायित्व",
+        "दिएको",
+        "दिगो",
+        "दिनुपर्दछ",
+        "दिने",
+        "देखि",
+        "देखिएका",
+        "देखिएको",
+        "देखिएकोले",
+        "देखिएन",
+        "देखिने",
+        "देखिन्छ",
+        "देखियो",
+        "देहाय",
+        "दैनिक",
+        "दोस्रो",
+        "दोहोरो",
+        "धरौटी",
+        "धारा",
+        "ध्यान",
+        "नगदमा",
+        "नगरी",
+        "नगरेको",
+        "नगरेकोले",
+        "नदेखिएको",
+        "नभएको",
+        "नभएकोले",
+        "नरहेको",
+        "नराखेको",
+        "नलिएको",
+        "नसकेको",
+        "नसारेको",
+        "नहुने",
+        "नागरिक",
+        "नाममा",
+        "निकायबाट",
+        "निकायले",
+        "निकासा",
+        "निम्न",
+        "निम्नानुसार",
+        "नियन्त्रण",
+        "नियम",
+        "नियमको",
+        "नियमानुसार",
+        "नियमावली",
+        "नियमावलीको",
+        "नियमित",
+        "नियमितता",
+        "निर्णय",
+        "निर्धारण",
+        "निर्माण",
+        "नीति",
+        "नेपाल",
+        "नेपालको",
+        "न्यायिक",
+        "न्यून",
+        "पत्र",
+        "पदपूर्ति",
+        "पदाधिकारी",
+        "परिचालन",
+        "परिमाण",
+        "परीक्षण",
+        "परेको",
+        "पर्दछ",
+        "पर्याप्त",
+        "पश्चात",
+        "पहिचान",
+        "पाइएन",
+        "पाइयो",
+        "पाईएन",
+        "पाउने",
+        "पारदर्शिता",
+        "पारित",
+        "पालना",
+        "पालिका",
+        "पालिकाको",
+        "पालिकाले",
+        "पूँजीगत",
+        "पूर्वाधार",
+        "पेश्की",
+        "प्रकारका",
+        "प्रकृतिका",
+        "प्रकृतिको",
+        "प्रक्षेपण",
+        "प्रगति",
+        "प्रचलित",
+        "प्रणाली",
+        "प्रति",
+        "प्रतिवेदन",
+        "प्रतिवेदनको",
+        "प्रतिवेदनमा",
+        "प्रतिशत",
+        "प्रत्येक",
+        "प्रथम",
+        "प्रदान",
+        "प्रदेश",
+        "प्रभावकारिता",
+        "प्रभावकारी",
+        "प्रमाण",
+        "प्रमाणित",
+        "प्रमुख",
+        "प्रमुखले",
+        "प्रयोग",
+        "प्रवाह",
+        "प्रशासकीय",
+        "प्रशासन",
+        "प्रशासनिक",
+        "प्रा",
+        "प्राप्त",
+        "प्राप्ति",
+        "प्रारम्भिक",
+        "प्राविधिक",
+        "फर्छ्यौट",
+        "फिर्ता",
+        "बजेट",
+        "बनाई",
+        "बनाउन",
+        "बमोजिम",
+        "बमोजिमको",
+        "बर्ष",
+        "बाँकी",
+        "बाहेक",
+        "बेरुजु",
+        "बेरुजू",
+        "बैंक",
+        "बैठक",
+        "भएका",
+        "भएको",
+        "भएकोमा",
+        "भएकोले",
+        "भएपछि",
+        "भएमा",
+        "भत्ता",
+        "भन्दा",
+        "भन्ने",
+        "भरपाई",
+        "भित्र",
+        "भित्रका",
+        "भुक्तानी",
+        "भुक्तानीको",
+        "भौचर",
+        "भौतिक",
+        "भ्रमण",
+        "मध्ये",
+        "मर्मत",
+        "महालेखा",
+        "महालेखापरीक्षक",
+        "महालेखापरीक्षकको",
+        "महालेखापरीक्षकबाट",
+        "महिना",
+        "मात्र",
+        "मानदण्ड",
+        "मापदण्ड",
+        "मार्गदर्शन",
+        "मार्फत",
+        "मालसामान",
+        "मासिक",
+        "मितव्ययिता",
+        "मिति",
+        "मिलान",
+        "मूल्य",
+        "मूल्याङ्कन",
+        "मौज्दात",
+        "म्याद",
+        "यकिन",
+        "यथार्थ",
+        "यसरी",
+        "यसैसाथ",
+        "यस्तो",
+        "योगदान",
+        "योजना",
+        "योजनाको",
+        "योजनामा",
+        "रकमको",
+        "रहेका",
+        "रहेको",
+        "रहेकोमा",
+        "राखी",
+        "राखेको",
+        "राख्ने",
+        "राजश्व",
+        "राजस्व",
+        "रायमा",
+        "रुपमा",
+        "लक्ष्य",
+        "लगती",
+        "लगाउने",
+        "लगायत",
+        "लगायतका",
+        "लगायतको",
+        "लागत",
+        "लागि",
+        "लागु",
+        "लागू",
+        "लाग्ने",
+        "लाभग्राही",
+        "लिएको",
+        "लिने",
+        "लेखा",
+        "लेखापरीक्षकको",
+        "लेखापरीक्षण",
+        "लेखापरीक्षणको",
+        "लेखापरीक्षणबाट",
+        "लेखापरीक्षणमा",
+        "लेखेको",
+        "वजेट",
+        "वमोजिम",
+        "वर्ष",
+        "वर्षको",
+        "वर्षमा",
+        "वापत",
+        "वार्षिक",
+        "वास्तविक",
+        "विकास",
+        "विकासका",
+        "वितरण",
+        "वितरणमुखी",
+        "वित्तीय",
+        "विद्यालय",
+        "विद्यालयको",
+        "विधायिकी",
+        "विनियोजन",
+        "विभिन्न",
+        "विवरण",
+        "विवरणको",
+        "विविध",
+        "विशेष",
+        "विश्लेषण",
+        "विश्वस्त",
+        "विषय",
+        "विषयः",
+        "विषयगत",
+        "विषयमा",
+        "व्यक्त",
+        "व्यक्ति",
+        "व्यय",
+        "व्ययको",
+        "व्यवसायी",
+        "व्यवस्था",
+        "व्यवस्थापन",
+        "व्यवस्थापनमा",
+        "व्यवस्थित",
+        "व्यहोरा",
+        "व्यहोराहरु",
+        "शासन",
+        "शिक्षक",
+        "शिक्षा",
+        "शुल्क",
+        "शैक्षिक",
+        "श्री",
+        "संकलन",
+        "संख्या",
+        "संघीय",
+        "संचालन",
+        "संचित",
+        "संरक्षण",
+        "संरचना",
+        "संलग्न",
+        "संविधान",
+        "संविधानको",
+        "संस्था",
+        "संस्थागत",
+        "सकिएन",
+        "सकिने",
+        "सक्ने",
+        "सञ्चालन",
+        "सञ्चालित",
+        "सञ्चित",
+        "सदस्य",
+        "समग्र",
+        "समयमा",
+        "समाप्त",
+        "समायोजन",
+        "समावेश",
+        "समिति",
+        "समितिको",
+        "समितिबाट",
+        "समितिलाई",
+        "समितिले",
+        "समेत",
+        "समेतको",
+        "सम्झौता",
+        "सम्पत्ति",
+        "सम्पत्तिको",
+        "सम्पन्न",
+        "सम्पादन",
+        "सम्पूर्ण",
+        "सम्बन्धमा",
+        "सम्बन्धित",
+        "सम्बन्धी",
+        "सम्म",
+        "सम्मको",
+        "सम्वन्धित",
+        "सरकार",
+        "सरकारका",
+        "सरकारको",
+        "सरकारबाट",
+        "सरकारले",
+        "सरकारी",
+        "सवारी",
+        "सशर्त",
+        "सहयोग",
+        "सहायता",
+        "सहित",
+        "सहितको",
+        "साथै",
+        "साधन",
+        "साधनको",
+        "साना",
+        "सामाग्री",
+        "सामाजिक",
+        "सामान",
+        "सामानको",
+        "सामान्य",
+        "सामुदायिक",
+        "सार्वजनिक",
+        "सीमा",
+        "सुझाव",
+        "सुदृढ",
+        "सुधार",
+        "सुनिश्चित",
+        "सुरक्षा",
+        "सुविधा",
+        "सुशासन",
+        "सूचना",
+        "सेवा",
+        "सेवाको",
+        "सोको",
+        "सोझै",
+        "सोधभर्ना",
+        "सोही",
+        "स्थानीय",
+        "स्थापना",
+        "स्थायी",
+        "स्थिति",
+        "स्पष्ट",
+        "स्रेस्ता",
+        "स्रोत",
+        "स्वास्थ्य",
+        "स्वीकृत",
+        "हजार",
+        "हजारमा",
+        "हस्तान्तरण",
+        "हामी",
+        "हामीले",
+        "हिसाब",
+        "हुँदा",
+        "हुनु",
+        "हुनुपर्दछ",
+        "हुने",
+        "हुन्छ",
+        "२०६३",
+        "२०६४",
+        "२०७४",
+        "२०७५",
+        "२०७६",
+        "२०७७",
+    }
+)
+
+# Token boundaries for `attested`. Counting DISTINCT tokens by set intersection, not
+# substrings: a substring test lets one long garbled token satisfy several short list
+# entries, and it costs O(list x text) per candidate map on every font of every
+# document, where this pass runs the list six times per font.
+_ATTESTED_TOKEN_PATTERN = re.compile(r"[^\s|*#>`~\[\]()!;:,.\-_/\\'\"=+]+")
+
+
+def _attested_word_count(text: str) -> int:
+    """How many distinct :data:`_ATTESTED_NEPALI_WORDS` forms ``text`` contains."""
+
+    tokens = {t.strip("।॥") for t in _ATTESTED_TOKEN_PATTERN.findall(text)}
+    return len(tokens & _ATTESTED_NEPALI_WORDS)
+
 
 # Accept gate thresholds. Calibrated so hand-built real Preeti keystrokes pass
 # (hits >= 2, penalty-per-Devanagari ~0.0) while CIB decoy text fails under all
@@ -1172,6 +1793,11 @@ def _nepali_validity(text: str) -> dict[str, float]:
 
     devanagari = len(_DEVANAGARI_CHAR.findall(text))
     non_space = len(re.sub(r"\s", "", text)) or 1
+    # Two garble measures, and which one goes where is load-bearing (VOL-185).
+    # `_legacy_map_garble` is comparative and feeds the RANKING axis; the full
+    # `_text_quality_penalty` is what the ABSOLUTE gate ceiling was calibrated
+    # against and feeds `penalty_per_deva`. `ecc5338` moved both at once and
+    # loosened the gate; see :func:`_legacy_map_garble`.
     penalty = _text_quality_penalty(text)
     hits = sum(1 for word in _CONTENT_LEGACY_DICTIONARY if word in text)
     return {
@@ -1183,7 +1809,13 @@ def _nepali_validity(text: str) -> dict[str, float]:
         # ``penalty_per_deva`` normalises it so one span can be compared against
         # an absolute ceiling. See :func:`_map_ranking_key` for why using the
         # normalised form to rank candidates is a bug.
-        "penalty": penalty,
+        #
+        # VOL-185: and they are no longer the same numerator. ``penalty`` drops the
+        # doubled-consonant term because it charges correct readings when maps are
+        # compared; ``penalty_per_deva`` keeps it because that is the measure the
+        # gate's 0.05 ceiling was calibrated against. See
+        # :func:`_legacy_map_garble` for what happens when one substitution moves both.
+        "penalty": _legacy_map_garble(text),
         "penalty_per_deva": penalty / devanagari if devanagari else float("inf"),
         # Reported separately so `_map_ranking_key` can forgive a bounded number of
         # these sites WITHOUT the gate forgiving any -- see
@@ -1193,6 +1825,8 @@ def _nepali_validity(text: str) -> dict[str, float]:
         "hits": hits,
         # Not part of `penalty`: see `_STRANDED_BRACKET_PATTERN`. Ranking only.
         "stranded": len(_STRANDED_BRACKET_PATTERN.findall(text)),
+        # Ranking only, and below `stranded`: see :func:`_map_ranking_key`.
+        "attested": _attested_word_count(text),
     }
 
 
@@ -1207,7 +1841,7 @@ def _passes_content_legacy_gate(validity: dict[str, float]) -> bool:
 
 def _map_ranking_key(
     validity: dict[str, float],
-) -> tuple[float, float, float, float, float]:
+) -> tuple[float, float, float, float, float, float]:
     """Evidence axes for a candidate map, most decisive first, higher is better.
 
     ``hits`` and ``penalty`` are the calibrated primary axes. ``ratio`` and
@@ -1294,6 +1928,28 @@ def _map_ranking_key(
     discriminator. The ordering below is the conservative default — the axis with a
     calibrated absolute meaning goes first — and the sweep that would settle it is still
     owed. Anything reordering these two must run it rather than cite 4487.
+
+    **``attested`` sits between ``stranded`` and ``ratio`` (VOL-185).** It counts how
+    many distinct high-frequency Nepali word-forms a reading actually produces, and it
+    is placed exactly where the axes stop being evidence: everything above it ties on
+    these spans, and the paragraph above records that every wrong ``ratio`` decision
+    sits at a margin below 0.004. ``ratio`` and ``devanagari`` ask how *Devanagari-shaped*
+    a reading is; a wrong map for a legacy face maps every keystroke onto Devanagari too,
+    so they are nearly blind here. Whether the output is Nepali *words* is a different
+    question and the one that separates.
+
+    On ``2424__…Ramechhap Nagarpalika`` (font ``Spins``, 283 characters) ``PCS NEPALI``
+    beat ``Spins`` on ``ratio`` by **0.000249** — 0.981900 against 0.981651 — and
+    rendered twelve repha as a misplaced anusvara (``आर्थिक``->``आथिंक``,
+    ``कार्यविधि``->``कायंविधि``, ``खर्च``->``खचं``). On that same span ``Spins`` carries
+    **12** attested forms against ``PCS NEPALI``'s **7**. The two readings hold 12 repha
+    and 0 anusvara versus 0 repha and 12 anusvara respectively.
+
+    It sits *below* ``stranded``, and therefore below ``penalty``, so it cannot disturb
+    either calibration: it decides only spans on which both already tie. Measured on the
+    corpus at ``677fa95``, that is the **127** of 1,390 gate-passing font decisions that
+    ``ratio`` or ``devanagari`` were deciding. See :data:`_ATTESTED_NEPALI_WORDS` for how
+    the vocabulary is derived and why it cannot be satisfied by garble.
     """
 
     return (
@@ -1312,6 +1968,7 @@ def _map_ranking_key(
             * _IKAR_NASAL_WEIGHT
         ),
         -validity["stranded"],
+        validity["attested"],
         validity["ratio"],
         validity["devanagari"],
     )
