@@ -870,6 +870,19 @@ _CONTENT_LEGACY_MAX_PENALTY_PER_DEVA = 0.05
 _CONTENT_LEGACY_MIN_DEVA_RATIO = 0.6
 _CONTENT_LEGACY_MIN_DEVA = 8
 
+# Latin-side veto on the content-legacy remap (VOL-138). Calibrated on all 6,236
+# OAG corpus documents: 1,245 carry a candidate content-legacy font, 469,357 text
+# runs and 15,808,347 characters are remapped by the pass above. See
+# :func:`_reads_as_latin_text` for what each threshold is worth.
+_LATIN_VETO_MIN_CHARS = 16  # non-space characters, not raw length -- see below
+_LATIN_VETO_MIN_ALPHA_RATIO = 0.88
+_LATIN_VETO_MIN_VOWEL_RATIO = 0.30
+# ASCII a legacy 8-bit Devanagari layout uses as glyph codes and English does not
+# use inside running text. Their presence is a sufficient condition for keystrokes.
+_LEGACY_KEYSTROKE_SYMBOLS = frozenset("][{}|~^@+_=")
+_ASCII_VOWELS = frozenset("aeiouAEIOU")
+_MEDIAL_CAPS = re.compile(r"[a-z][A-Z]")
+
 
 def _span_base_font(font_name: str) -> str:
     """Base font name with any subset prefix stripped (matches _convert_span_text)."""
@@ -887,6 +900,105 @@ def _is_probably_legacy_ascii(text: str) -> bool:
         return False
     printable_ascii = sum(1 for char in stripped if 0x20 <= ord(char) < 0x7F)
     return printable_ascii / len(stripped) >= 0.8
+
+
+def _reads_as_latin_text(text: str, decoded: str) -> bool:
+    """True if this run's raw ASCII is genuine Latin text, not legacy keystrokes.
+
+    A legacy 8-bit face reaches the remap per **font**, decided on that font's whole
+    aggregate (:func:`detect_content_legacy_fonts`). Any genuine Latin set in the
+    same face is remapped with it, rewriting real words as Devanagari that spells
+    nothing: OAG's 2077 performance audit report renders ``QOC`` as ``त्तइऋ`` and
+    loses 1,362 characters of an English appendix that way (VOL-126). This is the
+    per-run veto that keeps such a run as it was, leaving the font's candidacy
+    decision untouched.
+
+    ``decoded`` is the run's text under the font's chosen map, used only for the
+    dictionary axis below.
+
+    **Why the veto reads raw ASCII and not the decode.** A character map turns ASCII
+    letters into Devanagari letters whatever the input language was, so genuine
+    English decodes to ``penalty 0``, ``ratio 1.0`` — indistinguishable from real
+    keystrokes on every purity axis (VOL-138). The evidence has to be read before
+    the substitution.
+
+    Calibrated over all 6,236 corpus documents against a lexicon built from the
+    4,991 that carry no candidate legacy font at all, so the label cannot have been
+    contaminated by this pass. At these thresholds the veto fires on **190 of the
+    469,357 remapped runs**: 185 are labelled genuine Latin (7,067 characters
+    recovered) and the other 5 were read individually and are **also** genuine Latin
+    — ``(prophylactic antibiotics)``, ``theatre personnel)``, ``charities such as
+    Lifebox)``, and two personal names — which the label missed only because it
+    wants two known words and a name supplies none. **No Nepali run in the corpus
+    is vetoed.** The ``alpha_ratio``-only form first proposed fires on 13,429 runs
+    for the same 273, i.e. ~2% precision.
+
+    Each condition, and what dropping it costs — measured, ``runs/vol138/ablation.json``:
+
+    ``at least _LATIN_VETO_MIN_CHARS non-space characters``
+        The load-bearing condition: without it the veto fires on 3,692 Nepali runs
+        instead of 0. It counts **non-space** characters for a reason found by
+        reading — ``alpha_ratio`` is itself computed over non-space characters, so a
+        *raw-length* floor is cleared by padding, and 23 runs of ~75 spaces followed
+        by ``gfo`` did exactly that during calibration.
+    ``vowel_ratio``
+        Share of ASCII letters that are vowels, and **the axis that separates these
+        two populations when no earlier one could**. Symbol-free Preeti keystrokes
+        are all-letter strings — ``ljBfno ejg``, ``:yfgLo tx`` — so any letter-share
+        axis is blind to them by construction. The layout's frequent codes are
+        consonants (``f`` = ा, ``g`` = न, ``l`` = ि), so keystroke runs carry 10-25%
+        vowels where English carries 35-40%. Dropping it: 126 Nepali runs vetoed.
+    ``alpha_ratio``
+        Share of non-space characters that are ASCII letters; keeps out the digit
+        and punctuation companions. Dropping it: 79 Nepali runs vetoed.
+    ``no medial capital``
+        ``ljBfno``, ``cGo``: an 8-bit layout uses shifted keys for distinct glyphs,
+        so capitals land mid-token; English does this only in CamelCase. Dropping
+        it: 12 Nepali runs vetoed, for 2 more Latin runs saved.
+    ``no legacy keystroke symbol``
+        ``][{}|~^@+_=`` are glyph codes for common Devanagari marks and English does
+        not use them in running text, so their presence is *sufficient* for
+        keystrokes — 74.8% of remapped runs and 94.8% of remapped characters carry
+        one. At these thresholds the other conditions already exclude almost all of
+        them and this removes **1** further run. Kept because it is the one
+        condition that is sufficient on its own rather than calibrated.
+    ``zero Nepali dictionary hits in the decode``
+        **Contributes nothing at these thresholds** — the numbers are identical with
+        and without it — and it is kept deliberately, so the record should say so.
+        It cannot cause a miss: ``hits == 0`` holds for **100%** of the labelled
+        Latin population, measured. And it is the conjunction's only Nepali-*lexical*
+        evidence, where every other condition is a character-class rate: keystrokes
+        decode into real Nepali words, English decodes into Devanagari that spells
+        nothing. That guards the failure this veto must not have — silently
+        abandoning a Nepali run — on documents shaped unlike this corpus's.
+        This is **not** the ``hits >= 2`` axis of
+        :func:`_passes_content_legacy_gate`. That decides a **font's** candidacy on
+        its whole aggregate and is untouched here (VOL-77, VOL-89); this asks one run
+        of an already-confirmed legacy font whether it, specifically, is Nepali.
+
+    What it deliberately does **not** save: English lines dense in numerals, which
+    is what most of the residue is — ``110mmɸ uPVC Bend-45˚``, ``1/2"GI Nipple 9"
+    Long``, ``40-4kg/sqcm series iii(280mm)``. They fail ``alpha_ratio``. Lowering
+    it to reach them costs Nepali faster than it recovers Latin, and an undecoded
+    bill-of-quantities line is legible where wrong Devanagari is not.
+    """
+
+    non_space = [char for char in text if not char.isspace()]
+    if len(non_space) < _LATIN_VETO_MIN_CHARS:
+        return False
+    if any(char in _LEGACY_KEYSTROKE_SYMBOLS for char in text):
+        return False
+    letters = [char for char in non_space if char.isascii() and char.isalpha()]
+    if len(letters) / len(non_space) < _LATIN_VETO_MIN_ALPHA_RATIO:
+        return False
+    if not letters:  # unreachable while the ratio floor is above 0, but the
+        return False  # division below must not depend on that staying true
+    vowels = sum(1 for char in letters if char in _ASCII_VOWELS)
+    if vowels / len(letters) < _LATIN_VETO_MIN_VOWEL_RATIO:
+        return False
+    if _MEDIAL_CAPS.search(text):
+        return False
+    return not any(word in decoded for word in _CONTENT_LEGACY_DICTIONARY)
 
 
 def _nepali_validity(text: str) -> dict[str, float]:
@@ -1205,6 +1317,44 @@ def detect_content_legacy_fonts(
     return content_maps
 
 
+def _content_legacy_veto_flags(
+    spans: list[dict],
+    content_legacy_maps: dict[str, str] | None,
+) -> list[bool]:
+    """Per span: does the Latin-side veto apply to it? (VOL-138)
+
+    The decision unit is a **maximal run of consecutive same-font spans within one
+    line**, not a single span. PyMuPDF splits spans at a font change, so such a run
+    is what the producer laid down as one contiguous piece of that face — and it is
+    the unit :func:`_reads_as_latin_text`'s thresholds were calibrated on
+    (``runs/vol138/`` in the OAG corpus, via that sweep's ``_runs_of_line``). Judging
+    a lone span instead would ask a 3-character fragment whether it is English.
+
+    Every span of a vetoed run is flagged, so the run is kept or remapped whole.
+    Spans of fonts that are not content-legacy candidates are never flagged.
+    """
+
+    flags = [False] * len(spans)
+    if not content_legacy_maps:
+        return flags
+    start = 0
+    while start < len(spans):
+        font_name = str(spans[start]["font"])
+        end = start + 1
+        while end < len(spans) and str(spans[end]["font"]) == font_name:
+            end += 1
+        map_key = content_legacy_maps.get(font_name)
+        if map_key is not None:
+            run_text = "".join(str(spans[index]["text"]) for index in range(start, end))
+            if run_text.strip():
+                decoded = get_converter_for_map(map_key)(run_text)
+                if _reads_as_latin_text(run_text, decoded):
+                    for index in range(start, end):
+                        flags[index] = True
+        start = end
+    return flags
+
+
 class FontBasedStrategy(ExtractionStrategy):
     """Extract text from Nepali PDFs using PyMuPDF blocks."""
 
@@ -1394,13 +1544,19 @@ class FontBasedStrategy(ExtractionStrategy):
                 if "lines" not in block:
                     continue
                 for line_number, line in enumerate(block["lines"]):
-                    for span in line["spans"]:
+                    spans = list(line["spans"])
+                    latin_veto = _content_legacy_veto_flags(
+                        spans,
+                        content_legacy_maps,
+                    )
+                    for span_index, span in enumerate(spans):
                         text = self._convert_span_text(
                             str(span["text"]),
                             str(span["font"]),
                             page_font_strategies,
                             needs_reorder,
                             content_legacy_maps=content_legacy_maps,
+                            skip_content_legacy=latin_veto[span_index],
                         )
                         if not text:
                             continue
@@ -1482,6 +1638,7 @@ class FontBasedStrategy(ExtractionStrategy):
         font_strategies: dict[str, str],
         needs_reorder: bool,
         content_legacy_maps: dict[str, str] | None = None,
+        skip_content_legacy: bool = False,
     ) -> str:
         base = _span_base_font(font_name)
         strategy = font_strategies.get(base, "correct")
@@ -1490,7 +1647,11 @@ class FontBasedStrategy(ExtractionStrategy):
         # pages are skipped wholesale), so no span-level decoy branch is needed.
         # Content-legacy maps are keyed by full font name (subset prefix included)
         # so only the exact mislabeled font resource is remapped.
-        if content_legacy_maps:
+        # `skip_content_legacy` is the Latin-side veto (VOL-138), decided by
+        # _content_legacy_veto_flags over this span's whole same-font run. A vetoed
+        # span falls through to the strategy branches below, which is what returns
+        # its raw text unchanged for a font the name classifier calls "correct".
+        if content_legacy_maps and not skip_content_legacy:
             content_map_key = content_legacy_maps.get(font_name)
             if content_map_key is not None:
                 # Output, not scoring, so this takes the gated converter -- same
