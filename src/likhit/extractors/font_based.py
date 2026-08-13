@@ -1653,9 +1653,22 @@ _MEDIAL_CAPS = re.compile(r"[a-z][A-Z]")
 #
 #   1. `>= 2 uppercase LETTERS`, not "letters or digits". `36L` is घटी -- a real
 #      whitespace-delimited all-caps ASCII keystroke word holding one letter.
-#   2. `_ACRONYM_FORBIDDEN` must never be stripped as edge punctuation. Stripping
-#      `]` turns `;]G6/` into `G6` and reintroduces 20 of 21 spurious fires. The
+#   2. `_ACRONYM_FORBIDDEN` must never be stripped as edge punctuation. The
 #      assertion below keeps the two sets disjoint so that cannot regress.
+#
+#      §8 states this condition as if it were independent, and it is NOT: measured
+#      here 2026-08-13, **every character in `_ACRONYM_FORBIDDEN` is already
+#      excluded by the "ASCII uppercase or digit" condition below, so the membership
+#      test can never fire.** It is kept because it is the spec's own wording and
+#      because it becomes load-bearing the moment that shape condition is relaxed --
+#      but do not read it as what stops the spurious class.
+#
+#      What actually stops the 21 spurious fires is (a) **whitespace delimitation**
+#      and (b) note 1. Of the seven fragment shapes the loose tokenizer produced,
+#      `G6L`, `OG` and `PG6` PASS the strict shape test and are excluded only by
+#      being parts of a whitespace-delimited keystroke word; `6L`, `G6`, `G5` and
+#      `36L` are excluded by note 1's two-letter floor. Weaken either and the class
+#      returns -- weakening the forbidden set changes nothing.
 #   3. The survivor vocabulary must be built with this same strict tokenizer. Built
 #      loosely, `6L` attests itself from undecoded keystrokes elsewhere in the
 #      document (`w/f}6L` = धरौटी split at `}`), and survival is only evidence of

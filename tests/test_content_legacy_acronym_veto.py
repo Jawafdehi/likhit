@@ -102,11 +102,7 @@ def test_note_1_two_uppercase_LETTERS_not_letters_or_digits() -> None:
 
 
 def test_note_2_an_edge_strip_can_never_expose_a_forbidden_character() -> None:
-    """Stripping `]` would turn `;]G6/` into `G6` and restore 20 of the 21 fires.
-
-    The module asserts the two sets are disjoint at import; this pins the property
-    that assertion protects, and the behaviour on the actual corpus string.
-    """
+    """The module asserts the two sets are disjoint at import; this pins that."""
 
     assert not (_ACRONYM_FORBIDDEN & frozenset(_ACRONYM_EDGE))
     assert _acronym_tokens(";]G6/") == frozenset()
@@ -114,6 +110,43 @@ def test_note_2_an_edge_strip_can_never_expose_a_forbidden_character() -> None:
     # Ordinary English edge punctuation IS stripped, which is the point of the class.
     assert _acronym_tokens("(QOC),") == frozenset({"QOC"})
     assert _acronym_tokens('"MIS";') == frozenset({"MIS"})
+
+
+def test_the_forbidden_set_is_subsumed_by_the_shape_test() -> None:
+    """§8 states `_ACRONYM_FORBIDDEN` as an independent condition. It is not.
+
+    Every character in it is already excluded by "ASCII uppercase or digit", so the
+    membership test cannot currently reject a token the shape test accepts — deleting
+    it changes no outcome, which a mutation run confirmed. It is kept because it is
+    the spec's wording and becomes load-bearing if the shape test is ever relaxed to
+    admit lowercase or symbols; this test is what makes that relaxation visible
+    instead of silent.
+    """
+
+    for char in _ACRONYM_FORBIDDEN:
+        assert not (("A" <= char <= "Z") or ("0" <= char <= "9")), char
+
+
+def test_whitespace_delimitation_is_what_excludes_three_fragment_shapes() -> None:
+    """The rule that is actually load-bearing against the spurious class.
+
+    `G6L`, `OG` and `PG6` PASS every shape condition — 2-5 chars, all uppercase ASCII
+    or digits, two uppercase letters. Nothing about their shape disqualifies them.
+    They are excluded only because they are *parts* of a whitespace-delimited
+    keystroke word, which is why the tokenizer splits on whitespace and nothing else.
+    """
+
+    for fragment in ("G6L", "OG", "PG6"):
+        assert _acronym_tokens(fragment) == frozenset({fragment}), (
+            f"{fragment} is shape-legal; only whitespace delimitation excludes it"
+        )
+    # In the words they were cut out of, they are unreachable.
+    assert _acronym_tokens("Uof/]G6L") == frozenset()
+    assert _acronym_tokens("OG;]kmnfOl6;") == frozenset()
+    assert _acronym_tokens("8f6f PG6«L") == frozenset()
+    # The other four are excluded by note 1's two-letter floor instead.
+    for fragment in ("6L", "G6", "G5", "36L"):
+        assert _acronym_tokens(fragment) == frozenset(), fragment
 
 
 def test_length_bounds() -> None:
