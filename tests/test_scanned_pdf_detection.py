@@ -1167,19 +1167,40 @@ def test_doublet_is_charged_to_the_gate_but_not_to_the_map_ranking() -> None:
 
 
 def test_the_doublet_split_does_not_loosen_the_accept_gate() -> None:
-    # `ecc5338` made this same subtraction and fed it to BOTH the ranking axis and
-    # `penalty_per_deva`, which lowered the gate's numerator, admitted spans that were
-    # correctly rejected, and cost `3219__...रामधुनी नगरपालिका` 1,723 attested
+    # `ecc5338` made a version of this subtraction and fed it to BOTH the ranking axis
+    # and `penalty_per_deva`, which lowered the gate's numerator, admitted spans that
+    # were correctly rejected, and cost `3219__...रामधुनी नगरपालिका` 1,723 attested
     # occurrences -- which is why VOL-163 reverted it. A span whose ONLY penalty is
-    # doublets must still be measured against the ceiling with them counted.
+    # doublets must still be measured against the ceiling with ALL of them counted.
     doublets = "खररद " * 40
     validity = _nepali_validity(doublets)
-    assert validity["penalty"] == 0, "ranking axis sees no garble"
     assert validity["penalty_per_deva"] > 0, "the gate must still see the doublets"
     assert (
         validity["penalty_per_deva"]
         == _text_quality_penalty(doublets) / (validity["devanagari"])
     )
+
+
+def test_many_doublets_still_decide_the_map_ranking() -> None:
+    # The bound on the forgiveness, and the reason it is a bound rather than dropping
+    # the term. `2649__...घोराही उपमहानगरपालिका`, font `Hisab`: the wrong maps carry 323
+    # doublets to the right map's 3. Forgiving the whole term levels all five, the tie
+    # fails to localise, the span abstains, and 865 attested occurrences are lost.
+    many = "खररद " * 40
+    few = "खरिद " * 40
+    assert _duplicate_consonant_count(many) == 40
+    assert _duplicate_consonant_count(few) == 0
+    # Only one hit is forgiven, so 39 of them still separate the two readings.
+    assert _legacy_map_garble(many) == (40 - 1) * 3
+    assert _legacy_map_garble(few) == 0
+
+
+def test_a_single_doublet_does_not_decide_the_map_ranking() -> None:
+    # The margin that lost VOL-185's eleven documents their correct map: the correct
+    # `Spins` reading carries exactly one doublet and the map that misreads the span
+    # carries none, so a lone hit must not be the whole of the evidence.
+    assert _duplicate_consonant_count("खररद") == 1
+    assert _legacy_map_garble("खररद") == _legacy_map_garble("खरिद") == 0
 
 
 def test_the_token_chooser_keeps_the_full_penalty() -> None:

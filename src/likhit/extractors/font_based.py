@@ -169,6 +169,12 @@ _DUPLICATE_CONSONANT_PATTERN = re.compile(r"([क-ह])\1")
 # ranking. If the penalty ever adds the narrowed count at one weight while the
 # subtraction removes it at another, the ranking measure runs low or negative.
 _DUPLICATE_CONSONANT_WEIGHT = 3
+# How many doublet hits `_legacy_map_garble` forgives when RANKING candidate maps.
+# Calibrated, not chosen: see that function. One hit is inside the residual false
+# positive rate the narrowing above admits, and is the margin that lost VOL-185's
+# eleven documents their correct map; hundreds of hits are real damage and must still
+# decide, which is what forgiving a bounded number rather than the whole term preserves.
+_RANKING_DOUBLET_FORGIVENESS = 1
 # Two identical adjacent consonants are a real garble signal, but adjacency ALONE
 # is mostly wrong: in Nepali a stem ending in a consonant plus a suffix beginning
 # with the same one is ordinary morphology. Measured over all 6,223 documents of
@@ -656,14 +662,15 @@ def _text_quality_penalty(text: str) -> int:
 def _legacy_map_garble(text: str) -> int:
     """Garble measure for RANKING candidate legacy maps -- comparative, not absolute.
 
-    :func:`_text_quality_penalty` minus the doubled-consonant term (VOL-185).
+    :func:`_text_quality_penalty` with at most
+    :data:`_RANKING_DOUBLET_FORGIVENESS` doubled-consonant hits forgiven (VOL-185).
 
-    The term is real evidence when two readings of the **same token** are compared, and
-    noise when candidate **maps** are compared, for the reason the file already gives
-    about `_STRANDED_BRACKET_PATTERN`: adjacency alone does not distinguish Nepali
-    morphology from garble, so it charges readings that are correct. Where it moves a
-    map decision it can move it the wrong way, because the charge lands on whichever
-    reading happens to spell a doublet.
+    A doublet is real evidence when two readings of the **same token** are compared, and
+    at low counts it is noise when candidate **maps** are compared, for the reason the
+    file already gives about `_STRANDED_BRACKET_PATTERN`: adjacency alone does not
+    distinguish Nepali morphology from garble, so it charges readings that are correct.
+    Where one or two hits move a map decision they can move it the wrong way, because
+    the charge lands on whichever reading happens to spell a doublet.
 
     ⚠️ **Not because "a correct reading of Nepali spells more doublets than a garbled
     one".** That general claim was here and it is false in this population -- and the
@@ -673,7 +680,8 @@ def _legacy_map_garble(text: str) -> int:
     carry an unexplained doublet, and over **1,867** (correct-map, wrong-map) pairs that
     read differently the correct reading carries more in **0** cases while the wrong
     reading carries more in **53**. So the term is usually right and the direction of
-    its error is not systematic.
+    its error is not systematic -- which is exactly why a bounded FORGIVENESS is the
+    right shape and dropping the term is not.
 
     The real ground is narrower and is the paragraph below: on the eight spans VOL-185
     regressed, the charge landed on the CORRECT reading as a false positive of the
@@ -681,11 +689,31 @@ def _legacy_map_garble(text: str) -> int:
 
     That is the whole of VOL-185's regression on eight of its eleven documents. Measured
     on each of their `Spins` font aggregates: the correct `Spins` reading carries exactly
-    one narrowed doublet hit, **3** points, and the map that misreads the span carries
+    **one** narrowed doublet hit, 3 points, and the map that misreads the span carries
     **0** -- so with `a5cfd4a` having removed the `_INVALID_IKAR_PATTERN` counterweight
     the wrong map wins the `penalty` axis by that margin, and `र्` is emitted as a
-    misplaced `ं` (`वर्ष`->`वषं`, `आर्थिक`->`आथिंक`). Subtracting the term levels those
-    eight at 0 and 0, so the axes below decide instead.
+    misplaced `ं` (`वर्ष`->`वषं`, `आर्थिक`->`आथिंक`).
+
+    **Forgiving a bounded number, not the whole term.** Dropping the term outright also
+    repairs those eight, and it destroys `2649__…घोराही उपमहानगरपालिका`: on its `Hisab`
+    aggregate `Preeti`/`Kantipur`/`Sagarmatha` carry **323** doublets to
+    `FONTASY_HIMALI_TT`'s **3**, a 969-point margin that is exactly the damage VOL-135
+    measured (>=209,998 occurrences of legacy i-matra loss resurfacing as a doublet).
+    Levelling that to a tie makes five maps identical, the tie fails to localise, the
+    span abstains, and 865 attested occurrences are lost outright.
+
+    So the floor is what separates the two cases, and it is calibrated rather than
+    chosen (`oag-corpus/runs/vol185/calibrate_forgive_5f0833fc.py`, swept over
+    N = 0, 1, 2, 3, 5, 10, 25, inf on all 77 documents whose map choice this change can
+    move):
+
+    * the correct map on the eleven carries **0 or 1** doublets, never more;
+    * 2649's wrong maps carry **323-325** against the right map's 3;
+    * every N from 1 to 25 gives 11/11 repaired and **0** abstentions; N=0 repairs only
+      the 3 that `attested` decides, and N=inf repairs all 11 and abstains on 2649.
+
+    **1** is therefore the smallest value that works, and the two populations sit two
+    orders of magnitude apart, so nothing here depends on the exact figure.
 
     Note `ecc5338`'s version of this docstring cited `3544__…Thasang Ga. Pa.` charging
     all six candidates 3 points for `अध्ययन` ("study"). That is no longer true and must
@@ -695,13 +723,13 @@ def _legacy_map_garble(text: str) -> int:
     `आन्तररक` -- each still charged 3.
 
     **This is used for the ranking axis ONLY, never for the accept gate.**
-    `ecc5338` made the same subtraction and fed it to both, because
+    `ecc5338` made a version of this subtraction and fed it to both, because
     :func:`_nepali_validity` derived `penalty` and `penalty_per_deva` from one number.
     `_passes_content_legacy_gate` compares one span against an *absolute* ceiling of
     0.05, so lowering that numerator loosens the gate, admits spans that were correctly
-    rejected, and cost `3219__…रामधुनी नगरपालिका` 9,670 Devanagari characters and 1,723
-    attested occurrences -- which is why VOL-163 reverted it in `677fa95`. The
-    comparative half was never the problem; only the substitution's reach was.
+    rejected, and cost `3219__…रामधुनी नगरपालिका` 1,723 attested occurrences -- which is
+    why VOL-163 reverted it in `677fa95`. The comparative half was never the problem;
+    only the substitution's reach was.
 
     The counter must be the SAME one `_text_quality_penalty` adds -- the narrowed
     `_duplicate_consonant_count`, not `_DUPLICATE_CONSONANT_PATTERN.findall`. The raw
@@ -709,10 +737,8 @@ def _legacy_map_garble(text: str) -> int:
     than was ever added and drive this measure below the true penalty, silently.
     """
 
-    return (
-        _text_quality_penalty(text)
-        - _duplicate_consonant_count(text) * _DUPLICATE_CONSONANT_WEIGHT
-    )
+    forgiven = min(_duplicate_consonant_count(text), _RANKING_DOUBLET_FORGIVENESS)
+    return _text_quality_penalty(text) - forgiven * _DUPLICATE_CONSONANT_WEIGHT
 
 
 def _is_garbled_orphan(text: str) -> bool:

@@ -210,6 +210,24 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "beside. Naming it is the same move as the converter's candidate-score weights -- "
         "an inline weight is invisible to this registry",
     ),
+    # -- ranking forgiveness ---------------------------------------------------- #
+    #
+    # Each term forgives ONE occurrence before the tell counts, because each fires at a
+    # low rate on correct text. Registered in the SAME commit as the constant it pins:
+    # `test_every_module_level_numeric_constant_is_pinned` compares an AST scan of src/
+    # against this dict, so an unregistered constant is both an assertion failure and a
+    # KeyError in a parametrized sibling -- i.e. a commit that adds the constant without
+    # its entry is red on its own, and a bisect landing there sees failures unrelated to
+    # what it is bisecting. Measured: 2 failures for the doublet commit and 3 for the
+    # bracket commit when both entries arrived in a later third commit.
+    (
+        "likhit/extractors/font_based.py",
+        "_RANKING_DOUBLET_FORGIVENESS",
+    ): (
+        1,
+        "one unexplained doublet is inside the residual false-positive rate the "
+        "morphology narrowing leaves behind; two is evidence",
+    ),
     # -- the Latin veto on the content-legacy remap ---------------------------- #
     #
     # These four gate whether a span that merely SHARES a legacy face is left as English
