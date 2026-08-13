@@ -25,6 +25,7 @@ from likhit.extractors.font_based import (
     _map_ranking_key,
     _nepali_validity,
     _passes_content_legacy_gate,
+    _text_quality_penalty,
     choose_legacy_map,
     detect_content_legacy_fonts,
 )
@@ -552,6 +553,80 @@ def test_nepali_validity_reports_both_forms_of_the_garble_measure() -> None:
         validity["penalty_per_deva"] * validity["devanagari"]
     )
     assert isinstance(validity["penalty"], int)
+
+
+# --- Part B, VOL-131: the garble measure must not charge correct Nepali ---------
+#
+# VOL-89 fixed which *form* of the penalty may decide. VOL-131 is the residual that
+# reaches: two of the patterns summed into the penalty fire on ordinary Nepali, so
+# the correct map is charged and a wrong one wins on a margin that is not evidence.
+#
+# Measured on all 6,223 published v11 transcripts, whose text is accepted output:
+# `([क-ह])\1` matched 1,087,029 times in 6,186 of them (17.9% of all penalty
+# charged), and the ikar lookahead matched a nasal or visarga mark 95,153 times.
+# Both figures and the per-word evidence are in `oag-corpus/runs/vol131/`.
+
+
+def test_ordinary_nepali_morphology_is_not_charged_as_garble() -> None:
+    # A bare doubled consonant is Nepali morphology -- a stem ending in a consonant
+    # followed by a suffix beginning with the same one -- not a mis-map artifact.
+    # The most frequent instance in this corpus is the name of the body that
+    # published it. `अध्ययन` is the word that charged all six candidate maps 3
+    # points on `3544__...Thasang Ga. Pa.`, and `वडडा`/`द्दद्दण्` (which are garble)
+    # are indistinguishable from these by adjacency, so the pattern is removed
+    # rather than narrowed.
+    for word in (
+        "महालेखापरीक्षकको",  # "of the Office of the Auditor General"
+        "कार्यालय",
+        "अध्ययन",  # "study"
+        "क्रममा",  # "in the course of"
+        "सुनिश्चितता",  # "assurance"
+        "मितव्ययिता",  # "economy"
+        "त्यससँग",  # "with that"
+    ):
+        assert _text_quality_penalty(word) == 0, word
+
+
+def test_ikar_before_a_nasal_or_visarga_mark_is_not_charged() -> None:
+    # Two vowel signs in a row cannot be typed, so the ikar lookahead is a real
+    # signal for those. A vowel sign followed by anusvara, candrabindu or visarga is
+    # spelling, and these are among the commonest words in the corpus.
+    for word in (
+        "सिंह",  # a surname, 8,139 occurrences
+        "सिंचाई",  # "irrigation"
+        "दिँदा",  # "while giving"
+        "हिंसा",  # "violence"
+        "नदेखिंदा",  # "not being seen" -- the word that cost 2366 its span
+        "निःशुल्क",  # "free of charge"
+        "मितिः",  # "date:"
+    ):
+        assert _text_quality_penalty(word) == 0, word
+
+
+def test_the_narrowed_ikar_still_charges_two_vowel_signs_in_a_row() -> None:
+    # The control on the narrowing: the 101,628 matches that were doing real work
+    # must survive it. Each of these is one ikar followed by another vowel sign.
+    for word in ("वििरण", "आथििक", "सिालन", "पििकरण"):
+        assert _text_quality_penalty(word) == 6, word
+
+
+def test_a_false_positive_no_longer_decides_a_real_legacy_span() -> None:
+    # `2366__...Dolakha Tamakoshi ga.pa`, font "Spins", 951 characters. Every rival
+    # map scored 0 and Spins scored 12 -- all of it two ikar hits on `नदेखिंदा`. So
+    # `PCS NEPALI` won the span and rendered `;_Vof` as `स)ख्या` where the correct
+    # Spins read is `संख्या`. Deriving the penalty from the word rather than pinning
+    # the number keeps this test coupled to the pattern it is about.
+    spurious = _text_quality_penalty("नदेखिंदा") * 2
+    assert spurious == 0
+
+    spins = _validity(hits=5, penalty=spurious, devanagari=808, ratio=0.997531)
+    pcs = _validity(hits=5, penalty=0, devanagari=788, ratio=0.982544)
+    # Level on the garble axis now, so `ratio` is reached -- and the margin it decides
+    # on is 0.0150, two orders of magnitude above the 0.000132 it was deciding on
+    # before. Both maps still clear the gate, so nothing abstains.
+    assert _map_ranking_key(spins)[:2] == _map_ranking_key(pcs)[:2]
+    assert _map_ranking_key(spins) > _map_ranking_key(pcs)
+    assert _passes_content_legacy_gate(spins)
 
 
 def test_detect_content_legacy_fonts_ignores_english() -> None:
