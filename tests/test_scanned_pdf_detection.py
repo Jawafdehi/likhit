@@ -1195,6 +1195,35 @@ def test_many_doublets_still_decide_the_map_ranking() -> None:
     assert _legacy_map_garble(few) == 0
 
 
+def test_a_single_stranded_bracket_does_not_decide_the_map_ranking() -> None:
+    # `2992`/`2993 parsa gaupalika`, font `Arial`: `Preeti` carries 0 stranded brackets to
+    # `FONTASY_HIMALI_TT`'s 1 and is the WRONG map -- it loses `समानीकरण` (df 4,397), `ऋण`
+    # (4,549), `संघिय` (3,558), `पोषण` (2,650) and gains only `द्ध` (df 52). One bracket
+    # must not outrank that, so it is forgiven and `attested` decides, 23 to 22.
+    right = _validity(
+        hits=3, penalty=0, devanagari=826, ratio=0.959350, stranded=1, attested=23
+    )
+    wrong = _validity(
+        hits=3, penalty=0, devanagari=851, ratio=0.960497, stranded=0, attested=22
+    )
+    assert wrong["stranded"] < right["stranded"], "stranded alone favours the wrong map"
+    assert wrong["ratio"] > right["ratio"], "so does ratio"
+    assert _map_ranking_key(right) > _map_ranking_key(wrong), "attested must decide"
+
+
+def test_several_stranded_brackets_still_decide_the_map_ranking() -> None:
+    # The bound. VOL-131 calibrated this axis on counts of 3 and 6 against 0, and those
+    # must still decide -- a candidate with many brackets loses even holding more
+    # attested words.
+    stranded = _validity(
+        hits=2, penalty=0, devanagari=600, ratio=0.95, stranded=6, attested=30
+    )
+    clean = _validity(
+        hits=2, penalty=0, devanagari=600, ratio=0.90, stranded=0, attested=2
+    )
+    assert _map_ranking_key(clean) > _map_ranking_key(stranded)
+
+
 def test_a_single_doublet_does_not_decide_the_map_ranking() -> None:
     # The margin that lost VOL-185's eleven documents their correct map: the correct
     # `Spins` reading carries exactly one doublet and the map that misreads the span

@@ -175,6 +175,15 @@ _DUPLICATE_CONSONANT_WEIGHT = 3
 # eleven documents their correct map; hundreds of hits are real damage and must still
 # decide, which is what forgiving a bounded number rather than the whole term preserves.
 _RANKING_DOUBLET_FORGIVENESS = 1
+# The same floor on the other weak positive tell, for the same reason and calibrated in
+# the same sweep (VOL-185). VOL-131 calibrated `stranded` on counts of 3 and 6 against 0,
+# so a floor of 1 is inside what that calibration never rested on -- and a lone bracket
+# was deciding a map wrongly: on `2992`/`2993 parsa gaupalika`, font `Arial`, `Preeti`
+# carries 0 stranded to `FONTASY_HIMALI_TT`'s 1 and is the wrong map, losing `समानीकरण`
+# (df 4,397), `ऋण` (4,549), `संघिय` (3,558) and `पोषण` (2,650) while gaining only `द्ध`
+# (df 52). With the bracket forgiven the two level and `attested` decides, 23 to 22, the
+# right way. `oag-corpus/runs/vol185/calibrate_two_floors_5f0833fc.py` sweeps the pair.
+_RANKING_STRANDED_FORGIVENESS = 1
 # Two identical adjacent consonants are a real garble signal, but adjacency ALONE
 # is mostly wrong: in Nepali a stem ending in a consonant plus a suffix beginning
 # with the same one is ordinary morphology. Measured over all 6,223 documents of
@@ -2015,6 +2024,15 @@ def _map_ranking_key(
     corpus at ``677fa95``, that is the **127** of 1,390 gate-passing font decisions that
     ``ratio`` or ``devanagari`` were deciding. See :data:`_ATTESTED_NEPALI_WORDS` for how
     the vocabulary is derived and why it cannot be satisfied by garble.
+
+    **Both axes above it forgive one hit** (:data:`_RANKING_DOUBLET_FORGIVENESS`,
+    :data:`_RANKING_STRANDED_FORGIVENESS`), which is what lets ``attested`` reach the
+    spans it is for. A lone doublet or a lone bracket is not evidence about which map read
+    a span -- it lands on whichever reading happens to spell one -- and on
+    ``2992``/``2993 parsa gaupalika`` (font ``Arial``) a lone bracket was picking the map
+    that loses `समानीकरण`, `ऋण`, `संघिय` and `पोषण`. Forgiven, ``attested`` decides it 23
+    to 22. Note that margin is one word: this axis is a tie-break of last resort, not a
+    strong signal, and it is ordered accordingly.
     """
 
     return (
@@ -2032,7 +2050,9 @@ def _map_ranking_key(
             - min(validity["ikar_nasal"], _RANKING_IKAR_NASAL_FORGIVENESS)
             * _IKAR_NASAL_WEIGHT
         ),
-        -validity["stranded"],
+        # VOL-185: a single stranded bracket is forgiven for the same reason a single
+        # doublet is -- see `_RANKING_STRANDED_FORGIVENESS`.
+        -max(validity["stranded"] - _RANKING_STRANDED_FORGIVENESS, 0),
         validity["attested"],
         validity["ratio"],
         validity["devanagari"],

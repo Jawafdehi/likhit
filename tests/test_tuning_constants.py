@@ -228,6 +228,18 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "one unexplained doublet is inside the residual false-positive rate the "
         "morphology narrowing leaves behind; two is evidence",
     ),
+    (
+        "likhit/extractors/font_based.py",
+        "_RANKING_STRANDED_FORGIVENESS",
+    ): (
+        1,
+        "one stranded bracket can be an ordinary parenthetical. NOTE the tell now counts "
+        "overlapping occurrences, so two adjacent Nepali list labels score 2 rather than "
+        "1 -- which is exactly the case this forgiveness must not swallow, and the reason "
+        "the count was fixed before this value was pinned. It was previously pinned only "
+        "to an INTERVAL, admitting both 1 and 2; a registry entry pins exactly, which is "
+        "the point of this file",
+    ),
     # -- the Latin veto on the content-legacy remap ---------------------------- #
     #
     # These four gate whether a span that merely SHARES a legacy face is left as English
