@@ -29,6 +29,8 @@ from likhit.extractors.font_based import (
     _is_garbled_orphan,
     _merge_fragment_variants,
     _text_quality_penalty,
+    _duplicate_consonant_count,
+    _DUPLICATE_CONSONANT_PATTERN,
     join_spans_with_layout,
     join_words_with_spacing,
     normalize_extracted_word,
@@ -1028,6 +1030,94 @@ def test_text_quality_penalty_flags_invalid_devanagari_signs() -> None:
 def test_has_severe_noise_detects_invalid_signs() -> None:
     assert _has_severe_noise(_GARBLED_LINE)
     assert not _has_severe_noise(_CLEAN_LINE)
+
+
+# --- VOL-135: the doubled-consonant signal must survive morphology ----------------
+# Every word below was drawn from the corpus-wide adjudication in
+# `oag-corpus/runs/vol135/`, which scored all 34,684 doublet-bearing words in
+# `markdown-quality-v11` against the corpus's own 1.87M-word vocabulary. The counts
+# in the comments are that sweep's, so a regression here is a measurable one.
+
+#: Correct Nepali that the bare `([क-ह])\1` pattern charged. Together these 377-word
+#: class carried 56.8% of all 1,087,029 corpus hits.
+_DOUBLED_BUT_CORRECT = (
+    "महालेखापरीक्षकको",  # 59,388 — the corpus publisher's own name, क + को
+    "क्रममा",  # 47,002 — क्रम + मा locative
+    "कार्यक्रममा",  # 39,236
+    "कक्षा",  # 29,302 — lexical
+    "व्ययको",  # 26,921 — व्यय = expenditure
+    "अध्ययन",  # 24,451
+    "व्यय",  # 20,958
+    "काममा",  # 19,497
+    "नाममा",  # 19,023
+    "मितव्ययी",  # 18,448
+    "दररेट",  # 18,147
+    "नियमितता",  # 12,483 — त + ता abstract noun
+    "आश्वस्तता",  # 11,119
+    "त्यससँग",  # 8,259 — स + सँग
+    "जोखिममा",  # 6,553
+    "तहहरुले",  # 4,567 — ह + हरु plural
+    "ललितपुर",
+    "तत्काल",
+    "बबरमहल",  # Babarmahal, a Kathmandu locality
+    "उत्खनन",
+)
+
+#: Genuine legacy-decode damage, dominated by i-matra loss resurfacing as a doubled
+#: consonant. The clean form's corpus attestation count follows each entry.
+_DOUBLED_AND_DAMAGED = (
+    "खररद",  # -> खरिद, attested 538,011x
+    "ववरण",  # -> विवरण, 381,067x
+    "आन्तररक",  # -> आन्तरिक, 211,003x
+    "वववरण",  # -> विवरण, 381,067x
+    "गररएको",  # -> गरिएको, 111,892x
+    "ननयम",  # -> नियम, 219,606x
+    "देखख",  # -> देखि, 113,739x
+    "दाखखला",  # -> दाखिला, 157,909x — i-matra SURVIVED beside the doubled consonant
+    "ववकास",  # -> विकास, 184,268x
+    "शशर्त",  # -> शर्त, 13,147x
+    "कको",  # -> को, 818,214x — a suffix with no stem in front of it
+    "ममा",  # -> मा, 673,181x
+    "वडडाँडा",  # -> वडाँडा (VOL-135 names this one)
+    "घद्दद्दछ",  # pure legacy-map soup (VOL-135 names द्दद्दण्)
+)
+
+
+def test_duplicate_consonant_does_not_charge_correct_morphology() -> None:
+    # 4 of every 5 hits of the bare pattern were on correct Nepali. Charging these
+    # spends the accept gate's `penalty_per_deva <= 0.05` budget on nothing.
+    for word in _DOUBLED_BUT_CORRECT:
+        assert _duplicate_consonant_count(word) == 0, word
+        assert _text_quality_penalty(word) == 0, word
+
+
+def test_duplicate_consonant_still_charges_legacy_decode_damage() -> None:
+    # The pattern is NOT droppable: >=209,998 corpus occurrences are real damage.
+    for word in _DOUBLED_AND_DAMAGED:
+        assert _duplicate_consonant_count(word) > 0, word
+        assert _text_quality_penalty(word) > 0, word
+
+
+def test_duplicate_consonant_count_matches_the_pattern_when_nothing_is_excused() -> (
+    None
+):
+    # The word-scoped loop must not change WHICH doublets exist, only which are
+    # charged: a doublet is two Devanagari characters, so it can never straddle a
+    # word boundary. Guards against the loop silently dropping or double-counting.
+    text = " ".join(_DOUBLED_AND_DAMAGED)
+    assert _duplicate_consonant_count(text) == len(
+        _DUPLICATE_CONSONANT_PATTERN.findall(text)
+    )
+
+
+def test_duplicate_consonant_suffix_needs_a_real_stem() -> None:
+    # A suffix only excuses the doublet when a plausible stem precedes it. `कको`
+    # and `ममा` are a suffix with a single bare consonant in front, which is damage,
+    # not morphology — and is why the stem-length test exists.
+    assert _duplicate_consonant_count("महालेखापरीक्षकको") == 0
+    assert _duplicate_consonant_count("कको") == 1
+    assert _duplicate_consonant_count("क्रममा") == 0
+    assert _duplicate_consonant_count("ममा") == 1
 
 
 def test_is_garbled_orphan_only_fires_on_garble() -> None:
