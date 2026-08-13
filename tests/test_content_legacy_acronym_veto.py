@@ -35,6 +35,8 @@ from likhit.extractors.font_based import (
     LegacyMapChoice,
     _acronym_tokens,
     _content_legacy_veto_flags,
+    _decodes_as_legacy_devanagari,
+    _is_wellformed_devanagari,
     _reads_as_latin_text,
     _acronym_shaped,
     _reads_as_latin_words,
@@ -455,3 +457,140 @@ def test_a_marked_span_contributes_nothing_to_the_survivor_vocabulary(
 
     assert survivors == frozenset({plain}), survivors
     assert "MIS" not in survivors, "a glyph index is not evidence of Latin"
+
+
+# ---------------------------------------------------------------------------
+# VOL-212: SURVIVOR PURITY. Latin *shape* is not evidence of Latin.
+#
+# The 13 tests above guard the shape test and the veto's scope. None of them can
+# see this defect, because all of them hand the veto a survivor set built by
+# hand: the defect is in how `detect_latin_acronym_survivors` BUILDS that set.
+# ---------------------------------------------------------------------------
+
+# Verbatim from `runs/vol197/fire-sweep-caps-token-f7071d15.json`, fire 26:
+# `pdfs/report_annual-report/11129__n30-Annual Report 2071.pdf`, page 265, font Spins.
+VOL212_RUN = (
+    "ljj/0fx? oyfy+ b]lvg] cj:yf 5}g . ;fy}, nul;6df ljdfgsf] "
+    "rf]s Og 6fOd, rf]s ckm 6fOd, PG6L "
+)
+# That document's ENTIRE survivor vocabulary under the shipped axis. No English at
+# all -- three Preeti keystroke fragments, which is the defect in one line.
+VOL212_IMPURE_VOCABULARY = {"OG6": "इन्ट", "P06L": "एण्टी", "PG6L": "एन्टी"}
+# The 8 distinct tokens carrying the 25 genuine fires of the same sweep, across the
+# other 10 firing documents. `runs/vol212/FINDING-discriminator-a3f21c8e.md`.
+VOL212_GENUINE = {
+    "MIS": ":क्ष्क्",
+    "NS": "ल्क्",
+    "GI": "न्क्ष्",
+    "QOC": "त्तइऋ",
+    "DPR": "म्एच्",
+    "ECOD": "भ्ऋइम्",
+    "HDPE": "ज्म्एभ्",
+    "IEE": "क्ष्भ्भ्",
+}
+
+
+def test_the_impure_vocabulary_is_latin_SHAPED_which_is_why_note_3_missed_it() -> None:
+    """`PG6L` passes every condition VOL-180 §8 imposes. That is the whole bug."""
+
+    for token in VOL212_IMPURE_VOCABULARY:
+        assert _acronym_tokens(token) == frozenset({token}), token
+        assert sum(1 for char in token if "A" <= char <= "Z") >= 2, token
+
+
+def test_11129_whole_survivor_vocabulary_is_impure() -> None:
+    """Acceptance #1: `PG6L`, `P06L` and `OG6` must not qualify as survivors."""
+
+    for token, decoded in VOL212_IMPURE_VOCABULARY.items():
+        assert SPINS(token) == decoded, token
+        assert _decodes_as_legacy_devanagari(token, SPINS_CHOICE), token
+
+
+def test_11129_run_decodes_once_the_vocabulary_is_purified() -> None:
+    """Acceptance #1, at the veto: fire 26 disappears and the Nepali comes back.
+
+    The assertion that matters is the last one — published v12 and v13 both hold
+    `चोक इन टाइम` for this run and none of the raw keystrokes, so the shipped axis was
+    replacing fluent Nepali with ASCII.
+    """
+
+    spans = [_span("Spins", VOL212_RUN)]
+    impure = frozenset(VOL212_IMPURE_VOCABULARY)
+    assert _reads_as_latin_text(VOL212_RUN, SPINS(VOL212_RUN)) is False, (
+        "axis 1 declines"
+    )
+    assert _content_legacy_veto_flags(spans, SPINS_CHOICE, impure) == [True], "fire 26"
+
+    purified = frozenset(
+        token
+        for token in impure
+        if not _decodes_as_legacy_devanagari(token, SPINS_CHOICE)
+    )
+    assert purified == frozenset(), "nothing in this document attests English"
+    assert _content_legacy_veto_flags(spans, SPINS_CHOICE, purified) == [False]
+    assert "चोक इन टाइम" in SPINS(VOL212_RUN)
+
+
+def test_the_25_genuine_recoveries_survive_purification() -> None:
+    """Acceptance #2, at token level: a narrowing that kills these is not a fix."""
+
+    for token, decoded in VOL212_GENUINE.items():
+        assert SPINS(token) == decoded, token
+        assert not _decodes_as_legacy_devanagari(token, SPINS_CHOICE), token
+
+
+def test_C4_alone_carries_QOC_so_it_cannot_be_dropped() -> None:
+    """Which of the six conditions is load-bearing, measured not assumed.
+
+    C3 (halant-final) carries 7 of the 8 genuine tokens. `QOC` is the exception: its
+    decode `त्तइऋ` ends in a vowel letter, so only C4 (a non-initial independent vowel,
+    which Nepali writes as a matra) keeps it. Drop C4 and `QOC`'s 2 fires die.
+    """
+
+    assert not SPINS("QOC").endswith("्"), "C3 does not fire on QOC"
+    assert not _is_wellformed_devanagari(SPINS("QOC")), "C4 does"
+    for token in ("MIS", "NS", "GI", "DPR", "ECOD", "HDPE", "IEE"):
+        assert SPINS(token).endswith("्"), f"C3 carries {token}"
+
+
+def test_the_predicate_accepts_real_nepali_or_the_filter_is_inert() -> None:
+    """The other side of the one-sidedness: it must not call everything malformed."""
+
+    for word in ("नेपाल", "सरकार", "कार्यालय", "काठमाडौं", "विरुद्ध", "मिति", "डॉलर"):
+        assert _is_wellformed_devanagari(word), word
+
+
+def test_each_of_the_six_conditions_rejects_its_own_shape() -> None:
+    assert not _is_wellformed_devanagari(":क्ष्क"), "C1 non-Devanagari"
+    assert not _is_wellformed_devanagari("ँब्त्त"), "C2 initial combining mark"
+    assert not _is_wellformed_devanagari("ल्क्"), "C3 halant-final"
+    assert not _is_wellformed_devanagari("त्तइऋ"), "C4 non-initial independent vowel"
+    assert not _is_wellformed_devanagari("त्ी"), "C5 vowel sign after halant"
+    assert not _is_wellformed_devanagari("ध्ब्ीी"), "C6 two vowel signs in a row"
+    assert not _is_wellformed_devanagari(""), "empty is not a word"
+    assert not _is_wellformed_devanagari("MIS"), (
+        "an untouched ASCII token is not Nepali"
+    )
+
+
+def test_purity_is_ANY_candidate_map_not_ALL() -> None:
+    """`DAX` (11115's vocabulary) is the corpus case that separates the two.
+
+    Spins reads it as `म्ब्ह्` — halant-final, so malformed — while Kantipur reads it
+    as `म्ब्हृ`, a well-formed word shape. A document carrying both candidate maps must
+    not use it as evidence of English: one map reading it as Nepali is enough.
+    """
+
+    spins_only = {"Spins": LegacyMapChoice(map_key="Spins", validity=None)}
+    kantipur_only = {"K": LegacyMapChoice(map_key="Kantipur", validity=None)}
+    both = {**spins_only, **kantipur_only}
+    assert not _decodes_as_legacy_devanagari("DAX", spins_only)
+    assert _decodes_as_legacy_devanagari("DAX", kantipur_only)
+    assert _decodes_as_legacy_devanagari("DAX", both), "any(), not all()"
+
+
+def test_a_document_with_no_candidate_map_has_no_purity_opinion() -> None:
+    assert not _decodes_as_legacy_devanagari("PG6L", {})
+    assert not _decodes_as_legacy_devanagari(
+        "PG6L", {"Spins": LegacyMapChoice(map_key=None, validity=None)}
+    )
