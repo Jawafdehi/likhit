@@ -191,6 +191,37 @@ _SUSPICIOUS_ARTIFACT_PATTERN = re.compile(
 # normalization, every one a false positive.
 _INVALID_SIGN_PATTERN = re.compile(r"[\u094a\u0929\u0931\u0934]")
 
+# Devanagari letters and combining marks, EXCLUDING the digits U+0966-U+096F and the
+# two dandas U+0964/U+0965.
+_DEVANAGARI_LETTER_RANGE = "\u0900-\u0963\u0970-\u097f"
+# An ASCII bracket wedged between two Devanagari LETTERS is a positive tell that a
+# legacy map does not fit the face. A map that fits turns every keystroke into
+# Devanagari; a wrong one leaves its own literal reading behind. `Spins` reads the byte
+# that Preeti and PCS NEPALI read as `)` as the anusvara `ं`, so `संख्या` ("number")
+# comes out of the wrong map as `स)ख्या` (VOL-77, VOL-89, VOL-131).
+#
+# Digits are excluded because `दफा ३५(२)` -- "section 35(2)" -- is ordinary legal
+# citation in these reports, and U+0966-U+096F sit inside the Devanagari block, so the
+# obvious `[ऀ-ॿ]` class charges correct text. That is a live defect in
+# `runs/vol89/adjudicate_font.py`, which counts this tell with the digits included.
+#
+# This count is DELIBERATELY NOT a term in `_text_quality_penalty`. On the 6,223
+# published v11 transcripts it fires 33,204 times in 4,878 of them, and most of those
+# are Nepali alphabetic list labels -- `क)वित्तीय`, `ख)राजस्व`, `ग)सशर्त` -- which is how
+# Nepali writes `a)`, `b)`, `c)`, plus ordinary parentheticals like `फिर्ता(साँवा)`. As an
+# absolute quantity it is therefore not a damage measure, and the penalty feeds an
+# absolute accept ceiling. Between two decodes OF THE SAME span it is decisive,
+# because a shared label is shared by both; comparison is the only use here.
+_STRANDED_BRACKET_PATTERN = re.compile(
+    "["
+    + _DEVANAGARI_LETTER_RANGE
+    + "]"
+    + r"[)(\]\[}{]"
+    + "["
+    + _DEVANAGARI_LETTER_RANGE
+    + "]"
+)
+
 
 def parse_page_range(spec: str, total_pages: int) -> tuple[int, int]:
     """Parse a 1-based inclusive page range to 0-based bounds."""
@@ -790,6 +821,8 @@ def _nepali_validity(text: str) -> dict[str, float]:
         "penalty": penalty,
         "penalty_per_deva": penalty / devanagari if devanagari else float("inf"),
         "hits": hits,
+        # Not part of `penalty`: see `_STRANDED_BRACKET_PATTERN`. Ranking only.
+        "stranded": len(_STRANDED_BRACKET_PATTERN.findall(text)),
     }
 
 
@@ -802,7 +835,9 @@ def _passes_content_legacy_gate(validity: dict[str, float]) -> bool:
     )
 
 
-def _map_ranking_key(validity: dict[str, float]) -> tuple[float, float, float, float]:
+def _map_ranking_key(
+    validity: dict[str, float],
+) -> tuple[float, float, float, float, float]:
     """Evidence axes for a candidate map, most decisive first, higher is better.
 
     ``hits`` and ``penalty`` are the calibrated primary axes. ``ratio`` and
@@ -834,8 +869,8 @@ def _map_ranking_key(validity: dict[str, float]) -> tuple[float, float, float, f
     18/576 < 18/562 — a denominator difference, not a garble difference — which
     rendered ``;_Vof`` as ``स)ख्या`` where the correct Spins read is ``संख्या``.
 
-    Ranking on the raw count makes equal evidence an exact tie, so ``ratio``
-    decides those spans, and it needs no epsilon or threshold to do it.
+    Ranking on the raw count makes equal evidence an exact tie, so the axes below
+    it decide those spans, and it needs no epsilon or threshold to do it.
     ``penalty_per_deva`` remains the right statistic for
     :func:`_passes_content_legacy_gate`, which compares one span against an
     absolute ceiling and therefore does need cross-span comparability.
@@ -860,11 +895,32 @@ def _map_ranking_key(validity: dict[str, float]) -> tuple[float, float, float, f
     control test :func:`test_a_real_difference_in_garble_still_outranks_the_ratio`
     names the same hazard for a ratio-*first* key; this is that hazard reached
     through the tie band instead.
+
+    **``stranded`` sits between ``penalty`` and ``ratio`` (VOL-131).** It counts the
+    wrong-map tell directly — an ASCII bracket left inside a Devanagari word — where
+    ``ratio`` only sees it diluted, as one non-Devanagari character among several
+    hundred. That dilution is why ``ratio`` was deciding these spans at its
+    resolution limit: across the corpus ``ratio`` decides 486 remaps, and every one
+    of its wrong decisions sits at a margin below 0.004 while all 404 decisions at
+    a margin of 0.005 or more are right. On ``2573__…चामुण्डा विन्द्रासैनि`` the
+    margin was **0.000016** and on ``3544__…Thasang Ga. Pa.`` **0.000724**; the
+    stranded count on those same spans is 3 and 6 for the wrong maps against 0 for
+    ``Spins``. A resolution floor on ``ratio`` was the alternative and is worse: it
+    buys those two spans by abstaining on 25 to 44 others, several of them
+    independently verified correct, and an abstention loses the span outright.
+
+    It sits *below* ``penalty`` for the same reason ``ratio`` does — on
+    ``4487__…बसबरिया गाउँपालिका`` the wrong map carries one stranded bracket and 48
+    penalty points, so the penalty axis must still decide it first — and it is
+    deliberately absent from ``_text_quality_penalty``, because as an absolute
+    quantity it is not a damage measure at all. See
+    :data:`_STRANDED_BRACKET_PATTERN`.
     """
 
     return (
         validity["hits"],
         -validity["penalty"],
+        -validity["stranded"],
         validity["ratio"],
         validity["devanagari"],
     )

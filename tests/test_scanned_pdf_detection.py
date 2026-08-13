@@ -489,7 +489,7 @@ def test_all_map_keys_order_does_not_decide_the_text(
 
 
 def _validity(
-    hits: int, penalty: int, devanagari: int, ratio: float
+    hits: int, penalty: int, devanagari: int, ratio: float, stranded: int = 0
 ) -> dict[str, float]:
     """A validity dict as `_nepali_validity` would return it, for ranking tests."""
 
@@ -499,6 +499,7 @@ def _validity(
         "penalty_per_deva": penalty / devanagari if devanagari else float("inf"),
         "devanagari": devanagari,
         "ratio": ratio,
+        "stranded": stranded,
     }
 
 
@@ -702,6 +703,53 @@ def test_a_false_positive_no_longer_decides_a_real_legacy_span() -> None:
     assert _map_ranking_key(spins)[:2] == _map_ranking_key(pcs)[:2]
     assert _map_ranking_key(spins) > _map_ranking_key(pcs)
     assert _passes_content_legacy_gate(spins)
+
+
+def test_a_stranded_bracket_decides_before_the_ratio_does() -> None:
+    # `2573__...चामुण्डा विन्द्रासैनि`, font "Spins", 446 characters. Every map scores
+    # hits=3 and (after VOL-131) penalty 0, so the garble axis ties and the decision
+    # falls through. `ratio` separates Kantipur from Spins by 0.000016 -- 0.992974
+    # against 0.990719 -- and gets it wrong. The wrong-map tell is not close: the
+    # rivals leave three `स)ख्या` behind and Spins leaves none.
+    kantipur = _validity(hits=3, penalty=0, devanagari=424, ratio=0.992974, stranded=3)
+    spins = _validity(hits=3, penalty=0, devanagari=427, ratio=0.990719, stranded=0)
+    assert kantipur["ratio"] > spins["ratio"]  # ratio prefers the wrong map
+    assert abs(kantipur["ratio"] - spins["ratio"]) < 0.005  # at its noise floor
+
+    assert _map_ranking_key(spins) > _map_ranking_key(kantipur)
+    # And it must decide ABOVE ratio, not below it: below, the 0.000016 still wins.
+    assert _map_ranking_key(spins)[:2] == _map_ranking_key(kantipur)[:2]
+    assert _map_ranking_key(spins)[2] > _map_ranking_key(kantipur)[2]
+
+
+def test_a_real_garble_difference_still_outranks_the_stranded_count() -> None:
+    # The control that keeps VOL-89's counter-case working. On
+    # `4487__...बसबरिया गाउँपालिका` the wrong map (Spins) leaves one stranded bracket
+    # in `दनवा)टोल` AND carries 48 penalty points; the right map carries zero of both.
+    # Here the two signals agree, so it proves nothing on its own -- the point is the
+    # hypothetical where they disagree: a candidate with less stranding must not win
+    # on that alone while carrying more garble.
+    pcs = _validity(hits=2, penalty=0, devanagari=658, ratio=0.679752, stranded=4)
+    spins = _validity(hits=2, penalty=48, devanagari=655, ratio=0.688025, stranded=0)
+    assert spins["stranded"] < pcs["stranded"]
+    assert _map_ranking_key(pcs) > _map_ranking_key(spins)
+
+
+def test_stranded_count_excludes_devanagari_digits() -> None:
+    # `दफा ३५(२)` -- "section 35(2)" -- is ordinary legal citation in these reports,
+    # and the Devanagari digits U+0966-U+096F sit inside the Devanagari block, so a
+    # `[ऀ-ॿ]` class would charge the correct map for reading a section number.
+    # `runs/vol89/adjudicate_font.py` has exactly that defect and reports Spins with
+    # 2 and 3 "stranded" hits on the two documents where it in fact has none.
+    assert _nepali_validity("३५(२")["stranded"] == 0
+    assert _nepali_validity("दफा ३५(२) बमोजिम")["stranded"] == 0
+    assert _nepali_validity("स)ख्या")["stranded"] == 1
+    # Nepali list labels are NOT excluded -- they cannot be, they are structurally
+    # identical to the tell. That is precisely why this count stays out of
+    # `_text_quality_penalty`, which is an absolute measure, and is used only to
+    # compare two decodes of one span, where a shared label is shared by both.
+    assert _nepali_validity("क)वित्तीय")["stranded"] == 1
+    assert _text_quality_penalty("क)वित्तीय") == 0
 
 
 def test_detect_content_legacy_fonts_ignores_english() -> None:
