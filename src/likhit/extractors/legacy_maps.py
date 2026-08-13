@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 from typing import Callable
 import warnings
@@ -31,6 +32,34 @@ ALL_MAP_KEYS: tuple[str, ...] = (
     "FONTASY_HIMALI_TT",
     "Sagarmatha",
 )
+
+# No legacy keyboard layout in _REGISTRY puts its own bracket glyph on the
+# literal ASCII '(' / ')' keys -- confirmed for FONTASY_HIMALI_TT (whose '('
+# key is a keyboard-layout consonant slot, decoding to 'ढ') and for Preeti
+# (whose '(' key decodes to '९'); both layouts render a real bracket from '-'
+# instead. So when a whole span is nothing but an ASCII-bracketed number -- a
+# list/outline marker like "(1)" -- the parens were placed directly by
+# whatever authored the numbering, sharing the body font only for visual
+# consistency with the digit, not typed on this keyboard layout at all.
+# Running the full map over it anyway retargets the parens at whatever
+# consonant sits in that layout's slot: Fontasy Himali's "(1)" becomes "ढ१ण्"
+# even though the very same map correctly reads a same-shaped "-1_" marker as
+# "(१)" (VOL-166). Verified against all 13 CIAA annual reports: this exact
+# ASCII-bracketed shape never occurs under any other legacy map or font in
+# the corpus, so digit-only conversion here changes no other document.
+_ASCII_BRACKETED_NUMBER = re.compile(r"^(\s*)\((\d+)\)(\s*)$")
+_LATIN_TO_DEVANAGARI_DIGITS = str.maketrans("0123456789", "०१२३४५६७८९")
+
+
+def _decode_ascii_bracketed_number(text: str) -> str | None:
+    """Digit-only decode for a whole span shaped like ``"(12)"``, else ``None``."""
+
+    match = _ASCII_BRACKETED_NUMBER.match(text)
+    if match is None:
+        return None
+    lead, digits, trail = match.groups()
+    return f"{lead}({digits.translate(_LATIN_TO_DEVANAGARI_DIGITS)}){trail}"
+
 
 _mapper = None
 _mapper_lock = threading.Lock()
@@ -85,7 +114,15 @@ def get_converter(font_name: str) -> Callable[[str], str] | None:
     map_key = _match_font(font_name)
     if map_key is None:
         return None
-    return get_converter_for_map(map_key)
+    base_convert = get_converter_for_map(map_key)
+
+    def _convert(text: str) -> str:
+        decoded = _decode_ascii_bracketed_number(text)
+        if decoded is not None:
+            return decoded
+        return base_convert(text)
+
+    return _convert
 
 
 def get_converter_for_map(map_key: str) -> Callable[[str], str]:
