@@ -349,7 +349,7 @@ def test_mixed_document_decodes_keystrokes_and_spares_the_english_appendix(
     # still be a content-legacy candidate even with the English mixed in.
     doc = fitz.open(stream=raw, filetype="pdf")
     try:
-        assert detect_content_legacy_fonts(doc) == {"TT339t00": "Preeti"}
+        assert _chosen_maps(detect_content_legacy_fonts(doc)) == {"TT339t00": "Preeti"}
     finally:
         doc.close()
 

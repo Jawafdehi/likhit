@@ -31,6 +31,7 @@ from __future__ import annotations
 import pytest
 
 from likhit.extractors.font_based import (
+    LegacyMapChoice,
     _content_legacy_veto_flags,
     _reads_as_latin_text,
     _reads_as_latin_words,
@@ -39,6 +40,12 @@ from likhit.extractors.font_based import (
 from likhit.extractors.legacy_maps import get_converter_for_map
 
 SPINS = get_converter_for_map("Spins")
+
+# VOL-163: `_content_legacy_veto_flags` takes `dict[str, LegacyMapChoice]` since
+# VOL-156's `aa4caff` widened the content-legacy map. These cases were written
+# against the earlier `dict[str, str]`. Only `map_key` is read on this path, and an
+# empty `ambiguous` is what a tie-free choice carries.
+SPINS_CHOICE = {"Spins": LegacyMapChoice(map_key="Spins", validity=None)}
 
 
 def _veto(text: str) -> bool:
@@ -188,7 +195,7 @@ def test_the_veto_decides_a_whole_same_font_run_not_one_span() -> None:
     ]
     for span in spans:
         assert _veto(span["text"]) is False, "each span alone is below the floor"
-    assert _content_legacy_veto_flags(spans, {"Spins": "Spins"}) == [True, True, True]
+    assert _content_legacy_veto_flags(spans, SPINS_CHOICE) == [True, True, True]
 
 
 def test_a_keystroke_run_split_across_spans_still_decodes() -> None:
@@ -197,7 +204,7 @@ def test_a_keystroke_run_split_across_spans_still_decodes() -> None:
         _span("Spins", "lgoGq0f "),
         _span("Spins", "Joj:yf"),
     ]
-    assert _content_legacy_veto_flags(spans, {"Spins": "Spins"}) == [
+    assert _content_legacy_veto_flags(spans, SPINS_CHOICE) == [
         False,
         False,
         False,
@@ -217,7 +224,7 @@ def test_a_font_change_ends_the_run() -> None:
         _span("Spins_EXT", "179"),
         _span("Spins", "stone masonry work "),
     ]
-    flags = _content_legacy_veto_flags(spans, {"Spins": "Spins"})
+    flags = _content_legacy_veto_flags(spans, SPINS_CHOICE)
     assert flags[1] is False, "a non-candidate font is never vetoed"
     # Neither Spins piece reaches the floor on its own now that the companion splits
     # them, so the veto abstains -- the safe direction, since abstaining decodes.
@@ -226,9 +233,9 @@ def test_a_font_change_ends_the_run() -> None:
 
 def test_spans_of_a_font_that_is_not_a_candidate_are_never_flagged() -> None:
     spans = [_span("Times New Roman", "Quality Of Care and more text here")]
-    assert _content_legacy_veto_flags(spans, {"Spins": "Spins"}) == [False]
+    assert _content_legacy_veto_flags(spans, SPINS_CHOICE) == [False]
     assert _content_legacy_veto_flags(spans, None) == [False]
-    assert _content_legacy_veto_flags([], {"Spins": "Spins"}) == []
+    assert _content_legacy_veto_flags([], SPINS_CHOICE) == []
 
 
 def test_font_candidacy_is_untouched_by_the_veto() -> None:
