@@ -1742,6 +1742,103 @@ def _acronym_tokens(text: str) -> frozenset[str]:
     return frozenset(tokens)
 
 
+# VOL-212: SURVIVOR PURITY, the narrowing note 3 above does not achieve.
+#
+# Note 3 makes the survivor vocabulary Latin-*shaped*. `PG6L` is Latin-shaped --
+# whitespace-delimited, 4 characters, 3 uppercase ASCII letters -- and is a Preeti
+# keystroke word for `एन्टी` ("anti"). On `11129__n30-Annual Report 2071.pdf` page 265
+# its whole survivor vocabulary is `OG6 P06L PG6L`, three keystroke fragments and no
+# English at all, and the resulting fire kept a 91-character run of correct Nepali as
+# raw ASCII -- a regression against published v12 and v13, which both decode it.
+# Found by VOL-197's corpus-scale A/B (`runs/vol197/FINDING-corpus-ab-f7071d15.md`).
+#
+# So survival is evidence of English only if the surviving token is ALSO not itself
+# plausibly legacy text. Stated directly: decode the token with the document's own
+# candidate map and ask whether the result is well-formed Devanagari.
+#
+# **No existing measure can stand in for this.** Measured over the 18 labelled decodes
+# in `runs/vol212/purity-probe-a3f21c8e.json`, `_text_quality_penalty` is **0** and the
+# `_CONTENT_LEGACY_DICTIONARY` hit count is **0** for every one of them, `एन्टी`
+# included -- the penalty charges garble artifacts and `एन्टी` has none, and the
+# dictionary holds no transliterated loanword. A threshold on either reads the same for
+# the tokens that must be dropped and the tokens that must be kept.
+#
+# The predicate is ONE-SIDED and its direction matters: calling a decode well-formed
+# only ever *removes* a token from the vocabulary, and fires are monotone in the
+# vocabulary, so a false "well-formed" costs a genuine recovery and a false "malformed"
+# lets the defect back. Six malformedness conditions, with the calibration's own
+# attribution over the 8 tokens carrying the 25 genuine fires (`runs/vol212/`):
+#
+#   C3 halant-final           -- carries IEE, DPR, GI, HDPE, MIS, NS, ECOD (7 of 8)
+#   C4 non-initial ind. vowel -- carries DPR, HDPE, ECOD, and QOC ALONE
+#   C1 non-Devanagari char    -- carries MIS, redundant with C3
+#   C2 initial combining mark -- carries nothing here
+#   C5 vowel sign after halant-- carries nothing here
+#   C6 two vowel signs in a row- carries nothing here
+#
+# **`{C3, C4}` is the minimal sufficient set and C4 cannot be dropped: it is the only
+# condition keeping `QOC`, worth 2 of the 25 fires.** C1/C2/C5/C6 are kept because each
+# is an independent rule of Devanagari orthography and each recovers genuine English
+# evidence the two load-bearing ones discard -- distinct bystander tokens dropped falls
+# from 28 to 16 with them in. None of the six fires on `एन्टी`, `एण्टी` or `इन्ट`, so
+# they cannot re-admit 11129's vocabulary. Pinned by tests, per note 2's precedent.
+_DEVA_HALANT = "्"
+# Independent vowel LETTERS. Nepali writes a non-initial vowel as a matra, so one of
+# these away from the start of a word is a positive tell of a wrong byte map.
+_DEVA_INDEPENDENT_VOWEL = re.compile("[अ-औॠॡ]")
+# Vowel signs (matras), including the vocalic-L pair.
+_DEVA_VOWEL_SIGN = re.compile("[ा-ौॢॣ]")
+# Every combining mark in the block: signs, matras, halant, nukta, accents. A word
+# cannot begin with one.
+_DEVA_COMBINING = re.compile("[ऀ-ःऺ-्॑-ॗॢॣ]")
+_DEVA_ANY = re.compile("[ऀ-ॿ]")
+
+
+def _is_wellformed_devanagari(text: str) -> bool:
+    """True if ``text`` could be a Devanagari word (VOL-212).
+
+    Generous by design -- see the six conditions above. Used only to *disqualify* a
+    survivor token, so the safe error is to answer True.
+    """
+
+    if not text:
+        return False
+    if any(not (_DEVA_ANY.match(char) or char == " ") for char in text):
+        return False  # C1
+    if _DEVA_COMBINING.match(text[0]):
+        return False  # C2
+    if text.endswith(_DEVA_HALANT):
+        return False  # C3
+    if any(match.start() > 0 for match in _DEVA_INDEPENDENT_VOWEL.finditer(text)):
+        return False  # C4
+    if re.search(_DEVA_HALANT + _DEVA_VOWEL_SIGN.pattern, text):
+        return False  # C5
+    if re.search(_DEVA_VOWEL_SIGN.pattern + "{2}", text):
+        return False  # C6
+    return True
+
+
+def _decodes_as_legacy_devanagari(
+    token: str,
+    content_legacy_maps: dict[str, LegacyMapChoice],
+) -> bool:
+    """True if any of this document's candidate maps reads ``token`` as Nepali.
+
+    ``any``, not ``all``: a token that one candidate map turns into a Devanagari word
+    is not usable as evidence of English, whatever the other maps make of it. That is
+    the conservative side for the defect this closes.
+    """
+
+    seen: set[str] = set()
+    for choice in content_legacy_maps.values():
+        if choice.map_key is None or choice.map_key in seen:
+            continue
+        seen.add(choice.map_key)
+        if _is_wellformed_devanagari(get_converter_for_map(choice.map_key)(token)):
+            return True
+    return False
+
+
 # The SECOND, independent Latin-side veto (VOL-146, VOL-163). Both this one and
 # :func:`_reads_as_latin_text` are ONE-SIDED -- each only ever declines to remap --
 # so they compose as a disjunction rather than competing, and v13 carries both.
@@ -2547,6 +2644,10 @@ def detect_latin_acronym_survivors(
     2. spans of a run `27d74f0` vetoes (:func:`_reads_as_latin_text`);
     3. spans `5084fb8` vetoes (:func:`_reads_as_latin_words`).
 
+    A surviving token additionally has to be **pure** -- not itself a legacy keystroke
+    word -- or the vocabulary attests Nepali as English. See VOL-212 and
+    :func:`_decodes_as_legacy_devanagari`.
+
     (2) is why this pass has to exist separately and has to run **after** the first
     veto: `QOC`'s own survivor evidence is *created* by `27d74f0` firing on
     `Quality Of Care, QOC` two pages earlier. Build the vocabulary before that veto
@@ -2608,7 +2709,19 @@ def detect_latin_acronym_survivors(
                     # fonts), so this is a guard against a proven mechanism with an
                     # unmeasured footprint, not a repair of a counted defect.
                     if not rewritten and count_marked_cids(text) == 0:
-                        survivors |= _acronym_tokens(text)
+                        # VOL-212: survivor purity. Latin *shape* is not enough --
+                        # `PG6L` has it and is `एन्टी`. Drop any token this
+                        # document's own candidate map reads as a Devanagari word. This
+                        # is a SECOND, independent narrowing of the same set: the
+                        # condition above asks "is this text the extractor really read",
+                        # and this asks "is this token really English".
+                        survivors |= {
+                            token
+                            for token in _acronym_tokens(text)
+                            if not _decodes_as_legacy_devanagari(
+                                token, content_legacy_maps
+                            )
+                        }
     return frozenset(survivors)
 
 
