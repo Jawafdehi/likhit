@@ -245,11 +245,20 @@ def _join_visual_line(fragments: list[TextFragment]) -> str:
     Overprinted text -- the same string drawn twice at the same place -- was
     suppressed by the caller's line-level dedupe while one fragment meant one
     line. It has to be suppressed here too, but only where the two fragments
-    occupy the *same* horizontal position, which is what overprint means. Merely
-    overlapping is not enough: adjacent columns of a register overlap by a point
-    or two, and on
+    occupy the *same* place, which is what overprint means. Merely overlapping is
+    not enough: adjacent columns of a register overlap by a point or two, and on
     `3172__1613896170विराटनगर महानगरपालिका` an overlap test deleted a genuine
     repeat of `- डिल्लि धिमाल`.
+
+    Same place means same x *and* same y. Testing x alone was sufficient while a
+    group held one printed line, because sharing a horizontal position then
+    implied sharing a position outright. `_group_into_visual_lines` broke that
+    implication: a tall fragment can overlap several shorter ones, so a group can
+    span *stacked* register rows, and one column of three consecutive rows shares
+    x while differing in y. Suppressing on x alone therefore deleted a genuine
+    repeated figure -- 15 tokens across 5 documents, worst
+    `2446__16126986953_Ghyanglekh RM_Sindhuli`, where three rows carrying `10000`
+    each emitted it once and the document's count fell 8 -> 6.
     """
 
     parts: list[str] = []
@@ -258,17 +267,32 @@ def _join_visual_line(fragments: list[TextFragment]) -> str:
         text = _normalize_cell_text(fragment.text)
         if not text:
             continue
-        if kept and parts[-1] == text and _same_horizontal_position(kept[-1], fragment):
+        if kept and parts[-1] == text and _same_printed_position(kept[-1], fragment):
             continue
         parts.append(text)
         kept.append(fragment)
     return " ".join(parts)
 
 
+def _same_printed_position(left: TextFragment, right: TextFragment) -> bool:
+    """Are both fragments drawn at the same spot -- overprint rather than a repeat?"""
+
+    return _same_horizontal_position(left, right) and _same_vertical_position(
+        left, right
+    )
+
+
 def _same_horizontal_position(left: TextFragment, right: TextFragment) -> bool:
     return (
         abs(left.x0 - right.x0) <= _EDGE_TOLERANCE
         and abs(left.x1 - right.x1) <= _EDGE_TOLERANCE
+    )
+
+
+def _same_vertical_position(left: TextFragment, right: TextFragment) -> bool:
+    return (
+        abs(left.y0 - right.y0) <= _EDGE_TOLERANCE
+        and abs(left.y1 - right.y1) <= _EDGE_TOLERANCE
     )
 
 

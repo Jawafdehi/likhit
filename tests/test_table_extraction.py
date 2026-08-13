@@ -199,6 +199,49 @@ def test_a_register_row_printed_twice_is_kept_twice() -> None:
     assert text.splitlines() == ["१ Bhulli Devi Mahara ४२८५६ १५३०९४५२३"] * 3
 
 
+def stacked_rows_in_one_group() -> list[TextFragment]:
+    """One tall fragment plus three stacked rows that group onto its visual line.
+
+    This is the geometry VOL-119 was measured on. Grouping anchors on a group's
+    *first* fragment, so a label tall enough to span the register pulls all three
+    rows into one group even though the rows do not overlap each other. Each row
+    then repeats `10000` at the same x and a different y.
+    """
+
+    fragments = [fragment("बाल विवाह न्यूनिकरण", 20.0, 100.0, 140.0, 136.0)]
+    for row_index in range(3):
+        y0 = 100.0 + 12.0 * row_index
+        fragments.append(fragment("10000", 160.0, y0, 200.0, y0 + 9.0))
+    return fragments
+
+
+def test_a_figure_repeated_down_a_column_of_a_grouped_register_survives() -> None:
+    # VOL-119. Same x, different y, all in one group: three register rows each
+    # carrying `10000`. Suppressing on horizontal position alone read that as
+    # overprint and deleted two of the three -- 15 tokens over 5 documents, worst
+    # `2446__16126986953_Ghyanglekh RM_Sindhuli`, whose count fell 8 -> 6.
+    text = _extract_cell_text(stacked_rows_in_one_group(), (10.0, 90.0, 210.0, 145.0))
+
+    assert text == "बाल विवाह न्यूनिकरण 10000 10000 10000"
+
+
+def test_overprint_inside_a_grouped_register_is_still_suppressed() -> None:
+    # The other side of VOL-119's fix: adding the vertical test must not stop
+    # catching real overprint just because grouping merged stacked rows. This
+    # fragment sits at the same x *and* the same y as the middle row, so it is a
+    # double-drawn glyph run and must not reach the output.
+    #
+    # Its x0 matches that row's exactly: the dedupe compares each fragment with
+    # the previous *kept* one, and a group is ordered by x0, so an overprint has
+    # to sort adjacent to its twin to be seen at all.
+    fragments = stacked_rows_in_one_group()
+    fragments.append(fragment("10000", 160.0, 112.2, 200.2, 121.2))
+
+    text = _extract_cell_text(fragments, (10.0, 90.0, 210.0, 145.0))
+
+    assert text == "बाल विवाह न्यूनिकरण 10000 10000 10000"
+
+
 class FakeRow:
     def __init__(self, cells: list[tuple[float, float, float, float] | None]) -> None:
         self.cells = cells
