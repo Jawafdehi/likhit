@@ -218,10 +218,12 @@ _RANKING_STRANDED_FORGIVENESS = 1
 # -- the changed-decision set grows monotonically with it, 0 decisions at 3 and 11 at
 # 71 -- which is why the raw count is restored below `attested` in
 # `_map_ranking_key`. With that restoration only decisions an evidence axis actually
-# separates can move, and the value stops carrying the weight: 6 is the minimum that
-# reaches the one span this is for (its margin is exactly 6), and everything the
-# larger values additionally admitted was admitted on `ratio` alone and is now
-# refused on its own merits rather than by the size of the floor.
+# separates can move, and the value stops carrying the weight: re-swept at 6/12/24/48
+# (`key-sweep-88a30e76.txt`), all four produce the IDENTICAL corpus outcome -- the same
+# 2 font decisions of 37,901, 0 abstentions, 0 byte differences anywhere else. That
+# plateau is the calibration. 6 is the floor's lower bound, because the span this is
+# for carries a margin of exactly 6; 12 sits inside the plateau on the pattern-weight
+# argument above rather than on the margin.
 _RANKING_GARBLE_FORGIVENESS = 12
 # Two identical adjacent consonants are a real garble signal, but adjacency ALONE
 # is mostly wrong: in Nepali a stem ending in a consonant plus a suffix beginning
