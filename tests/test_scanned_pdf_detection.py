@@ -991,6 +991,40 @@ def test_the_forgiveness_floor_is_bounded_and_a_real_garble_gap_still_decides() 
     assert _map_ranking_key(clean)[1] > _map_ranking_key(over_by_one)[1]
 
 
+def test_a_forgiven_margin_is_not_handed_to_the_ratio() -> None:
+    # What the floor forgives, the raw count recovers below `attested`. Without that,
+    # forgiving a margin does not hand the decision to the axes that are evidence --
+    # it hands it to whichever axis is next, and when `stranded` and `attested` are
+    # level too, that is `ratio`, which this file establishes is a mirage here.
+    #
+    # `2901__...Janaknandani gaupalika`, font "CIDFont+F14", 1,277 characters: a bare
+    # floor of 6 flipped it from PCS NEPALI to Preeti on a 0.017 ratio difference with
+    # `attested` flat at 39 and `stranded` flat at 0 -- no evidence about the map at
+    # all. Nothing that identifies the map separates these two, so the reading with
+    # less garble must keep the span.
+    pcs = _validity(
+        hits=3, penalty=0, devanagari=1067, ratio=0.978900, stranded=0, attested=39
+    )
+    preeti = _validity(
+        hits=3, penalty=6, devanagari=1235, ratio=0.995970, stranded=0, attested=39
+    )
+    assert preeti["ratio"] > pcs["ratio"]  # the only axis that separates them
+    assert preeti["stranded"] == pcs["stranded"]
+    assert preeti["attested"] == pcs["attested"]
+    # The margin IS inside the floor, so the top axis genuinely levels them...
+    assert _map_ranking_key(pcs)[1] == _map_ranking_key(preeti)[1]
+    # ...and the raw count still decides, above `ratio`.
+    assert _map_ranking_key(pcs) > _map_ranking_key(preeti)
+
+    # The contrast that makes this a rescue and not a blanket refusal: give the
+    # forgiven candidate one more attested word and it wins, because now something
+    # that identifies the map does separate them. This is `3843`'s shape.
+    preeti_but_worse_nepali = _validity(
+        hits=3, penalty=6, devanagari=1235, ratio=0.995970, stranded=0, attested=40
+    )
+    assert _map_ranking_key(preeti_but_worse_nepali) > _map_ranking_key(pcs)
+
+
 def test_nepali_validity_reports_both_forms_of_the_garble_measure() -> None:
     """Both forms are present, and they are NOT the same numerator.
 

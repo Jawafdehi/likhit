@@ -211,13 +211,17 @@ _RANKING_STRANDED_FORGIVENESS = 1
 #
 # 12 is one hit of the heaviest single pattern in `_text_quality_penalty` -- a
 # replacement char or a PUA code point at 12 points each -- so the floor forgives at
-# most ONE artifact of ANY kind and no more. It is not fitted to a document: measured
-# over all 6,236 corpus PDFs, the ONLY font decision that a floor is meant to move
-# carries a margin of 6 (`3843__...Godawari finale`), the nearest decision that must
-# NOT move carries 51, and the other five carry 117 to 966. Every value in [6, 50]
-# produces the identical corpus outcome; 12 is chosen inside that plateau on the
-# pattern-weight argument rather than for the margin.
-# `oag-corpus/runs/vol226/floor-sweep-88a30e76.txt` is the sweep.
+# most ONE artifact of ANY kind and no more.
+#
+# Swept over all 6,236 corpus PDFs at 3/6/12/24/48/70/71
+# (`oag-corpus/runs/vol226/floor-sweep-88a30e76.txt`). The floor alone has NO plateau
+# -- the changed-decision set grows monotonically with it, 0 decisions at 3 and 11 at
+# 71 -- which is why the raw count is restored below `attested` in
+# `_map_ranking_key`. With that restoration only decisions an evidence axis actually
+# separates can move, and the value stops carrying the weight: 6 is the minimum that
+# reaches the one span this is for (its margin is exactly 6), and everything the
+# larger values additionally admitted was admitted on `ratio` alone and is now
+# refused on its own merits rather than by the size of the floor.
 _RANKING_GARBLE_FORGIVENESS = 12
 # Two identical adjacent consonants are a real garble signal, but adjacency ALONE
 # is mostly wrong: in Nepali a stem ending in a consonant plus a suffix beginning
@@ -2513,7 +2517,7 @@ def _passes_content_legacy_gate(validity: dict[str, float]) -> bool:
 
 def _map_ranking_key(
     validity: dict[str, float],
-) -> tuple[float, float, float, float, float, float]:
+) -> tuple[float, float, float, float, float, float, float]:
     """Evidence axes for a candidate map, most decisive first, higher is better.
 
     ``hits`` and ``penalty`` are the primary axes. ⚠️ ``penalty`` is deliberately NOT
@@ -2613,6 +2617,21 @@ def _map_ranking_key(
     :data:`_RANKING_GARBLE_FORGIVENESS` levels those margins so the decision falls
     through, exactly as the other two floors do for their own weak tells.
 
+    **The forgiven margin is restored below ``attested``, and that restoration is
+    load-bearing.** A bare floor does not hand the decision to the axes that are
+    evidence -- it hands it to whichever axis is next, and when ``stranded`` and
+    ``attested`` are level too, that is ``ratio``, which this docstring already
+    establishes is a mirage on exactly these spans. Measured over all 6,236 corpus
+    PDFs, a bare floor of 6 flipped ``2901__...Janaknandani gaupalika`` from
+    ``PCS NEPALI`` to ``Preeti`` on nothing but a 0.017 ratio difference, with
+    ``attested`` flat at 39 and ``stranded`` flat at 0; a floor of 12 added
+    ``2384__...पनौती नगरपालिका`` on the same shape, and 24 added two more
+    (``3741``, ``11319__...Nepalese Journal of Government Auditing``, the latter
+    losing `निर्माण` and `ऋण` x3). With the raw count restored as the last evidence
+    axis, all four of those hold their original map, because nothing that is evidence
+    about map identity separates them -- while ``3843`` still flips, because
+    ``stranded`` does separate it (0 against 4).
+
     On ``3843__…Godawari finale`` (font ``Spins``, 1,340 characters) the better
     ``Spins`` reading scores ``penalty`` **6** against ``Preeti``'s **0**, while
     carrying ``stranded`` **0** against ``Preeti``'s **4** and ``attested`` **44**
@@ -2705,6 +2724,10 @@ def _map_ranking_key(
         # doublet is -- see `_RANKING_STRANDED_FORGIVENESS`.
         -max(validity["stranded"] - _RANKING_STRANDED_FORGIVENESS, 0),
         validity["attested"],
+        # VOL-226: the raw count, restored as the LAST evidence axis. What the floor
+        # above forgives, this recovers -- so a forgiven margin can only ever be
+        # overruled by `stranded` or `attested`, never by `ratio`, which is a mirage.
+        -validity["penalty"],
         validity["ratio"],
         validity["devanagari"],
     )
