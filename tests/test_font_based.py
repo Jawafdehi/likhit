@@ -1182,3 +1182,73 @@ def test_to_dict_shape_matches_dict_mode_exactly() -> None:
         span["text"] for span in _iter_dict_spans(expected)
     ]
     assert all("chars" not in span for span in _iter_dict_spans(converted))
+
+
+def test_text_dict_flags_replace_the_default_and_must_not_be_made_additive() -> None:
+    """The two `flags=` words REPLACE PyMuPDF's default, deliberately.
+
+    Passing `flags=` to `get_text` replaces the default word rather than adding to
+    it, which is a real and recorded trap -- but here the natural remediation, OR-ing
+    the default back in, is destructive twice over. Both harms are measured over all
+    6,236 documents of the Nepali audit corpus (VOL-239, from VOL-225's run
+    `5dcf2ca9`), on PyMuPDF 1.27.2 where `TEXTFLAGS_RAWDICT` is 199:
+
+    * 199 **already sets** `TEXT_USE_CID_FOR_UNKNOWN_UNICODE`. An additive plain pass
+      therefore returns no U+FFFD at all, `get_cid_marked_page_dict` finds no
+      `replacement`, it returns the plain dict on every page, and all **22,871,324**
+      markings stop -- no exception, no warning, no gate. The plain pass works
+      *because* `flags=` drops bit 128 for it.
+    * 199 also sets `TEXT_MEDIABOX_CLIP`, which is not a no-op on this corpus: it
+      deletes **1,250,148** glyphs across **4,022 of 6,236** documents (107,902
+      pages), and the dropped glyphs are fully inside the mediabox, cropbox and
+      rect alike. On one 16-page bulletin it removes 60.6% of the text.
+
+    The two words are already correct *relative to each other*: they differ by
+    exactly bit 128, which is the contrast the CID pass exists to draw.
+    """
+    plain = fitz.TEXT_PRESERVE_WHITESPACE
+    cid = font_based_module._TEXT_DICT_FLAGS
+
+    assert cid == fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_USE_CID_FOR_UNKNOWN_UNICODE
+    assert cid ^ plain == fitz.TEXT_USE_CID_FOR_UNKNOWN_UNICODE
+
+    # Why additive silently disables the plain pass's detection.
+    assert fitz.TEXTFLAGS_RAWDICT & fitz.TEXT_USE_CID_FOR_UNKNOWN_UNICODE
+
+    # Neither word may clip to the mediabox.
+    assert not plain & fitz.TEXT_MEDIABOX_CLIP
+    assert not cid & fitz.TEXT_MEDIABOX_CLIP
+
+
+def test_additive_plain_pass_would_stop_every_cid_marking() -> None:
+    # The behavioural half of the guard above: pinning the constants alone would
+    # still let someone move both words together. This shows the consequence.
+    doc = fitz.open(stream=_build_zeroed_tounicode_pdf(), filetype="pdf")
+    try:
+        page = doc[0]
+        shipped = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+        additive = page.get_text(
+            "rawdict", flags=fitz.TEXTFLAGS_RAWDICT | fitz.TEXT_PRESERVE_WHITESPACE
+        )
+        page_dict = get_cid_marked_page_dict(page)
+    finally:
+        doc.close()
+
+    shipped_replacement, _ = _replacement_and_decoded_positions(shipped)
+    additive_replacement, _ = _replacement_and_decoded_positions(additive)
+
+    assert shipped_replacement, "the plain pass must see the unmappable glyphs"
+    assert not additive_replacement, (
+        "the additive word already carries bit 128, so it decodes the unmappable "
+        "glyphs to raw CIDs and no U+FFFD survives for the plain pass to detect"
+    )
+
+    # And the marking that detection drives is real work, so losing it is a loss.
+    text = "".join(
+        span["text"]
+        for block in page_dict["blocks"]
+        if "lines" in block
+        for line in block["lines"]
+        for span in line["spans"]
+    ).strip()
+    assert count_marked_cids(text) == 4
