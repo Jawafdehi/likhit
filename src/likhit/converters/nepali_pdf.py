@@ -712,11 +712,28 @@ def _default_pdf_result_needs_likhit(markdown: str) -> bool:
     if not tokens:
         return True
 
-    devanagari_chars = len(_DEVANAGARI_PATTERN.findall(markdown))
     latin_tokens = [token for token in tokens if _LATIN_PATTERN.search(token)]
-    if devanagari_chars >= 20 or len(latin_tokens) < 12:
+    if len(latin_tokens) < 12:
         return False
 
+    # An absolute Devanagari floor used to short-circuit here: `devanagari_chars >= 20`
+    # returned False before any of the terms below were computed. It is gone, because the
+    # count it tested is not evidence that the *rest* of the document decoded. Measured on
+    # `markdown-quality-v14` document `2997__1612859754Arnama Gaupalika`: 56 Devanagari
+    # characters -- 0.12% of 45,325 non-space characters -- cleared the floor, so 25,217
+    # characters of raw Preeti shipped as a transcript while every term below fired
+    # (suspicious_ratio 0.5699 against 0.12, pipe_heavy_lines 319 against 4). likhit does
+    # not raise on that PDF: it returns 40,481 Devanagari characters and outscores the
+    # default candidate 130,202 to -25,795. It was simply never asked.
+    #
+    # Removing the floor cannot make this predicate *less* suspicious of any document, and
+    # a True here only builds a second candidate -- `_markdown_quality_score` still decides
+    # which ships, and it scores Devanagari heavily. The population where this predicate
+    # returns False is exactly the transcripts that carry no page anchors (anchors are
+    # emitted only by likhit), so the change is bounded by that set and measured within it:
+    # over v14's 6,223 transcripts, 27 are anchor-free, the floor decided 2 of them, and 1
+    # of those 2 never reaches this function because its Kalimati fonts take the
+    # repair-font path first. Two documents change candidate set; one changes output.
     suspicious_tokens = [
         token for token in latin_tokens if _SUSPICIOUS_LATIN_TOKEN_PATTERN.search(token)
     ]
