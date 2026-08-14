@@ -2642,6 +2642,144 @@ def _map_ranking_key(
     )
 
 
+# ---------------------------------------------------------------------------
+# VOL-218: the mixed letter+digit margin gate. OPT-IN, OFF by default.
+# ---------------------------------------------------------------------------
+#
+# The two legacy map families swap the number rows: `Preeti`/`Kantipur`/
+# `Sagarmatha`/`Spins` put the Devanagari digits on the SHIFTED row `!@#$%^&*()`
+# and read `0123456789` as consonants, while `PCS NEPALI`/`FONTASY_HIMALI_TT` do
+# the reverse. So choosing the wrong family does not garble a span, it *transposes*
+# letters and digits -- and on a document that types money on one row and place
+# names on the other, one flip produces both directions at once. Measured on
+# `3719__...Humla Sarkegad` (font `Felix Titling`, v13 `PCS NEPALI` -> v14
+# `Preeti`): 49 unshifted-row keystrokes became consonants and 23 shifted-row
+# keystrokes became digits, in the same table. See
+# `oag-corpus/runs/vol218/FINDING-19-...-72f6752a.md`.
+#
+# A token carrying BOTH a Devanagari letter and a Devanagari digit is the signature
+# of that transposition, because real Nepali orthography does not mix them inside a
+# word. Ordinals like `१०औं` do, which is why this is a comparative measure between
+# candidate readings of the SAME span and never an absolute quality score.
+#
+# **Why a margin, and not simply another ranking axis.** The bare term was priced
+# corpus-wide first (`runs/vol218/FINDING-17-...-d2362b10.md`): placed below
+# `attested` (P1) it costs 0 attested forms but leaves `4834...खार्पुनाथ` damaged;
+# placed above (P2) it repairs all four damaged documents but takes `attested` -5
+# and makes four flips that are not repairs, because the term speaks on spans where
+# its advantage is a single token. Gating it on a margin keeps the shipped axis in
+# charge everywhere the evidence is thin: at M=5 it makes 6 flips, a strict subset
+# of P2's 11, keeps all four repairs and costs `attested` -2 -- all of which is
+# `4834`'s own repair (`runs/vol218/FINDING-18-...-0aa6842c.md`).
+#
+# **The term is an INDICATOR, not `-mixed`.** Among eligible candidates it does not
+# further prefer the lowest count; it promotes the eligible set and defers to
+# `attested`. That is what "only speak when the advantage exceeds a margin" means,
+# and it is why the arm cannot shrink a tie it is silent on.
+#
+# Which margin ships is open board decision `b70918c8`; until that is answered this
+# is unreachable unless a caller asks for it, so the default transcript is
+# unchanged. Enabling it also requires a generation build, the serialized
+# single-writer step.
+
+_MIXED_MARGIN_ENV_VAR = "LIKHIT_LEGACY_MAP_MIXED_MARGIN"
+
+# Distinguishes "caller said nothing, read the environment" from "caller explicitly
+# passed None", which means off. A plain ``None`` default cannot express both, and a
+# test that means to force the gate OFF must not be silently overridden by an env var
+# some other test or a build driver left set.
+_MARGIN_FROM_ENV = object()
+
+# Composed forms only. A Devanagari class written as a range over *composed*
+# characters decomposes if it is ever pasted through a shell, which compiles and
+# silently reclassifies every combining mark as a letter -- that has happened on
+# this corpus, so these are escapes and `_assert_mixed_classes_hold` checks them.
+_DEVA_LETTER_CLASS = "\u0915-\u0939\u0958-\u095f"
+_DEVA_DIGIT_CLASS = "\u0966-\u096f"
+_DEVA_MARK_CLASS = "\u093a-\u094f\u0951-\u0957\u0962\u0963"
+
+_DEVA_TOKEN_PATTERN = re.compile(
+    f"[{_DEVA_LETTER_CLASS}{_DEVA_MARK_CLASS}{_DEVA_DIGIT_CLASS}]{{2,}}"
+)
+_DEVA_HAS_LETTER = re.compile(f"[{_DEVA_LETTER_CLASS}]")
+_DEVA_HAS_DIGIT = re.compile(f"[{_DEVA_DIGIT_CLASS}]")
+
+
+def _mixed_letter_digit_count(text: str) -> int:
+    """Tokens in ``text`` carrying both a Devanagari letter and a Devanagari digit."""
+
+    return sum(
+        1
+        for token in _DEVA_TOKEN_PATTERN.findall(text)
+        if _DEVA_HAS_LETTER.search(token) and _DEVA_HAS_DIGIT.search(token)
+    )
+
+
+def _assert_mixed_classes_hold() -> None:
+    """Refuse to rank on these classes if the literals above decomposed in transit."""
+
+    if not (
+        _DEVA_HAS_LETTER.search("क")  # ka is a letter
+        and not _DEVA_HAS_LETTER.search("े")  # a vowel sign is not
+        and not _DEVA_HAS_LETTER.search("०")  # nor is a digit
+        and _DEVA_HAS_DIGIT.search("७")  # Devanagari 7
+        and not _DEVA_HAS_DIGIT.search("7")  # ASCII 7 is not
+        and _mixed_letter_digit_count("गो७ी") == 1  # go-7-i, damaged
+        and _mixed_letter_digit_count("गोठी") == 0  # gothi, correct
+    ):
+        raise ExtractionError(
+            "the Devanagari letter/digit character classes do not hold; "
+            f"{_MIXED_MARGIN_ENV_VAR} cannot be honoured safely"
+        )
+
+
+def _mixed_margin_setting() -> int | None:
+    """The configured margin, or ``None`` when the gate is off (the default).
+
+    A malformed value is a configuration error and is raised rather than silently
+    ignored: a gate that quietly disables itself would make a build's provenance
+    unfalsifiable.
+    """
+
+    raw = os.getenv(_MIXED_MARGIN_ENV_VAR)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        margin = int(raw)
+    except ValueError as exc:
+        raise ExtractionError(
+            f"{_MIXED_MARGIN_ENV_VAR}={raw!r} is not an integer"
+        ) from exc
+    if margin < 1:
+        raise ExtractionError(
+            f"{_MIXED_MARGIN_ENV_VAR}={raw!r} must be >= 1; unset it to disable the gate"
+        )
+    return margin
+
+
+def _map_ranking_key_margin_gated(threshold: float):
+    """:func:`_map_ranking_key` plus an ELIGIBLE indicator at P2's position.
+
+    ``threshold`` is ``mixed(shipped winner) - margin``. A candidate is eligible iff
+    its own mixed count is at or below it, so the gate can only ever promote a
+    candidate that beats the shipped winner by more than the margin.
+    """
+
+    def key(validity: dict[str, float]) -> tuple[float, ...]:
+        eligible = 1.0 if validity.get("mixed", 0.0) <= threshold else 0.0
+        return (
+            validity["hits"],
+            -validity["penalty"],
+            -max(validity["stranded"] - _RANKING_STRANDED_FORGIVENESS, 0),
+            eligible,
+            validity["attested"],
+            validity["ratio"],
+            validity["devanagari"],
+        )
+
+    return key
+
+
 @dataclass(frozen=True)
 class LegacyMapChoice:
     """What ranking every legacy map against one span decided.
@@ -2722,7 +2860,9 @@ def _decode_masking(text: str, convert, masked: frozenset[str]) -> str:
     return "".join(out)
 
 
-def choose_legacy_map_detailed(text: str) -> LegacyMapChoice:
+def choose_legacy_map_detailed(
+    text: str, *, mixed_margin: int | None = _MARGIN_FROM_ENV
+) -> LegacyMapChoice:
     """Rank every :data:`ALL_MAP_KEYS` map against ``text`` and decide what to read.
 
     Returns the winning map key only when the reading clears
@@ -2779,12 +2919,64 @@ def choose_legacy_map_detailed(text: str) -> LegacyMapChoice:
     :data:`ALL_MAP_KEYS`. The decoded text cannot depend on that choice, so no
     transcript is affected, but the recorded name is not a stable label for those
     spans and should not be read as an identification of the face.
+
+    **VOL-218's mixed letter+digit margin gate is OPT-IN and OFF by default.** When
+    ``mixed_margin`` is set -- by the argument, or by
+    :data:`_MIXED_MARGIN_ENV_VAR` -- this runs in two passes: pass 1 is the shipped
+    ranking above, and pass 2 re-ranks with an eligibility indicator for candidates
+    whose mixed letter+digit count beats the pass-1 winner's by more than the margin.
+    Both passes are *this* function's ranking core, so the tie mask, the localisation
+    check and the accept gate are the shipped ones in both.
+
+    Where pass 1 abstains there is no winner to measure a margin against, so the gate
+    stays silent and the shipped result is returned unchanged. That forecloses
+    ``abstain -> decided`` **by construction**: the gate can only ever move a span
+    from one map to another, never bring a rejected span into the transcript.
+    """
+
+    margin = (
+        _mixed_margin_setting() if mixed_margin is _MARGIN_FROM_ENV else mixed_margin
+    )
+    shipped = _choose_legacy_map_ranked(text, _map_ranking_key, mixed_threshold=None)
+    if margin is None or shipped.map_key is None:
+        return shipped
+
+    _assert_mixed_classes_hold()
+    try:
+        winner_reading = get_converter_for_map(shipped.map_key)(text)
+    except Exception:  # noqa: BLE001 - cannot re-read the winner; leave shipped alone
+        return shipped
+    # The threshold is measured on the winner's UNMASKED decode, which is the same
+    # text each candidate's own `mixed` is measured on, so the comparison is between
+    # like quantities. A negative threshold makes every candidate ineligible, which
+    # is the silent case again and orders exactly as shipped.
+    threshold = float(_mixed_letter_digit_count(winner_reading) - margin)
+    return _choose_legacy_map_ranked(
+        text,
+        _map_ranking_key_margin_gated(threshold),
+        mixed_threshold=threshold,
+    )
+
+
+def _choose_legacy_map_ranked(
+    text: str,
+    ranking_key,
+    mixed_threshold: float | None,
+) -> LegacyMapChoice:
+    """The shipped chooser, with the ranking key supplied by the caller.
+
+    Split out of :func:`choose_legacy_map_detailed` so VOL-218's margin gate can run
+    the *real* chooser a second time under a different key -- the tie mask, the
+    localisation check and the accept gate all stay the ones that ship, which is what
+    makes the gate's corpus sweep a measurement of this code path rather than of a
+    reimplementation of it. ``mixed_threshold`` is ``None`` on the shipped path, and
+    then no mixed count is computed at all.
     """
 
     # `tuple[float, ...]`, not a fixed arity: this used to spell out four floats and was
     # left at four when `_map_ranking_key` grew a fifth, so the declared arity became a
-    # second, disagreeing record of how many axes there are. Later commits in this chain
-    # add more. One place to change is `_map_ranking_key`'s own annotation.
+    # second, disagreeing record of how many axes there are. The margin-gated key adds
+    # two more. One place to change is `_map_ranking_key`'s own annotation.
     scored: list[tuple[tuple[float, ...], str, dict[str, float], str]] = []
     for map_key in ALL_MAP_KEYS:
         try:
@@ -2797,8 +2989,10 @@ def choose_legacy_map_detailed(text: str) -> LegacyMapChoice:
         except Exception:  # noqa: BLE001 - this map does not fit; try the next
             continue
         validity = _nepali_validity(converted)
+        if mixed_threshold is not None:
+            validity["mixed"] = float(_mixed_letter_digit_count(converted))
         digest = hashlib.blake2b(converted.encode("utf-8"), digest_size=16).hexdigest()
-        scored.append((_map_ranking_key(validity), map_key, validity, digest))
+        scored.append((ranking_key(validity), map_key, validity, digest))
     if not scored:
         return LegacyMapChoice(None, None)
 
