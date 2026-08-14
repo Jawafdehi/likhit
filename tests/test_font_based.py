@@ -616,6 +616,10 @@ def test_fix_kalimati_cmap_uses_trace_fallback_when_font_map_is_unavailable(
             assert xref == 12
             return b"unused"
 
+        def xref_is_stream(self, xref: int) -> bool:
+            assert xref == 12
+            return True
+
         def save(self, buffer) -> None:
             buffer.write(b"%PDF-1.4")
 
@@ -656,6 +660,94 @@ def test_fix_kalimati_cmap_uses_trace_fallback_when_font_map_is_unavailable(
 
     assert repaired_doc is reopened_doc
     assert needs_reorder is True
+    assert patched_maps == [(12, {7: "का"})]
+
+
+def test_parse_tounicode_cmap_treats_a_missing_stream_as_no_mapping() -> None:
+    # `doc.xref_stream()` returns None when /ToUnicode names a non-stream object.
+    # The annotation used to say `bytes` and the body dereferenced it directly.
+    assert kalimati_module._parse_tounicode_cmap(None) == {}
+
+
+def test_a_non_stream_tounicode_font_is_skipped_not_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One malformed font must not cost the whole document.
+
+    A /ToUnicode reference can point at an object that is not a stream. Reading
+    it returns None and writing it raises "object is no PDF dict", and because
+    `_extract_raw_document` wraps every exception into ExtractionError, that took
+    down extraction for the entire PDF -- after which `nepali_pdf` fell back to
+    pdfminer, which renders each glyph it cannot decode as U+0000. Measured on
+    OAG document 13006: 8,834 NULs in place of 8,834 conjuncts and matras, in
+    every generation v6..v12.
+
+    The good font in this fixture is what makes the assertion meaningful: the
+    malformed one is skipped *and* its sibling is still repaired.
+    """
+    patched_maps: list[tuple[int, dict[int, str]]] = []
+
+    class FakePage:
+        def get_fonts(self, full: bool = True) -> list[tuple[object, ...]]:
+            del full
+            return [
+                (11, "ttf", "Type0", "ABCDEF+Kalimati", "Identity-H"),
+                (21, "ttf", "Type0", "GHIJKL+Kalimati", "Identity-H"),
+            ]
+
+    class FakeDoc:
+        page_count = 1
+
+        def __getitem__(self, index: int) -> FakePage:
+            assert index == 0
+            return FakePage()
+
+        def xref_object(self, xref: int, compressed: bool = False) -> str:
+            del compressed
+            return {11: "<< /ToUnicode 12 0 R >>", 21: "<< /ToUnicode 22 0 R >>"}[xref]
+
+        def xref_is_stream(self, xref: int) -> bool:
+            # xref 22 is the malformed one: referenced, but not a stream.
+            return xref == 12
+
+        def xref_stream(self, xref: int) -> bytes:
+            assert xref == 12, "the non-stream xref must never be read"
+            return b"unused"
+
+        def save(self, buffer) -> None:
+            buffer.write(b"%PDF-1.4")
+
+        def close(self) -> None:
+            return None
+
+    reopened_doc = object()
+    monkeypatch.setattr(
+        kalimati_module,
+        "_collect_trace_fallback_map",
+        lambda doc, font_name: {7: "का"},
+    )
+    monkeypatch.setattr(kalimati_module, "_get_fontfile_xref", lambda doc, xref: None)
+    monkeypatch.setattr(
+        kalimati_module, "_parse_tounicode_cmap", lambda cmap_bytes: {7: "x"}
+    )
+    monkeypatch.setattr(
+        kalimati_module, "_get_font_correction_map", lambda doc, xref: {}
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_patch_single_cmap",
+        lambda doc, to_unicode_xref, correction_map: patched_maps.append(
+            (to_unicode_xref, dict(correction_map))
+        ),
+    )
+    monkeypatch.setattr(
+        kalimati_module.fitz, "open", lambda *args, **kwargs: reopened_doc
+    )
+
+    repaired_doc, _needs_reorder = kalimati_module.fix_kalimati_cmap(FakeDoc())  # type: ignore[arg-type]
+
+    assert repaired_doc is reopened_doc
+    # The well-formed font is still repaired; the malformed one is absent.
     assert patched_maps == [(12, {7: "का"})]
 
 

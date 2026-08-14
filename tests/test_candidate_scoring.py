@@ -235,6 +235,34 @@ def test_replacement_characters_still_lower_the_score() -> None:
     assert _markdown_quality_score(damaged) < _markdown_quality_score(filler)
 
 
+def test_nul_sentinels_still_lower_the_score() -> None:
+    # pdfminer's sentinel for a glyph it cannot decode is U+0000, where likhit
+    # emits U+FFFD or a mark. It is exactly as discriminating as U+FFFD -- any
+    # candidate can emit it -- so it has to be charged the same.
+    body = "कार्यालयको लेखापरीक्षण प्रतिवेदन तयार भयो।\n" * 20
+    damaged = body + "\x00" * 100
+    filler = body + "·" * 100
+
+    assert _markdown_quality_score(damaged) < _markdown_quality_score(filler)
+
+
+def test_a_nul_cannot_outrank_the_same_damage_declared_as_u_fffd() -> None:
+    """The inversion this pairing exists to prevent.
+
+    Both candidates lost the same glyphs; they differ only in which sentinel
+    marks the loss. Charging U+FFFD but not U+0000 made the *quieter* sentinel
+    win, which is the same "hidden damage outranks declared damage" ordering the
+    marked-CID comment above says is backwards. A NUL is strictly worse to ship
+    than a U+FFFD: GNU grep, `sort` and `comm` classify a NUL-bearing file as
+    binary, drop every match and still exit 0.
+    """
+    body = "कार्यालयको लेखापरीक्षण प्रतिवेदन तयार भयो।\n" * 20
+    declared = body + "�" * 100
+    hidden = body + "\x00" * 100
+
+    assert _markdown_quality_score(hidden) <= _markdown_quality_score(declared)
+
+
 def test_the_production_comparison_picks_the_marked_candidate_over_the_disguise(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
