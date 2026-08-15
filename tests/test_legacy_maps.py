@@ -4,7 +4,9 @@ import pytest
 
 from likhit.extractors.font_based import FontBasedStrategy
 from likhit.extractors.legacy_maps import (
+    ALL_MAP_KEYS,
     _decode_ascii_bracketed_number,
+    _map_reads_ascii_digits_as_digits,
     get_converter,
     get_converter_for_map,
     get_output_converter_for_map,
@@ -112,6 +114,137 @@ def test_output_converter_for_map_carries_the_gate():
     # ...without disturbing anything that is not the bare marker shape.
     assert convert("-1_") == "(१)"
     assert convert("100") == "१००"
+
+
+# --------------------------------------------------------------------------- #
+# The gate's precondition: the map must read an ASCII digit AS a digit.
+#
+# The gate exists because the map gets the BRACKETS wrong while getting the digit
+# between them right. That is a property of the map, and it holds for two of the
+# five in ALL_MAP_KEYS. Where it fails, the map reads the ASCII digit as a
+# consonant, and digit-translating the interior replaces a real letter with a
+# digit -- strictly worse than the defect the gate repairs.
+# --------------------------------------------------------------------------- #
+
+
+# Hard-coded on purpose rather than read back out of the map: this is the pin on
+# npttf2utf's vendored map.json, so if that file is revendored with a different
+# number row we find out here instead of in a corpus diff. Deriving the
+# expectation from the same table it means to pin would pin nothing.
+_DIGIT_ROW_DECODES = {
+    "Preeti": "ण्ज्ञद्दघद्धछटठडढ",
+    "Kantipur": "ण्ज्ञद्दघद्धछटठडढ",
+    "Sagarmatha": "ण्ज्ञद्दघद्धछटठडढ",
+    "PCS NEPALI": "०१२३४५६७८९",
+    "FONTASY_HIMALI_TT": "०१२३४५६७८९",
+}
+_READS_DIGITS_AS_DIGITS = frozenset({"PCS NEPALI", "FONTASY_HIMALI_TT"})
+
+
+def test_every_map_in_all_map_keys_is_classified():
+    # Adding a map to ALL_MAP_KEYS without deciding which family it is in would
+    # otherwise leave it silently untested by everything below.
+    assert set(ALL_MAP_KEYS) == set(_DIGIT_ROW_DECODES), (
+        "a map was added to or removed from ALL_MAP_KEYS -- measure its ASCII digit "
+        "row and record it in _DIGIT_ROW_DECODES / _READS_DIGITS_AS_DIGITS"
+    )
+
+
+@pytest.mark.parametrize("map_key", sorted(_DIGIT_ROW_DECODES))
+def test_ascii_digit_row_decodes_as_measured(map_key):
+    assert get_converter_for_map(map_key)("0123456789") == _DIGIT_ROW_DECODES[map_key]
+
+
+@pytest.mark.parametrize("map_key", sorted(_DIGIT_ROW_DECODES))
+def test_digit_reading_predicate_matches_the_measured_families(map_key):
+    assert _map_reads_ascii_digits_as_digits(map_key) is (
+        map_key in _READS_DIGITS_AS_DIGITS
+    )
+
+
+@pytest.mark.parametrize(
+    ("map_key", "expected"),
+    [
+        # The two families disagree about the INTERIOR, not just the brackets.
+        ("PCS NEPALI", "ढ५ण्"),  # digit already correct, brackets wrong -> gate applies
+        ("FONTASY_HIMALI_TT", "ढ५ण्"),
+        ("Preeti", "९छ०"),  # the interior IS the letter छ -> gate must not apply
+        ("Kantipur", "९छ०"),
+        ("Sagarmatha", "९छ०"),
+    ],
+)
+def test_raw_decode_of_a_bracketed_digit_shows_which_family_a_map_is_in(
+    map_key, expected
+):
+    assert get_converter_for_map(map_key)("(5)") == expected
+
+
+@pytest.mark.parametrize(
+    "map_key", sorted(set(_DIGIT_ROW_DECODES) - _READS_DIGITS_AS_DIGITS)
+)
+def test_gate_does_not_destroy_a_letter_on_a_consonant_digit_row(map_key):
+    """``"(5)"`` under Preeti is ``"९छ०"`` -- digit, LETTER, digit.
+
+    The first version of this gate shipped applying to every map, so this returned
+    ``"(५)"`` and the ``छ`` was gone. A digit-for-letter substitution is invisible to
+    a marker census (which counts brackets) and to a Devanagari-ratio check (which
+    counts characters in the block), so nothing downstream could have found it.
+    """
+
+    convert = get_output_converter_for_map(map_key)
+    assert convert("(5)") == "९छ०"
+    assert "छ" in convert("(5)")
+
+
+@pytest.mark.parametrize(
+    "map_key", sorted(set(_DIGIT_ROW_DECODES) - _READS_DIGITS_AS_DIGITS)
+)
+def test_gate_is_unreachable_for_a_consonant_digit_row_map(map_key):
+    """Equal output on one input would not prove the gate is out of the path.
+
+    Asserting reachability instead: the output converter must be indistinguishable
+    from the raw one across every shape the gate's pattern can match, so no input
+    exists on which the gate could fire for this map.
+    """
+
+    raw = get_converter_for_map(map_key)
+    out = get_output_converter_for_map(map_key)
+    for text in ("(1)", "(5)", "(12)", " (7) ", "(0)", "(99)", "(100)"):
+        assert out(text) == raw(text), text
+
+
+@pytest.mark.parametrize("map_key", sorted(_READS_DIGITS_AS_DIGITS))
+def test_gate_still_repairs_the_marker_where_the_premise_holds(map_key):
+    # The VOL-166 repair itself. Restricting the gate must not narrow this.
+    convert = get_output_converter_for_map(map_key)
+    assert convert("(1)") == "(१)"
+    assert convert("(13)") == "(१३)"
+    assert convert(" (1) ") == " (१) "
+
+
+@pytest.mark.parametrize("map_key", sorted(_DIGIT_ROW_DECODES))
+@pytest.mark.parametrize("digits", ["1", "5", "12", "7", "0", "99"])
+def test_gate_preserves_the_maps_reading_of_the_marker_interior(map_key, digits):
+    """The general invariant, and the one that survives a new map being added.
+
+    The gate is licensed to rewrite the map's reading of the ASCII **brackets** --
+    that is the whole repair, and on FONTASY_HIMALI_TT it replaces the letters
+    ``ढ`` and ``ण्`` with literal parens. It is not licensed to rewrite the map's
+    reading of the **interior**, whatever that reading turns out to be.
+
+    So the invariant is not "no letter is lost" (false for the repair by design) but
+    "the interior survives". On a digit-row map the interior reads as a digit and the
+    gate agrees with it; on a consonant-row map it reads as a letter and the gate must
+    keep out of the way. One assertion covers both families, and it is the assertion
+    the unrestricted gate fails.
+    """
+
+    interior = get_converter_for_map(map_key)(digits)
+    out = get_output_converter_for_map(map_key)(f"({digits})")
+    assert interior in out, (
+        f"{map_key}: gate dropped the map's reading of {digits!r} -- "
+        f"expected {interior!r} inside {out!r}"
+    )
 
 
 def test_content_based_span_conversion_is_gated_too():
