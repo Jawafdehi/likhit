@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from likhit.extractors.font_based import FontBasedStrategy
-from likhit.extractors.legacy_maps import get_converter, is_legacy_font
+from likhit.extractors.legacy_maps import (
+    get_converter,
+    get_converter_for_map,
+    is_legacy_font,
+)
 from likhit.extractors.pua_maps import (
     KNOWN_UNMAPPABLE,
     SYMBOL_PUA,
@@ -217,34 +221,46 @@ def test_arap_11_decodes_the_commissions_own_name_through_the_legacy_path() -> N
 
 
 @pytest.mark.parametrize(
-    ("lifted", "expected", "gloss"),
+    ("lifted", "expected", "preeti_would_give", "byte"),
     [
-        ("", "प्रमुख", "pramukh / chief"),
-        ("", "आयुक्त", "aayukta / commissioner"),
-        (
-            "",
-            "नवीनकुमार",
-            "a commissioner's given name",
-        ),
+        ("", "घिमिरे", "३िमिरे", "0x23 #"),
+        ("", "डा.", "८ा.", "0x2A *"),
+        ("", "गणेशराज", "ग०ोशराज", "0x29 )"),
+        ("", "पाठक", "पा७क", "0x26 &"),
     ],
-    ids=["pramukh", "aayukta", "nabinkumar"],
+    ids=["ghimire", "dr", "ganeshraj", "pathak"],
 )
-def test_arap_11_map_choice_emits_no_devanagari_digits(lifted, expected, gloss) -> None:
+def test_arap_11_map_choice_emits_no_devanagari_digits(
+    lifted, expected, preeti_would_give, byte
+) -> None:
     """FONTASY_HIMALI_TT, not Preeti -- and this is how the choice was decided.
 
     likhit's content-based `choose_legacy_map` cannot make this call: every map
     scores hits=2 against its dictionary and Preeti's errors are Devanagari
-    DIGITS, which `_text_quality_penalty` does not charge, so Preeti wins at
-    penalty_per_deva 0.0000 while emitting `८ा.` for `डा.` and `ग०ोशराज` for
-    `गणेशराज`. On a page of proper names and titles a Devanagari digit is a direct
-    error count, so the count must be zero.
+    DIGITS, which `_text_quality_penalty` does not charge. So Preeti wins at
+    penalty_per_deva 0.0000 -- an apparently perfect score -- while corrupting four
+    proper names on this one page.
+
+    Every token here is one where Preeti and FONTASY_HIMALI_TT DISAGREE, and that
+    is the point. An earlier version of this test used `प्रमुख`/`आयुक्त`/`नवीनकुमार`,
+    on which the two maps agree, so swapping the registry entry to Preeti left the
+    whole suite green. Mutation `arap-mapped-to-preeti` caught that; it is now
+    pinned, along with the exact wrong value, because a digit substitution is
+    invisible to every quality signal likhit has.
+
+    On a page of proper names and titles a Devanagari digit is a direct error
+    count, so the count must be zero.
     """
 
     convert = get_converter("ARAP 11")
     assert convert is not None
     decoded = convert(unlift_symbol_pua(lifted))
-    assert decoded == expected, gloss
+    assert decoded == expected, f"ARAP byte {byte}"
     assert not any("०" <= ch <= "९" for ch in decoded)
+    assert decoded != preeti_would_give
+    assert (
+        get_converter_for_map("Preeti")(unlift_symbol_pua(lifted)) == preeti_would_give
+    )
 
 
 # --- the span choke point and the list-marker decision ------------------------
