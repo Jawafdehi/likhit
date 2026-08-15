@@ -879,6 +879,16 @@ def strip_page_furniture_lines(text: str) -> str:
     nothing *but* furniture still renders as nothing, since every line is stripped
     and the caller skips the emptied block — while a page of body text can no
     longer be deleted by the header printed above it.
+
+    Callers must apply this only to a block the whole-block predicate already
+    rejected, i.e. one that was going to be discarded outright. Two of the three
+    clauses are strictly more eager per line than per block — `^\\d+\\s*परिच्छेद`
+    is anchored, so per line it matches at any line rather than only the first,
+    and the bare-short-number clause per line strips a page number sitting inside
+    a longer block. Applying this unconditionally therefore deletes text the old
+    code kept: measured at 15 characters over the CIAA corpus (2069-70 −8,
+    2071-72 −7). Gating on the block predicate makes the change purely additive —
+    it can only ever return text that was about to be thrown away.
     """
     return "\n".join(
         line for line in text.splitlines() if not _looks_like_page_furniture(line)
@@ -906,15 +916,20 @@ def _render_section(section: Section) -> list[str]:
         previous_table_key: str | None = None
         for index, block in enumerate(section.blocks):
             paragraph_text = block.text if isinstance(block, ParagraphBlock) else ""
-            if isinstance(block, ParagraphBlock) and (
-                (index > 0 and isinstance(section.blocks[index - 1], TableBlock))
-                or (
-                    index + 1 < len(section.blocks)
-                    and isinstance(section.blocks[index + 1], TableBlock)
+            if (
+                isinstance(block, ParagraphBlock)
+                and _looks_like_page_furniture(paragraph_text)
+                and (
+                    (index > 0 and isinstance(section.blocks[index - 1], TableBlock))
+                    or (
+                        index + 1 < len(section.blocks)
+                        and isinstance(section.blocks[index + 1], TableBlock)
+                    )
                 )
             ):
-                # Strip the furniture LINES rather than the whole block, so a page
-                # whose header merged into its body keeps the body (VOL-668).
+                # This block was about to be discarded whole. Keep its non-furniture
+                # lines instead: the predicate is a substring test, so a running
+                # header merged into the body condemned the entire page (VOL-668).
                 paragraph_text = strip_page_furniture_lines(paragraph_text)
                 if not paragraph_text.strip():
                     continue
