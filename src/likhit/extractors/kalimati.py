@@ -76,7 +76,23 @@ def _safe_get_best_cmap(font) -> dict[int, str]:
     return best_cmap or {}
 
 
-def _parse_tounicode_cmap(cmap_bytes: bytes) -> dict[int, str]:
+def _parse_tounicode_cmap(cmap_bytes: bytes | None) -> dict[int, str]:
+    # `doc.xref_stream()` returns None when /ToUnicode names an object that is
+    # not a stream -- a malformed but readable PDF, which MuPDF reports as
+    # "format error: object is not a stream" on stderr and then recovers from.
+    # This was annotated `bytes` and dereferenced directly, so such a document
+    # raised AttributeError out of the Kalimati repair. The blanket handler in
+    # `font_based._extract_raw_document` turned that into ExtractionError, and
+    # `nepali_pdf` fell back to pdfminer -- which renders every glyph it cannot
+    # decode as U+0000. On OAG document 13006 that fallback shipped 8,834 NULs
+    # in place of 8,834 conjuncts and matras, in every generation v6..v12.
+    #
+    # No ToUnicode mapping is the same situation as a gid missing from one, and
+    # the loop over `trace_maps` below already handles that per gid by taking
+    # the trace value, so an empty map degrades to the trace fallback rather
+    # than losing the document.
+    if not cmap_bytes:
+        return {}
     text = cmap_bytes.decode("utf-8", errors="replace")
     mapping: dict[int, str] = {}
 
@@ -663,7 +679,31 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
             font_dict = doc.xref_object(xref, compressed=False)
             match = re.search(r"/ToUnicode\s+(\d+)\s+\d+\s+R", font_dict)
             if match:
-                candidate_fonts[int(match.group(1))] = xref
+                to_unicode_xref = int(match.group(1))
+                # A /ToUnicode reference can name an object that is not a stream.
+                # Such a font has no CMap to read and none to patch: both
+                # `xref_stream` (returns None) and `update_stream` (raises
+                # "object is no PDF dict") fail on it, and because the caller in
+                # `font_based._extract_raw_document` wraps every exception into
+                # ExtractionError, one malformed font cost the whole document --
+                # `nepali_pdf` then fell back to pdfminer, which renders each
+                # glyph it cannot decode as U+0000. OAG document 13006 shipped
+                # 8,834 NULs this way in every generation v6..v12.
+                #
+                # Skipping the font leaves the rest of the document's fonts to be
+                # repaired normally, which is strictly better than losing all of
+                # it. MuPDF reports the malformation on stderr as
+                # "format error: object is not a stream" and reads the page text
+                # regardless, so there is nothing here that stops extraction.
+                if not doc.xref_is_stream(to_unicode_xref):
+                    logger.debug(
+                        "Kalimati repair: /ToUnicode xref=%d of font %s is not a "
+                        "stream; skipping this font.",
+                        to_unicode_xref,
+                        base_name,
+                    )
+                    continue
+                candidate_fonts[to_unicode_xref] = xref
                 font_names[xref] = base_name
 
     if not candidate_fonts:

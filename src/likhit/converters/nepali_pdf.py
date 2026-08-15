@@ -857,7 +857,23 @@ def _markdown_quality_score(markdown: str) -> int:
         #
         # U+FFFD stays charged: any candidate can emit it, so it still
         # discriminates.
-        - markdown.count("\ufffd") * 12
+        #
+        # U+0000 is charged with it, at the same rate. pdfminer's sentinel for a
+        # glyph it cannot decode is a NUL where likhit emits U+FFFD or a mark, so
+        # charging only U+FFFD compared the two converters on which sentinel they
+        # chose rather than on how much they lost. Measured on OAG document 13006
+        # (`\u0932\u0941\u0919\u0917\u094d\u0930\u0940 \u0917\u093e\u0909\u0901\u092a\u093e\u0932\u093f\u0915\u093e, \u0930\u094b\u0932\u094d\u092a\u093e`), whose text layer carries 8,861 Latin-side
+        # legacy codepoints: pdfminer turns 8,834 of them into NULs -- `\u0930\u094b\u0932\u094d\u092a\u093e` ->
+        # `\u0930\u094b\x00\u092a\u093e`, `\u0917\u093e\u0909\u0901\u092a\u093e\u0932\u093f\u0915\u093e` -> `\u0917\u093e\u0909\u0901\u092a\u093e\x00\u0932\u0915\u093e` -- and was charged nothing,
+        # while likhit declared 8,661 of the same glyphs as U+FFFD and was charged
+        # 103,932. The handicap ran against the converter that told the truth, and
+        # the NUL-bearing candidate shipped in every generation v6..v12.
+        #
+        # A NUL is strictly worse to ship than a U+FFFD, which is why it must not
+        # be the cheaper option: GNU grep classifies a NUL-bearing file as binary,
+        # drops every match, and still exits 0, so a sweep over the corpus
+        # undercounts by that document and reports success.
+        - (markdown.count("\ufffd") + markdown.count("\x00")) * 12
         - whitespace_excess
         - single_token_excess * _EXCESS_SINGLE_TOKEN_PENALTY
         - matra_damage_count * _MATRA_DAMAGE_PENALTY
