@@ -89,6 +89,26 @@ _REGISTRY: dict[str, str] = {
     #      13 reports spell that way 3,449 times, against PCS NEPALI's दुरूपयोग
     #      at 30. Every other load-bearing token is identical under both.
     "arap": "FONTASY_HIMALI_TT",
+    # Siddhi is its own layout, NOT a name for one of the five npttf2utf maps.
+    # It matches both spellings the corpus carries -- 'Siddhi' and 'SiddhiNormal'
+    # -- because _match_font is a substring test. See SIDDHI_MAP_KEY below for the
+    # table and how it was derived.
+    #
+    # Routed by NAME on purpose. `classify_font` returns "legacy_remap" for
+    # anything in this registry and `detect_content_legacy_fonts` skips every font
+    # that is not "correct", so a registry entry takes these faces OUT of the
+    # content-based candidate ranking entirely. That is what keeps the blast
+    # radius to the 79 documents that carry the name: adding the key to
+    # ALL_MAP_KEYS instead would put a seventh candidate in front of every
+    # gate-passing aggregate in the corpus.
+    #
+    # The `fontasyhimali` trap above does not apply here. That one was a
+    # numeral-only face destroyed by moving it to a map with the number rows
+    # exchanged; Siddhi's number rows are the NORMAL ones, so its numeral-only
+    # aggregates -- and several of the 79 are almost pure figures, e.g.
+    # '158.25 67235.67 0 0' in 3120__इलाम नगरपालिका -- decode to Devanagari
+    # digits with a real decimal point, which is what the page draws.
+    "siddhi": "Siddhi",
 }
 
 #: Map key for the Spins layout, which npttf2utf does not ship. It is not an
@@ -115,6 +135,53 @@ _SPINS_BASE_MAP_KEY = "Preeti"
 _SPINS_TO_PREETI_KEYS = str.maketrans(
     {"-": "=", "=": "[", "[": "-", "_": "+", "+": "{", "{": "_"}
 )
+
+#: Map key for the Siddhi layout, which npttf2utf does not ship either. Like
+#: :data:`SPINS_MAP_KEY` it is not an npttf2utf key, so it must go through
+#: :func:`get_converter_for_map`.
+SIDDHI_MAP_KEY = "Siddhi"
+
+#: The npttf2utf map the Siddhi layout is a permutation of. NOT Preeti: Siddhi's
+#: number rows are Himali's, which is what picks the base.
+_SIDDHI_BASE_MAP_KEY = "FONTASY_HIMALI_TT"
+
+# Siddhi reads as FONTASY_HIMALI_TT except on six codes. Five of them are a key
+# translation; the sixth cannot be one and is handled below.
+#
+# Derived by measurement (VOL-471, run d0121829), from rendered page pixels and
+# from per-glyph crops of the embedded faces -- not from a font specification, and
+# not by inference from a sibling map. Record:
+# oag-corpus/runs/vol471-d0121829/{DERIVE-d0121829.json,CHECKPOINT-2-layout.md}.
+#
+#   code        page draws   base gives   translated to   evidence
+#   '-' 0x2d    '-'          '('          (see below)     ट- सडक वोर्ड, ङ- संघीय
+#   '.' 0x2e    '.'          '।'          '=' 0x3d        २. राजश्व, ३१०७९३३३.१०
+#   '/' 0x2f    '/'          'र'          '÷' 0xf7        अमर/मजदुर जे.भि सुर्खेत
+#   '<' 0x3c    'र'          '?'          '/' 0x2f        रकम, राजश्व, गरिवसंग
+#   '_' 0x5f    'ं'          ')'          '+' 0x2b        पुंजिगत, संघ, ५ नं
+#   'Š' 0x160   'ड'          'Š' (passes) '*' 0x2a        सडक, वाडफाट, बांडफांड
+#
+# The base is Himali and not Preeti because Siddhi's number rows are the normal
+# ones: '235187839' draws २३५१८७८३९ on page 4 of 2688 (Preeti gives द्दघछज्ञडठडघढ),
+# and the sub-item markers on page 4 of 2835 run क ख ग घ ङ च छ ... ट as
+# 's- v- u- #- ª- r- %- ^-', which is Devanagari alphabetical order only under the
+# Himali shifted row. That argument uses no word list.
+#
+# 0x2e is a Siddhi fact and not a table artefact: the SAME document's Preeti face
+# draws a danda at 0x2e (a tall vertical bar) where the Siddhi face draws a square
+# baseline dot. Both crops are in the record.
+_SIDDHI_TO_HIMALI_KEYS = str.maketrans(
+    {".": "=", "/": "÷", "<": "/", "_": "+", "Š": "*"}
+)
+
+# 0x2d is the exception, and it is not an oversight. Siddhi draws a HYPHEN there
+# (glyph crop: a horizontal bar at mid height, 46 occurrences in 2835 alone) and
+# **no map in the family emits "-" at any codepoint in 0x00-0x2FFF** -- swept, all
+# six maps, zero hits -- so there is no code to translate 0x2d to. It is therefore
+# handled as a separator: split the source on it, map each part, rejoin with the
+# literal. That is exact because "-" never participates in a Devanagari cluster,
+# and it is the only shape available without inventing a sentinel codepoint.
+_SIDDHI_LITERAL_SEPARATOR = "-"
 
 # Every legacy map content-based (name-agnostic) detection tries against a span.
 # Order is NOT a tie-break. It was once, implicitly -- `choose_legacy_map` kept the
@@ -481,6 +548,21 @@ def get_output_converter_for_map(map_key: str) -> Callable[[str], str]:
         # out of the brackets and the gate's premise does not hold. Returning the raw
         # converter is not a fallback: it is the correct reading of the span.
         return base_convert
+    if map_key == SIDDHI_MAP_KEY:
+        base_convert = get_converter_for_map(_SIDDHI_BASE_MAP_KEY)
+
+        def _convert_siddhi(text: str) -> str:
+            # str.translate is simultaneous, so '<' -> '/' and '/' -> '÷' do not
+            # chain; a sequential two-pass replace would send '<' all the way to
+            # '÷' and lose every र.
+            return _SIDDHI_LITERAL_SEPARATOR.join(
+                base_convert(part.translate(_SIDDHI_TO_HIMALI_KEYS))
+                for part in text.split(_SIDDHI_LITERAL_SEPARATOR)
+            )
+
+        return _convert_siddhi
+
+    mapper = _get_mapper()
 
     def _convert(text: str) -> str:
         decoded = _decode_ascii_bracketed_number(text)
