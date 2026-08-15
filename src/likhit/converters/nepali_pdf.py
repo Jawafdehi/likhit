@@ -42,19 +42,24 @@ from likhit.pdf_page_analysis import (
     pdf_likely_needs_ocr,
 )
 
-# These four are imported rather than redefined. Three of them used to exist twice --
-# once here and once in the renderer, byte-identical -- and both copies decided the
-# same question about the same block on either side of the extractor/renderer seam. A
-# fix applied to one would have been a silent divergence, and the known pending fix to
-# _looks_like_page_furniture (a length bound, so a 216-character paragraph that merely
-# mentions a running-head phrase is not discarded) would have had to be landed twice.
+# Imported rather than redefined. These used to exist twice -- once here and once in
+# the renderer, byte-identical -- and both copies decided the same question about the
+# same block on either side of the extractor/renderer seam. A fix applied to one would
+# have been a silent divergence, and the known pending fix to _looks_like_page_furniture
+# (a length bound, so a 216-character paragraph that merely mentions a running-head
+# phrase is not discarded) would have had to be landed twice.
+#
+# _looks_like_page_furniture itself is no longer imported here: this module used to test
+# whole blocks with it, and now delegates to strip_page_furniture_lines, which applies
+# the same predicate per LINE inside the renderer. The predicate has exactly one caller
+# again, and it is that function.
 from likhit.renderers.markdown import (
-    _looks_like_page_furniture,
     _paragraph_ends_with_caption,
     _render_paragraph_markdown,
     _render_table,
     page_anchor,
     strip_page_anchors,
+    strip_page_furniture_lines,
 )
 
 logger = logging.getLogger(__name__)
@@ -948,15 +953,17 @@ def _render_markdown_from_blocks(
     for index, block in enumerate(blocks):
         page_number = _block_page_number(block)
         if isinstance(block, ParagraphBlock):
-            if _looks_like_page_furniture(block.text) and (
-                (index > 0 and isinstance(blocks[index - 1], TableBlock))
-                or (
-                    index + 1 < len(blocks)
-                    and isinstance(blocks[index + 1], TableBlock)
-                )
+            text = block.text
+            if (index > 0 and isinstance(blocks[index - 1], TableBlock)) or (
+                index + 1 < len(blocks) and isinstance(blocks[index + 1], TableBlock)
             ):
+                # Strip the furniture LINES rather than the whole block: the
+                # predicate is a substring test, so a running header merged into
+                # the page's body used to delete the entire page (VOL-668).
+                text = strip_page_furniture_lines(text)
+            if not text.strip():
                 continue
-            rendered.append((page_number, _render_paragraph_markdown(block.text)))
+            rendered.append((page_number, _render_paragraph_markdown(text)))
             previous_table_key = None
         elif isinstance(block, TableBlock):
             include_caption = True

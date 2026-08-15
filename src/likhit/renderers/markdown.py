@@ -855,6 +855,36 @@ def _looks_like_page_furniture(text: str) -> bool:
     )
 
 
+def strip_page_furniture_lines(text: str) -> str:
+    """Drop the running-header/footer LINES from a paragraph block's text.
+
+    `_looks_like_page_furniture` is a substring test — "वार्षिकप्रतिवेदन"
+    anywhere in the whitespace-stripped text — and it used to be asked about a
+    whole `ParagraphBlock`. When the layout pass merges a page's running header
+    into the same block as the page's body, that made the predicate true of the
+    entire page, and the renderer discarded all of it.
+
+    Measured on the CIAA corpus (VOL-668): **9 fully-texted pages** lost that way,
+    939 to 2,798 characters each, across three reports — 2072-73 p58, 2073-74 p15
+    and seven pages of 2081-82. Every one had a healthy PDF text layer, and each
+    was armed by a table on the *neighbouring* page, because the adjacency test
+    looks at neighbours in the flat cross-page block list.
+
+    A length cap was considered and rejected: measured over those three reports
+    there is no separating threshold. The smallest wrongly-dropped page is 939
+    characters and other dropped blocks run to 954, so any cap that saved the page
+    would still delete body text elsewhere.
+
+    Testing line by line keeps the behaviour that was wanted — a block that is
+    nothing *but* furniture still renders as nothing, since every line is stripped
+    and the caller skips the emptied block — while a page of body text can no
+    longer be deleted by the header printed above it.
+    """
+    return "\n".join(
+        line for line in text.splitlines() if not _looks_like_page_furniture(line)
+    )
+
+
 def _render_paragraph_markdown(text: str) -> str:
     lines = [line.rstrip() for line in text.splitlines()]
     return "  \n".join(line for line in lines if line.strip()).strip()
@@ -875,22 +905,23 @@ def _render_section(section: Section) -> list[str]:
     if section.blocks:
         previous_table_key: str | None = None
         for index, block in enumerate(section.blocks):
-            if (
-                isinstance(block, ParagraphBlock)
-                and _looks_like_page_furniture(block.text)
-                and (
-                    (index > 0 and isinstance(section.blocks[index - 1], TableBlock))
-                    or (
-                        index + 1 < len(section.blocks)
-                        and isinstance(section.blocks[index + 1], TableBlock)
-                    )
+            paragraph_text = block.text if isinstance(block, ParagraphBlock) else ""
+            if isinstance(block, ParagraphBlock) and (
+                (index > 0 and isinstance(section.blocks[index - 1], TableBlock))
+                or (
+                    index + 1 < len(section.blocks)
+                    and isinstance(section.blocks[index + 1], TableBlock)
                 )
             ):
-                continue
+                # Strip the furniture LINES rather than the whole block, so a page
+                # whose header merged into its body keeps the body (VOL-668).
+                paragraph_text = strip_page_furniture_lines(paragraph_text)
+                if not paragraph_text.strip():
+                    continue
             if index:
                 parts.append("")
             if isinstance(block, ParagraphBlock):
-                parts.append(_render_paragraph_markdown(block.text))
+                parts.append(_render_paragraph_markdown(paragraph_text))
                 previous_table_key = None
             elif isinstance(block, TableBlock):
                 include_caption = True
