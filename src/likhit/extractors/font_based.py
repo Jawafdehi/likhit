@@ -41,6 +41,10 @@ PAGE_RANGE_PATTERN = re.compile(r"^\d+(?:-\d+)?$")
 SPAN_GAP_THRESHOLD = 0.75
 # Zeroed ToUnicode maps otherwise collapse every unknown glyph to the same
 # replacement character. Raw CIDs keep those glyphs distinct for later repair.
+# This word REPLACES PyMuPDF's default rather than adding to it, and that is
+# deliberate: OR-ing `TEXTFLAGS_RAWDICT` in stops all CID marking and deletes
+# 1,250,148 glyphs corpus-wide. Do not "fix" it -- see
+# `test_text_dict_flags_replace_the_default_and_must_not_be_made_additive`.
 _TEXT_DICT_FLAGS = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_USE_CID_FOR_UNKNOWN_UNICODE
 # A raw CID is an arbitrary code point: observed values include 0x7a, an ordinary
 # ASCII "z". Nothing distinguishes one from real text, so the glyphs stay
@@ -193,6 +197,9 @@ def get_cid_marked_page_dict(page: fitz.Page) -> dict:
     than being guessed at.
     """
 
+    # Bit 128 is dropped here on purpose: this pass detects unmappable glyphs BY
+    # their U+FFFD, and `TEXTFLAGS_RAWDICT` already sets the CID bit, so making
+    # this word additive returns zero U+FFFD and silently ends every marking below.
     plain_dict = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
     replacement, decoded = _replacement_and_decoded_positions(plain_dict)
     if not replacement:

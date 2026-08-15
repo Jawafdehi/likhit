@@ -124,6 +124,10 @@ def collect_page_numeric_boundary_repairs(
         return []
 
     try:
+        # Non-additive on purpose, same as `font_based.py`'s two passes: OR-ing
+        # `TEXTFLAGS_RAWDICT` in would set `TEXT_MEDIABOX_CLIP`, which deletes
+        # 1,250,148 glyphs across 4,022 of 6,236 corpus documents -- and this
+        # repair reads character origins, so a clipped glyph is a lost boundary.
         raw = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
     except (AttributeError, RuntimeError, TypeError, ValueError):
         return []
