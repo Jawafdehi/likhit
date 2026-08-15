@@ -329,3 +329,29 @@ def test_a_symbol_bullet_never_reaches_the_greek_alphabet() -> None:
     )
     assert decoded == "आयोग"
     assert not any("Ͱ" <= ch <= "Ͽ" for ch in decoded)
+
+
+def test_the_symbol_and_legacy_registries_are_disjoint() -> None:
+    """No font name may be claimed by both registries.
+
+    This is the invariant that makes the branch ORDER in `_convert_span_text`
+    safe. The symbol branch is deliberately placed after the legacy-Devanagari
+    branches, but with disjoint registries the order cannot change behaviour for
+    any known font -- mutation `symbol-branch-moved-before-legacy` survives for
+    exactly that reason, and it is an equivalent mutant rather than an unpinned
+    behaviour.
+
+    So this test guards the premise instead of the ordering: add a font to both
+    registries and the order becomes load-bearing, and this fires to say so.
+    """
+
+    from likhit.extractors.legacy_maps import _REGISTRY as LEGACY_REGISTRY
+    from likhit.extractors.pua_maps import _REGISTRY as PUA_REGISTRY
+
+    claimed_by_both = [key for key in LEGACY_REGISTRY if is_symbol_pua_font(key)]
+    claimed_by_both += [key for key in PUA_REGISTRY if is_legacy_font(key)]
+    assert claimed_by_both == [], (
+        "a font name is claimed by both the symbol and legacy registries, so the "
+        "branch order in _convert_span_text is now load-bearing and needs a test "
+        "that pins it directly"
+    )
