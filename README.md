@@ -253,6 +253,24 @@ Run only the end-to-end integration suite:
 uv run pytest tests/integration
 ```
 
+**Read [`docs/writing-tests.md`](docs/writing-tests.md) before adding one.** `likhit`
+reads adversarial input, and several classes of defect here are invisible to a suite
+that merely passes — that file covers how to prove a test bites, and the
+library-specific traps a test can be blind to.
+
+Ten tests skip on a clean checkout, and they are three different things:
+
+| skips | why |
+|---|---|
+| 5 | real CIB fixtures — git-ignored (PII), absent locally and in CI |
+| 3 | `LIKHIT_LOHIT_REFERENCE_TTF` unset |
+| 2 | `LIKHIT_KALIMATI_REFERENCE_TTF` unset |
+
+Only the first group is unavoidable. The other five compare glyph mappings against
+upstream reference fonts, so they are the tests most likely to catch a mapping
+regression — set the variable if you are touching `lohit.py` or
+`kalimati_reference.py`.
+
 ### Gates
 
 CI runs the following. Run them yourself before opening a pull request:

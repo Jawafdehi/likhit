@@ -55,8 +55,18 @@ jobs:
       # (`|| true`). ty is pre-1.0 and this package's dependencies are largely
       # unstubbed, so at adoption it reported 102 diagnostics of which 99 were
       # tool limitations. pyproject.toml's [tool.ty.rules] silences those
-      # families, leaving 3. Drop the `|| true` and make this a gate once those
-      # reach 0; see the staged plan in pyproject.toml.
+      # families, leaving 3 IN `src/`. Drop the `|| true` and make this a gate
+      # once those reach 0; see the staged plan in pyproject.toml.
+      #
+      # The scope matters, because this step runs `ty check` with no path and so
+      # prints a LARGER number than the 3 above. Measured on this commit:
+      #
+      #   ty check src     3     <- what the suppressions are calibrated against
+      #   ty check tests   5
+      #   ty check         8     <- what this step prints
+      #
+      # Quoting one without its scope is how a reviewer concludes a change added
+      # five diagnostics that were already there. See docs/writing-tests.md.
       - name: Type check (ty, advisory — does not fail the build)
         run: uv run ty check || true
 
