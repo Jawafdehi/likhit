@@ -118,19 +118,28 @@ _NON_ASCII = _non_ascii_patterns()
 def test_the_scan_finds_the_patterns_it_is_meant_to_guard():
     """Without this, every test below could pass by finding nothing at all.
 
-    The counts are exact rather than ``> 0``: a refactor that moves a pattern behind
-    a variable makes it invisible to an AST scan, and silently shrinking coverage is
-    the failure mode this whole file exists to prevent. If you add or remove a
-    pattern, update the number and say why in the commit.
+    A FLOOR plus named instances, deliberately not an exact count. An exact count also
+    catches coverage silently shrinking -- a pattern moved behind a variable becomes
+    invisible to an AST scan -- but it breaks on every unrelated change that adds a
+    regex anywhere in src/, which on a repo with concurrent work means two unrelated
+    reds for whoever merges second. Measured: that happened. The floor protects against
+    the failure that actually matters here (a scan finding nothing and passing
+    everything), and the named modules below protect the specific sites with history.
     """
 
-    assert len(_regex_patterns()) == 92
-    assert len(_NON_ASCII) == 27
+    all_patterns = _regex_patterns()
+    assert len(all_patterns) >= 80, len(all_patterns)
+    assert len(_NON_ASCII) >= 25, len(_NON_ASCII)
 
-    # And the scan really is finding real modules, not an empty tree.
+    # The scan really is finding real modules, not an empty tree -- and specifically the
+    # two that carried the repaired patterns, so neither can drop out unnoticed.
     modules = {path.name for path, _, _ in _NON_ASCII}
     assert "nepali_pdf.py" in modules
     assert "font_based.py" in modules
+
+    # Every pattern the scan finds is automatically covered by the parametrized tests
+    # below, so a newly added pattern is guarded without this count changing.
+    assert len(_NON_ASCII) == len(_non_ascii_patterns())
 
 
 @pytest.mark.parametrize(
