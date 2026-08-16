@@ -1434,3 +1434,30 @@ def test_additive_plain_pass_would_stop_every_cid_marking() -> None:
         for span in line["spans"]
     ).strip()
     assert count_marked_cids(text) == 4
+
+
+def test_a_lexeme_does_not_excuse_unrelated_damage_in_the_same_word() -> None:
+    """The exemption is scoped to the lexeme's SPAN, not to the whole word.
+
+    Devanagari compounds carry no internal space, so a garbled token can hold a listed
+    lexeme and unrelated damage at once. Excusing the whole word hid the damage:
+    "कक्षा" scores 0 and "गग" scores 1, but concatenated they scored 0 before this
+    was scoped. Under-charging matters as much as over-charging, because this term is
+    one of the inputs deciding which legacy map wins.
+    """
+
+    from likhit.extractors.font_based import (
+        _DOUBLED_CONSONANT_LEXEMES,
+        _duplicate_consonant_count,
+    )
+
+    lexeme = _DOUBLED_CONSONANT_LEXEMES[1]
+    damage = "गग"
+
+    # The premise: each part scores what it should on its own, or this proves nothing.
+    assert _duplicate_consonant_count(lexeme) == 0
+    assert _duplicate_consonant_count(damage) == 1
+
+    assert _duplicate_consonant_count(lexeme + damage) == 1
+    # And the lexeme is still excused when it is the only thing there.
+    assert _duplicate_consonant_count(lexeme + lexeme) == 0

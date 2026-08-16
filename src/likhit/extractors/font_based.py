@@ -368,9 +368,24 @@ def _duplicate_consonant_count(text: str) -> int:
         matches = list(_DUPLICATE_CONSONANT_PATTERN.finditer(word))
         if not matches:
             continue
-        if any(lexeme in word for lexeme in _DOUBLED_CONSONANT_LEXEMES):
-            continue
+        # Excuse only the doublets that fall INSIDE a lexeme, not every doublet in a
+        # word that happens to contain one. Devanagari compounds carry no internal
+        # space, so a garbled token can hold a listed lexeme and unrelated damage at
+        # once -- measured: "कक्षा" + "गग" scored 0 when the whole word was
+        # excused, hiding damage that scores 1 on its own. Under-charging matters as
+        # much as over-charging here, because this term helps decide which legacy map
+        # wins.
+        lexeme_spans = [
+            (m.start(), m.end())
+            for lexeme in _DOUBLED_CONSONANT_LEXEMES
+            for m in re.finditer(re.escape(lexeme), word)
+        ]
         for match in matches:
+            if any(
+                start <= match.start() and match.end() <= end
+                for start, end in lexeme_spans
+            ):
+                continue
             # The doublet's second consonant opening a known suffix means the pair
             # straddles a morpheme boundary: `\u0915\u094d\u0930\u092e` + `\u092e\u093e`, `...\u0915` + `\u0915\u094b`. It only
             # counts as a boundary if a real stem precedes it -- a single bare
