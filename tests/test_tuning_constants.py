@@ -6,8 +6,29 @@ asserted anything that depended on the value, so a reviewer could change any of 
 and see green. Among the survivors were the CID marking base, the threshold that routes
 a page to paid OCR, and the table-cell edge tolerance.
 
-The sweep is `tools/constant_sweep.sh` in the run record; the result is
-`inventory/constant-sweep.tsv`.
+That figure is the measurement against the suite WITHOUT this file. Re-run against this
+file, all 23 are caught and 0 survive. Both numbers are needed: the first says why the
+file exists, the second says it works. The sweep is `tools/constant_sweep.sh` in the run
+record; the result is `inventory/constant-sweep.tsv`.
+
+🛑 THE FIRST VERSION OF THIS FILE SHIPPED VACUOUS, and how is worth more than the fix.
+`test_constant_holds_its_pinned_value` was committed with `expected` rebound to the live
+module attribute -- a mutation marker, left in by the very sweep that was demonstrating
+the vacuity. Three things had to line up, and all three are avoidable:
+
+  1. The mutation was reverted with `git checkout -- tests/<this file>` while the file
+     was still UNTRACKED. That command fails on an untracked path. It printed an error;
+     the error was read as benign, because "the file is untracked" sounded like an
+     explanation rather than the reason the restore did not happen.
+  2. The restore was then confirmed by re-running the suite and seeing green. Green
+     after a restore proves nothing when the mutation is one that makes tests PASS --
+     which is exactly the class of mutation a vacuity demonstration uses.
+  3. `git add -A tests` committed the mutant.
+
+So: restore by byte comparison against a pristine copy, never by re-running the suite,
+and never with `git checkout` on a path that may be untracked.
+`test_no_pin_is_derived_from_the_thing_it_pins` now closes the specific hole -- the pin
+could not detect its own vacuity, so the property is asserted over its source instead.
 
 WHY A BARE PIN IS THE RIGHT SHAPE HERE, given that a pin asserts nothing about
 behaviour: the alternative is a behavioural test per constant, and for a geometry
@@ -33,15 +54,22 @@ TWO THINGS THIS FILE IS CAREFUL ABOUT.
 from __future__ import annotations
 
 import ast
+import importlib
 from pathlib import Path
 
+import pymupdf as fitz
 import pytest
 
 from likhit.converters.nepali_pdf import _markdown_quality_score
 from likhit.extractors import font_based as font_based_module
-from likhit.extractors.font_classifier import _DECOY_MAX_DEVANAGARI
+from likhit.extractors.font_classifier import (
+    SCANNED_DECOY_TEXT,
+    _DECOY_MAX_DEVANAGARI,
+    classify_ocr_page,
+)
 from likhit.handlers import structure_detection as structure_detection_module
 from likhit.handlers import two_column_layout as two_column_layout_module
+from tests.synthetic_pdfs import build_scanned_decoy_pdf
 
 _SRC = Path(__file__).resolve().parent.parent / "src"
 
@@ -132,7 +160,12 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
     (
         "likhit/extractors/numeric_boundaries.py",
         "_BBOX_GAP_OUTLIER_EM",
-    ): (0.20, "bbox gap, in em; looser than the advance test because bboxes are"),
+    ): (
+        0.20,
+        "bbox gap between adjacent glyphs, in em. Twice the advance threshold "
+        "because a bbox is a rendered extent and an advance is a font metric, so "
+        "the bbox measure carries the glyph's own side bearings as noise",
+    ),
     (
         "likhit/extractors/numeric_boundaries.py",
         "_MIN_RULE_HEIGHT",
@@ -227,23 +260,70 @@ def test_every_module_level_numeric_constant_is_pinned():
     ("rel", "name", "value"), _FOUND, ids=lambda v: str(v).replace(".py", "")
 )
 def test_constant_holds_its_pinned_value(rel, name, value):
-    import importlib
+    """The pin. ``expected`` is the LITERAL from ``_PINNED`` and must stay that way.
 
+    Both readings of the constant are asserted against it, and they are independently
+    informative: ``value`` is the source literal the AST scan found, ``live`` is the
+    module attribute at runtime. They diverge if a constant is conditionally reassigned
+    after its definition, which the AST scan cannot see.
+
+    Neither may become the expectation. Deriving ``expected`` from either one makes this
+    ``source == source`` and the whole table stops being read -- which is not a
+    hypothetical: it shipped that way, as a mutation marker left in by the sweep that
+    was meant to demonstrate the vacuity. See the module docstring.
+    """
+
+    expected = _PINNED[(rel, name)][0]
     live = getattr(
         importlib.import_module(rel.removesuffix(".py").replace("/", ".")), name
     )
-    expected = live  # MUTANT: derived from the thing it means to pin
+
     assert value == expected
+    assert live == expected
     assert type(value) is type(expected), (
         f"{name} changed type: pinned {expected!r}, source has {value!r}"
     )
 
 
 def test_every_pin_carries_a_derivation():
-    # Guards the table against becoming a bare list of numbers, which is the state
-    # this file exists to leave behind.
+    """Guards the table against becoming a bare list of numbers.
+
+    ⚠️ This measures LENGTH, not completeness. It can only catch an empty or
+    near-empty cell -- a truncated clause passes, and one did: this file shipped
+    ``_BBOX_GAP_OUTLIER_EM``'s derivation ending mid-sentence at "because bboxes are",
+    62 characters and green. Read the column; do not rely on this test to.
+    """
+
     missing = [key for key, (_v, why) in _PINNED.items() if len(why.strip()) < 20]
     assert missing == [], missing
+
+
+def test_no_pin_is_derived_from_the_thing_it_pins():
+    """The pin's expectation must be a literal in ``_PINNED``, checked at the source.
+
+    ``test_constant_holds_its_pinned_value`` cannot detect its own vacuity: if
+    ``expected`` is rebound to the live value, every assertion in it still passes. So
+    the property is asserted here instead, over the source of that function -- the same
+    "scan the source, not the runtime" idiom the flag-word guard uses, for the same
+    reason.
+    """
+
+    body = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    target = next(
+        node
+        for node in ast.walk(body)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "test_constant_holds_its_pinned_value"
+    )
+    assignments = {
+        node.targets[0].id: ast.unparse(node.value)
+        for node in ast.walk(target)
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+    }
+    assert assignments.get("expected") == "_PINNED[rel, name][0]", (
+        "the pin's expectation must come from the _PINNED literal, not from the "
+        f"source scan or the live module. Found: {assignments.get('expected')!r}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -288,20 +368,76 @@ def test_the_cid_mark_range_fits_exactly_inside_plane_15():
     assert font_based_module._private_use_count(marked) == 1
 
 
+class _PageWithExtraDevanagari:
+    """A real decoy page whose extracted text carries ``count`` extra Devanagari.
+
+    The text layer has to be faked at ``get_text`` rather than drawn into the PDF,
+    and that is a constraint rather than a shortcut: PyMuPDF ships no
+    Devanagari-capable font (`helv` and `china-s` both report no glyph for ``क``,
+    and there is no builtin `notos`), so drawing ``क`` produces a substituted glyph
+    that extracts as nothing -- the count stays 0 at every value. Reaching for a host
+    font instead would make this test pass or fail by which machine ran it.
+
+    Everything else is the genuine article: real full-page raster, real non-embedded
+    core font, real xref. Only the one input the threshold reads is substituted, so
+    the branch under test is reached the way production reaches it.
+    """
+
+    def __init__(self, page: fitz.Page, count: int) -> None:
+        self._page = page
+        self._extra = "क" * count
+
+    def get_text(self, *args: object, **kwargs: object) -> str:
+        return self._page.get_text(*args, **kwargs) + "\n" + self._extra
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._page, name)
+
+
+class _DocWithExtraDevanagari:
+    def __init__(self, doc: fitz.Document, count: int) -> None:
+        self._doc = doc
+        self._count = count
+
+    def __getitem__(self, index: int) -> _PageWithExtraDevanagari:
+        return _PageWithExtraDevanagari(self._doc[index], self._count)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._doc, name)
+
+
+def _decoy_doc_with_devanagari(count: int) -> tuple[fitz.Document, object]:
+    doc = fitz.open(stream=build_scanned_decoy_pdf(page_count=1), filetype="pdf")
+    return doc, _DocWithExtraDevanagari(doc, count)
+
+
 def test_the_decoy_devanagari_threshold_is_the_gate_on_paid_ocr():
     """``_DECOY_MAX_DEVANAGARI`` decides whether a text layer is real.
 
-    ``classify_ocr_page`` returns ``None`` -- meaning "this page has real text, do not
-    OCR it" -- as soon as the Devanagari count reaches this value. So the constant is
-    not a tuning knob on output quality; it is the boundary between a page that is
-    transcribed for free and one that is sent to a metered vision model. Asserting the
-    boundary itself, at the value and one below it, because an off-by-one here is spend.
+    ``classify_ocr_page`` returns ``None`` -- "this page has real text, do not OCR it"
+    -- as soon as the Devanagari count reaches this value. So the constant is not a
+    tuning knob on output quality; it is the boundary between a page transcribed for
+    free and one sent to a metered vision model.
+
+    Driving the function rather than restating the comparison. The previous version of
+    this test asserted ``10 >= _DECOY_MAX_DEVANAGARI`` and ``not 9 >=
+    _DECOY_MAX_DEVANAGARI``, which are the constant substituted into itself and hold at
+    any value -- so flipping the ``>=`` in ``classify_ocr_page`` to ``>``, the exact
+    off-by-one that is spend, left it green.
     """
 
     assert _DECOY_MAX_DEVANAGARI == 10
-    # The comparison is `>=`, so the value itself is on the "real text" side.
-    assert 10 >= _DECOY_MAX_DEVANAGARI
-    assert not 9 >= _DECOY_MAX_DEVANAGARI
+
+    below_doc, below = _decoy_doc_with_devanagari(_DECOY_MAX_DEVANAGARI - 1)
+    at_doc, at = _decoy_doc_with_devanagari(_DECOY_MAX_DEVANAGARI)
+    try:
+        # One short of the threshold: still a decoy, so the page is sent to OCR.
+        assert classify_ocr_page(below, 0) == SCANNED_DECOY_TEXT
+        # At the threshold the text layer is accepted and no OCR is bought.
+        assert classify_ocr_page(at, 0) is None
+    finally:
+        below_doc.close()
+        at_doc.close()
 
 
 # The same four characters in two orders. `क्रा` puts the virama before a CONSONANT
