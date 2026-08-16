@@ -433,10 +433,22 @@ CORPUS_SYMBOL_FONTS = (
 #: Names that CONTAIN a registry key but are not that font family. The first two are
 #: real -- they appear in the corpus, 7 occurrences between them.
 NOT_SYMBOL_FONTS = (
+    # INFIX: the key sits inside the name. A substring test routed these; a prefix
+    # test does not. The first two are real -- 7 occurrences in the corpus.
     "SegoeUISymbol,Bold",
     "JNJOHL+SegoeUISymbol",
     "SomeSymbolicFont",
     "MySymbolizer",
+    # SUFFIX: the name STARTS with the key and continues into a different family, so a
+    # prefix test still routed all five. Raised in review of the prefix fix.
+    # "Wingdings3" is the one that shows the cost: Wingdings 3 is a real font with a
+    # real, different encoding, so routing it to the Wingdings table emits confidently
+    # wrong characters rather than merely failing to help.
+    "SymbolicFont",
+    "WingdingsExtra",
+    "Symbols",
+    "SymbolNeue",
+    "Wingdings3",
 )
 
 
@@ -447,6 +459,48 @@ def test_every_corpus_symbol_font_still_resolves(name: str) -> None:
     suffixes, the space in "Wingdings 2", and the MT variants all have to survive."""
 
     assert pua_table_for_font(name) is not None, name
+
+
+def test_the_name_boundary_set_is_derived_and_minimal() -> None:
+    """The boundary is derived, so pin the derivation -- through the REAL normaliser.
+
+    🛑 The first version of this test used `form.split("+", 1)[-1].lower()` to build the
+    base name. Production uses `_base_font_name`, which ALSO splits at the first comma.
+    So the test "proved" that `,` had to be in the boundary set when the router can
+    never see a comma at all: "Symbol,Bold" arrives as "symbol" and takes the
+    exact-match arm. A mutation that dropped the comma failed this test and nothing
+    else, which is what exposed it. The comma is gone from the set; the lesson is that
+    a derivation test must normalise the way the code under test normalises.
+    """
+
+    from likhit.extractors.pua_maps import (
+        _FONT_NAME_BOUNDARY,
+        _REGISTRY,
+        _base_font_name,
+    )
+
+    assert _FONT_NAME_BOUNDARY == frozenset("- ")
+    assert not any(char.isalnum() for char in _FONT_NAME_BOUNDARY)
+    assert "," not in _FONT_NAME_BOUNDARY, (
+        "_base_font_name strips it; it is unreachable"
+    )
+
+    def boundary_char(form: str) -> str | None:
+        base = _base_font_name(form)
+        for key in sorted(_REGISTRY, key=len, reverse=True):
+            if base.startswith(key):
+                return base[len(key)] if len(base) > len(key) else None
+        return None
+
+    # A comma form reaches the exact-match arm, never the boundary test.
+    assert boundary_char("Symbol,Bold") is None
+    # The hyphen is the one the corpus actually requires.
+    assert boundary_char("UYVFMY+Symbol-Identity-H") == "-"
+    assert boundary_char("KZTWBE+Wingdings-Identity-H") == "-"
+    # "Wingdings 2" matches its own key exactly, so the space is DEFENSIVE: no corpus
+    # form exercises it. Asserted so the docstring's claim stays honest.
+    assert boundary_char("ABCEEE+Wingdings 2") is None
+    assert boundary_char("Wingdings 2 Condensed") == " "
 
 
 @pytest.mark.parametrize("name", NOT_SYMBOL_FONTS)

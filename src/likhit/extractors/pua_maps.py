@@ -151,6 +151,27 @@ def _base_font_name(font_name: str) -> str:
     return name.split(",", 1)[0].strip().lower()
 
 
+#: What may follow a registry key and still be the same font family. A LETTER or DIGIT
+#: here means a DIFFERENT family -- "SymbolicFont", "Wingdings3" -- and must not route.
+#:
+#: Only two characters, and only one of them is corpus-exercised. Worth stating exactly,
+#: because the first draft of this set also contained a comma and a test "proved" the
+#: comma necessary -- using a normalisation production does not use:
+#:
+#:   ``-``  REQUIRED. "UYVFMY+Symbol-Identity-H" and "KZTWBE+Wingdings-Identity-H"
+#:          reach the router as "symbol-identity-h" / "wingdings-identity-h".
+#:   `` ``  DEFENSIVE, not exercised. No corpus form needs it: "ABCEEE+Wingdings 2"
+#:          matches the "wingdings 2" key EXACTLY. It admits a numbered-family variant
+#:          ("Wingdings 2 Condensed") that this corpus does not contain.
+#:   ``,``  REMOVED. It can never be a boundary: `_base_font_name` splits the name at
+#:          the first comma, so "Symbol,Bold" reaches the router as "symbol" and takes
+#:          the exact-match arm. Keeping it looked harmless and was dead code that a
+#:          derivation test appeared to justify.
+#:
+#: The "ABCDEE+" subset prefix is likewise already stripped, so it never reaches here.
+_FONT_NAME_BOUNDARY = frozenset("- ")
+
+
 def pua_table_for_font(font_name: str) -> dict[int, str] | None:
     """The PUA table for ``font_name``, or ``None`` if it is not a symbol font.
 
@@ -171,12 +192,27 @@ def pua_table_for_font(font_name: str) -> dict[int, str] | None:
     # the class is unbounded, and it is the same unguarded-substring-router defect
     # tests/test_legacy_map_difference.py pins for legacy_maps._match_font.
     #
-    # A prefix still admits every form the corpus actually contains: "Symbol",
-    # "SymbolMT", "Symbol-Identity-H", "Symbol,Bold", "ABCDEE+Symbol",
-    # "Wingdings-Identity-H", "ABCEEE+Wingdings 2". Longest key first, so
-    # "wingdings 2" is tested before "wingdings".
+    # 🛑 A prefix alone is NOT enough, and review caught the half-fix. It closes the
+    # INFIX case ("SegoeUISymbol") and leaves the SUFFIX case wide open: measured,
+    # "SymbolicFont", "WingdingsExtra", "Symbols", "SymbolNeue" and "Wingdings3" all
+    # still resolved. "Wingdings3" is the one that shows why it matters -- Wingdings 3
+    # is a real font with a real, different encoding, so routing it to the Wingdings
+    # table does not fail to help, it produces confidently wrong characters. Leaving
+    # its private-use codepoints visible is the better answer, for the same reason
+    # KNOWN_UNMAPPABLE exists.
+    #
+    # So the key must end at a name BOUNDARY. `_FONT_NAME_BOUNDARY` is derived from
+    # the corpus rather than guessed: all 12 forms the 13 reports actually contain
+    # clear it -- exact ("Symbol", "Wingdings 2" via its own key), "-Identity-H",
+    # ",Bold", and the "ABCDEE+" subset prefixes which `_base_font_name` has already
+    # stripped. `tests/test_pua_maps.py::test_every_corpus_symbol_font_still_resolves`
+    # is the control, so tightening this cannot silently drop a live font.
+    #
+    # Longest key first, so "wingdings 2" is tested before "wingdings".
     for key in sorted(_REGISTRY, key=len, reverse=True):
-        if base.startswith(key):
+        if base == key or (
+            base.startswith(key) and base[len(key)] in _FONT_NAME_BOUNDARY
+        ):
             return _REGISTRY[key]
     return None
 
