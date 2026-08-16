@@ -210,6 +210,36 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "beside. Naming it is the same move as the converter's candidate-score weights -- "
         "an inline weight is invisible to this registry",
     ),
+    # -- Latin cid uniform-offset recovery -------------------------------------- #
+    #
+    # A Latin subset whose glyph ids sit a uniform offset from ASCII can be read back
+    # exactly. These three decide when the offset is believed, and the transform FAILS
+    # CLOSED -- with no lexicon available it recovers nothing rather than guessing, which
+    # is why an absent dictionary makes the feature inert instead of wrong.
+    (
+        "likhit/extractors/font_based.py",
+        "_CID_RECOVERY_MIN_TOKEN",
+    ): (
+        3,
+        "shortest token that counts as evidence of an offset; two letters match the "
+        "lexicon too readily to distinguish a real offset from a coincidence",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_CID_RECOVERY_MIN_HITS",
+    ): (
+        2,
+        "one lexicon hit under a candidate offset is a coincidence, as with the "
+        "content-legacy dictionary's own floor",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_CID_RECOVERY_MIN_COV_ONE_HIT",
+    ): (
+        0.5,
+        "coverage required when there is only a single hit: half the run's tokens must "
+        "resolve, so a lone long word cannot carry the offset on its own",
+    ),
     # -- the document-scope acronym veto ---------------------------------------- #
     #
     # The third Latin-side axis: an all-upper run repeated across a document is an

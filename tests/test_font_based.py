@@ -1534,6 +1534,95 @@ def test_the_latin_veto_is_not_blind_to_cid_marked_text() -> None:
     assert not _reads_as_latin_words(mark_unmappable_cids(keystrokes))
 
 
+# --- a hermetic lexicon for the Latin cid recovery tests ------------------------
+#
+# The recovery reads an external English word list, defaulting to hunspell's
+# /usr/share/hunspell/en_US.dic. That is a HOST artifact: CI installs no system
+# packages, so without this fixture five tests below fail there while passing on a
+# developer machine that happens to have hunspell. Measured -- pointing the override at
+# a nonexistent path fails exactly those five.
+#
+# The word list is the vocabulary those tests actually feed through the recovery, written
+# out explicitly rather than derived, so it is auditable and cannot silently grow.
+#
+# The two nonsense tokens `qxzjvk` and `wgtplm` are DELIBERATELY ABSENT: one test asserts
+# they are declined as not-English, and adding them would make that test pass for the
+# wrong reason.
+_TEST_LEXICON_WORDS = (
+    "a",
+    "accountability",
+    "based",
+    "pilot",
+    "version",
+    "accounts",
+    "and",
+    "auditing",
+    "auditor",
+    "be",
+    "course",
+    "credible",
+    "development",
+    "for",
+    "general",
+    "implementation",
+    "in",
+    "institution",
+    "management",
+    "measurement",
+    "of",
+    "office",
+    "on",
+    "performance",
+    "preparedness",
+    "professional",
+    "promoting",
+    "report",
+    "reviewed",
+    # "sai" is DELIBERATELY ABSENT, matching hunspell, which does not contain it. Adding
+    # it lifts test_latin_cid_recovery_keeps_a_span_a_coverage_rule_would_drop from
+    # coverage 0.425 to exactly 0.500 and breaks its `coverage < 0.5` assertion -- that
+    # test's whole point is a span the coverage rule would drop, so inflating coverage
+    # destroys it. The SAI-titled test does not need it: performance/measurement/report
+    # already give it three hits.
+    "strive",
+    "sustainable",
+    "the",
+    "to",
+    "we",
+    # These two are not decoration. hunspell's en_US really does contain them, and they
+    # are the "two dictionary words that fall out by chance" from the Preeti keystroke
+    # span in test_latin_cid_recovery_refuses_preeti_read_as_ascii -- `fsf` twice and
+    # `vt` once, giving that span 2 hits. That test's PREMISE is that Preeti garble
+    # scores as English, so without them the premise fails and the test proves nothing
+    # about the gate it exists for. Measured against the host dictionary rather than
+    # guessed, and naming them makes the coincidence auditable instead of depending on
+    # whatever hunspell version a machine happens to ship.
+    "fsf",
+    "vt",
+)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_latin_lexicon(tmp_path_factory, monkeypatch):
+    """Point the recovery at a word list this repo owns, not at the host's hunspell.
+
+    Autouse so no test has to remember it. The one test that asserts the recovery FAILS
+    CLOSED without a lexicon sets its own nonexistent path with monkeypatch, which runs
+    after this and therefore still wins.
+    """
+
+    path = tmp_path_factory.mktemp("lexicon") / "test_en.dic"
+    # hunspell's first line is an entry count, which the loader skips.
+    path.write_text(
+        f"{len(_TEST_LEXICON_WORDS)}\n" + "\n".join(_TEST_LEXICON_WORDS) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(_CID_RECOVERY_LEXICON_ENV, str(path))
+    _latin_cid_lexicon.cache_clear()
+    yield
+    _latin_cid_lexicon.cache_clear()
+
+
 # --- Latin cid uniform-offset recovery -------------------------------------
 #
 # Every cid sequence below is a real one, taken from the four corpus documents
