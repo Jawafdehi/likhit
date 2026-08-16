@@ -978,8 +978,26 @@ def test_normalize_extracted_word_keeps_space_before_prebase_marker_word() -> No
         # unmappable glyph, an ASCII "z" no literal class would ever have covered.
         mark_unmappable_cids("\x83"),
         mark_unmappable_cids("z"),
+        # VOL-704. The bullets `pua_maps` resolves symbol fonts to, plus a raw
+        # private-use glyph that reached here unmapped (an unregistered symbol
+        # font, or a codepoint deliberately left in `KNOWN_UNMAPPABLE`). 2,227 of
+        # the CIAA corpus's 4,210 U+F0B7 are in this leading position, i.e. they
+        # are list markers, and before this class covered them the corpus had
+        # ZERO markdown list items where it should have had thousands.
+        "•",
+        "▪",
+        "➢",
+        "",
     ],
-    ids=["replacement-char", "marked-cid-0x83", "marked-cid-0x7a"],
+    ids=[
+        "replacement-char",
+        "marked-cid-0x83",
+        "marked-cid-0x7a",
+        "symbol-bullet-u2022",
+        "wingdings-square-u25aa",
+        "wingdings-arrowhead-u27a2",
+        "unmapped-pua-uf0b7",
+    ],
 )
 def test_normalize_press_release_paragraph_turns_leading_unknown_glyph_into_bullet(
     marker: str,

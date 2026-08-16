@@ -22,6 +22,11 @@ from likhit.extractors.numeric_boundaries import (
     apply_line_numeric_boundary_repairs,
     collect_page_repairs_by_line,
 )
+from likhit.extractors.pua_maps import (
+    is_symbol_pua_font,
+    remap_symbol_pua,
+    unlift_symbol_pua,
+)
 from likhit.extractors.tables import detect_page_tables, merge_continuation_tables
 from likhit.handlers.content_blocks import build_content_blocks, table_to_plain_text
 from likhit.models import TableBlock
@@ -253,8 +258,18 @@ def _convert_span_text(
     if strategy == "legacy_remap":
         converter = get_converter(font_name)
         if converter is not None:
-            return converter(text)
+            # VOL-704: same un-lift as font_based._convert_span_text. A legacy
+            # Devanagari font with a symbol-style cmap ("ARAP 11") hands us
+            # byte + 0xF000; the converter needs the byte. No-op on ASCII.
+            return converter(unlift_symbol_pua(text))
         return text
+
+    # VOL-704: a legacy symbol font (Symbol, Wingdings) classifies "correct", so
+    # without this its private-use codepoints fall through untouched. After the
+    # legacy-Devanagari branch on purpose -- U+F020 and U+F029 are emitted by both
+    # Symbol and ARAP 11 in the CIAA corpus and mean different things in each.
+    if is_symbol_pua_font(font_name):
+        return remap_symbol_pua(text, font_name)
 
     if strategy == "broken_cmap" and needs_reorder:
         text = normalize_devanagari_spacing(text)

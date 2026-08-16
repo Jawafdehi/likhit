@@ -33,6 +33,11 @@ from likhit.extractors.numeric_boundaries import (
     apply_line_numeric_boundary_repairs,
     collect_page_repairs_by_line,
 )
+from likhit.extractors.pua_maps import (
+    is_symbol_pua_font,
+    remap_symbol_pua,
+    unlift_symbol_pua,
+)
 from likhit.extractors.tables import detect_page_tables, merge_continuation_tables
 from likhit.models import Table
 
@@ -230,7 +235,25 @@ def normalize_press_release_paragraph(text: str) -> str:
     # Any unmappable glyph opening a list item is a bullet, whatever CID it came
     # from. Enumerating CIDs does not converge: the law-report sample alone emits
     # two (0x83 and 0x7a, an ASCII "z" that no literal class would ever cover).
-    normalized = re.sub(r"^[\ufffd\U000F0000-\U000FFFFD](?=\s)", "-", normalized)
+    #
+    # VOL-704 adds two things to the class. U+E000-U+F8FF covers a symbol-font
+    # bullet that reached here unmapped (an unregistered font, or a codepoint
+    # deliberately left in `pua_maps.KNOWN_UNMAPPABLE`). U+2022/U+25AA/U+27A2 are
+    # the real bullet characters `pua_maps` resolves Symbol and Wingdings to, and
+    # they need converting for the same reason the CIDs do.
+    #
+    # Position is what decides this, not identity, and the split is deliberate: a
+    # LEADING bullet is document *structure*, so it becomes "- " -- real Markdown
+    # list syntax that a parser sees as a list, which is the point of a corpus
+    # meant to be machine-readable. An INLINE bullet is *content* and is left as
+    # the literal glyph, because rewriting a mid-sentence bullet as a hyphen would
+    # corrupt the sentence. Measured on the CIAA corpus: 2,227 of the 4,210 U+F0B7
+    # are leading.
+    normalized = re.sub(
+        r"^[\ufffd\u2022\u25aa\u27a2\ue000-\uf8ff\U000F0000-\U000FFFFD](?=\s)",
+        "-",
+        normalized,
+    )
     normalized = re.sub(r"\s+", " ", normalized).strip()
     normalized = re.sub(r"\s+([।,:;])", r"\1", normalized)
     if re.fullmatch(r"प्रेस\s+विज्ञ\S*", normalized):
@@ -951,13 +974,32 @@ class FontBasedStrategy(ExtractionStrategy):
                 # Output, not scoring, so this takes the gated converter -- same
                 # as the name-based branch below. choose_legacy_map keeps using
                 # the raw get_converter_for_map to compare candidates (VOL-166).
-                return get_output_converter_for_map(content_map_key)(text)
+                return get_output_converter_for_map(content_map_key)(
+                    unlift_symbol_pua(text)
+                )
 
         if strategy == "legacy_remap":
             converter = get_converter(font_name)
             if converter is not None:
-                return converter(text)
+                # VOL-704: un-lift first. A legacy font whose cmap is symbol-style
+                # ("ARAP 11") hands us byte + 0xF000 instead of the byte, so the
+                # converter would otherwise see private-use characters it has no
+                # entry for and pass the whole span through untouched -- which is
+                # exactly how 1,363 glyphs of Nepali text shipped as U+F0xx.
+                # A no-op for every legacy font likhit already handled, since
+                # those arrive as ASCII keystrokes.
+                return converter(unlift_symbol_pua(text))
             return text
+
+        # VOL-704: a legacy SYMBOL font (Symbol, Wingdings) classifies "correct",
+        # because as far as the name-based classifier is concerned nothing is
+        # wrong with it -- so without this branch its private-use codepoints fall
+        # through untouched to the bare `return text` below. Placed after the
+        # legacy-Devanagari branches on purpose: `pua_maps` must never see a
+        # Devanagari font, since U+F020 and U+F029 are emitted by both Symbol and
+        # ARAP 11 in this corpus and mean different things in each.
+        if is_symbol_pua_font(font_name):
+            return remap_symbol_pua(text, font_name)
 
         if needs_reorder and (
             strategy == "broken_cmap" or _contains_private_use_marker(text)

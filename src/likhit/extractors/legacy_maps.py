@@ -63,6 +63,32 @@ _REGISTRY: dict[str, str] = {
     "pcs_nepali": "PCS NEPALI",
     "pcsnepali": "PCS NEPALI",
     "sagarmatha": "Sagarmatha",
+    # VOL-704. "ARAP 11" is a legacy Devanagari keystroke font, not a symbol
+    # font, despite carrying a symbol-style (3,0) cmap that pushes its bytes into
+    # the private use area as byte + 0xF000. Its spans therefore arrive as
+    # U+F020-U+F0FF and must be un-lifted before conversion -- see
+    # `pua_maps.unlift_symbol_pua`, applied on the legacy path in
+    # `font_based._convert_span_text`.
+    #
+    # Evidence it is a text font, not a symbol font: name table family
+    # "ARAP 11", PANOSE bFamilyType=0 (text) against 5 (pictorial) for every
+    # Symbol subset in the same corpus, 100% of its output in the PUA (1,363 of
+    # 1,363 glyphs) in long unbroken runs rather than isolated glyphs, and
+    # Devanagari letterform contours when the glyphs are rendered.
+    #
+    # FONTASY_HIMALI_TT rather than Preeti, decided on two external oracles and
+    # not on the content gate -- `choose_legacy_map` scores every map at hits=2
+    # and cannot separate them, so it picks Preeti, which is wrong:
+    #
+    #   1. Preeti/Kantipur/Sagarmatha map `# * ) &` to the Devanagari digits
+    #      `३ ८ ० ७`, emitting 10 digits across two pages of proper names and
+    #      titles ("८ा. ग०ोशराज" for "डा. गणेशराज"). FONTASY_HIMALI_TT and
+    #      PCS NEPALI emit 0.
+    #   2. Between those two, the corpus's own correctly-encoded Unicode text is
+    #      the oracle: FONTASY_HIMALI_TT reads `b'?kof]u` as दुरुपयोग, which the
+    #      13 reports spell that way 3,449 times, against PCS NEPALI's दुरूपयोग
+    #      at 30. Every other load-bearing token is identical under both.
+    "arap": "FONTASY_HIMALI_TT",
 }
 
 # The full set of npttf2utf map keys, used by content-based (name-agnostic)
