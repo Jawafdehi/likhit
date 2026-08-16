@@ -119,14 +119,24 @@ _SPINS_TO_PREETI_KEYS = str.maketrans(
 # Every legacy map content-based (name-agnostic) detection tries against a span.
 # Order matters only for exact ties, which the first entry wins -- Spins is last
 # so it has to beat Preeti outright to be chosen.
-ALL_MAP_KEYS: tuple[str, ...] = (
+#: The maps npttf2utf actually ships, i.e. the ones with an upstream table in its
+#: vendored ``map.json``. Kept separate from :data:`ALL_MAP_KEYS` because
+#: :data:`SPINS_MAP_KEY` has no upstream: a test that asks "does our compiled pipeline
+#: agree with upstream" or "does this map use the translate fast path" has nothing to
+#: compare against for a synthesised map, and sweeping it there fails for the wrong
+#: reason.
+SHIPPED_MAP_KEYS: tuple[str, ...] = (
     "Preeti",
     "Kantipur",
     "PCS NEPALI",
     "FONTASY_HIMALI_TT",
     "Sagarmatha",
-    SPINS_MAP_KEY,
 )
+
+#: Every map the scorer may choose, shipped or synthesised. DERIVED from
+#: SHIPPED_MAP_KEYS rather than listed again, so adding an upstream map cannot leave
+#: the two disagreeing.
+ALL_MAP_KEYS: tuple[str, ...] = SHIPPED_MAP_KEYS + (SPINS_MAP_KEY,)
 
 # No legacy keyboard layout in _REGISTRY puts its own bracket glyph on the
 # literal ASCII '(' / ')' keys -- confirmed for FONTASY_HIMALI_TT (whose '('

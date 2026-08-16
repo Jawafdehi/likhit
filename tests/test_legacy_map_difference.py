@@ -35,6 +35,8 @@ import pytest
 
 from likhit.extractors.legacy_maps import (
     ALL_MAP_KEYS,
+    SHIPPED_MAP_KEYS,
+    SPINS_MAP_KEY,
     _match_font,
     get_converter_for_map,
 )
@@ -90,12 +92,20 @@ def test_the_vendored_map_data_is_the_one_these_figures_were_measured_against():
 
 
 def test_map_json_carries_exactly_the_maps_all_map_keys_advertises():
-    """A map present in the data but absent from ``ALL_MAP_KEYS`` is never tried by
+    """A map present in the data but absent from the key lists is never tried by
     content-based detection, and one advertised but absent would raise at decode time.
+
+    Stated against ``SHIPPED_MAP_KEYS``, not ``ALL_MAP_KEYS``: those two used to be the
+    same tuple, and are not any more. ``ALL_MAP_KEYS`` now also carries the SYNTHESISED
+    Spins layout, which npttf2utf does not ship and ``map.json`` therefore does not
+    contain -- see ``test_spins_is_synthesised_and_therefore_outside_these_sweeps``.
+    Both directions still matter, so the difference is asserted rather than tolerated.
     """
 
     data = json.loads(_map_json_path().read_bytes())
-    assert sorted(data) == sorted(ALL_MAP_KEYS)
+    assert sorted(data) == sorted(SHIPPED_MAP_KEYS)
+    # ...and the only thing ALL_MAP_KEYS adds is the synthesised one.
+    assert set(ALL_MAP_KEYS) - set(SHIPPED_MAP_KEYS) == {SPINS_MAP_KEY}
 
 
 # --------------------------------------------------------------------------- #

@@ -152,6 +152,12 @@ _DIGIT_ROW_DECODES = {
     "Sagarmatha": "ण्ज्ञद्दघद्धछटठडढ",
     "PCS NEPALI": "०१२३४५६७८९",
     "FONTASY_HIMALI_TT": "०१२३४५६७८९",
+    # Spins is SYNTHESISED -- Spins keystrokes translated onto Preeti's, then decoded
+    # with Preeti's map -- so its digit row is Preeti's. Measured, not inferred from
+    # that delegation: the translation table could have re-keyed the digit row and
+    # does not. This keeps the consonant-row family at 4 and the digit-row family
+    # at 2.
+    "Spins": "ण्ज्ञद्दघद्धछटठडढ",
 }
 _READS_DIGITS_AS_DIGITS = frozenset({"PCS NEPALI", "FONTASY_HIMALI_TT"})
 
