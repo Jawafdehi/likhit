@@ -536,3 +536,55 @@ def test_a_leading_kalimati_sentinel_is_not_turned_into_a_bullet() -> None:
     for sentinel in (_PUA_REPH, _PUA_IKAR):
         out = normalize_press_release_paragraph(f"{sentinel} पहिलो")
         assert out.startswith(sentinel), out
+
+
+def test_a_known_unmappable_glyph_is_not_turned_into_a_bullet(monkeypatch) -> None:
+    """`KNOWN_UNMAPPABLE` outranks the positional bullet guess. Raised in review of #64.
+
+    The dict promises that a glyph it records "stays in the output and keeps being
+    counted ... visible as a gap", and the bullet rule's own comment used to name the
+    dict as an intended TARGET of its character class. Both could not hold: a recorded
+    codepoint inside SYMBOL_PUA_RANGE, in leading position followed by whitespace,
+    would be rewritten to "- " -- deleting the audit's only evidence of the gap while
+    asserting we knew what the glyph was.
+
+    🛑 The conflict is DORMANT, not gone: `KNOWN_UNMAPPABLE` is empty since VOL-741
+    resolved U+F093 to U+1F668, so nothing exercises it until the next entry is added
+    -- at which point it would have bitten silently. Hence the injected entry here.
+    U+F0B7 is used deliberately: it is the corpus's most common private-use character
+    and the bullet this rule exists for, so if the exclusion did not work this is the
+    codepoint most certain to be rewritten.
+    """
+
+    from likhit.extractors import font_based
+
+    marker = ""
+    assert font_based.normalize_press_release_paragraph(f"{marker} पहिलो").startswith(
+        "- "
+    ), "control: this glyph must be a bullet while it is NOT known-unmappable"
+
+    monkeypatch.setattr(
+        font_based, "KNOWN_UNMAPPABLE", {0xF0B7: "injected: deliberately unmapped"}
+    )
+    out = font_based.normalize_press_release_paragraph(f"{marker} पहिलो")
+    assert out.startswith(marker), (
+        f"a KNOWN_UNMAPPABLE glyph was rewritten as a list marker, so the gap it "
+        f"records is no longer countable: {out!r}"
+    )
+
+
+def test_the_bullet_rules_comment_does_not_claim_known_unmappable_as_a_target() -> None:
+    """The half of the contradiction that lives in prose.
+
+    A future reader deciding whether a recorded glyph may be rewritten reads the
+    comment, not this test -- and the comment said the opposite of the dict. Asserted
+    on the comment rather than trusting the code fix alone, because the comment is what
+    survives a refactor.
+    """
+
+    from likhit.extractors import font_based
+
+    source = inspect.getsource(font_based.normalize_press_release_paragraph)
+    assert "KNOWN_UNMAPPABLE` is EXCLUDED" in source, (
+        "the comment must state that KNOWN_UNMAPPABLE wins over the positional guess"
+    )

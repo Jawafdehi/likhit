@@ -34,6 +34,7 @@ from likhit.extractors.numeric_boundaries import (
     collect_page_repairs_by_line,
 )
 from likhit.extractors.pua_maps import (
+    KNOWN_UNMAPPABLE,
     is_symbol_pua_font,
     remap_symbol_pua,
     unlift_symbol_pua,
@@ -237,10 +238,25 @@ def normalize_press_release_paragraph(text: str) -> str:
     # two (0x83 and 0x7a, an ASCII "z" that no literal class would ever cover).
     #
     # VOL-704 adds two things to the class. U+E000-U+F8FF covers a symbol-font
-    # bullet that reached here unmapped (an unregistered font, or a codepoint
-    # deliberately left in `pua_maps.KNOWN_UNMAPPABLE`). U+2022/U+25AA/U+27A2 are
-    # the real bullet characters `pua_maps` resolves Symbol and Wingdings to, and
+    # bullet that reached here unmapped -- an unregistered font. U+2022/U+25AA/U+27A2
+    # are the real bullet characters `pua_maps` resolves Symbol and Wingdings to, and
     # they need converting for the same reason the CIDs do.
+    #
+    # 🛑 A codepoint in `pua_maps.KNOWN_UNMAPPABLE` is EXCLUDED, and the exclusion is
+    # a decision rather than an oversight. This comment used to name that dict as an
+    # intended target of the class, while the dict's own docstring promises the
+    # opposite -- that such glyphs "stay in the output and keep being counted ... a
+    # glyph we cannot faithfully represent should remain visible as a gap". Both
+    # could not be true. The recorded human judgement wins over the positional guess:
+    # `KNOWN_UNMAPPABLE` is an explicit per-codepoint finding, this rule is a
+    # heuristic, and rewriting such a glyph to "- " would assert we know what it is
+    # while deleting the audit's only evidence that we do not. The cost of getting it
+    # this way round is a missing list marker; the other way round it is a silently
+    # destroyed damage signal, which is the failure mode this corpus keeps paying for.
+    #
+    # Dormant today -- `KNOWN_UNMAPPABLE` is empty since U+F093 resolved to U+1F668 --
+    # so this guards the next entry, which is when it would otherwise have bitten
+    # silently. Raised in review of #64.
     #
     # Position is what decides this, not identity, and the split is deliberate: a
     # LEADING bullet is document *structure*, so it becomes "- " -- real Markdown
@@ -258,11 +274,13 @@ def normalize_press_release_paragraph(text: str) -> str:
     # common private-use character at 4,210 occurrences, is inside F020-F0FF; both
     # sentinels are below it. The agreement with SYMBOL_PUA_RANGE is asserted in
     # tests/test_pua_maps.py so the two cannot drift.
-    normalized = re.sub(
-        r"^[\ufffd\u2022\u25aa\u27a2\uf020-\uf0ff\U000F0000-\U000FFFFD](?=\s)",
-        "-",
-        normalized,
-    )
+    leading = normalized[:1]
+    if not (leading and ord(leading) in KNOWN_UNMAPPABLE):
+        normalized = re.sub(
+            r"^[\ufffd\u2022\u25aa\u27a2\uf020-\uf0ff\U000F0000-\U000FFFFD](?=\s)",
+            "-",
+            normalized,
+        )
     normalized = re.sub(r"\s+", " ", normalized).strip()
     normalized = re.sub(r"\s+([।,:;])", r"\1", normalized)
     if re.fullmatch(r"प्रेस\s+विज्ञ\S*", normalized):

@@ -107,6 +107,13 @@ WINGDINGS2_PUA: dict[int, str] = {
 #: by the corpus audit's PUA axis, which is the intended outcome -- a glyph we
 #: cannot faithfully represent should remain visible as a gap.
 #:
+#: That promise is enforced against the one rule that would otherwise break it:
+#: ``font_based.normalize_press_release_paragraph`` rewrites a LEADING private-use
+#: glyph to a Markdown list marker on position alone, and its character class covers
+#: :data:`SYMBOL_PUA_RANGE`, so an entry here would have been silently converted to
+#: "- ". It now skips anything recorded here -- a recorded finding outranks a
+#: positional guess. Raised in review of #64; see the comment at that rule.
+#:
 #: **Currently empty.** Its one entry, Wingdings 2 0xF093, was resolved to
 #: U+1F668 in VOL-741; see :data:`WINGDINGS2_PUA`. The mechanism is kept because
 #: the policy still holds for the next genuinely unmappable glyph -- and because
