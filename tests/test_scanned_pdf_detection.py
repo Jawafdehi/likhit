@@ -830,3 +830,29 @@ def test_npttf2utf_syntaxwarning_is_suppressed(tmp_path: Path) -> None:
     # Compiled fresh, so an unsuppressed warning would surface here. Under
     # `error::SyntaxWarning` it arrives as a SyntaxError naming the escape.
     assert "invalid escape sequence" not in completed.stderr
+
+
+def test_consecutive_stranded_brackets_are_both_counted() -> None:
+    """`findall` scans non-overlapping, so the trailing letter must not be consumed.
+
+    Two adjacent Nepali list labels under a wrong map render as `क)ख)ग`. With the
+    trailing letter consumed, `ख` belonged to the first match and the second tell was
+    invisible -- counted 1 instead of 2. That is the shape a forgiveness floor of one
+    then waves through entirely, so the undercount was worst exactly where the tell
+    matters most.
+
+    The digit case is the control: it must stay 0, or the fix has widened the class into
+    ordinary legal citation.
+    """
+
+    from likhit.extractors.font_based import _STRANDED_BRACKET_PATTERN
+
+    def count(text: str) -> int:
+        return len(_STRANDED_BRACKET_PATTERN.findall(text))
+
+    assert count("क)ख") == 1
+    assert count("क)ख)ग") == 2
+    assert count("क)ख ग)घ") == 2
+    # ordinary legal citation -- "section 35(2)" -- must not be charged
+    assert count("दफा ३५(२)") == 0
+    assert count("abc") == 0

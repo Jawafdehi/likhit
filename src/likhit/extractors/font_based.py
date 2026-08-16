@@ -212,14 +212,20 @@ _DEVANAGARI_LETTER_RANGE = "\u0900-\u0963\u0970-\u097f"
 # absolute quantity it is therefore not a damage measure, and the penalty feeds an
 # absolute accept ceiling. Between two decodes OF THE SAME span it is decisive,
 # because a shared label is shared by both; comparison is the only use here.
+# The trailing letter is matched by LOOKAHEAD, not consumed. `findall` scans
+# non-overlapping, so consuming it made consecutive tells invisible: `क)ख)ग` -- which is
+# exactly how a wrong map renders two adjacent Nepali list labels -- counted 1 instead of
+# 2, because `ख` belonged to the first match. That is the shape a forgiveness floor of
+# one then waves through entirely, so the undercount is worst precisely where the tell
+# matters most.
 _STRANDED_BRACKET_PATTERN = re.compile(
     "["
     + _DEVANAGARI_LETTER_RANGE
     + "]"
     + r"[)(\]\[}{]"
-    + "["
+    + "(?=["
     + _DEVANAGARI_LETTER_RANGE
-    + "]"
+    + "])"
 )
 
 
