@@ -58,7 +58,17 @@ _DOUBLED_MATRA_PATTERN = re.compile(r"[ा-ौ]{2,}")
 # precomposed nukta consonants (क़ becomes क + U+093C), so canonical
 # Nepali writes the decomposed form. Without it the matra in क़ानून reads as
 # orphaned and clean text gets penalised.
-_ORPHAN_MATRA_PATTERN = re.compile(r"(?<![क-हक़-य़्\u093c])[ा-ौ]")
+# The class is written as code-point escapes, NOT as literal Devanagari, and that
+# is load-bearing rather than a style choice. U+0958-U+095F are Unicode
+# composition exclusions: every normalization form (NFC, NFD, NFKC, NFKD) replaces
+# each with a two-code-point <base, U+093C NUKTA> sequence. Written literally, the
+# range "\u0915\u093c-\u092f\u093c" leaves the class ending on the DESCENDING
+# range U+093C-U+092F, and re.compile raises "bad character range". This module
+# then fails to IMPORT -- not to match. Verified on the literal form: compiles as
+# shipped, stops compiling under all four normalization forms.
+_ORPHAN_MATRA_PATTERN = re.compile(
+    r"(?<![\u0915-\u0939\u0958-\u095f\u094d\u093c])[\u093e-\u094c]"
+)
 _VIRAMA_MATRA_PATTERN = re.compile(r"्[ा-ौ]")
 _OCR_SERIAL_PATTERN = re.compile(r"^\s*([०-९0-9]{1,2}[.)।])\s+(.*\S)\s*$")
 _MAX_REASONABLE_WHITESPACE_RATIO = 0.35
