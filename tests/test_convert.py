@@ -521,8 +521,15 @@ def test_convert_renders_tables_as_raw_pipe_separated_rows() -> None:
     assert (
         "|  |  |  |  | व्यहोरा |  |  |  |  |  |  |  |  | बमोजिम कसुर/सजाय |  |  |"
     ) in markdown
-    assert ("| 1 |  | आन्तरिक |  | प्रतिवादीहरूको |  |  | 2081/04/24, |") in markdown
-    assert ("|  |  | मामिला |  | मिलेमतोमा |  |  | 2081/04/31, |") in markdown
+    # Each cell here holds whole printed lines. This used to read
+    # `| 1 |  | आन्तरिक |  | प्रतिवादीहरूको |  ...` with `मामिला` and `तथा` on the two
+    # rows below, because PyMuPDF splits this table's lines into one fragment per
+    # word -- `आन्तरिक`, `मामिला` and `तथा` all sit at y 241.49..258.21 -- and
+    # `_extract_cell_text` emitted one output row per fragment. VOL-91.
+    assert (
+        "| 1 |  | आन्तरिक मामिला तथा |  | प्रतिवादीहरूको मिलेमतोमा |  |  | 2081/04/24, |"
+    ) in markdown
+    assert ("|  |  |  |  | इलाका प्रहरी कार्यालय, |  |  | 2081/04/31, |") in markdown
     assert "**1**" not in markdown
     assert "- **उजुरीको व्यहोरा:**" not in markdown
 
