@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 import types
 from io import BytesIO
 from pathlib import Path
@@ -382,18 +383,31 @@ def test_analyze_gsub_returns_nothing_without_a_gsub_table() -> None:
 
 
 def _pdf_embedding(font_bytes: bytes) -> bytes:
-    """A one-page PDF that embeds ``font_bytes`` as an /Identity-H Type0 font."""
+    """A one-page PDF that embeds ``font_bytes`` as an /Identity-H Type0 font.
+
+    The scratch font goes in a private temp directory. It used to be written to
+    ``site-packages/fitz/_embedded_kalimati_test.ttf`` -- an installed package, under
+    a **fixed** name -- and unlinked afterwards. ``insert_font`` takes an absolute
+    path, so the location was never load-bearing, but the fixed name made the three
+    tests that call this helper race each other once the suite could run them in
+    parallel: one worker's ``unlink`` lands between another's ``write_bytes`` and its
+    ``insert_font``, and MuPDF reports
+
+        FzErrorSystem: code=2: cannot open .../_embedded_kalimati_test.ttf
+
+    Measured at 4 failures in 6 runs of ``pytest -n 3`` on this file alone. Deleting
+    before ``doc.save`` is still fine -- ``insert_font`` reads the file there and
+    then, which the previous version already relied on.
+    """
 
     doc = fitz.open()
     try:
         page = doc.new_page()
-        path = Path(fitz.__file__).parent / "_embedded_kalimati_test.ttf"
-        path.write_bytes(font_bytes)
-        try:
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "embedded_kalimati_test.ttf"
+            path.write_bytes(font_bytes)
             page.insert_font(fontname="KaliTest", fontfile=str(path))
             page.insert_text((72, 72), "AB", fontname="KaliTest")
-        finally:
-            path.unlink(missing_ok=True)
         out = BytesIO()
         doc.save(out)
         return out.getvalue()
