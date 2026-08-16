@@ -11,6 +11,7 @@ from likhit.extractors.legacy_maps import (
 from likhit.extractors.pua_maps import (
     KNOWN_UNMAPPABLE,
     SYMBOL_PUA,
+    WINGDINGS2_PUA,
     WINGDINGS_PUA,
     is_symbol_pua_font,
     pua_table_for_font,
@@ -87,19 +88,68 @@ def test_wingdings_table_is_separate_from_symbol(codepoint, expected) -> None:
     assert codepoint not in SYMBOL_PUA
 
 
-def test_known_unmappable_codepoints_are_left_in_place_not_dropped() -> None:
-    """VOL-704 item 3: record the unmappable tail, never silently drop it.
+def test_wingdings_2_quilt_ornament_resolves_to_ornamental_dingbats() -> None:
+    """VOL-741. Wingdings 2 0x93 DOES have a faithful Unicode equivalent.
 
-    Wingdings 2 0x75 is a four-petal outline ornament with no faithful Unicode
-    equivalent (35 occurrences, all in the 33rd report). Leaving it keeps it
-    countable by `_private_use_count` and by the corpus audit's PUA axis; dropping
-    it would make it undetectable later, which is strictly worse.
+    An earlier revision recorded it as unmappable, having compared it only against
+    the Dingbats block (U+2722-U+274B), where the near neighbours are genuinely
+    different shapes. The match is in Ornamental Dingbats, which Unicode 7.0 added
+    to encode the Wingdings/Webdings repertoire: U+1F668 HOLLOW QUILT SQUARE
+    ORNAMENT, whose name describes the rendered glyph exactly.
+
+    Asserted on the Unicode NAME as well as the codepoint, so a typo in the escape
+    cannot pass: 0x1F668 and 0x1F669 differ by one hex digit and are the hollow and
+    boxed variants of the same ornament.
     """
 
-    assert 0xF093 in KNOWN_UNMAPPABLE
-    assert remap_symbol_pua("", "Wingdings 2") == ""
+    import unicodedata
+
+    assert WINGDINGS2_PUA[0xF093] == "\U0001f668"
+    assert unicodedata.name(WINGDINGS2_PUA[0xF093]) == "HOLLOW QUILT SQUARE ORNAMENT"
+    assert remap_symbol_pua("", "Wingdings 2") == "🙨"
+    # It must leave the private use area, or the audit's PUA axis still counts it.
+    assert unicodedata.category("") == "Co"
+    assert unicodedata.category(WINGDINGS2_PUA[0xF093]) == "So"
+    # Still font-scoped: the other tables must not gain the codepoint.
     assert 0xF093 not in SYMBOL_PUA
     assert 0xF093 not in WINGDINGS_PUA
+
+
+def test_the_mapped_ornament_is_astral_and_survives_a_round_trip() -> None:
+    """U+1F668 is outside the BMP, a first for these tables.
+
+    Anything indexing the output by UTF-16 code unit would split it into a
+    surrogate pair and corrupt the transcript. Python strings are code points, so
+    this holds today; the test pins it so a future change that encodes to UTF-16 or
+    measures length in bytes fails loudly instead of silently mangling 35 cells.
+    """
+
+    out = remap_symbol_pua("| 4  |", "ABCEEE+Wingdings 2")
+    assert out == "| 4 🙨 |"
+    assert len(out) == len("| 4 X |")  # one code point, not a surrogate pair
+    assert ord(WINGDINGS2_PUA[0xF093]) > 0xFFFF
+    assert out.encode("utf-8").decode("utf-8") == out
+
+
+def test_known_unmappable_is_empty_but_its_policy_still_bites() -> None:
+    """VOL-704 item 3's mechanism outlives its one entry.
+
+    KNOWN_UNMAPPABLE is empty since VOL-741 resolved U+F093. The policy it encodes
+    -- leave an unmappable codepoint in place so it stays countable, never drop it
+    -- must still hold, so this asserts the behaviour on an UNLISTED codepoint
+    rather than on the now-absent table entry. A dropped glyph is undetectable
+    later; a left one is still measurable.
+    """
+
+    assert KNOWN_UNMAPPABLE == {}
+    assert 0xF093 not in KNOWN_UNMAPPABLE
+
+    # 0xF0AA is emitted by ARAP 11 in this corpus and is absent from every symbol
+    # table, so it stands in for "a codepoint we have no mapping for".
+    unlisted = "\uf0aa"
+    assert 0xF0AA not in WINGDINGS2_PUA
+    assert remap_symbol_pua(unlisted, "Wingdings 2") == unlisted, "must not be dropped"
+    assert len(remap_symbol_pua(unlisted, "Wingdings 2")) == 1
 
 
 def test_wingdings_2_does_not_silently_take_the_wingdings_table() -> None:
@@ -109,7 +159,7 @@ def test_wingdings_2_does_not_silently_take_the_wingdings_table() -> None:
     table and U+F0D8 would become an arrowhead it never was.
     """
 
-    assert pua_table_for_font("Wingdings 2") is not WINGDINGS_PUA
+    assert pua_table_for_font("Wingdings 2") is WINGDINGS2_PUA
     assert pua_table_for_font("Wingdings") is WINGDINGS_PUA
     assert remap_symbol_pua("", "Wingdings 2") == ""
     assert remap_symbol_pua("", "Wingdings") == "➢"

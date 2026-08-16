@@ -22,12 +22,22 @@ Symbol 0xB7 is really U+2022 BULLET `•`, and U+F02D becomes a hyphen when Symb
 0x2D is U+2212 MINUS. Each entry below therefore records the glyph name from the
 font's own encoding, not a computed offset.
 
-Provenance of the tables: the Adobe Symbol and Microsoft Wingdings encodings.
+Provenance of the tables: the Adobe Symbol and Microsoft Wingdings encodings, and
+for a Wingdings glyph the Unicode block that encodes it — Dingbats (U+2700) or
+Ornamental Dingbats (U+1F650), the latter added in Unicode 7.0 specifically to
+cover the Wingdings/Webdings repertoire. **Check both before concluding a glyph
+has no equivalent**; VOL-741 found one recorded as unmappable that is simply
+outside the BMP.
+
 Only the codepoints observed in a real corpus are listed — this is not an attempt
 at a complete transliteration of either font. An unlisted codepoint is left
 untouched on purpose, so it keeps being counted as unmapped rather than being
 silently replaced by a guess. Dropping a glyph is worse than leaving it: a left
 glyph is still measurable, a dropped one is not.
+
+A mapped value may sit outside the BMP (U+1F668 does). Anything consuming these
+tables must be astral-safe: index by character, never by UTF-16 code unit, and do
+not assume ``len(value) == 1`` bytes.
 """
 
 from __future__ import annotations
@@ -62,6 +72,33 @@ WINGDINGS_PUA: dict[int, str] = {
     0xF0D8: "➢",  # three-D top-lighted rightwards arrowhead, a Word bullet
 }
 
+#: Microsoft ``Wingdings 2``. A separate table from :data:`WINGDINGS_PUA` because
+#: the two fonts share codepoints and mean different glyphs by them.
+#:
+#: VOL-741. Wingdings 2 0x93 is a hollow four-petal quilt ornament, and it *does*
+#: have a faithful Unicode equivalent: U+1F668 HOLLOW QUILT SQUARE ORNAMENT, in
+#: the Ornamental Dingbats block that Unicode 7.0 added for exactly this purpose
+#: -- encoding the Wingdings/Webdings glyph repertoire. An earlier revision of
+#: this file recorded it as unmappable after comparing it against the Dingbats
+#: block alone (U+2722-U+274B), where the near neighbours really are different
+#: shapes; the Ornamental Dingbats block was not considered.
+#:
+#: Identified three independent ways rather than by eye alone: the glyph was
+#: extracted from the embedded ``ABCEEE+Wingdings 2`` subset and rendered from the
+#: source PDF (a hollow four-petal motif, matching the Unicode name); Microsoft's
+#: published Wingdings 2 table maps 0x93 there; and the surrounding codes align as
+#: a consecutive run -- 0x90-0x92 are CLOCK FACE TEN-/ELEVEN-/TWELVE-THIRTY and
+#: 0x94 is the paired ``... IN BLACK SQUARE`` variant, which a mis-indexed table
+#: would not produce.
+#:
+#: Scope is fixed by measurement, not by ambition: scanning the text layer of all
+#: 13 CIAA report PDFs finds Wingdings 2 emitting exactly **one** codepoint,
+#: U+F093, 35 times. The rest of the font's repertoire is deliberately absent --
+#: an unobserved mapping is an unverified claim.
+WINGDINGS2_PUA: dict[int, str] = {
+    0xF093: "\U0001f668",  # U+1F668 HOLLOW QUILT SQUARE ORNAMENT
+}
+
 #: Codepoints deliberately left UNMAPPED, with the reason. Recorded rather than
 #: dropped or guessed, per VOL-704 item 3: "map what maps, and record the rest as
 #: known-unmappable rather than silently dropping them".
@@ -69,12 +106,13 @@ WINGDINGS_PUA: dict[int, str] = {
 #: These stay in the output and keep being counted by ``_private_use_count`` and
 #: by the corpus audit's PUA axis, which is the intended outcome -- a glyph we
 #: cannot faithfully represent should remain visible as a gap.
-KNOWN_UNMAPPABLE: dict[int, str] = {
-    # Wingdings 2 0x75. A four-petal outline ornament with no faithful Unicode
-    # equivalent; the near neighbours (U+2727, U+2748) are different shapes.
-    # 35 occurrences, all in the 33rd annual report, all inside table cells.
-    0xF093: "Wingdings 2 four-petal ornament, no faithful Unicode equivalent",
-}
+#:
+#: **Currently empty.** Its one entry, Wingdings 2 0xF093, was resolved to
+#: U+1F668 in VOL-741; see :data:`WINGDINGS2_PUA`. The mechanism is kept because
+#: the policy still holds for the next genuinely unmappable glyph -- and because
+#: "it is in KNOWN_UNMAPPABLE" turned out to be a claim worth re-checking rather
+#: than inheriting.
+KNOWN_UNMAPPABLE: dict[int, str] = {}
 
 #: Lowercased base font name -> its PUA table. Matched as a substring against the
 #: base name (subset prefix stripped) the same way ``legacy_maps._match_font``
@@ -83,8 +121,8 @@ KNOWN_UNMAPPABLE: dict[int, str] = {
 #: Ordered longest-key-first at lookup time: "wingdings 2" must be tested before
 #: "wingdings", or Wingdings 2 spans would silently take the Wingdings table.
 _REGISTRY: dict[str, dict[int, str]] = {
-    "wingdings 2": {},  # every observed codepoint is KNOWN_UNMAPPABLE
-    "wingdings2": {},
+    "wingdings 2": WINGDINGS2_PUA,
+    "wingdings2": WINGDINGS2_PUA,
     "wingdings": WINGDINGS_PUA,
     "webdings": WINGDINGS_PUA,
     "symbolmt": SYMBOL_PUA,
