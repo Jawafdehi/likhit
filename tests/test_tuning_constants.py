@@ -210,6 +210,34 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "beside. Naming it is the same move as the converter's candidate-score weights -- "
         "an inline weight is invisible to this registry",
     ),
+    # -- the document-scope acronym veto ---------------------------------------- #
+    #
+    # The third Latin-side axis: an all-upper run repeated across a document is an
+    # acronym, not keystrokes. These three bound what counts as one.
+    (
+        "likhit/extractors/font_based.py",
+        "_ACRONYM_MIN_LEN",
+    ): (
+        2,
+        "a single upper-case letter is an initial or a list label, not an acronym",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_ACRONYM_MAX_LEN",
+    ): (
+        5,
+        "above this an all-upper run is more likely a keystroke sequence than an "
+        "abbreviation; the acronyms this corpus carries are 2-5 letters. Written as 6 "
+        "from memory first and caught by this pin -- which is what the file is for",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_ACRONYM_MIN_UPPER",
+    ): (
+        2,
+        "at least two of the run's characters must be upper-case, so a capitalised "
+        "ordinary word does not qualify",
+    ),
     # -- ranking forgiveness ---------------------------------------------------- #
     #
     # Each term forgives ONE occurrence before the tell counts, because each fires at a
