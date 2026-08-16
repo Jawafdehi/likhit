@@ -372,6 +372,51 @@ def _infer_mark_variants(
 
 
 def _is_ra_virama_swap(old_value: str, new_value: str) -> bool:
+    """True when replacing `old_value` with `new_value` would INVERT a rakar.
+
+    A rakar (below-form ra, the stroke under `त` in `त्र`) orders virama then ra:
+    `त` `्` `र`. The reverse order `त` `र` `्` is a repha bound to `त`, which
+    reads as a different word -- `प्रति` against `पर्ति`, `मन्त्रालय` against
+    `मन्तर्ालय`.
+
+    This predicate is asked at two sites, both comparing the PDF's own
+    `/ToUnicode` value (`old_value`) against the value derived from the embedded
+    font program (`new_value`), to decide whether the difference is worth acting
+    on. It answers only for the direction where the PDF is already right and the
+    derivation regressed it:
+
+        old `्र` -> new `र्`   True   the PDF holds the valid rakar; keep it
+        old `र्` -> new `्र`   False  the PDF holds the inverted order; FIX it
+
+    DIRECTIONALITY IS THE WHOLE POINT, and it was not always here. VOL-705: this
+    returned True for both directions, so `_patch_single_cmap` skipped the second
+    case as well and the PDF's inverted order survived into the Markdown. On the
+    CIAA 33rd annual report (FY 2079-80) that left 169 structurally invalid
+    `[consonant] र ् [matra]` sequences -- `मन्तर्ालय` for `मन्त्रालय` 106 times
+    -- plus a larger, well-formed-but-wrong tail (`पर्ति` for `प्रति`) that no
+    structural check can see.
+
+    Measured over all 13 CIAA report PDFs (run 384bcc86): the `old र् -> new ्र`
+    direction fires 10 times in the 33rd, over 8 distinct GIDs
+    (क्र ट्र त्र द्र प्र भ्र श्र ह्र) -- 10 rather than 8 because two of them,
+    प्र and श्र, occur in both embedded Kalimati subsets (xref 2469 and 2490) --
+    and once in the 32nd. The `old ्र -> new र्` direction fires on **none**, in
+    any report. So the branch retained below is the one with no measured hits and
+    the branch removed was carrying the entire defect.
+
+    The retained direction is kept rather than dropped because likhit derives
+    correction values per font at run time: `_analyze_gsub` reaching a rakar
+    through a ligature rule produces ra-then-virama and has to swap it back. Both
+    reference tables record the pair it swaps --
+    `kalimati_reference.BELOW_FORM_RA_CORRECTIONS` keyed by outline digest and
+    `lohit.BELOW_FORM_RA_CORRECTIONS` keyed by CID -- and
+    `tests/test_kalimati_reference.py::test_below_form_ra_corrections_are_applied_to_the_table`
+    pins the direction of every entry (`derived == र्`, `corrected == ्र`).
+    `::test_analyze_gsub_orders_a_rakar_after_its_base` pins the swap itself. If
+    that swap ever misses for some subset, the PDF's own correct value is the
+    better of the two and this predicate preserves it.
+    """
+
     if len(old_value) != len(new_value) or len(old_value) < 2:
         return False
     for index in range(len(old_value) - 1):
@@ -380,15 +425,6 @@ def _is_ra_virama_swap(old_value: str, new_value: str) -> bool:
             and old_value[index + 1] == _RA
             and new_value[index] == _RA
             and new_value[index + 1] == _VIRAMA
-            and old_value[:index] == new_value[:index]
-            and old_value[index + 2 :] == new_value[index + 2 :]
-        ):
-            return True
-        if (
-            old_value[index] == _RA
-            and old_value[index + 1] == _VIRAMA
-            and new_value[index] == _VIRAMA
-            and new_value[index + 1] == _RA
             and old_value[:index] == new_value[:index]
             and old_value[index + 2 :] == new_value[index + 2 :]
         ):
