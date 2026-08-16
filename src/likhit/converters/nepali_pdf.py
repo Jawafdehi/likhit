@@ -87,6 +87,19 @@ _MAX_REASONABLE_WHITESPACE_RATIO = 0.35
 _MAX_REASONABLE_SINGLE_TOKEN_RATIO = 0.35
 _EXCESS_SINGLE_TOKEN_PENALTY = 6
 _MATRA_DAMAGE_PENALTY = 8
+# The rest of _markdown_quality_score's weights. These were inline literals in one
+# arithmetic expression alongside the two named above, which made the guard in
+# tests/test_tuning_constants.py cover half of one function's tuning surface --
+# and worse, the two names above state their derivations RELATIVE to the U+FFFD/NUL
+# rate below ("half the U+FFFD/NUL rate of 12"), so the pinned values were anchored
+# to an unpinned one. Measured: changing that rate from 12 to 1 left the entire
+# suite green at 875 passed, the full baseline.
+_DEVANAGARI_CHAR_CREDIT = 3
+_SUSPICIOUS_TOKEN_PENALTY = 8
+_VOWEL_POOR_TOKEN_PENALTY = 3
+_PIPE_HEAVY_LINE_PENALTY = 4
+_CID_GARBAGE_PENALTY = 12
+_UNDECODED_GLYPH_PENALTY = 12
 _GEMINI_OPENAI_COMPAT_BASE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/openai/"
 )
@@ -839,12 +852,12 @@ def _markdown_quality_score(markdown: str) -> int:
         + len(_VIRAMA_MATRA_PATTERN.findall(markdown))
     )
     return (
-        devanagari_chars * 3
+        devanagari_chars * _DEVANAGARI_CHAR_CREDIT
         + len(tokens)
-        - len(suspicious_tokens) * 8
-        - len(vowel_poor_tokens) * 3
-        - pipe_heavy_lines * 4
-        - cid_garbage_count * 12
+        - len(suspicious_tokens) * _SUSPICIOUS_TOKEN_PENALTY
+        - len(vowel_poor_tokens) * _VOWEL_POOR_TOKEN_PENALTY
+        - pipe_heavy_lines * _PIPE_HEAVY_LINE_PENALTY
+        - cid_garbage_count * _CID_GARBAGE_PENALTY
         # Marked CIDs are deliberately absent from this comparison. Marking is a
         # likhit feature -- every rival candidate comes from pdfminer or the OCR
         # converter and can never carry a mark (measured over 58 cached candidate
@@ -887,7 +900,7 @@ def _markdown_quality_score(markdown: str) -> int:
         # be the cheaper option: GNU grep classifies a NUL-bearing file as binary,
         # drops every match, and still exits 0, so a sweep over the corpus
         # undercounts by that document and reports success.
-        - (markdown.count("\ufffd") + markdown.count("\x00")) * 12
+        - (markdown.count("\ufffd") + markdown.count("\x00")) * _UNDECODED_GLYPH_PENALTY
         - whitespace_excess
         - single_token_excess * _EXCESS_SINGLE_TOKEN_PENALTY
         - matra_damage_count * _MATRA_DAMAGE_PENALTY
