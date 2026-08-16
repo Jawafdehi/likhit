@@ -64,6 +64,61 @@ _PREFIX_IKAR_PATTERN = re.compile(r"(?:(?<=^)|(?<=[\s(]))ि(?=[\u0915-\u0939])"
 _INVALID_IKAR_PATTERN = re.compile(r"ि(?=[ािीुूृॄेैोौंःँ])")
 _HALANT_IKAR_PATTERN = re.compile(r"्ि")
 _DUPLICATE_CONSONANT_PATTERN = re.compile(r"([क-ह])\1")
+# Two identical adjacent consonants are a real garble signal, but adjacency ALONE
+# is mostly wrong: in Nepali a stem ending in a consonant plus a suffix beginning
+# with the same one is ordinary morphology. Measured over all 6,223 documents of
+# `markdown-quality-v11` (VOL-135, `oag-corpus/runs/vol135/`), the bare pattern
+# fires 1,087,029 times in 99.4% of documents, and adjudicating every one of the
+# 34,684 distinct doublet-bearing words against the corpus's own 1.87M-word
+# vocabulary put ~4 of every 5 hits on correct Nepali.
+#
+# The doublet is NOT droppable, though: the same sweep found >=209,998 occurrences
+# of genuine damage, dominated by legacy i-matra loss resurfacing as a doubled
+# consonant (`खररद`->`खरिद`, `ववरण`->`विवरण`, `आन्तररक`->`आन्तरिक`), whose clean forms
+# are attested 100,000-800,000 times each. Down-weighting the pattern would give
+# that up.
+#
+# So charge adjacency only when it is not explained by morphology. The two lists
+# below are closed and auditable, and were chosen by scoring thirteen candidate
+# rules against that adjudication (`runs/vol135/score_rules.py`): this one keeps
+# 91.6% of the true damage while removing 88.6% of the spurious mass. Note the
+# co-signal reading that suggests itself first -- "charge only if the token already
+# shows an i-matra anomaly" -- scores 9.0% recall and is not usable.
+_MORPHEME_SUFFIXES = (
+    "को",
+    "मा",
+    "ता",
+    "ताको",
+    "ताले",
+    "तामा",
+    "सँग",
+    "सङ्ग",
+    "हरु",
+    "हरू",
+    "रेट",
+    "योजना",
+)
+# Correct Nepali whose doubled consonant is word-internal rather than at a
+# morpheme boundary, so no suffix test can reach it.
+_DOUBLED_CONSONANT_LEXEMES = (
+    "व्यय",
+    "कक्षा",
+    "अध्ययन",
+    "तत्काल",
+    "ललितपुर",
+    "ससुरा",
+    "बबरमहल",
+    "उत्खनन",
+    "जज",
+    "ननाघे",
+    "तत्सम",
+    "सम्ममा",
+    "ससर्त",
+    "छैनन्",
+    "तहहरु",
+    "कार्ययोजना",
+)
+_DEVANAGARI_WORD_PATTERN = re.compile(r"[ऀ-ॿ]+")
 _SUSPICIOUS_ARTIFACT_PATTERN = re.compile(
     r"(ख्ज|अधध|धिरूद्ध|धिरुद्ध|प्रविधध|राविय|नम्िर|िडा|ितन|उज्वल|उज्जवल)"
 )
@@ -348,6 +403,52 @@ def _contains_private_use_marker(text: str) -> bool:
     return _private_use_count(text) > 0
 
 
+def _duplicate_consonant_count(text: str) -> int:
+    """Doubled consonants that morphology does not explain. See the pattern's note.
+
+    Scoped to one Devanagari word at a time because both tests are about where the
+    doublet sits inside a word. A doublet can never span a word boundary -- both
+    halves are Devanagari, so they are always inside the same maximal run -- which
+    makes this exactly the bare pattern's match set, minus the excused ones.
+    """
+    total = 0
+    for word_match in _DEVANAGARI_WORD_PATTERN.finditer(text):
+        word = word_match.group(0)
+        matches = list(_DUPLICATE_CONSONANT_PATTERN.finditer(word))
+        if not matches:
+            continue
+        # Excuse only the doublets that fall INSIDE a lexeme, not every doublet in a
+        # word that happens to contain one. Devanagari compounds carry no internal
+        # space, so a garbled token can hold a listed lexeme and unrelated damage at
+        # once -- measured: "कक्षा" + "गग" scored 0 when the whole word was
+        # excused, hiding damage that scores 1 on its own. Under-charging matters as
+        # much as over-charging here, because this term helps decide which legacy map
+        # wins.
+        lexeme_spans = [
+            (m.start(), m.end())
+            for lexeme in _DOUBLED_CONSONANT_LEXEMES
+            for m in re.finditer(re.escape(lexeme), word)
+        ]
+        for match in matches:
+            if any(
+                start <= match.start() and match.end() <= end
+                for start, end in lexeme_spans
+            ):
+                continue
+            # The doublet's second consonant opening a known suffix means the pair
+            # straddles a morpheme boundary: `\u0915\u094d\u0930\u092e` + `\u092e\u093e`, `...\u0915` + `\u0915\u094b`. It only
+            # counts as a boundary if a real stem precedes it -- a single bare
+            # consonant is not a Nepali stem, which is what separates the damage
+            # `\u0915\u0915\u094b` -> `\u0915\u094b` and `\u092e\u092e\u093e` -> `\u092e\u093e` from `\u092e\u0939\u093e\u0932\u0947\u0916\u093e\u092a\u0930\u0940\u0915\u094d\u0937\u0915\u0915\u094b` and `\u0915\u094d\u0930\u092e\u092e\u093e`.
+            stem_len = match.start() + 1
+            if stem_len >= 2 and word[match.start() + 1 :].startswith(
+                _MORPHEME_SUFFIXES
+            ):
+                continue
+            total += 1
+    return total
+
+
 def _text_quality_penalty(text: str) -> int:
     return (
         text.count("\ufffd") * 12
@@ -356,7 +457,7 @@ def _text_quality_penalty(text: str) -> int:
         + len(_PREFIX_IKAR_PATTERN.findall(text)) * 6
         + len(_INVALID_IKAR_PATTERN.findall(text)) * 6
         + len(_HALANT_IKAR_PATTERN.findall(text)) * 4
-        + len(_DUPLICATE_CONSONANT_PATTERN.findall(text)) * 3
+        + _duplicate_consonant_count(text) * 3
         + len(_SUSPICIOUS_ARTIFACT_PATTERN.findall(text)) * 8
     )
 
