@@ -29,16 +29,26 @@ from likhit.errors import ExtractionError
 #   Himalb         15,831       30,258              0                    1,021
 #   Himalb,Bold     2,360        9,243              0                      417
 #
-# 1,438 corruptions under the shipped routing, none under Preeti. The cost is 6 "-N_"
-# list markers whose interior digit reads as a consonant instead ("(५)" -> "(छ)"), and
-# zero whole-span ASCII "(N)" markers, so the gate below loses nothing. Two of those
-# six spans gain a correct word in exchange for the marker.
+# 1,438 corruptions under the shipped routing, none under Preeti. "spans" counts text
+# spans whose font name reaches the "himalb" key; "alpha chars" counts ASCII ALPHABETIC
+# keystrokes in those spans (not total characters, which are 87,020 and 18,767).
+#
+# The cost, measured on the same spans rather than assumed. All 6 "-N_" list markers in
+# these spans get WORSE: both maps read '-'/'_' as the real brackets, but the interior
+# digit becomes a consonant, so "(५)" -> "(छ)" in every one of the six -- checked
+# individually, Preeti's marker carries no Devanagari digit in any of them. Zero
+# whole-span ASCII "(N)" markers are affected, so the gate below loses nothing.
+#
+# Against that, 4 of those 6 spans carry a body beyond the marker and 3 of the 4 bodies
+# are REPAIRED, e.g. "भि८ियो ... सीसी६ीभीको" -> "भिडियो ... सीसीटीभीको". So the trade is
+# 6 marker digits for 3 repaired bodies plus the 1,438 above.
 #
 # 🛑 The discriminator used above is BLIND to a numeral-only font: with no surrounding
 # letters a pure-numeral span scores zero under BOTH maps, so "0 under Preeti" means
-# "no evidence", not "clean". The "Fontasy*" spellings carry 0-1 alphabetic characters
-# in ~46k, so nothing here licenses moving them and they stay on the Himali map. A
-# metric that cannot tell *clean* from *not applicable* must not be read as support.
+# "no evidence", not "clean". The "Fontasy*" spellings carry 1 and 0 ASCII alphabetic
+# keystrokes across 26,699 and 19,744 characters of span text, so nothing here licenses
+# moving them and they stay on the Himali map. A metric that cannot tell *clean* from
+# *not applicable* must not be read as support.
 _REGISTRY: dict[str, str] = {
     "preeti": "Preeti",
     "fontasy_himali": "FONTASY_HIMALI_TT",

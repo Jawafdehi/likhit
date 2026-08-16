@@ -356,7 +356,7 @@ def test_the_marker_shape_is_only_ever_observed_under_a_digit_row_map():
 # a consonant (and vice versa on the shifted row).
 #
 # Measured over the 13 CIAA annual reports, per name: "Himalb" (15,831 spans,
-# 30,258 alphabetic characters) and "Himalb,Bold" (2,360 spans, 9,243) produce
+# 30,258 ASCII ALPHABETIC keystrokes) and "Himalb,Bold" (2,360 spans, 9,243) produce
 # 1,438 in-word Devanagari digits under FONTASY_HIMALI_TT and 0 under Preeti.
 # --------------------------------------------------------------------------- #
 
@@ -420,11 +420,13 @@ _GENUINELY_HIMALI_SPELLINGS = (
 def test_the_himali_spellings_are_not_moved(font):
     """These stay on FONTASY_HIMALI_TT, and two of them for a measured reason.
 
-    ``Fontasy Himali`` and ``FontasyHimali`` carry **1 and 0** alphabetic characters
-    respectively across ~46,000 characters in the CIAA corpus -- their content is
-    page numbers and list markers. The in-word-digit discriminator that convicts
-    the ``Himalb`` family is structurally blind to such a font: with no surrounding
-    letters, a pure-numeral span scores zero under *both* maps.
+    ``Fontasy Himali`` and ``FontasyHimali`` carry **1 and 0 ASCII alphabetic
+    keystrokes** respectively -- across 26,699 and 19,744 characters of span text, so
+    the units are not interchangeable: the population is *characters in those spans*
+    and the count is *letters among them*. Their content is page numbers and list
+    markers. The in-word-digit discriminator that convicts the ``Himalb`` family is
+    structurally blind to such a font: with no surrounding letters, a pure-numeral
+    span scores zero under *both* maps.
 
     So "0 under Preeti" means "no evidence" for these names, not "clean", and the
     first version of this correction moved them on the strength of exactly that
