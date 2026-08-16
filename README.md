@@ -258,18 +258,11 @@ reads adversarial input, and several classes of defect here are invisible to a s
 that merely passes — that file covers how to prove a test bites, and the
 library-specific traps a test can be blind to.
 
-Ten tests skip on a clean checkout, and they are three different things:
-
-| skips | why |
-|---|---|
-| 5 | real CIB fixtures — git-ignored (PII), absent locally and in CI |
-| 3 | `LIKHIT_LOHIT_REFERENCE_TTF` unset |
-| 2 | `LIKHIT_KALIMATI_REFERENCE_TTF` unset |
-
-Only the first group is unavoidable. The other five compare glyph mappings against
-upstream reference fonts, so they are the tests most likely to catch a mapping
-regression — set the variable if you are touching `lohit.py` or
-`kalimati_reference.py`.
+Some tests skip on a clean checkout, and **not all of them are unavoidable** — several
+are opt-in glyph-mapping comparisons you can switch on with an environment variable, and
+they are the ones most likely to catch a mapping regression. The breakdown, and which
+variable turns which group on, is in
+[`docs/writing-tests.md`](docs/writing-tests.md#the-skips-are-three-different-things).
 
 ### Gates
 
@@ -285,7 +278,13 @@ uv run ty check               # types — ADVISORY, see pyproject.toml
 `ty` is advisory rather than a gate: it is pre-1.0, and several of this package's
 dependencies (PyMuPDF among them) ship no type information, so the rule families
 it cannot yet see through are silenced in `pyproject.toml`. Read its output; do
-not ignore it.
+not ignore it. **`ty check` reports a different number depending on the scope you give
+it and on whether the worktree has a `.venv`** — see
+[`docs/writing-tests.md`](docs/writing-tests.md#ty-has-three-different-correct-answers-and-they-differ-by-their-denominator).
+
+Before concluding a fix did or did not land in `main`, read
+[Checking whether a fix is actually in `main`](docs/writing-tests.md#checking-whether-a-fix-is-actually-in-main)
+— `git cherry` and `git patch-id` are both insufficient here, in two independent ways.
 
 
 ## References
