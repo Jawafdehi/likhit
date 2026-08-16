@@ -47,12 +47,61 @@ ALL_MAP_KEYS: tuple[str, ...] = (
 # "(१)" (VOL-166). Verified against all 13 CIAA annual reports: this exact
 # ASCII-bracketed shape never occurs under any other legacy map or font in
 # the corpus, so digit-only conversion here changes no other document.
+#
+# The gate is therefore about the BRACKETS, and it assumes the digit between them
+# is already read correctly by the map. That assumption is a property of the map,
+# not of the shape, and it is false for three of the five in ALL_MAP_KEYS -- so the
+# gate is applied only where _map_reads_ascii_digits_as_digits() holds. Applying it
+# everywhere is what the first version of this fix did, and on Preeti it destroys a
+# letter; the docstring on that predicate has the measurement.
 _ASCII_BRACKETED_NUMBER = re.compile(r"^(\s*)\((\d+)\)(\s*)$")
 _LATIN_TO_DEVANAGARI_DIGITS = str.maketrans("0123456789", "०१२३४५६७८९")
 
+_ASCII_DIGITS = "0123456789"
+_DEVANAGARI_DIGITS = "०१२३४५६७८९"
+_ascii_digit_maps: dict[str, bool] = {}
+
+
+def _map_reads_ascii_digits_as_digits(map_key: str) -> bool:
+    """Does ``map_key`` decode ASCII ``0``-``9`` to Devanagari ``०``-``९``?
+
+    This is the precondition of the gate above, and it does **not** hold for every
+    map. Measured against the maps themselves:
+
+        PCS NEPALI, FONTASY_HIMALI_TT       ->  "०१२३४५६७८९"
+        Preeti, Kantipur, Sagarmatha        ->  "ण्ज्ञद्दघद्धछटठडढ"
+
+    On the second family an ASCII digit is a **consonant** keystroke, so the two
+    families disagree about what the *interior* of the marker is, not just about the
+    brackets:
+
+        PCS NEPALI        "(5)"  ->  "ढ५ण्"   digit already correct, brackets wrong
+        Preeti            "(5)"  ->  "९छ०"    the interior IS the letter छ
+
+    That is the whole warrant for the gate. It exists because the map gets the
+    brackets wrong while getting the digit right, which is true of the first family
+    only. Applied to the second it replaces a letter with a digit -- ``"(5)"``
+    becomes ``"(५)"`` and the ``छ`` is **destroyed**, which is strictly worse than
+    the defect the gate repairs.
+
+    Derived from the map rather than hardcoded, so a map added to
+    :data:`ALL_MAP_KEYS` or :data:`_REGISTRY` is classified by what it actually does
+    and this cannot silently go stale. Cached because it costs a map load per key.
+    """
+
+    cached = _ascii_digit_maps.get(map_key)
+    if cached is None:
+        cached = get_converter_for_map(map_key)(_ASCII_DIGITS) == _DEVANAGARI_DIGITS
+        _ascii_digit_maps[map_key] = cached
+    return cached
+
 
 def _decode_ascii_bracketed_number(text: str) -> str | None:
-    """Digit-only decode for a whole span shaped like ``"(12)"``, else ``None``."""
+    """Digit-only decode for a whole span shaped like ``"(12)"``, else ``None``.
+
+    Callers must first establish :func:`_map_reads_ascii_digits_as_digits` for the
+    map in hand; this function cannot check it, because it never sees the map.
+    """
 
     match = _ASCII_BRACKETED_NUMBER.match(text)
     if match is None:
@@ -149,9 +198,19 @@ def get_output_converter_for_map(map_key: str) -> Callable[[str], str]:
     at :data:`_ASCII_BRACKETED_NUMBER`. Use this from every path that produces
     output, whether the map was chosen by font name or by span content; use the
     raw converter only for scoring.
+
+    The gate is applied only for maps that read ASCII digits as digits -- see
+    :func:`_map_reads_ascii_digits_as_digits`, which is where the reasoning lives.
+    For the others this returns the raw converter unchanged, so it is exactly
+    :func:`get_converter_for_map`.
     """
 
     base_convert = get_converter_for_map(map_key)
+    if not _map_reads_ascii_digits_as_digits(map_key):
+        # This map reads an ASCII digit as a consonant, so there is no digit to lift
+        # out of the brackets and the gate's premise does not hold. Returning the raw
+        # converter is not a fallback: it is the correct reading of the span.
+        return base_convert
 
     def _convert(text: str) -> str:
         decoded = _decode_ascii_bracketed_number(text)
