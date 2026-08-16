@@ -7,6 +7,8 @@ from likhit.extractors.legacy_maps import (
     ALL_MAP_KEYS,
     _decode_ascii_bracketed_number,
     _map_reads_ascii_digits_as_digits,
+    _match_font,
+    _REGISTRY,
     get_converter,
     get_converter_for_map,
     get_output_converter_for_map,
@@ -342,3 +344,204 @@ def test_the_marker_shape_is_only_ever_observed_under_a_digit_row_map():
     assert observed_under_digit_row_maps == 168
     # And the only map the shape was observed under is one the gate still applies to.
     assert _map_reads_ascii_digits_as_digits("FONTASY_HIMALI_TT") is True
+
+
+# --------------------------------------------------------------------------- #
+# The name path routes the "Himalb" family to the WRONG map.
+#
+# A font name is a hint about an encoding, and for one family the hint is wrong:
+# names in the "Himalb" family carry PREETI-encoded bytes while naming Himali.
+# Preeti and FONTASY_HIMALI_TT are near-clones that exchange their two number
+# rows, so the wrong one of the pair silently substitutes a Devanagari digit for
+# a consonant (and vice versa on the shifted row).
+#
+# Measured over the 13 CIAA annual reports, per name: "Himalb" (15,831 spans,
+# 30,258 ASCII ALPHABETIC keystrokes) and "Himalb,Bold" (2,360 spans, 9,243) produce
+# 1,438 in-word Devanagari digits under FONTASY_HIMALI_TT and 0 under Preeti.
+# --------------------------------------------------------------------------- #
+
+# Raw legacy keystrokes with their correct Preeti reading. Every one contains at
+# least one ASCII digit, which is the only place the two maps disagree in prose --
+# a span without one decodes identically under both, which is precisely why this
+# defect is sparse and survives every corpus gate.
+_PREETI_ENCODED_SOURCES = (
+    # 'chapter', the most common casualty: 1,269 occurrences in the Himalb spans of
+    # the CIAA corpus, all in 3 of the 13 documents. Measured on raw span text, which
+    # is a different instrument from a count over assembled transcripts -- do not
+    # reconcile this figure with one taken after markdown assembly.
+    ("kl/R5]b", "परिच्छेद"),
+    ("sf7df8f}+", "काठमाडौं"),  # 'Kathmandu'
+    ("d'2f", "मुद्दा"),  # 'case'
+    ("/0fgLlts", "रणनीतिक"),  # 'strategic'
+    ("5nkmn", "छलफल"),  # 'discussion'
+)
+
+# Every spelling that reaches the "himalb" registry key. _match_font strips a
+# subset prefix at '+' and a style suffix at ',', then matches on a substring, so
+# all of these resolve through the one key.
+_HIMALB_SPELLINGS = (
+    "Himalb",
+    "Himalb,Bold",
+    "HimalBold",
+    "HimalBoldBold11109013193",  # observed in the OAG corpus
+    "ABCDEE+Himalb",  # subset-prefixed
+)
+
+
+@pytest.mark.parametrize("font", _HIMALB_SPELLINGS)
+@pytest.mark.parametrize(("raw", "expected"), _PREETI_ENCODED_SOURCES)
+def test_the_himalb_family_decodes_as_preeti(font, raw, expected):
+    convert = get_converter(font)
+    assert convert is not None, f"{font!r} must still be recognised as a legacy font"
+    assert convert(raw) == expected
+
+
+@pytest.mark.parametrize("font", _HIMALB_SPELLINGS)
+def test_the_himalb_family_resolves_to_the_preeti_map(font):
+    assert _match_font(font) == "Preeti"
+
+
+# The other half of the invariant. A "fix" that moved the whole Himal family would
+# pass the tests above and destroy these, so both directions are pinned.
+_GENUINELY_HIMALI_SPELLINGS = (
+    "FONTASY_HIMALI_TT",
+    "FONTASY_HIMALI_TT,Bold",
+    "FONTASYHIMALITTNORMAL",
+    "FONTASY_ HIMALI_ TT",
+    "Fontasy Himali",
+    "FontasyHimali",
+    "Fontasy Roman Himali",
+    "BikrantHimaliTTNORMAL",
+    "HimaliBold",
+)
+
+
+@pytest.mark.parametrize("font", _GENUINELY_HIMALI_SPELLINGS)
+def test_the_himali_spellings_are_not_moved(font):
+    """These stay on FONTASY_HIMALI_TT, and two of them for a measured reason.
+
+    ``Fontasy Himali`` and ``FontasyHimali`` carry **1 and 0 ASCII alphabetic
+    keystrokes** respectively -- across 26,699 and 19,744 characters of span text, so
+    the units are not interchangeable: the population is *characters in those spans*
+    and the count is *letters among them*. Their content is page numbers and list
+    markers. The in-word-digit discriminator that convicts the ``Himalb`` family is
+    structurally blind to such a font: with no surrounding letters, a pure-numeral
+    span scores zero under *both* maps.
+
+    So "0 under Preeti" means "no evidence" for these names, not "clean", and the
+    first version of this correction moved them on the strength of exactly that
+    reading -- costing 24,804 correctly-decoded Devanagari digits corpus-wide. A
+    metric that cannot separate *clean* from *not applicable* is not support.
+    """
+
+    assert _match_font(font) == "FONTASY_HIMALI_TT"
+
+
+def test_the_two_maps_exchange_their_two_number_rows():
+    """The mechanism, stated exactly: the maps are transposes on the number rows.
+
+    This is why the wrong map is destructive in *both* directions -- it puts a
+    Devanagari digit inside a word (unshifted row) and a consonant where a year
+    belongs (shifted row). A reader who checks only the unshifted row sees half the
+    difference and could "correct" the registry back the wrong way.
+    """
+
+    preeti = get_converter_for_map("Preeti")
+    himali = get_converter_for_map("FONTASY_HIMALI_TT")
+
+    unshifted = "0123456789"
+    shifted = ")!@#$%^&*("
+
+    assert preeti(unshifted) == himali(shifted)
+    assert preeti(shifted) == himali(unshifted)
+    # And name the two readings, so the direction is on the record rather than
+    # implied by an equality between two computed values.
+    assert preeti(shifted) == "०१२३४५६७८९"
+    assert himali(unshifted) == "०१२३४५६७८९"
+    assert preeti(unshifted) == "ण्ज्ञद्दघद्धछटठडढ"
+    assert himali(shifted) == "ण्ज्ञद्दघद्धछटठडढ"
+
+
+def test_the_kanunpatrika_masthead_year_is_the_shifted_row():
+    """The non-CIAA confirmation, and it is semantic rather than statistical.
+
+    ``samples/kanunpatrika.pdf`` draws its masthead in ``Himalb``. The raw bytes
+    ``@)^%`` are Preeti's way of typing ``२०६५``; read through FONTASY_HIMALI_TT the
+    same bytes give ``द्दण्टछ``. Two lines later the same document cites the same
+    year off a genuine ``Preeti`` span, where it has always read ``२०६५`` -- so the
+    document corroborates itself, and only one routing makes the two agree.
+    """
+
+    raw = 'g]kfn sfg"g klqsf @)^%, c+s ^'
+    convert = get_converter("Himalb")
+    assert convert is not None
+    assert convert(raw) == "नेपाल कानून पत्रिका २०६५, अंक ६"
+    # What the shipped routing produced, and what three of this repo's own recorded
+    # expectations asserted as ground truth until this change.
+    assert (
+        get_converter_for_map("FONTASY_HIMALI_TT")(raw)
+        == "नेपाल कानून पत्रिका द्दण्टछ, अंक ट"
+    )
+
+
+def test_the_wrong_map_is_invisible_to_every_damage_signal():
+    """Why no gate caught this, asserted rather than asserted-in-prose.
+
+    Both readings are the same length, contain no U+FFFD, and are 100% Devanagari.
+    A replacement-character count, a Devanagari-ratio floor and a garble census all
+    pass on the corrupt reading, so the only instrument that sees it is one that
+    asserts the specific character.
+    """
+
+    raw = "kl/R5]b"
+    correct = get_converter_for_map("Preeti")(raw)
+    corrupt = get_converter_for_map("FONTASY_HIMALI_TT")(raw)
+
+    assert correct != corrupt
+    assert len(correct) == len(corrupt)
+    assert "�" not in correct and "�" not in corrupt
+    devanagari = range(0x0900, 0x0980)
+    assert all(ord(ch) in devanagari for ch in correct)
+    assert all(ord(ch) in devanagari for ch in corrupt)
+    # The single differing character is a Devanagari DIGIT standing in for a
+    # consonant -- same Unicode block, so no block-based check can separate them.
+    differing = [(a, b) for a, b in zip(correct, corrupt) if a != b]
+    assert differing == [("छ", "५")]
+
+
+def test_no_registry_key_is_a_substring_of_another_with_a_different_map():
+    """``_match_font`` returns on the first substring hit, so overlap + disagreement
+    would make dict insertion order decide the decoded text.
+
+    Today two keys overlap (``himali`` inside ``fontasy_himali`` and inside
+    ``fontasyhimali``) and both agree on the map, so order is provably NOT
+    load-bearing. This asserts that property instead of a comment claiming it, so
+    the day someone adds a key that breaks it, the test names the pair.
+    """
+
+    conflicts = [
+        (shorter, longer)
+        for shorter in _REGISTRY
+        for longer in _REGISTRY
+        if shorter != longer
+        and shorter in longer
+        and _REGISTRY[shorter] != _REGISTRY[longer]
+    ]
+    assert conflicts == []
+
+    # The overlap itself is real -- without this the test above could pass simply
+    # because no keys overlap at all, which would make it vacuous.
+    overlaps = [
+        (shorter, longer)
+        for shorter in _REGISTRY
+        for longer in _REGISTRY
+        if shorter != longer and shorter in longer
+    ]
+    assert overlaps == [("himali", "fontasy_himali"), ("himali", "fontasyhimali")]
+
+
+def test_every_registry_target_is_a_real_map():
+    """A typo'd map key would raise only when a document happens to use that font."""
+
+    for key, map_key in _REGISTRY.items():
+        assert map_key in ALL_MAP_KEYS, f"{key!r} -> {map_key!r} is not a known map"

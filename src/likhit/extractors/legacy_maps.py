@@ -11,12 +11,53 @@ import warnings
 
 from likhit.errors import ExtractionError
 
+# Font name -> npttf2utf map key. A font NAME is only ever a hint about the encoding
+# the bytes actually use, and for one family the hint is wrong: names in the "Himalb"
+# family carry PREETI-encoded bytes while naming Himali.
+#
+# Preeti and FONTASY_HIMALI_TT are near-clones that EXCHANGE their two number rows --
+# each map's unshifted digit row is the other's shifted row, exactly (asserted in
+# tests/test_legacy_maps.py). So the wrong one of the pair is silently destructive in
+# both directions: it puts a Devanagari digit inside a word, and it puts a consonant
+# where a year belongs. Neither shows up as damage -- both characters are Devanagari,
+# so there is no U+FFFD, no drop in the Devanagari ratio, and no garble tell.
+#
+# Measured over the 13 CIAA annual reports, per name rather than pooled -- pooling is
+# what made the first version of this correction move two names too many:
+#
+#   name           spans   alpha chars   in-word Devanagari digits
+#                                        under Preeti   under FONTASY_HIMALI_TT
+#   Himalb         15,831       30,258              0                    1,021
+#   Himalb,Bold     2,360        9,243              0                      417
+#
+# 1,438 corruptions under the shipped routing, none under Preeti. "spans" counts text
+# spans whose font name reaches the "himalb" key; "alpha chars" counts ASCII ALPHABETIC
+# keystrokes in those spans (not total characters, which are 87,020 and 18,767).
+#
+# The cost, measured on the same spans rather than assumed. All 6 "-N_" list markers in
+# these spans get WORSE: both maps read '-'/'_' as the real brackets, but the interior
+# digit becomes a consonant, so "(५)" -> "(छ)" in every one of the six -- checked
+# individually, Preeti's marker carries no Devanagari digit in any of them. Zero
+# whole-span ASCII "(N)" markers are affected, so the gate below loses nothing.
+#
+# Against that, 4 of those 6 spans carry a body beyond the marker and 3 of the 4 bodies
+# are REPAIRED, e.g. "भि८ियो ... सीसी६ीभीको" -> "भिडियो ... सीसीटीभीको". So the trade is
+# 6 marker digits for 3 repaired bodies plus the 1,438 above.
+#
+# 🛑 The discriminator used above is BLIND to a numeral-only font: with no surrounding
+# letters a pure-numeral span scores zero under BOTH maps, so "0 under Preeti" means
+# "no evidence", not "clean". The "Fontasy*" spellings carry 1 and 0 ASCII alphabetic
+# keystrokes across 26,699 and 19,744 characters of span text, so nothing here licenses
+# moving them and they stay on the Himali map. A metric that cannot tell *clean* from
+# *not applicable* must not be read as support.
 _REGISTRY: dict[str, str] = {
     "preeti": "Preeti",
     "fontasy_himali": "FONTASY_HIMALI_TT",
     "fontasyhimali": "FONTASY_HIMALI_TT",
     "himali": "FONTASY_HIMALI_TT",
-    "himalb": "FONTASY_HIMALI_TT",
+    # PREETI-encoded despite naming Himali. Reached by "Himalb", "Himalb,Bold" and
+    # "HimalBold" -- _match_font strips a ",Bold" suffix and matches on a substring.
+    "himalb": "Preeti",
     "kantipur": "Kantipur",
     "pcs nepali": "PCS NEPALI",
     "pcs_nepali": "PCS NEPALI",
