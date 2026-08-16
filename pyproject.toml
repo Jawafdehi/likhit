@@ -84,6 +84,7 @@ include = ["/src/likhit", "/README.md", "/LICENSE", "/CHANGELOG.md"]
 dev = [
     "pytest>=8.0.0,<9.0.0",
     "pytest-cov>=6.0.0,<7.0.0",
+    "pytest-xdist>=3.6.0,<4.0.0",
     "ruff>=0.15.0,<0.16.0",
     "pre-commit>=4.6.0",
     "ty>=0.0.66",
@@ -92,6 +93,60 @@ dev = [
     # than only asserting the schema's own contents.
     "jsonschema>=4.23.0,<5.0.0",
 ]
+
+# ---------------------------------------------------------------------------
+# pytest. testpaths is pinned to tests/, which is where every test module already
+# lives (tests/ and tests/integration are the only two directories holding any).
+# Measured: it changes nothing today -- 737 collected in ~1.1s either way, and
+# there is nothing collectible under site/ -- so treat it as a constraint on
+# future collection, not as a fix for anything.
+#
+# `-n auto` is deliberately NOT in addopts, on measured grounds. Whole-suite
+# figures on a 64-core box, every run identical at 722 passed / 10 skipped /
+# 5 xfailed. The range is where the run was repeated:
+#
+#     serial    62.6s
+#     -n 4      31.4s   (2.0x -- what a 4-vCPU CI runner sees)
+#     -n 8      33.8s
+#     -n 16     28.9s
+#     -n auto   21.0-22.2s  (3.0x; `auto` is 64 here)
+#
+# Past -n 4 the gains are small and not monotonic -- -n 8 measured slower than
+# -n 4 here -- so do not read the column as a scaling curve.
+#
+# But it is a net loss on the single-file runs that dominate local iteration:
+# tests/test_convert.py alone is 6.96s serial and 7.69s under `-n auto`. `-p
+# xdist` also disables `--pdb`. So parallelism is opt-in per invocation:
+#
+#     uv run pytest -n auto                  # whole suite, fastest
+#     uv run pytest tests/test_convert.py    # iterating, no worker overhead
+#
+# CI passes `-n auto` explicitly on the "Run tests" step instead. Expect ~4
+# workers there (ubuntu-latest is 4 vCPU), not this box's count.
+#
+# Do not expect linear scaling, for two reasons. The serial suite already runs
+# at ~181% CPU because PyMuPDF threads internally; and the parallel floor is set
+# by the longest single test, which is the 11.7s full-document kanunpatrika smoke
+# in tests/integration/test_sample_pdfs.py. No worker count gets the suite below
+# that.
+#
+# 🛑 Before widening parallelism further, look for tests that touch state shared
+# across workers -- not only for order dependence. Two were found when `-n auto`
+# was turned on here, and they failed in opposite ways:
+#
+#   * tests/test_kalimati_reference.py wrote a FIXED-name scratch font into
+#     site-packages/fitz/ and unlinked it, so three tests raced and one died with
+#     "cannot open ..._embedded_kalimati_test.ttf" -- 4 failures in 6 runs of
+#     `pytest -n 3` on that file.
+#   * tests/test_scanned_pdf_detection.py deleted npttf2utf bytecode to force a
+#     fresh compile. A sibling worker's import restores it, and with the bytecode
+#     present the warning never fires -- so that test went VACUOUS rather than red:
+#     it passed with the thing it tests removed.
+#
+# The second is the dangerous shape, because a green suite is the symptom.
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 # ---------------------------------------------------------------------------
 # ruff — the lint AND format gate. CI runs `uv run ruff check .` plus

@@ -205,6 +205,19 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "likhit/handlers/two_column_layout.py",
         "_LAYOUT_BLOCK_GAP_MIN",
     ): (18.0, "vertical points between fragments that start a new block"),
+    # -- legacy map word cache ------------------------------------------------ #
+    (
+        "likhit/extractors/legacy_maps.py",
+        "_WORD_CACHE_SIZE",
+    ): (
+        65536,
+        "words memoized per map. Sized to be unreachable rather than tuned: every "
+        "span of the 128-page law-report sample holds 7,899 distinct words, and five "
+        "warm caches -- one per map, which is what choose_legacy_map fills when it "
+        "scores a span against every candidate -- measured 39,495 entries and ~1.8 "
+        "MiB. A bound only needs to stop an unbounded corpus run, so anything well "
+        "above the per-document count does the same work",
+    ),
 }
 
 

@@ -27,8 +27,36 @@ def _md(*, enable_plugins: bool = True) -> MarkItDown:
     return MarkItDown(enable_plugins=enable_plugins)
 
 
-def _convert_text(path: Path) -> str:
-    return _md().convert(str(path)).text_content
+def _convert_text(path: Path, *, pages: str | None = None) -> str:
+    """Convert ``path``, optionally restricting to a ``pages`` range.
+
+    Pass ``pages`` when a test asserts only on the opening of a long document.
+    ``samples/kanunpatrika.pdf`` is 128 pages and ``samples/aarop-patra.pdf`` 67, and
+    a full conversion of either costs ~14.1s / ~9.6s -- measured. Together with the
+    integration tests over the same two documents that was **105s of a 136s suite,
+    77%**, in eight tests, with a 7.9x cliff to 9th place at 1.25s. Restricting each
+    to the pages it actually asserts on:
+
+        test_convert_preserves_two_column_reading_order          14.46s -> 0.30s
+        ..._normalizes_replacement_char_bullets_in_two_column    14.69s -> 0.21s
+        test_convert_keeps_aarop_patra_title_lines_readable       9.99s -> 0.38s
+
+    This is not a weaker input. ``pages`` slices the PDF before extraction, and
+    :func:`test_convert_honors_page_range_selection_for_pdf` below asserts that
+    ``convert(sample, pages="1-2")`` is byte-identical to converting a
+    :func:`_copy_pdf_pages` slice of that same range -- so a page-restricted
+    conversion is the same code path over a smaller document, not a different one.
+
+    Whole-document regression coverage is deliberately *not* duplicated here: it
+    lives in ``tests/integration/test_sample_pdfs.py``, which converts both
+    samples in full behind an ``lru_cache`` and checks markers, ordering, shape and
+    ``max_replacement_chars=0``. Widen a range here only to reach a marker that is
+    genuinely deeper in the document.
+    """
+
+    if pages is None:
+        return _md().convert(str(path)).text_content
+    return _md().convert(str(path), pages=pages).text_content
 
 
 @lru_cache(maxsize=1)
@@ -411,7 +439,8 @@ def test_convert_honors_page_range_selection_for_pdf(tmp_path: Path) -> None:
 def test_convert_preserves_two_column_reading_order() -> None:
     sample = ROOT / "samples" / "kanunpatrika.pdf"
 
-    markdown = _convert_text(sample)
+    # Every marker below is on page 1; see _convert_text on why the range.
+    markdown = _convert_text(sample, pages="1-2")
 
     assert "निर्णय नं.७९७३" in markdown
     assert "सर्बोच्च अदालत विशेष इजलास" in markdown
@@ -529,7 +558,8 @@ def test_convert_preserves_pre_table_line_breaks_in_markdown() -> None:
 def test_convert_normalizes_replacement_char_bullets_in_two_column_output() -> None:
     sample = ROOT / "samples" / "kanunpatrika.pdf"
 
-    markdown = _convert_text(sample)
+    # The bulleted "अपराध" run is on page 1; see _convert_text on why the range.
+    markdown = _convert_text(sample, pages="1-2")
 
     assert "� अपराध" not in markdown
     assert "- अपराध" in markdown
@@ -540,7 +570,8 @@ def test_convert_keeps_aarop_patra_title_lines_readable() -> None:
     if not sample.exists():
         pytest.skip("aarop-patra sample not available")
 
-    markdown = _convert_text(sample)
+    # The asserted lines are the document's first four; see _convert_text.
+    markdown = _convert_text(sample, pages="1")
 
     assert "श्री विशेष अदालत, काठमाडौं समक्ष पेस गरेको" in markdown
     assert "आरोप-पत्र" in markdown

@@ -245,8 +245,14 @@ uv run pre-commit install
 
 Run all tests:
 ```bash
-uv run pytest
+uv run pytest           # ~63s
+uv run pytest -n auto   # ~21s on 64 cores, ~31s on 4 — same 722 passed
 ```
+
+`-n auto` (pytest-xdist) is not in `addopts`, because worker startup is a net
+loss on the single-file runs that dominate local iteration — use plain `pytest`
+for those. CI passes `-n auto` itself. `pyproject.toml`'s
+`[tool.pytest.ini_options]` comment carries the measured worker-count table.
 
 Run only the end-to-end integration suite:
 ```bash
@@ -271,7 +277,7 @@ CI runs the following. Run them yourself before opening a pull request:
 ```bash
 uv run ruff check .           # lint — gated
 uv run ruff format --check .  # formatting — gated
-uv run pytest                 # tests — gated
+uv run pytest -n auto         # tests — gated (CI uses -n auto; plain works too)
 uv run ty check               # types — ADVISORY, see pyproject.toml
 ```
 

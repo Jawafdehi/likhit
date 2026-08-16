@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 import os
 import re
 import threading
@@ -159,6 +160,137 @@ def _get_mapper():
     return _mapper
 
 
+# npttf2utf's own tokenizer, lifted verbatim from FontMapper.map_to_unicode.
+# Every character of the input is either \s or \S, and the group makes findall
+# return the tokens themselves, so "".join(tokens) == input -- the split is
+# lossless and the per-word pipeline below sees exactly what upstream's does.
+_WORD_SPLIT = re.compile(r"(\s+|\S+)")
+
+# Bounded so a long corpus run cannot grow it without limit. 65536 is far above
+# any single document: every span of the 128-page law-report sample holds 7,899
+# distinct words, and five warm caches (one per map, which is what
+# choose_legacy_map fills when it scores a span against every candidate) came to
+# 39,495 entries and roughly 1.8 MiB.
+_WORD_CACHE_SIZE = 65536
+
+
+class _CompiledMap:
+    """One npttf2utf map with its regexes compiled once instead of per word.
+
+    Upstream ``FontMapper.map_to_unicode`` calls ``re.sub(re.compile(rule[0]), ...)``
+    **inside** its loop over every word of every span. Each of the five maps
+    carries 32 post-rules, so a full conversion of the 128-page ``kanunpatrika.pdf``
+    sample -- which routes **9,460** spans through this class -- cost 3.19M
+    ``re.sub`` and 6.36M ``re._compile`` calls.
+
+    The speed figures below come from a different, larger instrument: **all 11,268
+    non-empty spans** of that document pushed through the Preeti map directly, so
+    they are not the 9,460 above and the two counts should not be mixed.
+
+        upstream                          2.362s
+        rules compiled once per map       0.445s   5.3x
+        plus per-word memoization         0.073s  32.5x
+
+    Two independent wins, and the second is the larger one. Memoizing whole
+    *spans* would not have paid -- those 11,268 spans hold 8,757 distinct ones,
+    only a 1.3x dedupe -- but words repeat far more: 90,352 word lookups resolve to
+    7,899 distinct words, an **11.4x** dedupe (82,453 hits to 7,899 misses),
+    because Nepali function words and the whitespace tokens recur on every line.
+
+    End to end that is 3s off a full conversion of the sample: **14.11s -> 11.11s**.
+
+    Output is byte-identical to upstream: 0 differences over 12,154 cases (every
+    distinct span of the four legacy samples plus 16 hand-built edge cases) on all
+    five maps, 60,770 conversions in total. The unknown-map and ``"unicode"``
+    passthrough contracts are preserved too; see
+    ``tests/test_legacy_maps_precompiled.py``.
+
+    The rules still come from npttf2utf's own ``map.json`` via
+    :func:`_get_mapper`, so that file stays the single source of truth and an
+    upstream map change is picked up without touching this class.
+    """
+
+    __slots__ = (
+        "_character_map",
+        "_post_rules",
+        "_pre_rules",
+        "_translate_table",
+        "convert_word",
+    )
+
+    def __init__(self, rules: dict) -> None:
+        self._pre_rules = tuple(
+            (re.compile(pattern), replacement)
+            for pattern, replacement in rules["pre-rules"]
+        )
+        self._post_rules = tuple(
+            (re.compile(pattern), replacement)
+            for pattern, replacement in rules["post-rules"]
+        )
+        character_map = rules["character-map"]
+        self._character_map = character_map
+        # str.maketrans requires single-character keys. All five of npttf2utf's
+        # maps satisfy that (measured: 120-144 entries each, every key one
+        # character), but fall back to the fold rather than assume it, so a future
+        # multi-character key costs speed instead of raising. It would be a dead
+        # entry either way -- upstream folds over single characters too.
+        self._translate_table = (
+            str.maketrans(character_map)
+            if all(len(key) == 1 for key in character_map)
+            else None
+        )
+        self.convert_word = lru_cache(maxsize=_WORD_CACHE_SIZE)(self._convert_word)
+
+    def _convert_word(self, word: str) -> str:
+        for pattern, replacement in self._pre_rules:
+            word = pattern.sub(replacement, word)
+
+        if self._translate_table is not None:
+            mapped = word.translate(self._translate_table)
+        else:
+            get = self._character_map.get
+            mapped = "".join(get(character, character) for character in word)
+
+        for pattern, replacement in self._post_rules:
+            mapped = pattern.sub(replacement, mapped)
+        return mapped
+
+    def convert(self, text: str) -> str:
+        convert_word = self.convert_word
+        return "".join(convert_word(word) for word in _WORD_SPLIT.findall(text))
+
+
+_compiled_maps: dict[str, _CompiledMap] = {}
+_compiled_maps_lock = threading.Lock()
+
+
+def _get_compiled_map(map_key: str) -> _CompiledMap:
+    """Return the compiled pipeline for ``map_key``, building it once.
+
+    Raises npttf2utf's own ``NoMapForOriginException`` for an unknown key, so
+    callers see the same failure they saw when this went through
+    ``FontMapper.map_to_unicode`` directly.
+    """
+
+    compiled = _compiled_maps.get(map_key)
+    if compiled is not None:
+        return compiled
+
+    mapper = _get_mapper()
+    with _compiled_maps_lock:
+        compiled = _compiled_maps.get(map_key)
+        if compiled is not None:
+            return compiled
+
+        if map_key not in mapper.all_rules:
+            from npttf2utf.base.exceptions import NoMapForOriginException
+
+            raise NoMapForOriginException
+        compiled = _CompiledMap(mapper.all_rules[map_key]["rules"])
+        _compiled_maps[map_key] = compiled
+    return compiled
+
+
 def get_converter(font_name: str) -> Callable[[str], str] | None:
     map_key = _match_font(font_name)
     if map_key is None:
@@ -181,14 +313,25 @@ def get_converter_for_map(map_key: str) -> Callable[[str], str]:
     the content-based path before the name-based one and returns from it directly,
     so an ungated call there reintroduces `"(1)" -> "ढ१ण्"` even with
     :func:`get_converter` fixed.
+
+    An unknown ``map_key`` raises ``NoMapForOriginException`` **here**, at
+    construction. That is eager where this used to be lazy: it once returned a
+    closure over ``FontMapper.map_to_unicode``, which raised only when the closure
+    was called. Nothing in-repo can tell the difference -- every caller passes a
+    key from :data:`ALL_MAP_KEYS` or :data:`_REGISTRY` and calls the result
+    immediately -- but a caller that builds a converter early and uses it later
+    would now fail at build time. :func:`get_output_converter_for_map` inherits
+    this, since it resolves its base converter up front.
     """
 
-    mapper = _get_mapper()
+    # Upstream's own passthrough: map_to_unicode returns the input untouched for a
+    # case-insensitive "unicode" origin, before it ever looks at the rules. No
+    # _REGISTRY entry or ALL_MAP_KEYS member reaches it, but keep the contract
+    # identical -- this function is what both the scoring and output paths call.
+    if map_key.lower() == "unicode":
+        return lambda text: text
 
-    def _convert(text: str) -> str:
-        return mapper.map_to_unicode(text, from_font=map_key)
-
-    return _convert
+    return _get_compiled_map(map_key).convert
 
 
 def get_output_converter_for_map(map_key: str) -> Callable[[str], str]:

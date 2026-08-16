@@ -25,6 +25,12 @@ from .conftest import (
 
 IS_WINDOWS = platform.system() == "Windows"
 
+# Matches tests/integration/test_sample_pdfs.py, which already reads the repo's
+# samples/ from this directory: the two big sample PDFs are the corpus-scale
+# regression inputs and are not duplicated into test_data/.
+ROOT = Path(__file__).resolve().parents[2]
+SAMPLES_DIR = ROOT / "samples"
+
 
 def _has_working_doc_runtime() -> bool:
     """Return True when at least one DOC extractor runtime is available."""
@@ -166,11 +172,20 @@ class TestPluginConversion:
         assert "काठमाड�" not in markdown
 
     def test_two_column_pdf_output_preserves_reading_order(self) -> None:
-        two_column_pdf = TEST_DATA_DIR / "kanun_patrika_sample.pdf"
+        # Was test_data/kanun_patrika_sample.pdf, which was byte-identical to
+        # samples/kanunpatrika.pdf (sha256 fee0399...) -- the same 128-page
+        # document under two names, so a per-path conversion cache could never
+        # collapse the two and the suite paid ~14.1s for each. The duplicate is
+        # gone; this reads the sample directly.
+        #
+        # pages="1-2" because every line asserted below is on page 1: measured
+        # 0.20s against 14.45s for the full document. Whole-document coverage is
+        # in test_sample_pdfs.py, which converts this sample in full.
+        two_column_pdf = SAMPLES_DIR / "kanunpatrika.pdf"
         if not two_column_pdf.exists():
             pytest.skip("Two-column PDF sample not found")
 
-        markdown = _md().convert(str(two_column_pdf)).text_content
+        markdown = _md().convert(str(two_column_pdf), pages="1-2").text_content
 
         _assert_lines_in_order(
             markdown,
