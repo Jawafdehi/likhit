@@ -17,6 +17,7 @@ import pytest
 
 from likhit.extractors.legacy_maps import (
     ALL_MAP_KEYS,
+    SHIPPED_MAP_KEYS,
     _CompiledMap,
     _get_compiled_map,
     _get_mapper,
@@ -73,7 +74,7 @@ def _sample_spans(file_name: str, limit: int | None = None) -> list[str]:
     return sorted(seen)
 
 
-@pytest.mark.parametrize("map_key", ALL_MAP_KEYS)
+@pytest.mark.parametrize("map_key", SHIPPED_MAP_KEYS)
 def test_compiled_map_matches_upstream_on_edge_cases(map_key: str) -> None:
     mapper = _get_mapper()
     convert = get_converter_for_map(map_key)
@@ -84,7 +85,7 @@ def test_compiled_map_matches_upstream_on_edge_cases(map_key: str) -> None:
         )
 
 
-@pytest.mark.parametrize("map_key", ALL_MAP_KEYS)
+@pytest.mark.parametrize("map_key", SHIPPED_MAP_KEYS)
 def test_compiled_map_matches_upstream_on_real_spans(map_key: str) -> None:
     # A page cap keeps this to 0.20s per map while still covering real legacy
     # text; the full 12,154-case sweep over every distinct span of all four
@@ -125,7 +126,7 @@ def test_unicode_origin_passes_text_through_untouched(probe: str) -> None:
     assert _get_mapper().map_to_unicode(text, from_font=probe) == text
 
 
-@pytest.mark.parametrize("map_key", ALL_MAP_KEYS)
+@pytest.mark.parametrize("map_key", SHIPPED_MAP_KEYS)
 def test_every_map_uses_the_translate_fast_path(map_key: str) -> None:
     """All five maps have single-character keys, so none should need the fold.
 
@@ -181,7 +182,7 @@ def test_per_map_word_caches_do_not_leak_across_maps() -> None:
     mapper = _get_mapper()
     probe = "~"
     expected = {
-        key: mapper.map_to_unicode(probe, from_font=key) for key in ALL_MAP_KEYS
+        key: mapper.map_to_unicode(probe, from_font=key) for key in SHIPPED_MAP_KEYS
     }
     assert len(set(expected.values())) == 3, (
         f"probe is no longer discriminating: {expected}"
@@ -189,14 +190,18 @@ def test_per_map_word_caches_do_not_leak_across_maps() -> None:
 
     # Interleave, and repeat in reverse, so a shared cache cannot be masked by
     # every map happening to be asked in one order only.
-    order = list(ALL_MAP_KEYS) + list(reversed(ALL_MAP_KEYS)) + list(ALL_MAP_KEYS)
+    order = (
+        list(SHIPPED_MAP_KEYS)
+        + list(reversed(SHIPPED_MAP_KEYS))
+        + list(SHIPPED_MAP_KEYS)
+    )
     for key in order:
         assert get_converter_for_map(key)(probe) == expected[key], (
             f"{key} returned another map's cached result"
         )
 
-    caches = {id(_get_compiled_map(key).convert_word) for key in ALL_MAP_KEYS}
-    assert len(caches) == len(ALL_MAP_KEYS)
+    caches = {id(_get_compiled_map(key).convert_word) for key in SHIPPED_MAP_KEYS}
+    assert len(caches) == len(SHIPPED_MAP_KEYS)
 
 
 def test_word_splitting_is_lossless() -> None:
@@ -210,3 +215,44 @@ def test_word_splitting_is_lossless() -> None:
 
     for text in EDGE_CASES:
         assert "".join(_WORD_SPLIT.findall(text)) == text
+
+
+def test_spins_is_synthesised_and_therefore_outside_these_sweeps() -> None:
+    """Why the sweeps above use SHIPPED_MAP_KEYS rather than ALL_MAP_KEYS.
+
+    Every property in this file is stated against npttf2utf's own table: "our compiled
+    pipeline agrees with upstream", "this map uses the translate fast path", "each map
+    has its own word cache". `SPINS_MAP_KEY` has no upstream table -- npttf2utf does not
+    ship the layout -- so those questions have nothing to compare against and
+    `_get_compiled_map` raises `NoMapForOriginException` for it. Sweeping it here failed
+    for the wrong reason.
+
+    Spins is instead Spins keystrokes translated onto Preeti's, then decoded with
+    Preeti's map. That is asserted here, so the exclusion above is a stated property
+    rather than a gap.
+    """
+
+    from npttf2utf.base.exceptions import NoMapForOriginException
+
+    from likhit.extractors.legacy_maps import (
+        SPINS_MAP_KEY,
+        _SPINS_BASE_MAP_KEY,
+        _SPINS_TO_PREETI_KEYS,
+        get_converter_for_map,
+    )
+
+    # It is in ALL_MAP_KEYS -- the scorer may choose it -- but not in the shipped set.
+    assert SPINS_MAP_KEY in ALL_MAP_KEYS
+    assert SPINS_MAP_KEY not in SHIPPED_MAP_KEYS
+    assert set(ALL_MAP_KEYS) - set(SHIPPED_MAP_KEYS) == {SPINS_MAP_KEY}
+
+    # No upstream table, which is the whole reason for the split.
+    with pytest.raises(NoMapForOriginException):
+        _get_compiled_map(SPINS_MAP_KEY)
+
+    # And it really is the delegation it claims to be: for any keystroke text, Spins
+    # equals translate-then-Preeti.
+    spins = get_converter_for_map(SPINS_MAP_KEY)
+    preeti = get_converter_for_map(_SPINS_BASE_MAP_KEY)
+    for probe in ("kl/R5]b", ";'\\][", "0123456789", "cAdM", ""):
+        assert spins(probe) == preeti(probe.translate(_SPINS_TO_PREETI_KEYS)), probe

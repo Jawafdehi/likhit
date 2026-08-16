@@ -14,7 +14,6 @@ from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
 from likhit.extractors.font_classifier import (
     SCANNED_DECOY_TEXT,
     classify_font,
-    is_core_font_name,
     scan_ocr_pages,
     scan_pdf_fonts_by_page,
 )
@@ -658,33 +657,42 @@ def detect_content_legacy_fonts(
 ) -> dict[str, str]:
     """Map base-font name -> legacy map key for mislabeled legacy fonts.
 
-    Considers only bare Latin core fonts that the name-based classifier calls
-    "correct" and whose aggregate span text reads as raw legacy keystrokes.
-    ``skip_pages`` (1-based) excludes scanned-decoy pages — so this never rescues
-    the CIB junk layer (Part A owns those) — and any page outside the requested
-    extraction range.
+    Considers every font the name-based classifier calls "correct" whose
+    aggregate span text reads as raw legacy keystrokes and then validates as
+    Nepali under one of the legacy maps. ``skip_pages`` (1-based) excludes
+    scanned-decoy pages — so this never rescues the CIB junk layer (Part A owns
+    those) — and any page outside the requested extraction range.
+
+    The candidate set is deliberately name-agnostic, because a legacy 8-bit face
+    reaches a PDF under whatever name its producer's subsetter invented. OAG's
+    2070 annual report carries its body font as ``TT339t00`` and the 2067-2072
+    reports carry theirs as ``Spins``; neither is a standard-14 core name, so
+    restricting candidates to core fonts left 436 pages of Preeti keystrokes
+    undecoded. Widening the *name* registry instead would not be safe: the same
+    documents put their clause numbers ("179", "23.2") in a companion font named
+    ``Spins_EXT`` / ``TT33At00`` -- 85% ASCII digits, zero dictionary hits under
+    every map -- which a substring match on the name would remap into garbage.
+    Content is the only signal that separates the two, and the gate below is
+    where it is applied.
     """
 
-    # Cheap pre-check on font metadata: unless a bare Latin core font is present
-    # somewhere, there is nothing to reinterpret, so skip the expensive per-page
-    # text-dict pass entirely (the common pure-Unicode Nepali PDF hits this).
     considered_pages = [
         page_index
         for page_index in range(doc.page_count)
         if (page_index + 1) not in skip_pages
     ]
-    has_core_font = any(
-        is_core_font_name(str(font_info[3]))
-        for page_index in considered_pages
-        for font_info in doc[page_index].get_fonts(full=True)
-    )
-    if not has_core_font:
-        return {}
 
     # Aggregate span text per FULL font name (subset prefix included) so a
     # mislabeled-Preeti embedded font ("ABCDE+Helvetica") is decided separately
     # from a genuine bare core font ("Helvetica") of the same family — mapping
     # one must not corrupt the other's spans.
+    #
+    # There is no metadata pre-check in front of this pass. The one that used to
+    # stand here ("skip unless a standard-14 core font is present") is what hid
+    # the subset-named faces above, and it bought very little: 79 of 80 sampled
+    # corpus documents carry a core font somewhere and paid for the pass anyway.
+    # So the pass is now unconditional, and the ~1% of documents that used to
+    # skip it pay one extra text-dict pass (~10ms per page).
     text_by_font: dict[str, list[str]] = defaultdict(list)
     for page_index in considered_pages:
         page_dict = get_cid_marked_page_dict(doc[page_index])
@@ -697,8 +705,9 @@ def detect_content_legacy_fonts(
 
     content_maps: dict[str, str] = {}
     for font_name, parts in text_by_font.items():
-        if not is_core_font_name(font_name):
-            continue
+        # A font the name-based classifier already routes (legacy_remap, or a
+        # broken-CMap family) is left to that path; this is only for fonts it
+        # calls "correct".
         if classify_font(font_name, "") != "correct":
             continue
         aggregate = "".join(parts)
