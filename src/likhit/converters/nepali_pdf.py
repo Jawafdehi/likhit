@@ -37,9 +37,21 @@ from likhit.font_classifier import classify_fonts_from_stream
 from likhit.handlers.content_blocks import build_content_blocks
 from likhit.handlers.two_column_layout import TwoColumnLayoutHandler
 from likhit.models import ParagraphBlock, TableBlock
-from likhit.pdf_page_analysis import pdf_likely_needs_ocr
+from likhit.pdf_page_analysis import (
+    _is_vowel_poor_latin_token,
+    pdf_likely_needs_ocr,
+)
+
+# These four are imported rather than redefined. Three of them used to exist twice --
+# once here and once in the renderer, byte-identical -- and both copies decided the
+# same question about the same block on either side of the extractor/renderer seam. A
+# fix applied to one would have been a silent divergence, and the known pending fix to
+# _looks_like_page_furniture (a length bound, so a 216-character paragraph that merely
+# mentions a running-head phrase is not discarded) would have had to be landed twice.
 from likhit.renderers.markdown import (
-    _caption_key,
+    _looks_like_page_furniture,
+    _paragraph_ends_with_caption,
+    _render_paragraph_markdown,
     _render_table,
     page_anchor,
     strip_page_anchors,
@@ -769,14 +781,6 @@ def _pipe_heavy_line_count(markdown: str) -> int:
     )
 
 
-def _is_vowel_poor_latin_token(token: str) -> bool:
-    letters = [char for char in token if char.isalpha()]
-    if len(letters) < 4:
-        return False
-    vowels = sum(char in "aeiouAEIOU" for char in letters)
-    return vowels / len(letters) < 0.2
-
-
 def _markdown_quality_score(markdown: str) -> int:
     # Anchors are structural, not content. Scoring them would let the page
     # count sway which candidate conversion wins.
@@ -964,28 +968,6 @@ def _render_markdown_from_blocks(
             if rendered_table.strip():
                 rendered.append((page_number, f"```text\n{rendered_table}\n```"))
     return _assemble_with_page_anchors(rendered, page_numbers)
-
-
-def _looks_like_page_furniture(text: str) -> bool:
-    compact = re.sub(r"\s+", "", text)
-    stripped = text.strip()
-    return (
-        bool(re.match(r"^\d+\s*परिच्छेद", text))
-        or "वार्षिकप्रतिवेदन" in compact
-        or (stripped.isdigit() and len(stripped) <= 3)
-    )
-
-
-def _render_paragraph_markdown(text: str) -> str:
-    lines = [line.rstrip() for line in text.splitlines()]
-    return "  \n".join(line for line in lines if line.strip()).strip()
-
-
-def _paragraph_ends_with_caption(text: str, caption: str) -> bool:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines:
-        return False
-    return _caption_key(lines[-1]) == _caption_key(caption)
 
 
 def _render_two_column_markdown(
