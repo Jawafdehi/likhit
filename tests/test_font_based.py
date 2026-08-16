@@ -1479,3 +1479,46 @@ def test_a_lexeme_does_not_excuse_unrelated_damage_in_the_same_word() -> None:
     assert _duplicate_consonant_count(lexeme + damage) == 1
     # And the lexeme is still excused when it is the only thing there.
     assert _duplicate_consonant_count(lexeme + lexeme) == 0
+
+
+def test_unmark_cids_is_the_inverse_of_marking() -> None:
+    """Distinct from `strip_marked_cids`, which replaces a mark with U+FFFD.
+
+    This recovers the ORIGINAL character, which is what a predicate reading a span's
+    content needs: a marked glyph still carries its identity, it is just offset.
+    """
+
+    from likhit.extractors.font_based import mark_unmappable_cids, unmark_cids
+
+    for probe in ("The Auditor General", "क्र.सं.", "", "a1 -_(", "x" * 200):
+        assert unmark_cids(mark_unmappable_cids(probe)) == probe, probe
+        # and a no-op on text that was never marked
+        assert unmark_cids(probe) == probe, probe
+
+
+def test_the_latin_veto_is_not_blind_to_cid_marked_text() -> None:
+    """The veto must certify marked English, or it fails in the case it most matters.
+
+    A marked CID is `chr(_CID_MARK_BASE + ord(char))`, so `isascii()` is False and the
+    veto's token pattern matches nothing. The predicate therefore answered False for a
+    span of plain English purely because its glyphs had failed to decode -- and a marked
+    span of genuine Latin is exactly what would otherwise be remapped into well-formed
+    Devanagari that spells nothing, with no U+FFFD left for any gate to notice.
+
+    Both arms are asserted, because a fix that made everything read as Latin would pass
+    the marked arm alone.
+    """
+
+    from likhit.extractors.font_based import (
+        _reads_as_latin_words,
+        mark_unmappable_cids,
+    )
+
+    english = "The Office of the Auditor General reviewed the accounts"
+    assert _reads_as_latin_words(english)
+    assert _reads_as_latin_words(mark_unmappable_cids(english))
+
+    # The negative arm: legacy keystrokes must still NOT read as Latin, marked or not.
+    keystrokes = "kl/R5]b ;'\\][ cAdM"
+    assert not _reads_as_latin_words(keystrokes)
+    assert not _reads_as_latin_words(mark_unmappable_cids(keystrokes))

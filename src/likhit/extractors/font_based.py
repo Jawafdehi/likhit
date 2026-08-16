@@ -393,6 +393,23 @@ def mark_unmappable_cids(text: str) -> str:
     )
 
 
+def unmark_cids(text: str) -> str:
+    """Undo :func:`mark_unmappable_cids`, restoring each character it offset.
+
+    Distinct from :func:`strip_marked_cids`, which replaces a mark with a visible
+    U+FFFD for reporting. This recovers the ORIGINAL character, which is what any
+    predicate reading a span's content needs -- a marked glyph still carries its
+    identity, it is just offset.
+    """
+
+    return "".join(
+        chr(ord(char) - _CID_MARK_BASE)
+        if _CID_MARK_BASE <= ord(char) <= _CID_MARK_BASE + _MAX_MARKABLE_CID
+        else char
+        for char in text
+    )
+
+
 def strip_marked_cids(text: str, replacement: str = "�") -> str:
     """Render marked CIDs back to a visible replacement character."""
 
@@ -953,6 +970,16 @@ def _reads_as_latin_words(text: str) -> bool:
     measure of the raw ASCII.
     """
 
+    # Unmark first. A marked CID is chr(_CID_MARK_BASE + ord(char)), so `isascii()` is
+    # False for it and the token pattern below matches nothing -- this predicate returned
+    # False for a span of plain English purely because its glyphs had failed to decode.
+    # That is the one case the veto most needs to catch: a marked span of genuine Latin
+    # would otherwise be remapped into well-formed Devanagari that spells nothing, with no
+    # U+FFFD left for any gate to notice. Verified: the same sentence reads as Latin
+    # plain and did NOT read as Latin marked.
+    #
+    # Done here rather than at the call site so every caller inherits it.
+    text = unmark_cids(text)
     tokens = _LATIN_VETO_TOKEN.findall(text)
     multi_letter = [token for token in tokens if len(token) > 1]
     if not multi_letter:

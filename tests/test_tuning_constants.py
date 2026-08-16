@@ -199,6 +199,45 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "largest CID that fits: _CID_MARK_BASE + this is 0xFFFFD, the top of the "
         "range _MARKED_CID_PATTERN matches. See the invariant test below",
     ),
+    # -- the Latin veto on the content-legacy remap ---------------------------- #
+    #
+    # These four gate whether a span that merely SHARES a legacy face is left as English
+    # instead of being remapped into well-formed Devanagari that spells nothing. Getting
+    # them wrong is silent in both directions: too loose and real Nepali survives
+    # undecoded, too tight and English becomes plausible-looking gibberish with no U+FFFD
+    # for any gate to notice.
+    (
+        "likhit/extractors/font_based.py",
+        "_LATIN_VETO_MIN_CHARS",
+    ): (
+        16,
+        "absolute floor on the run, so a two-word fragment cannot veto a document's "
+        "decode on volume alone",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_LATIN_VETO_MIN_ALPHA_RATIO",
+    ): (
+        0.88,
+        "share of the run that must be alphabetic before it reads as prose rather than "
+        "as keystrokes with punctuation in them",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_LATIN_VETO_MIN_VOWEL_RATIO",
+    ): (
+        0.3,
+        "vowel share: legacy keystroke text is consonant-heavy because the layout puts "
+        "consonants on the home row, so a genuine English run has far more vowels",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_LATIN_VETO_MIN_SHARE",
+    ): (
+        0.1,
+        "share of the FONT's runs that must read as Latin before the veto applies to "
+        "that font at all -- run-level evidence, aggregated per font per document",
+    ),
     # -- content-based legacy detection --------------------------------------- #
     (
         "likhit/extractors/font_based.py",
