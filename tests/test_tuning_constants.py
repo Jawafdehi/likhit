@@ -50,8 +50,17 @@ TWO THINGS THIS FILE IS CAREFUL ABOUT.
   to a free one. Measured: changing that rate from 12 to 1 left the whole suite green
   at 875 passed. All six are now named and registered, and
   `test_the_candidate_score_carries_no_unnamed_weight` closes the class for that
-  function. Repo-wide it stays open by choice: src/ holds 431 distinct non-trivial
-  numeric literals over 635 occurrences, nearly all structural.
+  function. Repo-wide it stays open by choice: src/ holds 432 distinct non-trivial
+  numeric literals over 640 occurrences, nearly all structural.
+
+  🛑 That pair is instrument-dependent, so read it with its definition attached:
+  ``ast.walk`` over every ``src/**/*.py``, counting ``ast.Constant`` of int or float
+  (``bool`` excluded, since it is an int subclass), with 0, 1 and 2 treated as
+  trivial. Change any of those choices and the number moves -- excluding only 0 and 1
+  gives 433 over 743. This docstring said 431 over 635 until review re-derived it and
+  got 432 over 640; neither figure reproduced under any reading of the old wording,
+  because the wording named no instrument. The lesson is the missing definition, not
+  the off-by-one.
 * **Every expected value is a literal.** A test that reads the constant to build its
   own expectation holds at any value -- which is exactly how these came to be
   unpinned. `tests/test_candidate_scoring.py` is the live example: its `_mark()` helper
@@ -637,8 +646,9 @@ def test_the_candidate_score_carries_no_unnamed_weight():
     the anchor two registered derivations cited. Naming them fixes those six; this
     test is what stops a seventh being added the same way.
 
-    Scoped to ``_markdown_quality_score`` deliberately. src/ holds 431 distinct
-    non-trivial numeric literals over 635 occurrences, nearly all structural -- array
+    Scoped to ``_markdown_quality_score`` deliberately. src/ holds 432 distinct
+    non-trivial numeric literals over 640 occurrences (see the module docstring for the
+    instrument -- the pair is meaningless without it), nearly all structural -- array
     indices, small counts, geometry arithmetic -- so a repo-wide version of this test
     would be noise that nobody could keep green. This function is the one whose
     literals are all weights.
