@@ -86,9 +86,9 @@ def test_compiled_map_matches_upstream_on_edge_cases(map_key: str) -> None:
 
 @pytest.mark.parametrize("map_key", ALL_MAP_KEYS)
 def test_compiled_map_matches_upstream_on_real_spans(map_key: str) -> None:
-    # A page cap keeps this to ~1s per map while still covering real legacy text;
-    # the full 12,153-case sweep over every distinct span of all four samples ran
-    # 0 differences on all five maps when the mapper was written.
+    # A page cap keeps this to 0.20s per map while still covering real legacy
+    # text; the full 12,153-case sweep over every distinct span of all four
+    # samples ran 0 differences on all five maps when the mapper was written.
     spans = _sample_spans("kanunpatrika.pdf", limit=600)
     if not spans:
         pytest.skip("sample missing: kanunpatrika.pdf")
@@ -161,6 +161,42 @@ def test_compiled_map_falls_back_when_a_character_map_key_is_multi_character() -
 
     assert compiled._translate_table is None
     assert compiled.convert("abc") == upstream_fold == "abख"
+
+
+def test_per_map_word_caches_do_not_leak_across_maps() -> None:
+    """Each map memoizes words in its own cache, keyed on the word alone.
+
+    This is the failure mode that would be worst and quietest: one shared
+    word->output cache would serve whichever map ran first, so a Kantipur span
+    would silently come back decoded as Preeti. The differential tests above cover
+    it only incidentally (the second map to run would start disagreeing with
+    upstream), so assert it directly.
+
+    ``"~"`` is the probe because it is maximally discriminating -- searched over
+    single ASCII characters and 169 two-character combinations, no input makes all
+    five maps disagree, but ``"~"`` splits them three ways, which is enough for a
+    shared cache to show up.
+    """
+
+    mapper = _get_mapper()
+    probe = "~"
+    expected = {
+        key: mapper.map_to_unicode(probe, from_font=key) for key in ALL_MAP_KEYS
+    }
+    assert len(set(expected.values())) == 3, (
+        f"probe is no longer discriminating: {expected}"
+    )
+
+    # Interleave, and repeat in reverse, so a shared cache cannot be masked by
+    # every map happening to be asked in one order only.
+    order = list(ALL_MAP_KEYS) + list(reversed(ALL_MAP_KEYS)) + list(ALL_MAP_KEYS)
+    for key in order:
+        assert get_converter_for_map(key)(probe) == expected[key], (
+            f"{key} returned another map's cached result"
+        )
+
+    caches = {id(_get_compiled_map(key).convert_word) for key in ALL_MAP_KEYS}
+    assert len(caches) == len(ALL_MAP_KEYS)
 
 
 def test_word_splitting_is_lossless() -> None:

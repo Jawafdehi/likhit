@@ -166,9 +166,11 @@ def _get_mapper():
 # lossless and the per-word pipeline below sees exactly what upstream's does.
 _WORD_SPLIT = re.compile(r"(\s+|\S+)")
 
-# Bounded so a long corpus run cannot grow it without limit. 65536 distinct
-# words is far above any single document: the 128-page law-report sample emits
-# 11,268 legacy spans holding 7,899 distinct words.
+# Bounded so a long corpus run cannot grow it without limit. 65536 is far above
+# any single document: every span of the 128-page law-report sample holds 7,899
+# distinct words, and five warm caches (one per map, which is what
+# choose_legacy_map fills when it scores a span against every candidate) came to
+# 39,495 entries and roughly 1.8 MiB.
 _WORD_CACHE_SIZE = 65536
 
 
@@ -177,19 +179,23 @@ class _CompiledMap:
 
     Upstream ``FontMapper.map_to_unicode`` calls ``re.sub(re.compile(rule[0]), ...)``
     **inside** its loop over every word of every span. Each of the five maps
-    carries 32 post-rules, so converting the 128-page ``kanunpatrika.pdf`` sample
-    costs 3.19M ``re.sub`` and 6.36M ``re._compile`` calls. Measured over that
-    document's 11,268 legacy spans:
+    carries 32 post-rules, so a full conversion of the 128-page ``kanunpatrika.pdf``
+    sample -- which routes **9,460** spans through this class -- cost 3.19M
+    ``re.sub`` and 6.36M ``re._compile`` calls.
+
+    The speed figures below come from a different, larger instrument: **all 11,268
+    non-empty spans** of that document pushed through the Preeti map directly, so
+    they are not the 9,460 above and the two counts should not be mixed.
 
         upstream                          2.351s
         rules compiled once per map       0.448s   5.0x
         plus per-word memoization         0.070s  31.9x
 
     Two independent wins, and the second is the larger one. Memoizing whole
-    *spans* would not have paid -- 11,268 spans hold 8,757 distinct ones, a 1.3x
-    dedupe -- but words repeat far more: the same run is 82,453 cache hits against
-    7,899 misses, a 10.4x dedupe, because Nepali function words and the whitespace
-    tokens recur on every line.
+    *spans* would not have paid -- those 11,268 spans hold 8,757 distinct ones,
+    only a 1.3x dedupe -- but words repeat far more: 90,352 word lookups resolve to
+    7,899 distinct words, an **11.4x** dedupe (82,453 hits to 7,899 misses),
+    because Nepali function words and the whitespace tokens recur on every line.
 
     Output is byte-identical to upstream: 0 differences over 12,153 cases (every
     distinct span of the four legacy samples plus 15 hand-built edge cases) on all
@@ -305,6 +311,15 @@ def get_converter_for_map(map_key: str) -> Callable[[str], str]:
     the content-based path before the name-based one and returns from it directly,
     so an ungated call there reintroduces `"(1)" -> "ढ१ण्"` even with
     :func:`get_converter` fixed.
+
+    An unknown ``map_key`` raises ``NoMapForOriginException`` **here**, at
+    construction. That is eager where this used to be lazy: it once returned a
+    closure over ``FontMapper.map_to_unicode``, which raised only when the closure
+    was called. Nothing in-repo can tell the difference -- every caller passes a
+    key from :data:`ALL_MAP_KEYS` or :data:`_REGISTRY` and calls the result
+    immediately -- but a caller that builds a converter early and uses it later
+    would now fail at build time. :func:`get_output_converter_for_map` inherits
+    this, since it resolves its base converter up front.
     """
 
     # Upstream's own passthrough: map_to_unicode returns the input untouched for a

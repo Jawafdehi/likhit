@@ -98,7 +98,7 @@ jobs:
 
       # -n auto is passed here rather than in pyproject's addopts, so that local
       # single-file runs do not pay xdist's worker startup. ubuntu-latest is
-      # 4 vCPU, so this is ~4 workers: measured 33.6s at -n 4 against 65.0s
+      # 4 vCPU, so this is ~4 workers: measured 30.7s at -n 4 against ~60s
       # serial. See the [tool.pytest.ini_options] comment for the full table.
       - name: Run tests
         env:

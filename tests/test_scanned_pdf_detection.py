@@ -248,19 +248,19 @@ def test_npttf2utf_syntaxwarning_is_suppressed(tmp_path: Path) -> None:
 
     Forces a fresh compile of the bundled preetimapper under a strict
     ``error::SyntaxWarning`` filter; our import-site suppression must keep it
-    from becoming fatal. Skips gracefully if the site-packages cache is not
-    writable.
+    from becoming fatal.
+
+    The freshness is bought with ``-X pycache_prefix`` pointed at an empty
+    directory, **not** by deleting ``preetimapper*.pyc`` out of site-packages,
+    and that distinction is load-bearing rather than stylistic. Cached bytecode
+    is not recompiled, so the warning never fires and this test passes *even with
+    the suppression removed altogether* -- measured. Deleting the shared .pyc made
+    that a race the moment the suite gained ``-n auto``: any sibling worker
+    importing ``npttf2utf.base.preetimapper`` between the unlink and this
+    subprocess's import restores the file and the assertions below go vacuous. A
+    private cache directory cannot be repopulated by anyone else, needs no
+    writable site-packages, and leaves other workers' bytecode alone.
     """
-
-    import npttf2utf
-
-    pkg_dir = Path(npttf2utf.__file__).parent
-    pyc_files = list(pkg_dir.rglob("preetimapper*.pyc"))
-    try:
-        for pyc in pyc_files:
-            pyc.unlink()
-    except OSError:
-        pytest.skip("npttf2utf bytecode cache is not writable")
 
     script = textwrap.dedent(
         """
@@ -272,12 +272,15 @@ def test_npttf2utf_syntaxwarning_is_suppressed(tmp_path: Path) -> None:
         print("SUPPRESSION-OK")
         """
     )
+    pycache = tmp_path / "pycache"
     completed = subprocess.run(
-        [sys.executable, "-c", script],
+        [sys.executable, "-X", f"pycache_prefix={pycache}", "-c", script],
         capture_output=True,
         text=True,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         cwd=str(ROOT),
     )
     assert "SUPPRESSION-OK" in completed.stdout, completed.stderr
+    # Compiled fresh, so an unsuppressed warning would surface here. Under
+    # `error::SyntaxWarning` it arrives as a SyntaxError naming the escape.
     assert "invalid escape sequence" not in completed.stderr

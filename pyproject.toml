@@ -95,22 +95,24 @@ dev = [
 ]
 
 # ---------------------------------------------------------------------------
-# pytest. Every test lives under tests/ (tests/ and tests/integration are the
-# only two directories holding test modules), so pinning testpaths keeps
-# collection off site/ and the repo root.
+# pytest. testpaths is pinned to tests/, which is where every test module already
+# lives (tests/ and tests/integration are the only two directories holding any).
+# Measured: it changes nothing today -- 574 collected in 0.80s either way, and
+# there is nothing collectible under site/ -- so treat it as a constraint on
+# future collection, not as a fix for anything.
 #
 # `-n auto` is deliberately NOT in addopts, on measured grounds. Whole-suite
-# figures on a 64-core box, all three runs identical at 538 passed / 10 skipped
-# / 5 xfailed:
+# figures on a 64-core box, every run identical at 559 passed / 10 skipped /
+# 5 xfailed. Ranges are where the run was repeated:
 #
-#     serial    65.0s
-#     -n 4      33.6s   (1.9x -- what a 4-vCPU CI runner sees)
-#     -n 8      31.4s
-#     -n 16     31.5-31.9s  (no gain over 8; reproduced twice)
-#     -n auto   23.0-23.7s  (2.8x; `auto` is 64 here)
+#     serial    59.9-61.5s
+#     -n 4      30.7s   (2.0x -- what a 4-vCPU CI runner sees)
+#     -n 8      28.3s
+#     -n 16     29.4s   (no gain over 8)
+#     -n auto   21.1-21.8s  (2.8x; `auto` is 64 here)
 #
 # But it is a net loss on the single-file runs that dominate local iteration:
-# tests/test_convert.py alone is 6.81s serial and 7.72s under `-n auto`. `-p
+# tests/test_convert.py alone is 6.76s serial and 7.68s under `-n auto`. `-p
 # xdist` also disables `--pdb`. So parallelism is opt-in per invocation:
 #
 #     uv run pytest -n auto                  # whole suite, fastest
@@ -121,9 +123,14 @@ dev = [
 #
 # Do not expect linear scaling, for two reasons. The serial suite already runs
 # at ~181% CPU because PyMuPDF threads internally; and the parallel floor is set
-# by the longest single test, which after the page-slicing work is the 14.2s
-# full-document kanunpatrika smoke in tests/integration/test_sample_pdfs.py.
-# No worker count gets the suite below that.
+# by the longest single test, which is the 11.7s full-document kanunpatrika smoke
+# in tests/integration/test_sample_pdfs.py. No worker count gets the suite below
+# that.
+#
+# One hazard worth knowing before adding workers: a test that mutates state
+# shared across workers can go vacuous rather than red. See
+# tests/test_scanned_pdf_detection.py::test_npttf2utf_syntaxwarning_is_suppressed,
+# which used to delete bytecode from site-packages and had to stop.
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
