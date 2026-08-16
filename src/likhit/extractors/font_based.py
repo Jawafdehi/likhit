@@ -2932,6 +2932,28 @@ def choose_legacy_map_detailed(
     stays silent and the shipped result is returned unchanged. That forecloses
     ``abstain -> decided`` **by construction**: the gate can only ever move a span
     from one map to another, never bring a rejected span into the transcript.
+
+    🛑 ``decided -> abstain`` needed a guard, and did NOT have one. Raised in review and
+    measured on real spans: across the first 3 CIAA reports, 21,376 distinct spans, 2,015
+    of which pass 1 decides, the gate changes the winner on 275 and turned **2** into
+    abstentions -- i.e. it dropped text that ships today. Synthetic strings cannot find
+    this: 60,000 of them abstained in pass 1, so they never reach the region where the
+    gate does anything.
+
+    Both were the ACCEPT-GATE path, and neither abstention was a finding about the span:
+
+    * ``/sddWo] ?=%,!!,**,^&).() ...`` -- pass 1 picks Spins and it passes; pass 2
+      promotes Preeti, which FAILS. An unacceptable candidate is not a better one, so
+      there is nothing here to prefer over pass 1's accepted answer.
+    * ``lhNnf lzIff sfof{no, 88]nw'/f`` -- the same map wins BOTH passes. Pass 1 reaches
+      it through the tie path, so it gates the MASKED reading and accepts; pass 2 finds
+      no tie under the gated key, so it gates the UNMASKED reading and rejects. The
+      abstention is a disagreement between the two passes about which text to gate, not
+      evidence about the span.
+
+    So pass 2 falls back to the shipped choice whenever it abstains. That makes "can only
+    ever move a span from one map to another" true in both directions rather than one,
+    which is what the sentence above always claimed.
     """
 
     margin = (
@@ -2951,11 +2973,16 @@ def choose_legacy_map_detailed(
     # like quantities. A negative threshold makes every candidate ineligible, which
     # is the silent case again and orders exactly as shipped.
     threshold = float(_mixed_letter_digit_count(winner_reading) - margin)
-    return _choose_legacy_map_ranked(
+    gated = _choose_legacy_map_ranked(
         text,
         _map_ranking_key_margin_gated(threshold),
         mixed_threshold=threshold,
     )
+    # An abstaining second pass is not evidence against the first pass's accepted
+    # answer -- see the `decided -> abstain` note above, where both measured cases are
+    # artifacts of pass 2 rather than findings about the span. Keeping `shipped` is what
+    # makes this gate strictly a map-to-map move.
+    return gated if gated.map_key is not None else shipped
 
 
 def _choose_legacy_map_ranked(

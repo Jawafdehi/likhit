@@ -691,6 +691,14 @@ class _StubDoc:
     page_count = 1
 
     def __getitem__(self, index: int) -> _StubPage:
+        # Bounded, so the stub behaves like the `fitz.Document` it stands in for.
+        # Raised in review. NOT a live bug: `detect_latin_acronym_survivors` iterates
+        # `range(doc.page_count)`, so it never indexes past the end. But an unbounded
+        # `__getitem__` makes this object an infinite sequence, so the day production
+        # switches to `for page in doc` the suite hangs instead of failing -- and a
+        # hanging test is the least diagnosable kind. Cheap fidelity, loud failure.
+        if index != 0:
+            raise IndexError(index)
         return _StubPage()
 
 

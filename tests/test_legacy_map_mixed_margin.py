@@ -353,3 +353,73 @@ class TestGateCannotManufactureADecision:
         )
         # Pass 1 shipped (None), pass 2 gated at mixed(winner) - margin = 13 - 5.
         assert passes == [None, 8.0], f"expected [None, 8.0], got {passes}"
+
+
+# ------------------------------------------------- decided -> abstain, the other way
+
+#: Two real CIAA spans on which the gate, as first written, turned a DECIDED span into
+#: an abstention -- i.e. dropped text that ships today. Found by review, then located by
+#: sweeping the first 3 reports: 21,376 distinct spans, 2,015 decided by pass 1, 275
+#: winners changed by the gate, and these 2 abstained.
+#:
+#: 🛑 Synthetic fixtures cannot reach this. 60,000 generated keystroke strings all
+#: abstained in PASS 1, so the gate never ran on any of them. That is why these are
+#: verbatim corpus spans and not constructed ones.
+DECIDED_THEN_ABSTAINED = [
+    # pass 1 picks Spins and it passes the accept gate; pass 2 promotes Preeti, which
+    # FAILS it. An unacceptable candidate is not a better one.
+    (1, "/sddWo] ?=%,!!,**,^&).() cfkm\"nfO{ u}/sfg'gL ¿kdf nfe k'¥ofpg] / g]kfn"),
+    # Subtler, and not what the review described: the SAME map wins both passes. Pass 1
+    # reaches it through the tie path, so it gates the MASKED reading and accepts; pass 2
+    # finds no tie under the gated key, so it gates the UNMASKED reading and rejects.
+    (0, "lhNnf lzIff sfof{no, 88]nw'/f"),
+]
+
+
+@pytest.mark.parametrize(("margin", "text"), DECIDED_THEN_ABSTAINED)
+def test_the_gate_never_turns_a_decided_span_into_an_abstention(
+    monkeypatch, margin: float, text: str
+) -> None:
+    """The gate's stated invariant, in the direction it was not guarded in.
+
+    Its docstring always claimed the gate "can only ever move a span from one map to
+    another". `abstain -> decided` was foreclosed by construction; `decided -> abstain`
+    was not, and these two spans did it. An abstaining second pass is not evidence
+    against the first pass's accepted answer, so pass 2 now falls back to it.
+    """
+
+    monkeypatch.delenv(fb._MIXED_MARGIN_ENV_VAR, raising=False)
+
+    shipped = fb._choose_legacy_map_ranked(
+        text, fb._map_ranking_key, mixed_threshold=None
+    )
+    assert shipped.map_key is not None, (
+        "fixture must be DECIDED without the gate, or this test proves nothing"
+    )
+
+    gated = fb.choose_legacy_map_detailed(text, mixed_margin=margin)
+    assert gated.map_key is not None, "the gate dropped a span that ships today"
+    # Identical, not merely non-None: the fallback must carry the shipped choice's
+    # `ambiguous` set too, or the second fixture's masked code points would be decoded
+    # as though the tie had been settled.
+    assert gated == shipped
+
+
+def test_the_fallback_does_not_suppress_a_legitimate_winner_change(monkeypatch) -> None:
+    """The control. A fallback that swallowed every pass-2 result would pass the test
+    above while making the gate inert, which is the failure mode worth guarding: the
+    gate exists to change winners, and it changes 275 of them on those 3 reports.
+    """
+
+    monkeypatch.delenv(fb._MIXED_MARGIN_ENV_VAR, raising=False)
+
+    text = AGGREGATE_3719
+    shipped = fb._choose_legacy_map_ranked(
+        text, fb._map_ranking_key, mixed_threshold=None
+    )
+    gated = fb.choose_legacy_map_detailed(text, mixed_margin=5)
+    assert shipped.map_key is not None and gated.map_key is not None
+    assert gated.map_key != shipped.map_key, (
+        "this fixture is the measured winner-change case; if the gate no longer moves "
+        "it, the fallback has made the gate inert"
+    )
