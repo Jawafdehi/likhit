@@ -109,16 +109,23 @@ def _duplicates(kind: str) -> dict[str, list[tuple[str, ast.AST]]]:
 def test_the_sweep_sees_a_real_population():
     """Guard against the whole file passing because the scan found nothing.
 
-    Both totals are exact. If a refactor changes them, the change is either a merge
-    (good, update the number) or a new duplicate (which the tests below will name).
+    FLOORS plus named instances, deliberately not exact counts. An exact count would
+    also catch coverage silently shrinking, but it breaks on every unrelated change that
+    adds a module-level definition anywhere in src/ -- which on a repo with concurrent
+    work means an unrelated red for whoever merges second. Measured: that happened.
+
+    The real guards against shrinkage are elsewhere and are specific: the duplicate
+    tests below assert a SET rather than a count, so both a new duplicate and a
+    disappeared one are named, and test_the_four_merged_functions_are_each_defined_
+    exactly_once pins the four with history individually.
     """
 
     definitions = _module_level_definitions()
     functions = [k for k in definitions if k[0] == "func"]
     constants = [k for k in definitions if k[0] == "const"]
 
-    assert len(functions) == 261, len(functions)
-    assert len(constants) == 99, len(constants)
+    assert len(functions) >= 240, len(functions)
+    assert len(constants) >= 90, len(constants)
     # And the sweep really reaches the modules this file is about.
     assert ("func", "_looks_like_page_furniture") in definitions
     assert ("const", "_HEADER_Y_MAX") in definitions
