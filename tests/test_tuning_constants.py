@@ -42,6 +42,16 @@ TWO THINGS THIS FILE IS CAREFUL ABOUT.
 * **The registry is checked against an AST scan of the source**, so a constant added
   later must be registered. Pinning today's 23 would close 23 instances and leave the
   class open.
+* **The scan sees NAMED module-level constants only**, which left a real hole: six
+  weights in `_markdown_quality_score` -- the function that decides which candidate
+  transcript ships -- were inline literals in the same expression as two that were
+  named here. Worse, the two named ones stated their derivations against one of the
+  unpinned literals ("half the U+FFFD/NUL rate of 12"), so pinned values were anchored
+  to a free one. Measured: changing that rate from 12 to 1 left the whole suite green
+  at 875 passed. All six are now named and registered, and
+  `test_the_candidate_score_carries_no_unnamed_weight` closes the class for that
+  function. Repo-wide it stays open by choice: src/ holds 431 distinct non-trivial
+  numeric literals over 635 occurrences, nearly all structural.
 * **Every expected value is a literal.** A test that reads the constant to build its
   own expectation holds at any value -- which is exactly how these came to be
   unpinned. `tests/test_candidate_scoring.py` is the live example: its `_mark()` helper
@@ -90,15 +100,78 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
     (
         "likhit/converters/nepali_pdf.py",
         "_EXCESS_SINGLE_TOKEN_PENALTY",
-    ): (6, "per excess single-token line; half the U+FFFD/NUL rate of 12"),
+    ): (
+        6,
+        "per excess single-token line; half _UNDECODED_GLYPH_PENALTY. Stated "
+        "against the CONSTANT, not against the literal 12 -- when this derivation "
+        "said 'the U+FFFD/NUL rate of 12' that rate was an inline literal nothing "
+        "pinned, so this pin was anchored to a free number",
+    ),
     (
         "likhit/converters/nepali_pdf.py",
         "_MATRA_DAMAGE_PENALTY",
     ): (
         8,
-        "per matra-damage unit. Between the single-token rate (6) and the "
-        "U+FFFD/NUL rate (12): a damaged matra is worse than a bad line break and "
-        "better than a glyph that did not decode at all",
+        "per matra-damage unit. Between _EXCESS_SINGLE_TOKEN_PENALTY and "
+        "_UNDECODED_GLYPH_PENALTY: a damaged matra is worse than a bad line break "
+        "and better than a glyph that did not decode at all. The ordering is "
+        "asserted below, so the derivation is checked rather than merely stated",
+    ),
+    # The rest of _markdown_quality_score's weights. These were inline literals in
+    # the same arithmetic expression as the two above, so this guard covered half of
+    # one function's tuning surface. Measured before naming them: changing the
+    # U+FFFD/NUL rate from 12 to 1 left the whole suite green at 875 passed -- the
+    # full baseline -- while the two derivations above cited that very number.
+    (
+        "likhit/converters/nepali_pdf.py",
+        "_DEVANAGARI_CHAR_CREDIT",
+    ): (
+        3,
+        "credit per Devanagari character; with the token count it is one of only two "
+        "positive terms, because Devanagari volume is the primary evidence that a "
+        "Nepali candidate decoded at all. Absolute value unrecorded when introduced",
+    ),
+    (
+        "likhit/converters/nepali_pdf.py",
+        "_SUSPICIOUS_TOKEN_PENALTY",
+    ): (
+        8,
+        "per token carrying legacy-garble punctuation or letter/digit mixing; equal "
+        "to _MATRA_DAMAGE_PENALTY. Absolute value unrecorded when introduced",
+    ),
+    (
+        "likhit/converters/nepali_pdf.py",
+        "_VOWEL_POOR_TOKEN_PENALTY",
+    ): (
+        3,
+        "per vowel-poor Latin token; equal to _DEVANAGARI_CHAR_CREDIT, so one such "
+        "token cancels one Devanagari character. Absolute value unrecorded",
+    ),
+    (
+        "likhit/converters/nepali_pdf.py",
+        "_PIPE_HEAVY_LINE_PENALTY",
+    ): (
+        4,
+        "per pipe-heavy line; between _VOWEL_POOR_TOKEN_PENALTY and "
+        "_EXCESS_SINGLE_TOKEN_PENALTY. Absolute value unrecorded",
+    ),
+    (
+        "likhit/converters/nepali_pdf.py",
+        "_CID_GARBAGE_PENALTY",
+    ): (
+        12,
+        "per '(cid:N)' run; equal to _UNDECODED_GLYPH_PENALTY, because a cid literal "
+        "IS a glyph that did not decode -- it is the same damage spelled differently",
+    ),
+    (
+        "likhit/converters/nepali_pdf.py",
+        "_UNDECODED_GLYPH_PENALTY",
+    ): (
+        12,
+        "per U+FFFD or NUL. The heaviest weight in the score and the anchor the "
+        "others are stated against: a glyph that did not decode is the worst thing a "
+        "candidate can ship. See the NUL comment at the call site for why a NUL must "
+        "not be cheaper than a U+FFFD",
     ),
     # -- CID marking ---------------------------------------------------------- #
     (
@@ -507,4 +580,90 @@ def test_the_two_layout_modules_agree_on_the_geometry_they_share():
     assert (
         structure_detection_module._COLUMN_GUTTER
         == two_column_layout_module._COLUMN_GUTTER
+    )
+
+
+def test_the_scoring_weights_form_the_ordering_their_derivations_claim():
+    """The derivations above are prose; this makes them checked.
+
+    Three of them state a RELATIONSHIP rather than an absolute -- "half
+    _UNDECODED_GLYPH_PENALTY", "between", "equal to". A relationship stated only in a
+    comment goes stale the moment one side moves, and the pin on each individual value
+    cannot notice: every pin would still hold at its own number while the sentence
+    joining them became false.
+    """
+
+    from likhit.converters import nepali_pdf as m
+
+    # "half _UNDECODED_GLYPH_PENALTY"
+    assert m._EXCESS_SINGLE_TOKEN_PENALTY * 2 == m._UNDECODED_GLYPH_PENALTY
+    # "between _EXCESS_SINGLE_TOKEN_PENALTY and _UNDECODED_GLYPH_PENALTY"
+    assert (
+        m._EXCESS_SINGLE_TOKEN_PENALTY
+        < m._MATRA_DAMAGE_PENALTY
+        < m._UNDECODED_GLYPH_PENALTY
+    )
+    # "equal to _MATRA_DAMAGE_PENALTY"
+    assert m._SUSPICIOUS_TOKEN_PENALTY == m._MATRA_DAMAGE_PENALTY
+    # "equal to _DEVANAGARI_CHAR_CREDIT, so one such token cancels one character"
+    assert m._VOWEL_POOR_TOKEN_PENALTY == m._DEVANAGARI_CHAR_CREDIT
+    # "between _VOWEL_POOR_TOKEN_PENALTY and _EXCESS_SINGLE_TOKEN_PENALTY"
+    assert (
+        m._VOWEL_POOR_TOKEN_PENALTY
+        < m._PIPE_HEAVY_LINE_PENALTY
+        < m._EXCESS_SINGLE_TOKEN_PENALTY
+    )
+    # "a cid literal IS a glyph that did not decode"
+    assert m._CID_GARBAGE_PENALTY == m._UNDECODED_GLYPH_PENALTY
+    # and the anchor really is the heaviest weight in the score
+    assert m._UNDECODED_GLYPH_PENALTY == max(
+        m._DEVANAGARI_CHAR_CREDIT,
+        m._SUSPICIOUS_TOKEN_PENALTY,
+        m._VOWEL_POOR_TOKEN_PENALTY,
+        m._PIPE_HEAVY_LINE_PENALTY,
+        m._EXCESS_SINGLE_TOKEN_PENALTY,
+        m._MATRA_DAMAGE_PENALTY,
+        m._CID_GARBAGE_PENALTY,
+        m._UNDECODED_GLYPH_PENALTY,
+    )
+
+
+def test_the_candidate_score_carries_no_unnamed_weight():
+    """Closes the CLASS, not the six instances that were found.
+
+    This file's own limit, recorded in its docstring, is that it sees *named*
+    module-level constants only -- so a weight written inline is invisible to it. Six
+    were, in the one function that decides which transcript ships, and one of them was
+    the anchor two registered derivations cited. Naming them fixes those six; this
+    test is what stops a seventh being added the same way.
+
+    Scoped to ``_markdown_quality_score`` deliberately. src/ holds 431 distinct
+    non-trivial numeric literals over 635 occurrences, nearly all structural -- array
+    indices, small counts, geometry arithmetic -- so a repo-wide version of this test
+    would be noise that nobody could keep green. This function is the one whose
+    literals are all weights.
+    """
+
+    import ast
+    import inspect
+    import textwrap
+
+    from likhit.converters import nepali_pdf as m
+
+    source = textwrap.dedent(inspect.getsource(m._markdown_quality_score))
+    literals = sorted(
+        {
+            node.value
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, (int, float))
+            and not isinstance(node.value, bool)
+        }
+    )
+
+    # 0 and 1 are structural here: an empty-input guard and a divide-by-zero floor.
+    assert literals == [0, 1], (
+        f"unnamed numeric weight(s) in _markdown_quality_score: "
+        f"{[v for v in literals if v not in (0, 1)]}. Every weight in this function "
+        f"must be a module-level constant, so the registry above covers it."
     )
