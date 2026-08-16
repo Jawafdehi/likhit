@@ -35,8 +35,11 @@ font off the host is a test that passes or fails by which machine ran it.
 
 from __future__ import annotations
 
+import ast
 import inspect
+from pathlib import Path
 import re
+import textwrap
 
 import pymupdf as fitz
 import pytest
@@ -113,20 +116,33 @@ def _page_fragments(page: fitz.Page) -> list[TextFragment]:
 
 
 def _extract_one_table(**kwargs):
+    # `Table`/`TableCell` are slotted dataclasses holding no page handle (see
+    # models/types.py), so using the result after `doc.close()` is safe. Worth stating,
+    # because "use an extraction result after closing the document" is normally a bug.
     doc, page = _ruled_table_page(**kwargs)
     try:
         tables = detect_page_tables(page, _page_fragments(page))
     finally:
         doc.close()
-    assert len(tables) == 1, f"fixture must yield exactly one table, got {len(tables)}"
+    assert len(tables) == 1, (
+        f"expected exactly one table from this fixture, got {len(tables)}. Either the "
+        "fixture stopped describing a ruled table, or table DETECTION regressed -- the "
+        "second is the likelier cause and the more serious one."
+    )
     return tables[0]
 
 
 def _cell(table, row: int, col: int) -> str:
+    # Raises rather than returning "": an `in`-style assertion against a missing cell
+    # would otherwise read as a text mismatch, and a missing cell is a different and
+    # more serious failure.
     for cell in table.cells:
         if cell.row == row and cell.col == col:
             return cell.text
-    return ""
+    raise AssertionError(
+        f"no cell at ({row}, {col}); table has "
+        f"{sorted((c.row, c.col) for c in table.cells)}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -139,6 +155,15 @@ def test_detect_page_tables_output_renders_end_to_end():
 
     Everything below narrows this. If this breaks, the seam moved and the narrower
     assertions will say where.
+
+    ⚠️ A THIRD SHARP EDGE, disclosed here because this is the first assertion a reader
+    meets: the output below is **not a GFM table**. There is no ``|---|---|---|``
+    delimiter row, and ``render_table_markdown`` never emits one -- the only ``---`` in
+    the renderer is frontmatter. Under GFM a pipe table without a delimiter row is three
+    lines of literal text with pipes in them, not a table. That is the shipped behaviour
+    and consumers treat it as text, so it is pinned as-is; it is recorded because a
+    reader will otherwise take this assertion for the renderer's contract with Markdown,
+    and it is not one.
     """
 
     table = _extract_one_table()
@@ -204,42 +229,166 @@ def test_cell_membership_is_decided_by_the_fragment_centre_not_by_overlap():
 def test_edge_tolerance_is_the_slack_on_that_centre_test():
     # Pinned exactly rather than to a range: a wider tolerance pulls neighbouring
     # fragments into a cell, which is the failure mode above.
+    #
+    # Also pinned in tests/test_tuning_constants.py, as one of a closed set. Two files
+    # asserting one value is deliberate -- here for the reason it matters at the seam,
+    # there so no tuning constant is free -- but they move together.
     assert _EDGE_TOLERANCE == 1.5
 
 
 # --------------------------------------------------------------------------- #
 # 3. What those emissions make the renderer decide.
 #
-# This is the sharp edge, and it is pinned rather than fixed. Every one of these
-# classifiers uses `fullmatch` or an anchored pattern with no `re.MULTILINE`, so a
-# newline anywhere in a cell makes the verdict False -- whatever the first line says.
+# The sharp edge, pinned rather than fixed.
+#
+# 🛑 It is NOT true that every classifier here is newline-sensitive, and an earlier
+# version of this file said so. Each has several legs, and only some legs care:
+#
+#   _looks_like_data_key         one leg,   `_SERIAL_PATTERN.fullmatch`
+#   _is_record_key_header        no pattern at all -- whitespace-stripped set
+#                                membership, so it is newline-sensitive by
+#                                COLLAPSING, and no re flag could change that
+#   _is_decision_fragment        two legs; `_DATE_CASE_PATTERN.search` is UNANCHORED
+#                                and survives a newline in either position
+#   _looks_like_page_furniture   three legs; `re.match(r"^\d+\s*परिच्छेद")` is
+#                                start-anchored (so a PREFIX kills it, a SUFFIX does
+#                                not), the `in compact` substring leg is newline-blind,
+#                                and the isdigit leg dies on either
+#
+# So the table below names the LEG, and each row is a measured verdict rather than an
+# instance of a rule. Rows that stay True are as load-bearing as the ones that go
+# False: they are where "just add re.MULTILINE" would change nothing and a reader
+# would conclude the guard was working.
 # --------------------------------------------------------------------------- #
 
-_NEWLINE_SENSITIVE_CLASSIFIERS = (
-    ("_looks_like_data_key", "1", "1\n(a)"),
-    ("_is_record_key_header", "no.", "no.\n(a)"),
-    ("_is_decision_fragment", "1", "1\n(a)"),
-    ("_looks_like_page_furniture", "1", "1\n(a)"),
+# (classifier, which leg decides it, positive input, transformation, verdict after)
+_LEG_CASES = (
+    ("_looks_like_data_key", "_SERIAL_PATTERN.fullmatch", "1", "prefix", False),
+    ("_looks_like_data_key", "_SERIAL_PATTERN.fullmatch", "1", "suffix", False),
+    (
+        "_is_record_key_header",
+        "whitespace-collapsed set membership",
+        "no.",
+        "prefix",
+        False,
+    ),
+    (
+        "_is_record_key_header",
+        "whitespace-collapsed set membership",
+        "no.",
+        "suffix",
+        False,
+    ),
+    ("_is_decision_fragment", "short-digit leg", "1", "prefix", False),
+    (
+        "_is_decision_fragment",
+        "_DATE_CASE_PATTERN.search, UNANCHORED",
+        "01/CR-2",
+        "prefix",
+        True,
+    ),
+    (
+        "_is_decision_fragment",
+        "_DATE_CASE_PATTERN.search, UNANCHORED",
+        "01/CR-2",
+        "suffix",
+        True,
+    ),
+    (
+        "_looks_like_page_furniture",
+        "re.match on ^\\d+ परिच्छेद, start-anchored",
+        "2 परिच्छेद",
+        "prefix",
+        False,
+    ),
+    (
+        "_looks_like_page_furniture",
+        "re.match ignores a trailing newline",
+        "2 परिच्छेद",
+        "suffix",
+        True,
+    ),
+    (
+        "_looks_like_page_furniture",
+        "substring leg, newline-blind",
+        "वार्षिक प्रतिवेदन",
+        "prefix",
+        True,
+    ),
+    ("_looks_like_page_furniture", "isdigit leg", "123", "prefix", False),
 )
 
 
 @pytest.mark.parametrize(
-    ("name", "single", "joined"), _NEWLINE_SENSITIVE_CLASSIFIERS, ids=lambda v: str(v)
+    ("name", "leg", "positive", "where", "after"),
+    _LEG_CASES,
+    ids=lambda v: str(v).replace(" ", "-"),
 )
-def test_a_newline_joined_cell_defeats_every_shape_classifier(name, single, joined):
+def test_each_classifier_leg_reacts_to_a_newline_as_measured(
+    name, leg, positive, where, after
+):
     classifier = getattr(markdown_module, name)
+    joined = f"zzz\n{positive}" if where == "prefix" else f"{positive}\n(a)"
 
-    assert classifier(single) is True
-    assert classifier(joined) is False
+    assert classifier(positive) is True, (
+        f"{name}: {leg} no longer fires on {positive!r}"
+    )
+    assert classifier(joined) is after, f"{name}: {leg}, {where} newline"
 
 
 def test_no_shape_pattern_in_the_renderer_is_multiline_aware():
-    """Which is *why* section 3 holds, kept separate so the cause is asserted too.
+    """The cause, asserted over the SOURCE rather than the module namespace.
 
-    A future author adding ``re.MULTILINE`` to make one of these newline-tolerant
-    would be making a corpus-visible change, and this is where they find out.
+    ``vars(markdown_module)`` sees only patterns bound at module level -- three of them
+    -- and `_looks_like_page_furniture` compiles its anchored pattern INLINE, so no
+    ``re.Pattern`` object for it ever exists there. Measured: adding ``re.MULTILINE`` to
+    that inline pattern in both copies of the predicate flips
+    ``_looks_like_page_furniture("x\n2 परिच्छेद")`` from False to True -- any block whose
+    *second* line starts a chapter heading is then discarded as page furniture -- and the
+    full suite stayed at 551 passed, this branch's own baseline. Fully green.
+
+    So the scan reads the source, which is the same reason
+    `test_pymupdf_flag_words.py` scans source for its call sites: a guard is only as
+    wide as the set of places it looks.
+
+    This cannot cover `_is_record_key_header`, which has no pattern at all -- its
+    newline-sensitivity comes from whitespace collapsing. `_LEG_CASES` above is what
+    covers that one, and it is why both exist.
     """
 
+    module_source = Path(markdown_module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(module_source)
+
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "re"
+        ):
+            continue
+        rendered = ast.unparse(node)
+        if "MULTILINE" in rendered or re.search(r"\bre\.M\b", rendered):
+            offenders.append(f"{node.lineno}: {rendered[:80]}")
+
+    # And an inline (?m) in any string literal in the module, which no flag scan sees.
+    inline = [
+        f"{node.lineno}: {node.value[:60]}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "(?m" in node.value
+    ]
+
+    assert offenders + inline == [], (
+        "a renderer pattern became MULTILINE. That makes a shape classifier match on "
+        "any LINE of a cell rather than on the cell, which changes rendered output "
+        f"corpus-wide -- see this file's section 3. {offenders + inline}"
+    )
+
+    # The namespace check is kept as well: it catches a pattern compiled at import time
+    # with flags passed some way the source scan above does not model.
     for name, pattern in vars(markdown_module).items():
         if isinstance(pattern, re.Pattern):
             assert not pattern.flags & re.MULTILINE, name
@@ -300,7 +449,15 @@ def test_the_page_furniture_predicate_is_defined_twice_and_the_copies_agree():
         "the copies were merged -- good; delete this test and keep the agreement "
         "assertion below only if a shared helper still has two call sites"
     )
-    assert inspect.getsource(renderer) == inspect.getsource(converter)
+
+    # Compared as parsed syntax, not as bytes. Byte-equality fails on a comment, a
+    # docstring or different line wrapping -- none of which is divergence -- and that
+    # failure would be indistinguishable from the real thing this guards.
+    def _shape(function: object) -> str:
+        source = textwrap.dedent(inspect.getsource(function))
+        return ast.dump(ast.parse(source))
+
+    assert _shape(renderer) == _shape(converter)
 
     for text in (
         "12",
