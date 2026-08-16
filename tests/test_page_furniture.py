@@ -6,11 +6,23 @@ used to condemn the whole block. `_looks_like_page_furniture` is a substring tes
 asked it about the whole block, and a `TableBlock` neighbour armed the drop — so a
 page whose header the layout pass folded into its body lost every character.
 
-Measured on the CIAA corpus (VOL-668): 9 fully-texted pages emptied — 2072-73 p58,
-2073-74 p15 and seven pages of 2081-82 — and 63,640 Devanagari characters gone
-across all 13 reports, every page with a healthy PDF text layer. The corpus-scale
-proof lives outside this repo, in the corruption-research audit tree; these pins
-hold the rule itself.
+Measured on all 13 CIAA annual reports, on untouched `main`, at BLOCK grain: the
+rule drops 877 paragraph blocks — 793 pure furniture, correctly dropped, and 84
+carrying real body text, losing 86,812 characters. Every one has a healthy PDF text
+layer.
+
+🛑 Say which grain a figure is. An earlier pass counted PAGES LEFT EMPTY and found
+9; a page that loses one block but keeps others is invisible to that count, which is
+why the block-grain figure is 84. A third instrument counted only Devanagari
+characters and got 63,640 against the 86,812 here. All three are right about
+different things, and reconciling them is not possible without naming them.
+
+A LENGTH BOUND cannot fix this, which is the part worth remembering because the
+converter's own comment used to say it could: the smallest wrongly-dropped block is
+82 characters and the largest correctly-dropped one is 137, so the ranges overlap.
+
+The corpus-scale probe lives outside this repo, in the landing-plan tools; these
+pins hold the rule itself.
 """
 
 from __future__ import annotations

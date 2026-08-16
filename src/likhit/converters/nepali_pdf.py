@@ -45,9 +45,17 @@ from likhit.pdf_page_analysis import (
 # Imported rather than redefined. These used to exist twice -- once here and once in
 # the renderer, byte-identical -- and both copies decided the same question about the
 # same block on either side of the extractor/renderer seam. A fix applied to one would
-# have been a silent divergence, and the known pending fix to _looks_like_page_furniture
-# (a length bound, so a 216-character paragraph that merely mentions a running-head
-# phrase is not discarded) would have had to be landed twice.
+# have been a silent divergence, and the pending fix to _looks_like_page_furniture
+# would have had to be landed twice. That fix is strip_page_furniture_lines, and it
+# arrives through this same import.
+#
+# 🛑 This comment used to describe that pending fix as "a length bound, so a
+# 216-character paragraph that merely mentions a running-head phrase is not
+# discarded". Measurement REFUTES a length bound: over all 13 CIAA annual reports the
+# smallest wrongly-dropped block is 82 characters and the largest CORRECTLY dropped
+# one is 137, so no threshold separates them. The fix is per-LINE stripping instead.
+# Recorded rather than quietly deleted, because the wrong approach was written down
+# confidently and would otherwise be proposed again.
 from likhit.renderers.markdown import (
     _looks_like_page_furniture,
     _paragraph_ends_with_caption,

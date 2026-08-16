@@ -864,16 +864,25 @@ def strip_page_furniture_lines(text: str) -> str:
     into the same block as the page's body, that made the predicate true of the
     entire page, and the renderer discarded all of it.
 
-    Measured on the CIAA corpus (VOL-668): **9 fully-texted pages** lost that way,
-    939 to 2,798 characters each, across three reports — 2072-73 p58, 2073-74 p15
-    and seven pages of 2081-82. Every one had a healthy PDF text layer, and each
-    was armed by a table on the *neighbouring* page, because the adjacency test
-    looks at neighbours in the flat cross-page block list.
+    Measured on all 13 CIAA annual reports, at BLOCK grain: the rule drops **877**
+    paragraph blocks, of which **793 are pure furniture and correctly dropped** —
+    and **84 carry real body text, losing 86,812 characters**. Every one has a
+    healthy PDF text layer, and each is armed by a table on the *neighbouring*
+    page, because the adjacency test looks at neighbours in the flat cross-page
+    block list.
 
-    A length cap was considered and rejected: measured over those three reports
-    there is no separating threshold. The smallest wrongly-dropped page is 939
-    characters and other dropped blocks run to 954, so any cap that saved the page
-    would still delete body text elsewhere.
+    🛑 Two grains, both correct, so name which one a figure is: an earlier pass
+    counted **pages left empty** and found **9**, over three reports (2072-73 p58,
+    2073-74 p15, seven pages of 2081-82). A page that loses one block but keeps
+    others is invisible to that count, which is why the block-grain figure is 84.
+    Neither number is wrong; they measure different things.
+
+    A length cap was considered and REFUTED on measurement — there is no
+    separating threshold. The smallest wrongly-dropped block is **82** characters
+    and the largest correctly-dropped one is **137**, so the ranges overlap: any
+    cap at or below 137 keeps 118 blocks that should go, and any cap above 82 still
+    deletes 7 that should stay. This matters because it contradicts what the
+    converter's own import comment claimed the pending fix would be.
 
     Testing line by line keeps the behaviour that was wanted — a block that is
     nothing *but* furniture still renders as nothing, since every line is stripped
