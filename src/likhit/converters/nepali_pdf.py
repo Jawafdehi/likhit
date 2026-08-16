@@ -42,12 +42,20 @@ from likhit.pdf_page_analysis import (
     pdf_likely_needs_ocr,
 )
 
-# These four are imported rather than redefined. Three of them used to exist twice --
-# once here and once in the renderer, byte-identical -- and both copies decided the
-# same question about the same block on either side of the extractor/renderer seam. A
-# fix applied to one would have been a silent divergence, and the known pending fix to
-# _looks_like_page_furniture (a length bound, so a 216-character paragraph that merely
-# mentions a running-head phrase is not discarded) would have had to be landed twice.
+# Imported rather than redefined. These used to exist twice -- once here and once in
+# the renderer, byte-identical -- and both copies decided the same question about the
+# same block on either side of the extractor/renderer seam. A fix applied to one would
+# have been a silent divergence, and the pending fix to _looks_like_page_furniture
+# would have had to be landed twice. That fix is strip_page_furniture_lines, and it
+# arrives through this same import.
+#
+# 🛑 This comment used to describe that pending fix as "a length bound, so a
+# 216-character paragraph that merely mentions a running-head phrase is not
+# discarded". Measurement REFUTES a length bound: over all 13 CIAA annual reports the
+# smallest wrongly-dropped block is 82 characters and the largest CORRECTLY dropped
+# one is 137, so no threshold separates them. The fix is per-LINE stripping instead.
+# Recorded rather than quietly deleted, because the wrong approach was written down
+# confidently and would otherwise be proposed again.
 from likhit.renderers.markdown import (
     _looks_like_page_furniture,
     _paragraph_ends_with_caption,
@@ -55,6 +63,7 @@ from likhit.renderers.markdown import (
     _render_table,
     page_anchor,
     strip_page_anchors,
+    strip_page_furniture_lines,
 )
 
 logger = logging.getLogger(__name__)
@@ -961,15 +970,31 @@ def _render_markdown_from_blocks(
     for index, block in enumerate(blocks):
         page_number = _block_page_number(block)
         if isinstance(block, ParagraphBlock):
-            if _looks_like_page_furniture(block.text) and (
+            text = block.text
+            if _looks_like_page_furniture(text) and (
                 (index > 0 and isinstance(blocks[index - 1], TableBlock))
                 or (
                     index + 1 < len(blocks)
                     and isinstance(blocks[index + 1], TableBlock)
                 )
             ):
-                continue
-            rendered.append((page_number, _render_paragraph_markdown(block.text)))
+                # This block was about to be discarded whole. Keep its
+                # non-furniture lines instead: the predicate is a substring test,
+                # so a running header merged into the page's body condemned the
+                # entire page (VOL-668).
+                text = strip_page_furniture_lines(text)
+                # INSIDE the branch, matching `markdown._render_section`. Outside,
+                # it also skips every whitespace-only ParagraphBlock, which is a
+                # second behaviour change smuggled in with this one -- and it made
+                # the two render paths differ again in exactly the place #61
+                # deduplicated. Inert today only because `previous_table_key` is
+                # dead (`_render_table` discards it); it stops being inert the
+                # moment table continuation is implemented, and then
+                # `Table | empty paragraph | Table` would merge at one site and
+                # not the other. Found in review.
+                if not text.strip():
+                    continue
+            rendered.append((page_number, _render_paragraph_markdown(text)))
             previous_table_key = None
         elif isinstance(block, TableBlock):
             include_caption = True

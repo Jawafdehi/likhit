@@ -266,6 +266,20 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "clustering. Widening it pulls a neighbouring fragment into a cell, which "
         "reclassifies the row downstream -- see test_extractor_renderer_seam.py",
     ),
+    # -- page furniture ------------------------------------------------------- #
+    (
+        "likhit/renderers/markdown.py",
+        "_MAX_WRAPPED_HEADER_LINES",
+    ): (
+        3,
+        "text-carrying lines a wrapped running header is sought across. A bound on "
+        "cost and blast radius, NOT a separating threshold -- a length cap was "
+        "refuted for this rule on measurement, and this one cannot delete prose "
+        "because body text between the two halves of the token stops the token "
+        "forming at all. 3 covers a header that wraps twice; above it the scan is an "
+        "unbounded O(n^2) pass over every block mentioning the header. Pinned at 2 "
+        "the suite reddens, so the third line is load-bearing",
+    ),
     # -- layout handlers ------------------------------------------------------ #
     (
         "likhit/handlers/structure_detection.py",
