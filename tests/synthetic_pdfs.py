@@ -59,6 +59,46 @@ _SPINS_LINES = (
 _SUBSET_STYLE_FONT_NAME = "TT339t00"
 
 
+#: PDF delimiters and whitespace, which a name object must escape as ``#XX``
+#: (PDF 1.7 §7.3.5). ``#`` itself is included because it introduces the escape.
+_PDF_NAME_MUST_ESCAPE = frozenset("()<>[]{}/%# \t\r\n\f\x00")
+
+
+def _pdf_name(value: str) -> str:
+    """``value`` as a PDF name object, delimiters escaped, without the leading ``/``.
+
+    Raised in review as "can corrupt the PDF object syntax". Measured on the unescaped
+    path, that splits into two cases and only one of them is corruption:
+
+    * **Delimiters fail LOUDLY.** A space, ``/``, ``(`` and ``)`` make PyMuPDF raise
+      ``ValueError: bad 'value'``. Nothing is written, so nothing is corrupted -- the
+      cost is an opaque error from inside PyMuPDF that never names the font. ``,``,
+      ``+`` and ``-`` are regular characters and need no escape at all.
+    * **``#`` corrupts SILENTLY**, and this is the real defect. PyMuPDF writes ``#``
+      literally but UNescapes ``#XX`` on read, so ``c#41d`` comes back as ``cAd`` and
+      ``Font#20Two`` as ``Font Two``. No error, a different font name than the fixture
+      asked for, and any test built on it would be quietly testing the wrong thing.
+
+    So escaping earns its place twice over: it makes the awkward-but-realistic names
+    usable -- ``Wingdings 2`` is exactly the kind of face this project routes -- and it
+    closes the ``#`` hole. Verified by round-tripping ``Wingdings 2``, ``a/b``,
+    ``c#d``, ``c#41d``, ``(x)``, ``Symbol,Bold`` and ``ABCDEE+Symbol`` through
+    write-then-read.
+
+    Escaping rather than rejecting, so those names stay usable. A non-ASCII name is
+    refused outright: PDF names are byte strings, so it would need an encoding
+    decision this helper has no business making.
+    """
+
+    if not value:
+        raise ValueError("PDF name cannot be empty")
+    if not value.isascii():
+        raise ValueError(f"non-ASCII PDF name needs an explicit encoding: {value!r}")
+    return "".join(
+        f"#{ord(char):02X}" if char in _PDF_NAME_MUST_ESCAPE else char for char in value
+    )
+
+
 def _rename_base_fonts(doc: fitz.Document, new_name: str) -> None:
     """Rewrite every font object's ``/BaseFont`` to ``new_name``.
 
@@ -69,9 +109,10 @@ def _rename_base_fonts(doc: fitz.Document, new_name: str) -> None:
     are identical to the core-font original.
     """
 
+    escaped = _pdf_name(new_name)
     for xref in range(1, doc.xref_length()):
         if doc.xref_get_key(xref, "Type")[1] == "/Font":
-            doc.xref_set_key(xref, "BaseFont", f"/{new_name}")
+            doc.xref_set_key(xref, "BaseFont", f"/{escaped}")
 
 
 def _fill_page_with_image(page: fitz.Page) -> None:
