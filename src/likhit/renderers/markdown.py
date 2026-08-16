@@ -755,6 +755,23 @@ def _merge_continuation_rows(
 #: in the instrument that measures the renderer.
 _BARE_FIGURE = re.compile(r"^[\s0-9०-९,.।-]+$")
 _ANY_DIGIT = re.compile(r"[0-9०-९]")
+#: A line whose last token is a figure. This is the tell that separates a REGISTER ROW
+#: from a wrapped sentence, and it is needed because the bare-figure test below cannot
+#: see one any more.
+#:
+#: Before the swallowed-sub-table extraction fix, a cell that had swallowed a register
+#: held one value per line -- "190", "SCA Dalit", "7980" -- so several lines WERE bare
+#: figures and `_wrapped_lines_are_one_row` refused to rejoin on that basis. The fix
+#: space-joins each printed row instead, so the lines now read
+#: "190 SCA Dalit Seti Kamani 7980". Every one of them contains letters, no line is a
+#: bare figure, the guard stops firing, and the whole register is mashed into one row.
+#: Measured on that fix's own fixture: 3 rows became 1, with the full suite green.
+#:
+#: A wrapped sentence breaks at an arbitrary point, so its non-final lines rarely end
+#: on a figure. A register row always ends on its amount. Requiring EVERY line to end
+#: that way keeps the rule conservative -- a false negative merely declines to rejoin,
+#: which is the direction this whole guard already errs in.
+_TRAILING_FIGURE = re.compile(r"[0-9०-९][0-9०-९,.]*[\s।]*$")
 
 
 def _wrapped_lines_are_one_row(cell_lines: list[list[str]]) -> bool:
@@ -788,9 +805,28 @@ def _wrapped_lines_are_one_row(cell_lines: list[list[str]]) -> bool:
     wrapped = [parts for parts in cell_lines if len(parts) > 1]
     if len(wrapped) != 1:
         return not wrapped
+    if _looks_like_register_rows(wrapped[0]):
+        return False
     return not any(
         _BARE_FIGURE.match(part) and _ANY_DIGIT.search(part) for part in wrapped[0]
     )
+
+
+def _looks_like_register_rows(parts: list[str]) -> bool:
+    """Do these lines read as separate records rather than one wrapped sentence?
+
+    See `_TRAILING_FIGURE`. Two or more lines, every one of them ending on a figure,
+    and at least one carrying a letter -- the letter requirement keeps this from
+    duplicating the bare-figure test, so the two clauses stay independently meaningful
+    and a mutation of either is visible.
+    """
+
+    lines = [part for part in parts if part.strip()]
+    if len(lines) < 2:
+        return False
+    if not all(_TRAILING_FIGURE.search(line) for line in lines):
+        return False
+    return any(re.search(r"[^\s0-9०-९,.।-]", line) for line in lines)
 
 
 def _render_raw_table_lines(

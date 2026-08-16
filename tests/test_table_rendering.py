@@ -166,3 +166,81 @@ def test_render_table_keeps_covered_rowspan_positions():
     assert render_table_preformatted_markdown(table) == (
         "```text\n| क्र.सं. | नाम | रकम |\n|  | कार्यालय | १०० |\n```"
     )
+
+
+# --------------------------------------------- a register row is not a wrapped sentence
+#: What a swallowed register looks like AFTER the extractor keeps its rows together --
+#: one space-joined line per printed row. Must stay in step with what
+#: `extractors.tables._extract_cell_text` produces for a swallowed sub-table; the test
+#: below renders it, and `tests/test_table_extraction.py` pins the extractor side.
+SPACE_JOINED_REGISTER = "\n".join(
+    [
+        "190 SCA Dalit Seti Kamani 7980",
+        "191 SCA Others Jibram Sunar 12000",
+        "192 SCA Dalit Agabahadur Kami 7980",
+    ]
+)
+
+
+def test_a_space_joined_register_is_not_rejoined_into_one_row():
+    """The interaction this guard exists for, and it is invisible to a green suite.
+
+    `test_render_table_does_not_join_a_swallowed_sub_table` above uses the register's
+    OLD shape -- one value per line, so several lines are bare figures and the
+    bare-figure clause refuses the rejoin. Once the extractor keeps each printed row
+    together, every line carries letters, no line is a bare figure, that clause stops
+    firing, and the whole register collapses into one row. Measured: 3 rows became 1
+    with the full suite still green at 893 passed, because the only test covering it
+    was pinned to the shape the extractor no longer produces.
+    """
+
+    table = Table(
+        row_count=1,
+        col_count=2,
+        cells=[
+            TableCell(row=0, col=0, text="1"),
+            TableCell(row=0, col=1, text=SPACE_JOINED_REGISTER),
+        ],
+    )
+    rendered = render_table_preformatted_markdown(table)
+
+    for serial in ("190", "191", "192"):
+        assert serial in rendered
+    # The tell: no output line may carry two register serials.
+    for line in rendered.splitlines():
+        assert not ("190" in line and "191" in line), line
+
+
+def test_a_wrapped_sentence_is_still_rejoined():
+    """The control. If the register rule is too eager it silently disables the rejoin
+    this whole change is for, and every assertion above would still pass."""
+
+    table = Table(
+        row_count=1,
+        col_count=2,
+        cells=[
+            TableCell(row=0, col=0, text="क"),
+            TableCell(row=0, col=1, text="कार्यालय\nसञ्चालन"),
+        ],
+    )
+    assert "कार्यालय सञ्चालन" in render_table_preformatted_markdown(table)
+
+
+def test_the_register_rule_needs_a_letter_as_well_as_a_trailing_figure():
+    """Keeps the two guard clauses independently meaningful.
+
+    Without the letter requirement this rule would also cover the one-value-per-line
+    register and the split figure, duplicating the bare-figure clause -- and a mutation
+    of either would then be masked by the other.
+    """
+
+    from likhit.renderers.markdown import _looks_like_register_rows
+
+    assert _looks_like_register_rows(SPACE_JOINED_REGISTER.splitlines())
+    # figures only: left to the bare-figure clause, not claimed by this one
+    assert not _looks_like_register_rows(["185929593.", "20"])
+    assert not _looks_like_register_rows(["190", "7980"])
+    # one line is never a register
+    assert not _looks_like_register_rows(["190 SCA Dalit 7980"])
+    # a line that does not end on a figure is a sentence
+    assert not _looks_like_register_rows(["190 SCA Dalit 7980", "थप विवरण"])
