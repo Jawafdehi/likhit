@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from likhit.extractors.font_based import FontBasedStrategy
@@ -170,7 +172,10 @@ def test_wingdings_2_does_not_silently_take_the_wingdings_table() -> None:
 
 @pytest.mark.parametrize(
     "font",
-    ["Symbol", "SymbolMT", "ABCDEE+SymbolMT", "Symbol,Bold", "Wingdings", "Webdings"],
+    # "Webdings" was here and has been removed deliberately: it does not share
+    # Wingdings' encoding, and it appears nowhere in the 13-report corpus, so the alias
+    # was a guess. See test_webdings_and_zapfdingbats_are_deliberately_absent.
+    ["Symbol", "SymbolMT", "ABCDEE+SymbolMT", "Symbol,Bold", "Wingdings"],
 )
 def test_symbol_fonts_are_recognized_through_subset_and_style_decoration(font) -> None:
     assert is_symbol_pua_font(font)
@@ -404,4 +409,236 @@ def test_the_symbol_and_legacy_registries_are_disjoint() -> None:
         "a font name is claimed by both the symbol and legacy registries, so the "
         "branch order in _convert_span_text is now load-bearing and needs a test "
         "that pins it directly"
+    )
+
+
+# --------------------------------------------------------------- router boundaries
+#: Every font name in the 13 CIAA annual reports that must resolve to a PUA table.
+#: Measured from the PDFs, not invented: 12 of 329 distinct names.
+CORPUS_SYMBOL_FONTS = (
+    "Symbol",
+    "ABCDEE+Symbol",
+    "ABCEEE+Symbol",
+    "JMPPJA+SymbolMT",
+    "KFKAEK+SymbolMT",
+    "UYVFMY+Symbol-Identity-H",
+    "UYVFMY+SymbolMT-Identity-H",
+    "Wingdings",
+    "ABCFEE+Wingdings",
+    "ABCGEE+Wingdings",
+    "KZTWBE+Wingdings-Identity-H",
+    "ABCEEE+Wingdings 2",
+)
+
+#: Names that CONTAIN a registry key but are not that font family. The first two are
+#: real -- they appear in the corpus, 7 occurrences between them.
+NOT_SYMBOL_FONTS = (
+    # INFIX: the key sits inside the name. A substring test routed these; a prefix
+    # test does not. The first two are real -- 7 occurrences in the corpus.
+    "SegoeUISymbol,Bold",
+    "JNJOHL+SegoeUISymbol",
+    "SomeSymbolicFont",
+    "MySymbolizer",
+    # SUFFIX: the name STARTS with the key and continues into a different family, so a
+    # prefix test still routed all five. Raised in review of the prefix fix.
+    # "Wingdings3" is the one that shows the cost: Wingdings 3 is a real font with a
+    # real, different encoding, so routing it to the Wingdings table emits confidently
+    # wrong characters rather than merely failing to help.
+    "SymbolicFont",
+    "WingdingsExtra",
+    "Symbols",
+    "SymbolNeue",
+    "Wingdings3",
+)
+
+
+@pytest.mark.parametrize("name", CORPUS_SYMBOL_FONTS)
+def test_every_corpus_symbol_font_still_resolves(name: str) -> None:
+    """The control on the boundary test below: tightening the router must not drop a
+    single form the corpus actually contains -- subset prefixes, ``-Identity-H``
+    suffixes, the space in "Wingdings 2", and the MT variants all have to survive."""
+
+    assert pua_table_for_font(name) is not None, name
+
+
+def test_the_name_boundary_set_is_derived_and_minimal() -> None:
+    """The boundary is derived, so pin the derivation -- through the REAL normaliser.
+
+    🛑 The first version of this test used `form.split("+", 1)[-1].lower()` to build the
+    base name. Production uses `_base_font_name`, which ALSO splits at the first comma.
+    So the test "proved" that `,` had to be in the boundary set when the router can
+    never see a comma at all: "Symbol,Bold" arrives as "symbol" and takes the
+    exact-match arm. A mutation that dropped the comma failed this test and nothing
+    else, which is what exposed it. The comma is gone from the set; the lesson is that
+    a derivation test must normalise the way the code under test normalises.
+    """
+
+    from likhit.extractors.pua_maps import (
+        _FONT_NAME_BOUNDARY,
+        _REGISTRY,
+        _base_font_name,
+    )
+
+    assert _FONT_NAME_BOUNDARY == frozenset("- ")
+    assert not any(char.isalnum() for char in _FONT_NAME_BOUNDARY)
+    assert "," not in _FONT_NAME_BOUNDARY, (
+        "_base_font_name strips it; it is unreachable"
+    )
+
+    def boundary_char(form: str) -> str | None:
+        base = _base_font_name(form)
+        for key in sorted(_REGISTRY, key=len, reverse=True):
+            if base.startswith(key):
+                return base[len(key)] if len(base) > len(key) else None
+        return None
+
+    # A comma form reaches the exact-match arm, never the boundary test.
+    assert boundary_char("Symbol,Bold") is None
+    # The hyphen is the one the corpus actually requires.
+    assert boundary_char("UYVFMY+Symbol-Identity-H") == "-"
+    assert boundary_char("KZTWBE+Wingdings-Identity-H") == "-"
+    # "Wingdings 2" matches its own key exactly, so the space is DEFENSIVE: no corpus
+    # form exercises it. Asserted so the docstring's claim stays honest.
+    assert boundary_char("ABCEEE+Wingdings 2") is None
+    assert boundary_char("Wingdings 2 Condensed") == " "
+
+
+@pytest.mark.parametrize("name", NOT_SYMBOL_FONTS)
+def test_a_name_that_merely_contains_a_key_is_not_routed(name: str) -> None:
+    """The router matches a PREFIX, not a substring.
+
+    Under a substring test "SegoeUISymbol" resolved to SYMBOL_PUA, and so did
+    "SomeSymbolicFont". That matters beyond the remap itself: ``_convert_span_text``
+    returns immediately on a symbol-font hit, so a misrouted font bypasses every other
+    handler. It was latent rather than live -- SegoeUISymbol's spans carry 0
+    private-use characters, so the remap was a no-op on them -- but the class is
+    unbounded.
+    """
+
+    assert pua_table_for_font(name) is None, name
+
+
+def test_webdings_and_zapfdingbats_are_deliberately_absent() -> None:
+    """Neither font occurs in the corpus, and neither shares Wingdings' encoding.
+
+    They were briefly aliased to WINGDINGS_PUA. A wrong glyph table is worse than no
+    table here, because the output stays well-formed: there is no U+FFFD and no length
+    change for any gate to notice. Scanned all 13 reports -- 329 distinct font names,
+    Wingdings present, Webdings and ZapfDingbats absent -- so the aliases were guesses
+    at fonts nobody has seen. Leave them unsupported until there is a measured table.
+    """
+
+    assert pua_table_for_font("Webdings") is None
+    assert pua_table_for_font("ZapfDingbats") is None
+
+
+# ------------------------------------------- the leading-bullet rule's PUA boundary
+
+
+def test_the_leading_bullet_class_agrees_with_the_symbol_pua_range() -> None:
+    """The rule's class is written as literal escapes; this stops it drifting.
+
+    ``normalize_press_release_paragraph`` rewrites a leading bullet to "- ". Its
+    private-use bounds must be SYMBOL_PUA_RANGE and nothing wider: a full
+    ``\\ue000-\\uf8ff`` class also matches ``kalimati._PUA_REPH`` (U+F000) and
+    ``_PUA_IKAR`` (U+F001), and the rule fires on POSITION, so a sentinel that reached
+    the start of a line followed by whitespace was rewritten to "- " -- destroying it
+    and disguising the failure as a list item.
+    """
+
+    import re as _re
+
+    from likhit.extractors import font_based
+    from likhit.extractors.pua_maps import SYMBOL_PUA_RANGE
+
+    lo, hi = SYMBOL_PUA_RANGE
+    source = inspect.getsource(font_based.normalize_press_release_paragraph)
+
+    # Assert on the CHARACTER CLASS, not on the whole function source. The source also
+    # carries a comment explaining why the wide form is wrong, and that comment
+    # contains the wide form -- so a naive "not in source" check fails on the prose
+    # that documents the fix.
+    classes = _re.findall(r"\^\[([^]]*)\]", source)
+    assert len(classes) == 1, f"expected one leading-character class, found {classes}"
+    klass = classes[0]
+
+    assert f"\\u{lo:04x}-\\u{hi:04x}" in klass, (
+        f"the leading-bullet class must bound its private-use range at "
+        f"SYMBOL_PUA_RANGE (U+{lo:04X}-U+{hi:04X}); got {klass!r}"
+    )
+    assert "\\ue000" not in klass and "\\uf8ff" not in klass, (
+        f"the whole BMP private-use area is too wide -- it swallows the kalimati "
+        f"sentinels at U+F000/U+F001; got {klass!r}"
+    )
+
+
+def test_a_leading_symbol_bullet_still_becomes_a_markdown_list_item() -> None:
+    """The control: narrowing the class must not stop the rule working. U+F0B7 is the
+    corpus's most common private-use character at 4,210 occurrences, and U+F0D8 also
+    appears; both are inside the symbol range."""
+
+    from likhit.extractors.font_based import normalize_press_release_paragraph
+
+    for bullet in ("", ""):
+        assert normalize_press_release_paragraph(f"{bullet} पहिलो").startswith("- ")
+
+
+def test_a_leading_kalimati_sentinel_is_not_turned_into_a_bullet() -> None:
+    from likhit.extractors.font_based import normalize_press_release_paragraph
+    from likhit.extractors.kalimati import _PUA_IKAR, _PUA_REPH
+
+    for sentinel in (_PUA_REPH, _PUA_IKAR):
+        out = normalize_press_release_paragraph(f"{sentinel} पहिलो")
+        assert out.startswith(sentinel), out
+
+
+def test_a_known_unmappable_glyph_is_not_turned_into_a_bullet(monkeypatch) -> None:
+    """`KNOWN_UNMAPPABLE` outranks the positional bullet guess. Raised in review of #64.
+
+    The dict promises that a glyph it records "stays in the output and keeps being
+    counted ... visible as a gap", and the bullet rule's own comment used to name the
+    dict as an intended TARGET of its character class. Both could not hold: a recorded
+    codepoint inside SYMBOL_PUA_RANGE, in leading position followed by whitespace,
+    would be rewritten to "- " -- deleting the audit's only evidence of the gap while
+    asserting we knew what the glyph was.
+
+    🛑 The conflict is DORMANT, not gone: `KNOWN_UNMAPPABLE` is empty since VOL-741
+    resolved U+F093 to U+1F668, so nothing exercises it until the next entry is added
+    -- at which point it would have bitten silently. Hence the injected entry here.
+    U+F0B7 is used deliberately: it is the corpus's most common private-use character
+    and the bullet this rule exists for, so if the exclusion did not work this is the
+    codepoint most certain to be rewritten.
+    """
+
+    from likhit.extractors import font_based
+
+    marker = ""
+    assert font_based.normalize_press_release_paragraph(f"{marker} पहिलो").startswith(
+        "- "
+    ), "control: this glyph must be a bullet while it is NOT known-unmappable"
+
+    monkeypatch.setattr(
+        font_based, "KNOWN_UNMAPPABLE", {0xF0B7: "injected: deliberately unmapped"}
+    )
+    out = font_based.normalize_press_release_paragraph(f"{marker} पहिलो")
+    assert out.startswith(marker), (
+        f"a KNOWN_UNMAPPABLE glyph was rewritten as a list marker, so the gap it "
+        f"records is no longer countable: {out!r}"
+    )
+
+
+def test_the_bullet_rules_comment_does_not_claim_known_unmappable_as_a_target() -> None:
+    """The half of the contradiction that lives in prose.
+
+    A future reader deciding whether a recorded glyph may be rewritten reads the
+    comment, not this test -- and the comment said the opposite of the dict. Asserted
+    on the comment rather than trusting the code fix alone, because the comment is what
+    survives a refactor.
+    """
+
+    from likhit.extractors import font_based
+
+    source = inspect.getsource(font_based.normalize_press_release_paragraph)
+    assert "KNOWN_UNMAPPABLE` is EXCLUDED" in source, (
+        "the comment must state that KNOWN_UNMAPPABLE wins over the positional guess"
     )
