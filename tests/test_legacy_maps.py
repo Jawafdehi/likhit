@@ -117,13 +117,26 @@ def test_output_converter_for_map_carries_the_gate():
 
 
 # --------------------------------------------------------------------------- #
-# The gate's precondition: the map must read an ASCII digit AS a digit.
+# Where the gate is applied, and why that is narrower than it first looks.
 #
-# The gate exists because the map gets the BRACKETS wrong while getting the digit
-# between them right. That is a property of the map, and it holds for two of the
-# five in ALL_MAP_KEYS. Where it fails, the map reads the ASCII digit as a
-# consonant, and digit-translating the interior replaces a real letter with a
-# digit -- strictly worse than the defect the gate repairs.
+# The gate does not consult the map -- it translates the raw ASCII digits and emits
+# literal parens, rewriting the whole span on VOL-166's premise that none of it was
+# typed on the layout. So the restriction below is NOT a precondition the gate
+# depends on. It is a restriction on where that premise has been checked:
+#
+#   digit-row maps (PCS NEPALI, FONTASY_HIMALI_TT)
+#       the shape occurs and is demonstrably literal numbering -- 168 markers over
+#       the 13 CIAA annual reports, 168 of 168 sitting in lines whose other spans
+#       already carry Unicode Devanagari.
+#
+#   consonant-row maps (Preeti, Kantipur, Sagarmatha)
+#       the shape does NOT occur in the corpus. Rewriting "(5)" there would emit
+#       "(५)" where the map reads "९छ०" -- a digit in place of a letter, on no
+#       evidence either way. So the gate is declined, and the tests below pin that
+#       CHOICE rather than claiming "९छ०" is the correct reading.
+#
+# The restriction is therefore a no-op on every document measured. It matters for the
+# un-anchored form of the gate, which would fire on substrings under every map.
 # --------------------------------------------------------------------------- #
 
 
@@ -182,18 +195,24 @@ def test_raw_decode_of_a_bracketed_digit_shows_which_family_a_map_is_in(
 @pytest.mark.parametrize(
     "map_key", sorted(set(_DIGIT_ROW_DECODES) - _READS_DIGITS_AS_DIGITS)
 )
-def test_gate_does_not_destroy_a_letter_on_a_consonant_digit_row(map_key):
-    """``"(5)"`` under Preeti is ``"९छ०"`` -- digit, LETTER, digit.
+def test_gate_is_declined_rather_than_applied_on_a_consonant_digit_row(map_key):
+    """What we deliberately DO here, not a claim that it is the correct reading.
 
-    The first version of this gate shipped applying to every map, so this returned
-    ``"(५)"`` and the ``छ`` was gone. A digit-for-letter substitution is invisible to
-    a marker census (which counts brackets) and to a Devanagari-ratio check (which
-    counts characters in the block), so nothing downstream could have found it.
+    ``"(5)"`` under Preeti is ``"९छ०"`` -- digit, LETTER, digit -- and the gate would
+    emit ``"(५)"``, replacing that letter with a digit. Which of the two is right
+    depends on whether such a span is literal numbering (as it demonstrably is on
+    Fontasy Himali) or genuine keystrokes, and **the shape does not occur under these
+    maps anywhere in the corpus**, so nothing settles it. See
+    ``test_the_marker_shape_is_only_ever_observed_under_a_digit_row_map``.
+
+    So this pins the conservative choice -- do not rewrite text on no evidence -- and
+    not the correctness of ``"९छ०"``. If a document ever shows the shape under one of
+    these maps, that is the evidence, and this test is what should be revisited.
     """
 
     convert = get_output_converter_for_map(map_key)
+    assert convert("(5)") == get_converter_for_map(map_key)("(5)")
     assert convert("(5)") == "९छ०"
-    assert "छ" in convert("(5)")
 
 
 @pytest.mark.parametrize(
@@ -204,7 +223,8 @@ def test_gate_is_unreachable_for_a_consonant_digit_row_map(map_key):
 
     Asserting reachability instead: the output converter must be indistinguishable
     from the raw one across every shape the gate's pattern can match, so no input
-    exists on which the gate could fire for this map.
+    exists on which the gate could fire for this map. This is a statement about the
+    code path, not about which reading of the span is correct.
     """
 
     raw = get_converter_for_map(map_key)
@@ -284,3 +304,41 @@ def test_content_based_span_conversion_is_gated_too():
         )
         == "परिच्छेद"
     )
+
+
+def test_the_marker_shape_is_only_ever_observed_under_a_digit_row_map():
+    """The measurement that decides which way to restrict, recorded so it is not re-argued.
+
+    Probed over all 13 CIAA annual reports -- every span whose whole text is an ASCII
+    ``(N)`` and whose font resolves to a map in :data:`_REGISTRY`
+    (``tools/marker_family_probe.py`` in the run record):
+
+        168  markers, all in the 35th annual report
+        168  under Fontasy Himali  -> FONTASY_HIMALI_TT, a digit-row map
+          0  under Preeti / Kantipur / Sagarmatha
+        168  of 168 have other spans on the same line already carrying Unicode
+             Devanagari
+          0  of 168 have a rest-of-line that is pure ASCII
+
+    Two things follow, and they point in opposite directions on purpose.
+
+    The 168/168 Unicode-neighbour figure CONFIRMS VOL-166's premise where the gate
+    fires: the marker is literal numbering sharing a body font with text that is
+    already Unicode, so the map is not decoding that line at all -- it mangles it.
+
+    The 0 figure is why the restriction is a no-op on everything measured, and why the
+    consonant-row tests above pin a choice rather than a correctness claim. There is no
+    observation to reason from there.
+
+    The numbers are hard-coded rather than re-derived: the corpus PDFs are not in this
+    repository, so this is a record of a measurement, and it is here so that a future
+    change to the restriction has to argue with a figure instead of with a prior.
+    """
+
+    observed_under_digit_row_maps = 168
+    observed_under_consonant_row_maps = 0
+
+    assert observed_under_consonant_row_maps == 0
+    assert observed_under_digit_row_maps == 168
+    # And the only map the shape was observed under is one the gate still applies to.
+    assert _map_reads_ascii_digits_as_digits("FONTASY_HIMALI_TT") is True
