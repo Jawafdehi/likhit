@@ -199,6 +199,17 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "largest CID that fits: _CID_MARK_BASE + this is 0xFFFFD, the top of the "
         "range _MARKED_CID_PATTERN matches. See the invariant test below",
     ),
+    (
+        "likhit/extractors/font_based.py",
+        "_DUPLICATE_CONSONANT_WEIGHT",
+    ): (
+        3,
+        "per unexplained doubled consonant in _text_quality_penalty. The lightest term "
+        "there, which is deliberate: even narrowed by morphology the signal keeps ~1 in "
+        "5 false positives, so it is priced below the ikar and invalid-sign terms it sits "
+        "beside. Naming it is the same move as the converter's candidate-score weights -- "
+        "an inline weight is invisible to this registry",
+    ),
     # -- the Latin veto on the content-legacy remap ---------------------------- #
     #
     # These four gate whether a span that merely SHARES a legacy face is left as English
