@@ -53,7 +53,10 @@ number belongs to one invocation. Run the gate on an untouched worktree with the
 *identical* invocation and diff the two counts. `uv sync --locked` in the new worktree
 also gets you back to the 8.
 
-### The 10 skips are three different things
+### The skips are three different things
+
+Measured on this commit. Re-derive with `uv run pytest -q -rs` rather than quoting the
+total, which moves as tests are added:
 
 ```
 5   real CIB fixtures -- git-ignored (PII), absent locally and in CI
@@ -65,6 +68,11 @@ Only the first group is unavoidable. The other five are **coverage you do not ha
 unless you opt in** — they compare against upstream reference fonts, and they are the
 tests most likely to catch a glyph-mapping regression. If you are touching
 `lohit.py` or `kalimati_reference.py`, set the variable.
+
+This table lives here and nowhere else; the README points at it rather than repeating
+it. A figure copied into two files is a figure that will eventually disagree with
+itself — the same defect class as the predicate defined twice in
+`src/likhit/renderers/markdown.py`.
 
 ## Prove the test bites
 
@@ -168,6 +176,9 @@ worse than either alone. `tests/test_extractor_renderer_seam.py` is where that c
 lives — extend it rather than adding another one-sided test.
 
 ## Checking whether a fix is actually in `main`
+
+*Linked from the README's Gates section, because it answers a question people ask
+constantly and is otherwise the least discoverable part of this file.*
 
 `git cherry` and `git patch-id` are not sufficient here, in two independent ways:
 
