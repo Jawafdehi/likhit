@@ -149,7 +149,7 @@ def test_a_figure_repeated_across_columns_survives() -> None:
 
 def test_repeated_figure_on_consecutive_lines_is_still_deduped() -> None:
     # Pre-existing behaviour, pinned so the change does not quietly widen it:
-    # identical consecutive *lines* collapse to one.
+    # identical consecutive single-fragment lines collapse to one.
     fragments = [
         fragment("7980", 20.0, 100.0, 60.0, 109.0),
         fragment("7980", 20.0, 112.0, 60.0, 121.0),
@@ -158,6 +158,30 @@ def test_repeated_figure_on_consecutive_lines_is_still_deduped() -> None:
     text = _extract_cell_text(fragments, (10.0, 90.0, 70.0, 130.0))
 
     assert text == "7980"
+
+
+def test_a_register_row_printed_twice_is_kept_twice() -> None:
+    # The other half of that dedupe, and the one regression grouping can cause.
+    # `5852__pLpP31685271785मिर्चैया नगरपालिका, २०७८।७९` prints this row three
+    # times; while one fragment meant one line the three copies produced
+    # different line sequences and survived, but once a whole row is a single
+    # joined line the consecutive-line dedupe would collapse them and delete two
+    # of the three. The dedupe therefore stays fragment-scoped.
+    row = [
+        ("१", 20.0, 40.0),
+        ("Bhulli Devi Mahara", 50.0, 150.0),
+        ("४२८५६", 160.0, 200.0),
+        ("१५३०९४५२३", 210.0, 270.0),
+    ]
+    fragments = [
+        fragment(value, x0, 100.0 + 12.0 * line, x1, 109.0 + 12.0 * line)
+        for line in range(3)
+        for value, x0, x1 in row
+    ]
+
+    text = _extract_cell_text(fragments, (10.0, 90.0, 280.0, 150.0))
+
+    assert text.splitlines() == ["१ Bhulli Devi Mahara ४२८५६ १५३०९४५२३"] * 3
 
 
 class FakeRow:
@@ -242,3 +266,46 @@ def test_detect_page_tables_recovers_the_register_through_the_public_path() -> N
         "190 Seti Kamani 7980",
         "191 Jibram Sunar 12000",
     ]
+
+
+def test_a_blank_fragment_on_the_line_does_not_disable_the_repeat_suppression() -> None:
+    """A defect in the fragment-scoping itself, fixed here rather than shipped.
+
+    The scope test counted every fragment on the visual line, including ones whose text
+    is blank and which therefore contribute nothing to the joined line. A single
+    whitespace-only fragment sharing the line made it look multi-fragment and switched
+    the suppression off, so an overprinted duplicate survived.
+
+    All three cases are asserted together, because the fix is only correct if the middle
+    one changes and the outer two do not.
+    """
+
+    bbox = (0.0, 90.0, 300.0, 160.0)
+
+    def frag(text: str, x0: float, y0: float) -> TextFragment:
+        return TextFragment(
+            text=text, page_number=1, x0=x0, y0=y0, x1=x0 + 30, y1=y0 + 9
+        )
+
+    # one fragment per line, overprinted: suppressed, and always was
+    plain = [frag("७९८०", 20, 100.0), frag("७९८०", 20, 112.0)]
+    assert _extract_cell_text(plain, bbox).splitlines() == ["७९८०"]
+
+    # the same, plus a whitespace-only fragment on each line: was NOT suppressed
+    with_blank = [
+        frag("७९८०", 20, 100.0),
+        frag("   ", 60, 100.0),
+        frag("७९८०", 20, 112.0),
+        frag("   ", 60, 112.0),
+    ]
+    assert _extract_cell_text(with_blank, bbox).splitlines() == ["७९८०"]
+
+    # genuinely multi-fragment: must still survive, or the scoping this change adds is
+    # gone and a legitimately repeated register row would be deleted
+    register = [
+        frag("१", 20, 100.0),
+        frag("Bhulli", 60, 100.0),
+        frag("१", 20, 112.0),
+        frag("Bhulli", 60, 112.0),
+    ]
+    assert _extract_cell_text(register, bbox).splitlines() == ["१ Bhulli", "१ Bhulli"]

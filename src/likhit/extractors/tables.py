@@ -165,12 +165,29 @@ def _extract_cell_text(
     matching.sort(key=lambda fragment: (fragment.y0, fragment.x0))
 
     lines: list[str] = []
+    single: list[bool] = []
     for visual_line in _group_into_visual_lines(matching):
         text = _join_visual_line(visual_line)
         if not text:
             continue
-        if not lines or lines[-1] != text:
-            lines.append(text)
+        # Suppress a repeated line, but only between lines that each came from one
+        # fragment. That is the overprint this dedupe was written for, and keeping
+        # it fragment-scoped is what stops it widening: a register legitimately
+        # prints the same row more than once, and once a whole row is one joined
+        # line, collapsing the repeat deletes it. Measured on
+        # `5852__pLpP31685271785मिर्चैया नगरपालिका, २०७८।७९` -- three identical
+        # `१ Bhulli Devi Mahara ४२८५६ १५३०९४५२३ ७९८० ७९८०` rows became one.
+        # Count only the fragments that CONTRIBUTED to `text`. `len(visual_line)`
+        # counts blank ones too, so a single whitespace-only fragment sharing the line
+        # -- which adds nothing to the joined text -- made the line look
+        # multi-fragment and switched the suppression off. Measured: two identical
+        # overprinted lines collapse to one, and adding one blank fragment to each
+        # leaves both.
+        one_fragment = sum(1 for part in visual_line if part.text.strip()) == 1
+        if lines and lines[-1] == text and single[-1] and one_fragment:
+            continue
+        lines.append(text)
+        single.append(one_fragment)
     return "\n".join(lines)
 
 
