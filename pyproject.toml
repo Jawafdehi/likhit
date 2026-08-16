@@ -84,6 +84,7 @@ include = ["/src/likhit", "/README.md", "/LICENSE", "/CHANGELOG.md"]
 dev = [
     "pytest>=8.0.0,<9.0.0",
     "pytest-cov>=6.0.0,<7.0.0",
+    "pytest-xdist>=3.6.0,<4.0.0",
     "ruff>=0.15.0,<0.16.0",
     "pre-commit>=4.6.0",
     "ty>=0.0.66",
@@ -92,6 +93,40 @@ dev = [
     # than only asserting the schema's own contents.
     "jsonschema>=4.23.0,<5.0.0",
 ]
+
+# ---------------------------------------------------------------------------
+# pytest. Every test lives under tests/ (tests/ and tests/integration are the
+# only two directories holding test modules), so pinning testpaths keeps
+# collection off site/ and the repo root.
+#
+# `-n auto` is deliberately NOT in addopts, on measured grounds. Whole-suite
+# figures on a 64-core box, all three runs identical at 538 passed / 10 skipped
+# / 5 xfailed:
+#
+#     serial    65.0s
+#     -n 4      33.6s   (1.9x -- what a 4-vCPU CI runner sees)
+#     -n 8      31.4s
+#     -n 16     31.5-31.9s  (no gain over 8; reproduced twice)
+#     -n auto   23.0-23.7s  (2.8x; `auto` is 64 here)
+#
+# But it is a net loss on the single-file runs that dominate local iteration:
+# tests/test_convert.py alone is 6.81s serial and 7.72s under `-n auto`. `-p
+# xdist` also disables `--pdb`. So parallelism is opt-in per invocation:
+#
+#     uv run pytest -n auto                  # whole suite, fastest
+#     uv run pytest tests/test_convert.py    # iterating, no worker overhead
+#
+# CI passes `-n auto` explicitly on the "Run tests" step instead. Expect ~4
+# workers there (ubuntu-latest is 4 vCPU), not this box's count.
+#
+# Do not expect linear scaling, for two reasons. The serial suite already runs
+# at ~181% CPU because PyMuPDF threads internally; and the parallel floor is set
+# by the longest single test, which after the page-slicing work is the 14.2s
+# full-document kanunpatrika smoke in tests/integration/test_sample_pdfs.py.
+# No worker count gets the suite below that.
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 # ---------------------------------------------------------------------------
 # ruff — the lint AND format gate. CI runs `uv run ruff check .` plus

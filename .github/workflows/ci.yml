@@ -5,7 +5,7 @@
 #
 #   uv run ruff check .           gated
 #   uv run ruff format --check .  gated (this replaced `black --check`)
-#   uv run pytest                 gated
+#   uv run pytest -n auto         gated (xdist; -n lives here, not in addopts)
 #   uv run ty check               ADVISORY — `|| true`, see pyproject.toml
 #
 # Python stays pinned to 3.12, now through setup-uv rather than setup-python:
@@ -96,7 +96,11 @@ jobs:
             | sha256sum -c -
           echo "ttf=$PWD/$ttf" >> "$GITHUB_OUTPUT"
 
+      # -n auto is passed here rather than in pyproject's addopts, so that local
+      # single-file runs do not pay xdist's worker startup. ubuntu-latest is
+      # 4 vCPU, so this is ~4 workers: measured 33.6s at -n 4 against 65.0s
+      # serial. See the [tool.pytest.ini_options] comment for the full table.
       - name: Run tests
         env:
           LIKHIT_LOHIT_REFERENCE_TTF: ${{ steps.lohit.outputs.ttf }}
-        run: uv run pytest
+        run: uv run pytest -n auto
