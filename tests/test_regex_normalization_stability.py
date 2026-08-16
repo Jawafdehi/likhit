@@ -20,7 +20,8 @@ Inside a regex character class that is catastrophic, and in two distinct grades:
   and because these patterns are module-level constants the module fails to **import**.
   The library stops working entirely -- this is not a subtle mismatch.
 
-* **A set silently widens.** ``[ॊऩऱऴ]`` normalizes into a five-member set that
+* **A set silently widens.** A literal ``[U+094A U+0929 U+0931 U+0934]``
+  normalizes into a five-member set that
   includes the bare consonants ``न``, ``र`` and ``ळ``. That pattern is a *garble
   detector*, so the widened form convicts clean text: measured on 70 characters of
   ordinary Nepali prose, 0 hits as written and 11 after normalization.
@@ -35,12 +36,30 @@ That "something" is not exotic for this project. Normalizing Devanagari is a rou
 operation in the domain, and an editor, a formatter, or a copy through any
 normalizing tool is enough.
 
-🛑 The scan is deliberately narrowed to strings in a **regex-function call position**.
-An earlier version walked every string constant and reported 74 "fragile patterns" in
-``src/``, but most were ordinary data -- a ``'क़'`` key in a lookup table. A data
-string that normalization changes is a much milder problem than a pattern that stops
-compiling, and conflating them buries the one instance that breaks an import under 73
-that do not.
+🛑 The scan is deliberately narrowed, and it took **two** narrowings to get right.
+Both are recorded because each was a real over-count that would have produced false
+failures on ordinary text:
+
+1. **Any string constant -> only strings in a regex-function call position.** The first
+   version walked every string literal and reported 74 "fragile patterns" in ``src/``,
+   but most were ordinary data -- a ``'\u0958'`` key in a lookup table. A data string
+   that normalization changes is a far milder problem than a pattern that stops
+   compiling, and conflating them buries the one import-breaking instance under 73 that
+   are not.
+
+2. **Any ``.search``/``.sub``/``.split`` call -> only ``re.<func>(...)``.** Raised in
+   review, and correct: a method NAME is not enough, the receiver has to be the ``re``
+   module. Measured on this ``src/``, the broad form picked up **15** calls that are not
+   pattern positions -- 14 plain ``str.split("+")`` style separators and one
+   ``PAGE_ANCHOR_PATTERN.sub("")``, a compiled pattern whose first argument is the
+   REPLACEMENT. All 15 happened to be ASCII, so nothing failed, but the total was
+   inflated 92 -> 77 and a Devanagari replacement would have been asserted as a regex
+   pattern. A compiled pattern's own source is already checked at its ``re.compile``
+   site, so skipping these costs nothing: non-ASCII coverage was 27 before and 27 after.
+
+The scan is split into :func:`_patterns_in_source` so it can be tested against
+synthetic source rather than only against whatever ``src/`` happens to contain -- a scan
+nobody can test is a scan whose blind spots are found in production.
 """
 
 from __future__ import annotations
@@ -58,8 +77,23 @@ SRC_ROOT = pathlib.Path(likhit.__file__).parent
 
 NORMALIZATION_FORMS = ("NFC", "NFD", "NFKC", "NFKD")
 
-# Functions whose first positional argument is a regex pattern.
-_REGEX_FUNCS = frozenset(
+# Module-level ``re`` functions whose first positional argument is a regex pattern.
+#
+# 🛑 The receiver must be the ``re`` MODULE. An earlier version accepted any attribute
+# call with one of these names, and that was wrong two ways -- measured on this src/,
+# which contained 15 such calls:
+#
+#   14x  str.split("+") / .split(",") / .split("\n")   not regex at all; their first
+#                                                      argument is a plain separator
+#    1x  PAGE_ANCHOR_PATTERN.sub("")                    a COMPILED pattern, whose first
+#                                                      argument is the REPLACEMENT
+#
+# All 15 were ASCII, so nothing failed -- but the count was inflated by 15, and a
+# Devanagari replacement (``_PATTERN.sub("\u0964", text)``) would have been asserted as
+# a regex pattern and produced a false failure on ordinary text. A compiled pattern's
+# own source is already checked at its ``re.compile`` site, so skipping these loses
+# nothing.
+_RE_FUNCS = frozenset(
     {
         "compile",
         "match",
@@ -83,26 +117,48 @@ def _source_files() -> list[pathlib.Path]:
     return files
 
 
+def _patterns_in_source(source: str, filename: str = "<test>") -> list[tuple[int, str]]:
+    """``(lineno, pattern)`` for every string literal in an ``re.*`` pattern position.
+
+    Split out from the directory walk so the scan itself is testable against synthetic
+    source -- see :func:`test_the_scan_ignores_calls_that_are_not_re_module_calls`. A
+    scan nobody can test is a scan whose blind spots are discovered in production.
+    """
+
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(source, filename=filename)):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            # Only ``re.<func>(...)``. Anything else with the same method name is a
+            # compiled pattern or a plain str method -- see _RE_FUNCS above.
+            if not isinstance(func.value, ast.Name) or func.value.id != "re":
+                continue
+            name = func.attr
+        else:
+            # A bare call, which would be ``from re import compile``. There is no such
+            # import in src/ today; the branch is kept so adding one does not silently
+            # drop coverage.
+            name = getattr(func, "id", "")
+        if name not in _RE_FUNCS:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            found.append((first.lineno, first.value))
+    return found
+
+
 def _regex_patterns() -> list[tuple[pathlib.Path, int, str]]:
     """Every string literal passed as a pattern to an ``re.*`` call in ``src/``."""
 
     found: list[tuple[pathlib.Path, int, str]] = []
     for path in _source_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not node.args:
-                continue
-            func = node.func
-            name = (
-                func.attr
-                if isinstance(func, ast.Attribute)
-                else getattr(func, "id", "")
-            )
-            if name not in _REGEX_FUNCS:
-                continue
-            first = node.args[0]
-            if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                found.append((path, first.lineno, first.value))
+        source = path.read_text(encoding="utf-8")
+        found.extend(
+            (path, lineno, pattern)
+            for lineno, pattern in _patterns_in_source(source, str(path))
+        )
     return found
 
 
@@ -128,7 +184,7 @@ def test_the_scan_finds_the_patterns_it_is_meant_to_guard():
     """
 
     all_patterns = _regex_patterns()
-    assert len(all_patterns) >= 80, len(all_patterns)
+    assert len(all_patterns) >= 70, len(all_patterns)
     assert len(_NON_ASCII) >= 25, len(_NON_ASCII)
 
     # The scan really is finding real modules, not an empty tree -- and specifically the
@@ -140,6 +196,71 @@ def test_the_scan_finds_the_patterns_it_is_meant_to_guard():
     # Every pattern the scan finds is automatically covered by the parametrized tests
     # below, so a newly added pattern is guarded without this count changing.
     assert len(_NON_ASCII) == len(_non_ascii_patterns())
+
+
+def test_the_scan_ignores_calls_that_are_not_re_module_calls():
+    """A method name is not enough: the RECEIVER has to be the ``re`` module.
+
+    Found in review of this file's first version, and it was real. That version matched
+    any attribute call named ``search``/``sub``/``split``/..., which in this src/ picked
+    up **15** calls that are not regex pattern positions at all:
+
+      * 14 plain ``str.split("+")`` / ``.split(",")`` / ``.split("\n")`` -- the argument
+        is a separator, not a pattern;
+      * one ``PAGE_ANCHOR_PATTERN.sub("")`` -- a COMPILED pattern, whose first argument
+        is the REPLACEMENT.
+
+    Every one was ASCII, so nothing failed. But the total was inflated by 15, and a
+    Devanagari replacement would have been asserted as a regex pattern and produced a
+    false failure on ordinary text -- in a Nepali library, a realistic edit.
+    """
+
+    source = (
+        "import re\n"
+        # Real pattern positions -- these MUST be found.
+        'A = re.compile("\u0915-pattern")\n'
+        'B = re.sub("\u0916-pattern", "x", text)\n'
+        'C = re.findall("\u0917-pattern", text)\n'
+        # Not pattern positions -- these must NOT be found.
+        'D = font_name.split("\u0918-separator")\n'
+        'E = A.sub("\u0919-replacement", text)\n'
+        'F = A.search("\u091a-subject-text")\n'
+        'G = obj.compile("\u091b-not-re")\n'
+    )
+
+    found = {pattern for _, pattern in _patterns_in_source(source)}
+
+    assert found == {
+        "\u0915-pattern",
+        "\u0916-pattern",
+        "\u0917-pattern",
+    }, found
+
+    # Spelled out, so a regression names which shape leaked back in.
+    assert "\u0918-separator" not in found  # str.split separator
+    assert "\u0919-replacement" not in found  # compiled-pattern .sub replacement
+    assert "\u091a-subject-text" not in found  # compiled-pattern .search subject
+    assert "\u091b-not-re" not in found  # a .compile() that is not re's
+
+
+def test_the_scan_still_reaches_the_two_sites_this_pr_repaired():
+    """The narrowing must not have cost coverage where it matters.
+
+    Measured at the time of the narrowing: 27 non-ASCII patterns before and 27 after --
+    all 15 misclassified calls were ASCII, so the guard's reach did not change and only
+    the inflated total (92 -> 77) moved.
+
+    That 27 is recorded here as a measurement, NOT asserted: an exact count breaks on
+    any unrelated change that adds a non-ASCII regex, which is the same trap this file
+    already stepped in once. The floor lives in the population test above.
+    """
+
+    modules = {path.name for path, _, _ in _regex_patterns()}
+    assert "nepali_pdf.py" in modules
+    assert "font_based.py" in modules
+    # Both repaired sites are still reached by name, which is the property at issue.
+    assert any(p.name == "nepali_pdf.py" for p, _, _ in _NON_ASCII)
+    assert any(p.name == "font_based.py" for p, _, _ in _NON_ASCII)
 
 
 @pytest.mark.parametrize(
@@ -314,10 +435,10 @@ def test_the_two_repaired_patterns_kept_their_exact_meaning():
     # nothing else. Candra-O (U+0949) is deliberately excluded -- it is legitimate in
     # loanwords -- so its absence here is an assertion, not an omission.
     assert [c for c in block if _INVALID_SIGN_PATTERN.search(c)] == [
-        "ऩ",
-        "ऱ",
-        "ऴ",
-        "ॊ",
+        "\u0929",  # NNNA
+        "\u0931",  # RRA
+        "\u0934",  # LLLA
+        "\u094a",  # short-O
     ]
     assert not _INVALID_SIGN_PATTERN.search("ॉ")
     assert not _INVALID_SIGN_PATTERN.search("न")  # bare न must NOT match
@@ -328,8 +449,38 @@ def test_the_two_repaired_patterns_kept_their_exact_meaning():
     # a virama or a nukta. Checked as a lookbehind, in context, both ways.
     assert _ORPHAN_MATRA_PATTERN.search("ा")  # bare matra: orphan
     assert _ORPHAN_MATRA_PATTERN.search(" ा")  # after a space: orphan
-    assert not _ORPHAN_MATRA_PATTERN.search("का")  # after क: fine
-    assert not _ORPHAN_MATRA_PATTERN.search("हा")  # after ह: fine
-    assert not _ORPHAN_MATRA_PATTERN.search("क़ा")  # after क़: fine
-    assert not _ORPHAN_MATRA_PATTERN.search("्ा")  # after virama: fine
-    assert not _ORPHAN_MATRA_PATTERN.search("़ा")  # after nukta: fine
+    assert not _ORPHAN_MATRA_PATTERN.search("\u0915\u093e")  # preceded, fine
+    assert not _ORPHAN_MATRA_PATTERN.search("\u0939\u093e")  # preceded, fine
+    assert not _ORPHAN_MATRA_PATTERN.search("\u0958\u093e")  # preceded, fine
+    assert not _ORPHAN_MATRA_PATTERN.search("\u094d\u093e")  # preceded, fine
+    assert not _ORPHAN_MATRA_PATTERN.search("\u093c\u093e")  # preceded, fine
+
+
+def test_this_test_file_is_itself_normalization_stable():
+    """The rule this file enforces on ``src/`` applies to this file too.
+
+    It did not, at first. Three sites here spelled Devanagari out literally, and one of
+    them -- a list of the four signs ``_INVALID_SIGN_PATTERN`` must match, compared
+    element-wise against single characters -- would have FAILED outright once normalized,
+    because each element becomes two code points while the characters it is compared
+    against stay one.
+
+    That is worth a test rather than a fix-and-move-on: a guard whose own source breaks
+    under the condition it guards against is the least credible kind, and this file is
+    the only one in ``tests/`` where the property is load-bearing (the src/ scan does not
+    cover ``tests/``).
+    """
+
+    source = pathlib.Path(__file__).read_text(encoding="utf-8")
+    for form in NORMALIZATION_FORMS:
+        assert unicodedata.normalize(form, source) == source, (
+            f"this file changes under {form}. Write Devanagari literals as \\uXXXX "
+            f"escapes -- see this file's own docstring."
+        )
+
+    # And the reason it is stable is that the remaining literals have no decomposition,
+    # not that there are none left. Keeping some readable is deliberate.
+    non_ascii = {ch for ch in source if ord(ch) > 127}
+    assert non_ascii, "if this is empty the test above is vacuous"
+    for ch in non_ascii:
+        assert unicodedata.normalize("NFKD", ch) == ch, f"U+{ord(ch):04X} decomposes"
