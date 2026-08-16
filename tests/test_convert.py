@@ -298,7 +298,7 @@ def test_converter_forces_ocr_when_likhit_flags_dropped_pages(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_try_convert_with_likhit",
-        lambda raw: (DocumentConverterResult(markdown="पहिलो पृष्ठ"), [2]),
+        lambda raw: (DocumentConverterResult(markdown="पहिलो पृष्ठ"), [2], None),
     )
 
     def _fake_ocr(raw, info, **kwargs):
@@ -348,7 +348,7 @@ def test_converter_logs_when_ocr_is_needed_but_not_configured(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_try_convert_with_likhit",
-        lambda raw: (None, []),
+        lambda raw: (None, [], None),
     )
 
     with caplog.at_level(logging.INFO):

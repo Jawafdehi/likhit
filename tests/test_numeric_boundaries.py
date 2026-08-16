@@ -589,7 +589,7 @@ def test_converter_uses_successful_known_font_candidate_directly(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_try_convert_with_likhit",
-        lambda _raw: (DocumentConverterResult(markdown="geometry aware"), []),
+        lambda _raw: (DocumentConverterResult(markdown="geometry aware"), [], None),
     )
 
     result = converter.convert(io.BytesIO(raw), stream_info)
@@ -626,6 +626,7 @@ def test_converter_repairs_unambiguous_numeric_merges_in_known_font_candidate(
                 markdown="267,000.00267,000.00\n267,000.00267,000.00"
             ),
             [],
+            None,
         ),
     )
 
@@ -696,6 +697,7 @@ def test_converter_repairs_a_prefetched_likhit_candidate_forced_to_ocr(
         lambda _raw: (
             DocumentConverterResult(markdown="बेरुजु रकम तालिका\n267,000.00267,000.00"),
             [51],
+            None,
         ),
     )
     # OCR is unavailable, which is the real-world shape of this path: likhit's
@@ -769,6 +771,7 @@ def test_converter_repairs_a_likhit_re_extraction_candidate(
         lambda _raw: (
             DocumentConverterResult(markdown="merged 12500 ok\n267,000.00267,000.00"),
             [],
+            None,
         ),
     )
 
@@ -812,6 +815,7 @@ def test_converter_prefers_geometry_candidate_for_ambiguous_short_merge(
         lambda _raw: (
             DocumentConverterResult(markdown="legitimate 12500\nmerged 1 | 2500"),
             [],
+            None,
         ),
     )
 
@@ -961,7 +965,7 @@ def test_converter_prefers_a_safe_candidate_over_a_higher_scoring_unsafe_one(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_try_convert_with_likhit",
-        lambda _raw: (DocumentConverterResult(markdown="split 1 | 2500"), []),
+        lambda _raw: (DocumentConverterResult(markdown="split 1 | 2500"), [], None),
     )
     scores = {"merged 12500 padding": 500, "split 1 | 2500": 10}
     monkeypatch.setattr(

@@ -300,7 +300,7 @@ def test_the_production_comparison_picks_the_marked_candidate_over_the_disguise(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_try_convert_with_likhit",
-        lambda _raw: (DocumentConverterResult(markdown=labelled), [1]),
+        lambda _raw: (DocumentConverterResult(markdown=labelled), [1], None),
     )
     monkeypatch.setattr(
         nepali_pdf_module,

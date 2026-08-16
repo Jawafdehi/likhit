@@ -136,12 +136,29 @@ class NepaliPdfConverter(DocumentConverter):
         numeric_repairs = _try_collect_numeric_boundary_repairs(raw)
         prefetched_likhit: DocumentConverterResult | None = None
         force_ocr = False
+        # Set by EITHER likhit attempt below, and CLEARED by a likhit attempt that
+        # succeeds.
+        #
+        # 🛑 Clearing is not tidiness, it prevents a false positive that a mutation
+        # test caught: a MemoryError can be transient, so the first attempt can fail
+        # and the second succeed. Keeping the reason then stamps a transcript likhit
+        # actually produced -- measured, with all 3 page anchors present. A marker on
+        # a healthy transcript is worse than no marker, because a corpus sweep would
+        # quarantine good documents on it.
+        #
+        # If likhit fails BOTH times the reason survives, and if the second attempt is
+        # never reached the first attempt's reason survives, because neither
+        # assignment runs.
+        degraded_reason: str | None = None
         classifications = classify_fonts_from_stream(io.BytesIO(raw))
         if _has_known_nepali_repair_font(classifications):
             logger.info(
                 "PDF converter: known Nepali repair fonts detected; using geometry-aware likhit extraction directly."
             )
-            likhit_result, likhit_needs_ocr = _try_convert_with_likhit(raw)
+            likhit_result, likhit_needs_ocr, reason = _try_convert_with_likhit(raw)
+            degraded_reason = (
+                None if likhit_result is not None else (degraded_reason or reason)
+            )
             if likhit_result is not None and not likhit_needs_ocr:
                 return _repair_result_numeric_boundaries(
                     likhit_result,
@@ -228,7 +245,10 @@ class NepaliPdfConverter(DocumentConverter):
                 logger.info(
                     "PDF converter: default extraction looks suspicious for Nepali text; retrying with likhit extraction."
                 )
-            likhit_result, _ = _try_convert_with_likhit(raw)
+            likhit_result, _, reason = _try_convert_with_likhit(raw)
+            degraded_reason = (
+                None if likhit_result is not None else (degraded_reason or reason)
+            )
             if likhit_result is not None:
                 logger.info("PDF converter: likhit re-extraction produced a candidate.")
                 candidates.append(
@@ -253,7 +273,7 @@ class NepaliPdfConverter(DocumentConverter):
             logger.info(
                 "PDF converter: returning the only available extraction result."
             )
-            return candidates[0][0]
+            return _stamp_degraded(candidates[0][0], degraded_reason)
 
         scored_candidates = [
             (
@@ -282,7 +302,7 @@ class NepaliPdfConverter(DocumentConverter):
             best_score,
             best_safe,
         )
-        return best_result
+        return _stamp_degraded(best_result, degraded_reason)
 
 
 def _try_collect_numeric_boundary_repairs(
@@ -712,14 +732,85 @@ def _convert_with_likhit(raw: bytes) -> tuple[DocumentConverterResult, list[int]
         tmp_path.unlink(missing_ok=True)
 
 
+#: Exceptions from likhit's extraction that can never mean "this PDF is unreadable".
+#:
+#: `raw` is the whole document in memory and `_convert_with_likhit` writes a second
+#: full copy to a temp file, so a parallel pass over the 80MB annual reports
+#: double-buffers several GB; MemoryError there is a property of the machine, and
+#: OSError covers the same class (ENOSPC on the temp write, EMFILE).
+#:
+#: A malformed PDF genuinely IS a document verdict, so everything else still falls
+#: back silently. The distinction is the whole point: a resource failure and an
+#: unreadable document produced byte-identical evidence before this split, which is
+#: how five documents shipped damaged in the v11 corpus generation with the run
+#: recording zero errors.
+_RESOURCE_FAILURES: tuple[type[BaseException], ...] = (MemoryError, OSError)
+
+#: Marks a transcript that is NOT what likhit would have produced. Same
+#: HTML-comment shape as `page_anchor`, so it survives Markdown rendering, any
+#: transport, and a driver that discards stderr -- which is the case that matters,
+#: because the v11 build captured the child's stderr and then threw it away on
+#: success.
+DEGRADED_MARKER_PATTERN = re.compile(r"<!-- likhit:degraded reason=(\w+) -->")
+
+
+def degraded_marker(reason: str) -> str:
+    """The in-band signal that this transcript came from the fallback path."""
+
+    return f"<!-- likhit:degraded reason={reason} -->"
+
+
+def _stamp_degraded(
+    result: DocumentConverterResult,
+    reason: str | None,
+) -> DocumentConverterResult:
+    """Prepend the degradation marker, if a resource failure caused the fallback.
+
+    Deliberately NOT applied when a document verdict caused it. A malformed PDF
+    falling back is correct behaviour and stamping it would make the marker mean
+    "likhit declined", which is common and uninteresting, instead of "the machine
+    failed and this document should be retried", which is rare and actionable.
+    """
+
+    if reason is None:
+        return result
+    return DocumentConverterResult(
+        markdown=f"{degraded_marker(reason)}\n\n{result.markdown}",
+        title=result.title,
+    )
+
+
 def _try_convert_with_likhit(
     raw: bytes,
-) -> tuple[DocumentConverterResult | None, list[int]]:
+) -> tuple[DocumentConverterResult | None, list[int], str | None]:
+    """Returns (result, pages needing OCR, resource-failure reason).
+
+    The third element is the fix for a failure mode that cost five documents: the
+    caller cannot re-raise to signal a transient, because likhit is registered as a
+    MarkItDown plugin (`_plugin.py`, priority -2.0) and MarkItDown's converter loop
+    wraps every `convert()` call in `except Exception`. A raise there is recorded as
+    a failed attempt, the loop moves on to the plain PdfConverter, and its output is
+    returned with exit 0 -- measured 279,829 characters and 0 of 128 page anchors,
+    *worse* than the fallback this function already takes. So the signal has to come
+    back in-band.
+    """
+
     try:
-        return _convert_with_likhit(raw)
+        return (*_convert_with_likhit(raw), None)
+    except _RESOURCE_FAILURES as exc:
+        # warning, not debug, and carrying the TYPE: at debug this was the only
+        # trace of a fallback that changes every character of the transcript, and
+        # the type is what separates a resource failure from a malformed PDF.
+        logger.warning(
+            "PDF converter: likhit extraction hit a resource failure (%s: %s); "
+            "falling back to a DEGRADED transcript, which will be marked as such.",
+            type(exc).__name__,
+            exc,
+        )
+        return None, [], type(exc).__name__
     except Exception as exc:  # noqa: BLE001 - fall back to the default PDF path
         logger.debug("PDF converter: likhit extraction failed: %s", exc)
-        return None, []
+        return None, [], None
 
 
 def _default_pdf_result_needs_likhit(markdown: str) -> bool:
