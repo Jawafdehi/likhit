@@ -381,7 +381,7 @@ def test_the_dictionary_axis_survives_marking() -> None:
     )
 
     spans = [_span("Spins", marked)]
-    assert _content_legacy_veto_flags(spans, {"Spins": "Spins"}) == [False], (
+    assert _content_legacy_veto_flags(spans, SPINS_CHOICE) == [False], (
         "a marked run that decodes to a Nepali word must not be vetoed as Latin"
     )
 
@@ -433,3 +433,71 @@ def test_marked_keystrokes_are_still_not_vetoed() -> None:
     keystrokes = "cfGtl/s lgoGq0f Joj:yf"
     assert _veto(keystrokes) is False
     assert _veto(_mark(keystrokes)) is False
+
+
+# -------------------------------------------------- the veto's unguarded decode
+
+
+def test_an_extraction_error_from_the_veto_is_not_swallowed(monkeypatch) -> None:
+    """`ExtractionError` must propagate out of the veto, not be caught per run.
+
+    Review proposed wrapping the veto's decode in `except Exception`. Declined, and this
+    pins the decisive reason so the suggestion cannot be applied in that form later:
+    `_choose_legacy_map_ranked` RE-RAISES `ExtractionError` on purpose -- "a
+    missing/broken npttf2utf is a real config error -- surface it rather than silently
+    disabling Part B". A blanket catch here would do what that comment forbids, one run
+    at a time, so a broken install would look like a corpus with no Latin in it.
+
+    Asserted through `_content_legacy_veto_flags` rather than on the converter, because
+    the claim is about the CALL SITE's error handling, not the converter's.
+    """
+
+    from likhit.errors import ExtractionError
+    from likhit.extractors import font_based as font_based_module
+
+    def broken(map_key: str):
+        def convert(text: str) -> str:
+            raise ExtractionError("npttf2utf is missing")
+
+        return convert
+
+    monkeypatch.setattr(font_based_module, "get_converter_for_map", broken)
+    with pytest.raises(ExtractionError):
+        _content_legacy_veto_flags(
+            [_span("Spins", "Random rubble stone masonry")], SPINS_CHOICE
+        )
+
+
+def test_the_veto_decode_has_no_demonstrated_failing_input() -> None:
+    """The other half of declining that suggestion: nothing reachable raises.
+
+    Probed every candidate map against the adversarial inputs a malformed run could
+    plausibly carry. Kept as a test rather than a run note so a future map or converter
+    that DOES raise on one of these shows up here -- which is the point at which the
+    guard becomes worth adding, in the ExtractionError-preserving form.
+    """
+
+    from likhit.extractors.legacy_maps import ALL_MAP_KEYS, get_converter_for_map
+
+    inputs = [
+        "",
+        "\x00",
+        "\x00abc",
+        "�",
+        "a" * 2000,
+        " ",
+        "",
+        chr(0xF0000 + 65),
+        "\U0001f600",
+        "a\nb\tc\rd",
+        "\\",
+        "%",
+        "​",
+        "́" * 50,
+        "".join(chr(index) for index in range(1, 256)),
+        "नेपाली",
+    ]
+    for map_key in ALL_MAP_KEYS:
+        convert = get_converter_for_map(map_key)
+        for text in inputs:
+            convert(text)  # must not raise

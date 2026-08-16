@@ -1643,6 +1643,26 @@ def _content_legacy_veto_flags(
                 # The unmasked decode is right here: this is the *evidence* for
                 # "would decoding this run produce Nepali words", not the output. The
                 # mask (VOL-156) applies when the span is actually written.
+                #
+                # 🛑 DELIBERATELY UNGUARDED, and this note exists because review proposed
+                # wrapping it in `except Exception: decoded = None`. Two reasons, and the
+                # second is decisive:
+                #
+                #   1. No reachable input raises. Probed all 6 candidate maps against 18
+                #      adversarial inputs -- NUL, embedded NUL, U+FFFD, BMP private use,
+                #      a plane-15 CID mark, an astral emoji, every Latin-1 byte, control
+                #      characters, a combining storm, 2,000 chars -- 108 pairs, 0 raises.
+                #   2. A blanket `except Exception` here would swallow `ExtractionError`,
+                #      which `_choose_legacy_map_ranked` above RE-RAISES on purpose: "a
+                #      missing/broken npttf2utf is a real config error -- surface it
+                #      rather than silently disabling Part B". Catching it here would do
+                #      exactly what that comment forbids, and it would do it one run at a
+                #      time, so a broken install would read as a corpus with no Latin in
+                #      it rather than as a broken install.
+                #
+                # If this ever does need a guard, it must mirror the ranking loop: let
+                # `ExtractionError` through and catch only the rest.
+                # `test_an_extraction_error_from_the_veto_is_not_swallowed` pins that.
                 decoded = get_converter_for_map(choice.map_key)(raw_text)
                 if _reads_as_latin_text(raw_text, decoded):
                     for index in range(start, end):
