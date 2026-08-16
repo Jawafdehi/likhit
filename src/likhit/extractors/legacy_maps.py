@@ -211,10 +211,29 @@ SHIPPED_MAP_KEYS: tuple[str, ...] = (
     "Sagarmatha",
 )
 
-#: Every map the scorer may choose, shipped or synthesised. DERIVED from
-#: SHIPPED_MAP_KEYS rather than listed again, so adding an upstream map cannot leave
-#: the two disagreeing.
+#: Maps this library MODELS rather than gets from npttf2utf: a layout upstream does not
+#: ship, expressed as a key translation onto a shipped map. There are two, and they work
+#: the same way -- translate the keystrokes, then decode with the base map -- so they get
+#: a name instead of being spelled out as exceptions wherever the distinction matters.
+#:
+#: The distinction is load-bearing for tests: anything asking "does this agree with
+#: upstream" or "does this use the compiled translate fast path" has nothing to compare
+#: against for these two, and `_get_compiled_map` raises for them.
+SYNTHESISED_MAP_KEYS: tuple[str, ...] = (SPINS_MAP_KEY, SIDDHI_MAP_KEY)
+
+#: Every map CONTENT-BASED detection may choose. Note what is missing: Siddhi is
+#: decodable but is NOT a candidate here, deliberately. Adding it would put a seventh
+#: candidate in front of every gate-passing aggregate in the corpus -- a corpus-wide
+#: false-positive surface for a population the font NAME already identifies. That
+#: decision is pinned in tests/test_siddhi_layout.py and is the thing to argue with if a
+#: later run measures the surface and disagrees.
 ALL_MAP_KEYS: tuple[str, ...] = SHIPPED_MAP_KEYS + (SPINS_MAP_KEY,)
+
+#: Every key :func:`get_converter_for_map` accepts. This is a SUPERSET of
+#: :data:`ALL_MAP_KEYS`, and the difference is the point: a font can be routed to a map
+#: by NAME without that map being a content-detection candidate. The two sets coincided
+#: until Siddhi, which is why code that conflated them was correct up to that point.
+DECODABLE_MAP_KEYS: tuple[str, ...] = SHIPPED_MAP_KEYS + SYNTHESISED_MAP_KEYS
 
 # No legacy keyboard layout in _REGISTRY puts its own bracket glyph on the
 # literal ASCII '(' / ')' keys -- confirmed for FONTASY_HIMALI_TT (whose '('
@@ -517,6 +536,20 @@ def get_converter_for_map(map_key: str) -> Callable[[str], str]:
     # layout, so its keystrokes are translated onto Preeti's and decoded with Preeti's
     # map. Placed in the RAW converter deliberately -- this is the scoring primitive,
     # and choose_legacy_map has to be able to score Spins against the shipped maps.
+    if map_key == SIDDHI_MAP_KEY:
+        base_convert = get_converter_for_map(_SIDDHI_BASE_MAP_KEY)
+
+        def _convert_siddhi(text: str) -> str:
+            # str.translate is simultaneous, so '<' -> '/' and '/' -> '÷' do not
+            # chain; a sequential two-pass replace would send '<' all the way to
+            # '÷' and lose every र.
+            return _SIDDHI_LITERAL_SEPARATOR.join(
+                base_convert(part.translate(_SIDDHI_TO_HIMALI_KEYS))
+                for part in text.split(_SIDDHI_LITERAL_SEPARATOR)
+            )
+
+        return _convert_siddhi
+
     if map_key == SPINS_MAP_KEY:
         base_convert = get_converter_for_map(_SPINS_BASE_MAP_KEY)
 
@@ -548,21 +581,6 @@ def get_output_converter_for_map(map_key: str) -> Callable[[str], str]:
         # out of the brackets and the gate's premise does not hold. Returning the raw
         # converter is not a fallback: it is the correct reading of the span.
         return base_convert
-    if map_key == SIDDHI_MAP_KEY:
-        base_convert = get_converter_for_map(_SIDDHI_BASE_MAP_KEY)
-
-        def _convert_siddhi(text: str) -> str:
-            # str.translate is simultaneous, so '<' -> '/' and '/' -> '÷' do not
-            # chain; a sequential two-pass replace would send '<' all the way to
-            # '÷' and lose every र.
-            return _SIDDHI_LITERAL_SEPARATOR.join(
-                base_convert(part.translate(_SIDDHI_TO_HIMALI_KEYS))
-                for part in text.split(_SIDDHI_LITERAL_SEPARATOR)
-            )
-
-        return _convert_siddhi
-
-    mapper = _get_mapper()
 
     def _convert(text: str) -> str:
         decoded = _decode_ascii_bracketed_number(text)

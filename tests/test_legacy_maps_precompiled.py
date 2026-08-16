@@ -217,7 +217,7 @@ def test_word_splitting_is_lossless() -> None:
         assert "".join(_WORD_SPLIT.findall(text)) == text
 
 
-def test_spins_is_synthesised_and_therefore_outside_these_sweeps() -> None:
+def test_the_synthesised_maps_are_outside_these_sweeps() -> None:
     """Why the sweeps above use SHIPPED_MAP_KEYS rather than ALL_MAP_KEYS.
 
     Every property in this file is stated against npttf2utf's own table: "our compiled
@@ -241,14 +241,22 @@ def test_spins_is_synthesised_and_therefore_outside_these_sweeps() -> None:
         get_converter_for_map,
     )
 
-    # It is in ALL_MAP_KEYS -- the scorer may choose it -- but not in the shipped set.
-    assert SPINS_MAP_KEY in ALL_MAP_KEYS
-    assert SPINS_MAP_KEY not in SHIPPED_MAP_KEYS
-    assert set(ALL_MAP_KEYS) - set(SHIPPED_MAP_KEYS) == {SPINS_MAP_KEY}
+    # They are in ALL_MAP_KEYS -- the scorer may choose them -- but not shipped.
+    from likhit.extractors.legacy_maps import SYNTHESISED_MAP_KEYS
 
-    # No upstream table, which is the whole reason for the split.
-    with pytest.raises(NoMapForOriginException):
-        _get_compiled_map(SPINS_MAP_KEY)
+    from likhit.extractors.legacy_maps import DECODABLE_MAP_KEYS
+
+    # Stated against DECODABLE, not ALL: only ONE of the two synthesised maps is a
+    # content candidate. Siddhi is decodable and name-routed but deliberately not a
+    # candidate, so ALL_MAP_KEYS - SHIPPED_MAP_KEYS is {Spins} alone.
+    assert set(DECODABLE_MAP_KEYS) - set(SHIPPED_MAP_KEYS) == set(SYNTHESISED_MAP_KEYS)
+    assert set(SHIPPED_MAP_KEYS) & set(SYNTHESISED_MAP_KEYS) == set()
+    assert set(ALL_MAP_KEYS) - set(SHIPPED_MAP_KEYS) == {"Spins"}
+
+    # No upstream table for either, which is the whole reason for the split.
+    for key in SYNTHESISED_MAP_KEYS:
+        with pytest.raises(NoMapForOriginException):
+            _get_compiled_map(key)
 
     # And it really is the delegation it claims to be: for any keystroke text, Spins
     # equals translate-then-Preeti.
