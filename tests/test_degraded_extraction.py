@@ -288,6 +288,46 @@ def test_a_failure_on_both_attempts_still_stamps(monkeypatch, sample_pdf) -> Non
     assert DEGRADED_MARKER_PATTERN.search(_convert(sample_pdf).markdown) is not None
 
 
+def test_the_transcript_the_scorer_chose_is_also_stamped(
+    monkeypatch, sample_pdf
+) -> None:
+    """The second stamp site: the one reached when the scorer CHOSE between candidates.
+
+    `convert()` returns from two places -- the single-candidate shortcut and the
+    scored comparison -- and every other test here reaches only the first, because a
+    resource failure normally leaves the default extraction as the sole candidate.
+    Removing the stamp from the scored return therefore left the whole suite green
+    (measured: 99 passed / 1 xfailed), so a later refactor of that return could drop
+    the marker unnoticed. That is the exact channel this file exists to close.
+
+    The second site is reachable: a resource failure plus an OCR candidate gives two
+    candidates and a live reason. Asserting on the OCR text as well as the marker is
+    what pins the SCORED return rather than the shortcut -- if the shortcut ran, the
+    OCR candidate would not be in the output.
+    """
+
+    ocr_text = "ओसीआर पाठ " * 40
+    _inject(monkeypatch, MemoryError("simulated double-buffering"))
+    monkeypatch.setattr(nepali_pdf_module, "pdf_likely_needs_ocr", lambda raw: True)
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_run_ocr_pdf_converter",
+        lambda raw, stream_info, **kwargs: DocumentConverterResult(markdown=ocr_text),
+    )
+
+    markdown = _convert(sample_pdf).markdown
+
+    assert ocr_text.strip() in markdown, (
+        "the OCR candidate is absent, so the single-candidate shortcut ran and this "
+        "test proves nothing about the scored return"
+    )
+    match = DEGRADED_MARKER_PATTERN.search(markdown)
+    assert match is not None, (
+        "the scorer chose a candidate after a resource failure and returned it unmarked"
+    )
+    assert match.group(1) == "MemoryError"
+
+
 def test_the_degraded_transcript_is_not_shorter_than_the_healthy_one(
     monkeypatch, sample_pdf
 ) -> None:
