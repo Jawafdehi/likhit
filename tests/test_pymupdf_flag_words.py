@@ -30,6 +30,7 @@ Two facts this file records that are easy to get backwards:
 from __future__ import annotations
 
 import ast
+from collections import Counter
 import importlib
 from pathlib import Path
 
@@ -45,21 +46,37 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 # is the whole point: the reviewer has to say what word the new site gets and why.
 # --------------------------------------------------------------------------- #
 
-# (module path relative to src/, the flags= expression as written) -> why.
-_EXPLICIT_FLAG_SITES: dict[tuple[str, str], str] = {
+# (module path relative to src/, enclosing function, the flags= expression) -> why.
+#
+# The enclosing function is part of the key, and that is load-bearing rather than
+# decorative. Keyed on (module, expression) alone, a SECOND site in the same module
+# reusing an EXISTING expression collapses onto the existing key and the comparison
+# below is unchanged -- measured, fully green at 28 passed. The reverse is equally
+# invisible: delete one of two same-keyed sites and nothing notices it left. Since the
+# whole thesis of this file is that a fourth site must not pass silently, and
+# `fitz.TEXT_PRESERVE_WHITESPACE` is the expression a fourth site is likeliest to
+# reuse, that hole was the file's central claim failing on its own terms.
+#
+# It is still not a perfect key -- two sites in one function with one expression would
+# collapse -- which is why the comparison is a MULTISET, not a set. The count catches
+# what the key cannot.
+_EXPLICIT_FLAG_SITES: dict[tuple[str, str, str], str] = {
     (
         "likhit/extractors/font_based.py",
+        "get_cid_marked_page_dict",
         "fitz.TEXT_PRESERVE_WHITESPACE",
     ): "the plain detection pass. Must NOT carry bit 128: it detects unmappable "
     "glyphs BY their U+FFFD, and the CID bit decodes them to raw CIDs instead, "
     "so an additive word returns zero U+FFFD and ends all CID marking.",
     (
         "likhit/extractors/font_based.py",
+        "get_cid_marked_page_dict",
         "_TEXT_DICT_FLAGS",
     ): "the CID pass. Deliberately the plain word PLUS bit 128 and nothing else -- "
     "that one-bit difference is the contrast the marking is derived from.",
     (
         "likhit/extractors/numeric_boundaries.py",
+        "collect_page_numeric_boundary_repairs",
         "fitz.TEXT_PRESERVE_WHITESPACE",
     ): "the numeric-boundary repair reads character ORIGINS, so a clipped glyph is "
     "a lost digit, not merely a lost glyph. See the behavioural test at the "
@@ -94,11 +111,24 @@ def _iter_get_text_sites():
 
         # Map each node to its enclosing function so a site can be named by what it
         # is in rather than by a line number, which churns on every edit above it.
+        #
+        # Recursed explicitly rather than via `ast.walk` + `setdefault`: walk is
+        # breadth-first, so an outer `def` is visited before a `def` nested inside it
+        # and `setdefault` makes the OUTER name stick. Verified -- a call inside
+        # `inner()` reported `outer`. No site is in a nested function today, but both
+        # of these modules use inner helpers, and a wrong name here also widens the
+        # key collision the registry comment describes.
         enclosing: dict[int, str] = {}
-        for func in ast.walk(tree):
-            if isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for inner in ast.walk(func):
-                    enclosing.setdefault(id(inner), func.name)
+
+        def annotate(node: ast.AST, name: str) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    annotate(child, child.name)
+                else:
+                    enclosing[id(child)] = name
+                    annotate(child, name)
+
+        annotate(tree, "<module>")
 
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -118,8 +148,53 @@ def _all_sites() -> list[tuple[str, str, str | None, int]]:
     return list(_iter_get_text_sites())
 
 
+# A `flags=` expression must be a pure constant expression -- a name, an attribute, or
+# those combined with bitwise operators. That is a real restriction on what src/ may
+# write, and it is deliberate: `_resolve` below evaluates whatever it finds, so anything
+# richer (a call, a subscript, a conditional) would be both un-analysable by this scan
+# and executed by it. The positional-argument test sets the same precedent -- constrain
+# what the source may write so the scan stays honest.
+_ALLOWED_FLAG_NODES = (
+    ast.Expression,
+    ast.Name,
+    ast.Attribute,
+    ast.BinOp,
+    ast.UnaryOp,
+    ast.Constant,
+    ast.Load,
+    ast.BitOr,
+    ast.BitAnd,
+    ast.BitXor,
+    ast.Invert,
+)
+
+
+@pytest.mark.parametrize(
+    ("rel", "expression"),
+    sorted({(rel, flags) for rel, _fn, flags, _n in _all_sites() if flags is not None}),
+    ids=lambda v: v,
+)
+def test_every_flag_expression_is_a_pure_constant_expression(rel, expression):
+    tree = ast.parse(expression, mode="eval")
+    offenders = [
+        type(node).__name__
+        for node in ast.walk(tree)
+        if not isinstance(node, _ALLOWED_FLAG_NODES)
+    ]
+    assert offenders == [], (
+        f"{rel} passes flags={expression!r}, which contains {offenders}. Keep it to "
+        "names, attributes and bitwise operators: this module evaluates the "
+        "expression to check its bits, and it must not execute anything richer."
+    )
+
+
 def _resolve(rel: str, expression: str) -> int:
-    """Evaluate a ``flags=`` expression in its own module's namespace."""
+    """Evaluate a ``flags=`` expression in its own module's namespace.
+
+    Safe because `test_every_flag_expression_is_a_pure_constant_expression` bounds what
+    can appear here. Module globals win over the injected `fitz`, which is correct --
+    each module imports `pymupdf as fitz` itself.
+    """
 
     module = importlib.import_module(rel.removesuffix(".py").replace("/", "."))
     return eval(expression, {"fitz": fitz, **vars(module)})  # noqa: S307
@@ -146,7 +221,12 @@ _MEASURED_DEFAULTS = {
 
 @pytest.mark.parametrize(("name", "value"), sorted(_MEASURED_DEFAULTS.items()))
 def test_pymupdf_default_flag_words_are_what_the_comments_assume(name, value):
-    assert getattr(fitz, name) == value
+    assert getattr(fitz, name) == value, (
+        f"a PyMuPDF upgrade changed {name} from {value} to {getattr(fitz, name)}. "
+        "Every comment in this module and in font_based.py that reasons about 199 or "
+        "195 is now unverified -- re-derive the two harms on the corpus before "
+        "adjusting this pin. This failure is the signal, not a broken test."
+    )
 
 
 @pytest.mark.parametrize("name", sorted(_MEASURED_DEFAULTS))
@@ -172,23 +252,32 @@ def test_the_clip_bit_and_the_cid_bit_are_the_ones_named_in_the_comments():
 
 
 def test_every_explicit_flags_site_in_src_is_registered():
-    found = {(rel, flags) for rel, _fn, flags, _n in _all_sites() if flags is not None}
-    assert found == set(_EXPLICIT_FLAG_SITES), (
-        "a get_text(flags=...) call site in src/ was added, removed or reworded.\n"
-        f"  unregistered: {sorted(found - set(_EXPLICIT_FLAG_SITES))}\n"
-        f"  stale entries: {sorted(set(_EXPLICIT_FLAG_SITES) - found)}\n"
+    # Counter, not set: a duplicate site raises a count the registry does not have, and
+    # a deleted one lowers a count. A set comparison sees neither.
+    found = Counter(
+        (rel, fn, flags) for rel, fn, flags, _n in _all_sites() if flags is not None
+    )
+    # `Counter(dict)` would read the dict's VALUES as counts -- here the rationale
+    # strings -- so the keys are taken explicitly.
+    expected = Counter(_EXPLICIT_FLAG_SITES.keys())
+    assert found == expected, (
+        "a get_text(flags=...) call site in src/ was added, removed, moved or "
+        "reworded.\n"
+        f"  unregistered: {sorted((found - expected).elements())}\n"
+        f"  stale entries: {sorted((expected - found).elements())}\n"
         "flags= REPLACES PyMuPDF's default word. Read this module's docstring "
         "before adding an entry."
     )
 
 
 def test_every_flagless_get_text_site_in_src_is_registered():
-    found = {(rel, fn) for rel, fn, flags, _n in _all_sites() if flags is None}
-    assert found == set(_DEFAULT_FLAG_SITES), (
+    found = Counter((rel, fn) for rel, fn, flags, _n in _all_sites() if flags is None)
+    expected = Counter(_DEFAULT_FLAG_SITES.keys())
+    assert found == expected, (
         "a get_text() call with no flags= was added or removed. Every TEXTFLAGS_* "
         "default sets TEXT_MEDIABOX_CLIP, so this is not the neutral choice.\n"
-        f"  unregistered: {sorted(found - set(_DEFAULT_FLAG_SITES))}\n"
-        f"  stale entries: {sorted(set(_DEFAULT_FLAG_SITES) - found)}"
+        f"  unregistered: {sorted((found - expected).elements())}\n"
+        f"  stale entries: {sorted((expected - found).elements())}"
     )
 
 
@@ -210,6 +299,9 @@ def test_get_text_flags_are_never_passed_positionally():
 # property about the record of reality would only ever restate the record: an
 # unregistered additive site would be caught by the coverage test as a bookkeeping
 # mismatch, and the actual reason it is wrong would go unstated.
+# Deduplicated on (module, expression): the flag word's PROPERTIES are a function of the
+# expression alone, so two sites sharing one word need the property checked once. The
+# coverage test above is where duplicate SITES are caught, on the fuller key.
 _FOUND_EXPLICIT = sorted(
     {(rel, flags) for rel, _fn, flags, _n in _all_sites() if flags is not None}
 )
@@ -260,6 +352,16 @@ class _AdditivelyFlaggedPage:
         self._page = page
 
     def get_text(self, mode: str, flags: int | None = None) -> dict:
+        # Discarding `flags` is the point, but not blindly: the call under test passes
+        # the SHIPPED word, and this wrapper's claim is that substituting the additive
+        # one changes the outcome. If the site's word ever changes, the substitution is
+        # no longer the comparison this test describes -- so it is asserted rather than
+        # assumed.
+        assert flags == fitz.TEXT_PRESERVE_WHITESPACE, (
+            f"the call site passed flags={flags}, not the shipped "
+            f"{fitz.TEXT_PRESERVE_WHITESPACE}; this wrapper would then be comparing "
+            "the additive word against something other than what ships"
+        )
         return self._page.get_text(mode, flags=_ADDITIVE)
 
     def get_cdrawings(self) -> list:
