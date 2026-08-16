@@ -310,3 +310,69 @@ def test_the_register_rule_needs_a_letter_as_well_as_a_trailing_figure():
     assert not _looks_like_register_rows(["190 SCA Dalit 7980"])
     # a line that does not end on a figure is a sentence
     assert not _looks_like_register_rows(["190 SCA Dalit 7980", "थप विवरण"])
+
+
+def test_a_blank_line_inside_a_cell_never_reaches_the_register_predicate():
+    """Raised in review: "blank lines are dropped before classification".
+
+    They are dropped, but one level UP and before this function is reached, so nothing
+    is lost at the point the review is about. `_render_raw_table_lines` builds
+    `cell_lines` with `if _clean_text(part)`, so the predicate cannot observe a blank
+    through the render path. Instrumented rather than argued: a cell whose text contains
+    a blank line between two figure-ending lines hands the predicate TWO entries.
+
+    Pinned because a reader of `_looks_like_register_rows` alone sees a filter that
+    looks like it is discarding evidence, and will keep raising it.
+    """
+
+    import likhit.renderers.markdown as markdown_module
+    from likhit.models import Table, TableCell, TableRegion
+
+    table = Table(
+        row_count=1,
+        col_count=2,
+        cells=[
+            TableCell(row=0, col=0, text="क्र.सं. १०\n\nजम्मा २०"),
+            TableCell(row=0, col=1, text="x"),
+        ],
+        regions=[
+            TableRegion(page_number=1, x0=0, y0=0, x1=100, y1=50, page_height=800)
+        ],
+    )
+
+    seen: list[list[str]] = []
+    original = markdown_module._looks_like_register_rows
+
+    def spy(parts: list[str]) -> bool:
+        seen.append(list(parts))
+        return original(parts)
+
+    markdown_module._looks_like_register_rows = spy
+    try:
+        render_table_preformatted_markdown(table)
+    finally:
+        markdown_module._looks_like_register_rows = original
+
+    assert seen, "the predicate was never called, so this test proves nothing"
+    assert all(all(part.strip() for part in parts) for parts in seen), seen
+    assert seen[0] == ["क्र.सं. १०", "जम्मा २०"]
+
+
+def test_the_register_rule_stays_conservative_on_ambiguous_input():
+    """Which direction is safe, pinned so the suggested inversion is not re-applied.
+
+    True means "separate records", which makes the caller LEAVE THE ROWS ALONE. False is
+    what permits the join, and joining is the corrupting act -- it splits a figure across
+    visual lines and mashes a swallowed sub-table into one string. So on input carrying a
+    blank, True is the conservative answer, not the aggressive one.
+    """
+
+    from likhit.renderers.markdown import (
+        _looks_like_register_rows,
+        _wrapped_lines_are_one_row,
+    )
+
+    ambiguous = ["क्र.सं. १०", "", "जम्मा २०"]
+    assert _looks_like_register_rows(ambiguous) is True
+    # ...and True is what stops the rejoin, which is the whole point.
+    assert _wrapped_lines_are_one_row([ambiguous]) is False

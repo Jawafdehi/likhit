@@ -829,6 +829,19 @@ def _looks_like_register_rows(parts: list[str]) -> bool:
     and at least one carrying a letter -- the letter requirement keeps this from
     duplicating the bare-figure test, so the two clauses stay independently meaningful
     and a mutation of either is visible.
+
+    The blank-line filter below is BELT AND BRACES, not evidence being discarded, and
+    that distinction was raised in review. `_render_raw_table_lines` builds `cell_lines`
+    with `if _clean_text(part)`, so a blank never reaches this function through the
+    render path -- verified by instrumenting the predicate and rendering a cell whose
+    text contains one: it arrives as two entries, not three.
+
+    🛑 And the suggested repair pointed the wrong way. "A blank line means these are not
+    register rows" makes this return False, and False is what lets the caller JOIN the
+    lines. Joining is the corrupting act here, not splitting -- see the caller's
+    docstring: it splits a figure across visual lines and mashes a swallowed sub-table
+    into one string. Returning True on ambiguous input leaves the rows alone, which is
+    why the conservative direction is the one already taken.
     """
 
     lines = [part for part in parts if part.strip()]
