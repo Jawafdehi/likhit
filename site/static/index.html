@@ -9,6 +9,12 @@
       content="Generated integration and document-conversion results for Likhit."
     />
     <title>Likhit benchmark</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Noto+Serif+Devanagari:wght@400;500;600&family=Noto+Sans+Devanagari:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="./styles.css" />
     <script
       src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"
@@ -21,13 +27,6 @@
   <body>
     <header class="topbar">
       <a class="brand" href="./" aria-label="Likhit benchmark home">
-        <img
-          class="brand-logo"
-          src="./logo-mark.svg"
-          alt=""
-          width="414"
-          height="132"
-        />
         <span>
           <strong>Likhit</strong>
           <small>document benchmark</small>
@@ -49,14 +48,9 @@
     <main>
       <section class="intro" aria-labelledby="intro-title">
         <div class="intro-copy">
-          <img
-            class="intro-logo"
-            src="./logo.svg"
-            alt="Likhit"
-            width="1240"
-            height="260"
-          />
-          <h1 id="intro-title">Nepali documents, converted faithfully</h1>
+          <h1 id="intro-title">
+            Nepali documents, converted <span class="hl">faithfully</span>
+          </h1>
           <p class="intro-lede">
             <strong>Likhit</strong> is
             <a href="https://jawafdehi.org/">Jawafdehi's</a> public
@@ -322,10 +316,6 @@ export GEMINI_MODEL=gemini-2.5-flash</pre>
         </p>
       </section>
 
-      <!-- Populated only when the published numbers were replayed from a recorded
-           snapshot rather than measured by this build. Empty otherwise. -->
-      <div class="measured-banner" id="measured-banner" aria-live="polite"></div>
-
       <section class="summary-strip" id="summary-strip" aria-label="Run summary">
         <div class="summary-skeleton"></div>
       </section>
@@ -386,7 +376,7 @@ export GEMINI_MODEL=gemini-2.5-flash</pre>
               data-status="known-issue"
               aria-pressed="false"
             >
-              Known
+              Known issues
             </button>
             <button type="button" data-status="blocked" aria-pressed="false">
               Blocked
@@ -417,7 +407,6 @@ export GEMINI_MODEL=gemini-2.5-flash</pre>
                 <i data-lucide="arrow-left" aria-hidden="true"></i>
               </button>
               <div class="detail-title">
-                <div class="detail-kicker" id="detail-kicker"></div>
                 <h1 id="detail-name"></h1>
                 <p id="detail-summary"></p>
               </div>
@@ -440,11 +429,6 @@ export GEMINI_MODEL=gemini-2.5-flash</pre>
               aria-label="Select configuration"
             ></div>
 
-            <!-- Which model served the selected configuration, and what it spent.
-                 Sits beside the selector because that is where the question comes
-                 up, and it holds for runs that made no call at all. -->
-            <div class="run-backend" id="run-backend"></div>
-
             <nav class="detail-tabs" id="detail-tabs" aria-label="Result views">
               <button
                 class="active"
@@ -460,6 +444,15 @@ export GEMINI_MODEL=gemini-2.5-flash</pre>
               <button type="button" data-tab="metadata" aria-pressed="false">
                 Metadata
               </button>
+              <!-- Preview/Source belongs to the transcript, so it lives on the
+                   tab row's right edge and hides on the other tabs. -->
+              <div
+                class="view-toggle"
+                id="transcript-view"
+                role="group"
+                aria-label="Markdown view"
+                hidden
+              ></div>
             </nav>
 
             <section class="detail-body" id="detail-body"></section>
@@ -468,29 +461,10 @@ export GEMINI_MODEL=gemini-2.5-flash</pre>
       </section>
     </main>
 
-    <dialog class="pdf-modal" id="pdf-modal" aria-labelledby="pdf-modal-title">
-      <header class="pdf-modal-bar">
-        <h2 id="pdf-modal-title">Source PDF</h2>
-        <div class="pdf-modal-actions">
-          <a
-            class="command-link"
-            id="pdf-modal-open"
-            href="#"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Open in new tab
-          </a>
-          <button
-            class="command-link"
-            type="button"
-            id="pdf-modal-close"
-            aria-label="Close PDF viewer"
-          >
-            Close
-          </button>
-        </div>
-      </header>
+    <!-- Chromeless viewer: the browser's own PDF toolbar covers zoom, print and
+         download, and the native <dialog> covers Esc; clicking the backdrop
+         closes it. A second header on top of that would only repeat. -->
+    <dialog class="pdf-modal" id="pdf-modal" aria-label="Source PDF">
       <iframe id="pdf-modal-frame" title="Source PDF" src="about:blank"></iframe>
     </dialog>
 

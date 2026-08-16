@@ -856,7 +856,6 @@ def test_dashboard_shows_ocr_tokens_and_model_but_never_a_cost() -> None:
     app = (SITE_DIR / "static" / "app.js").read_text(encoding="utf-8")
     schema = json.loads((SITE_DIR / "schema.json").read_text(encoding="utf-8"))
 
-    assert "runCostBadge(run)" in app
     assert "OCR usage" in app
     assert "usage.total_tokens" in app
     # The model is resolved per configuration, with the per-run usage record only
@@ -1860,26 +1859,24 @@ def test_job_summary_survives_a_build_that_produced_no_artifact(
     assert summarize.main([str(tmp_path / "absent.json")]) == 0
 
 
-def test_dashboard_declares_recorded_results_rather_than_implying_fresh_ones() -> None:
-    """A page that replays a recording must say so, next to the numbers."""
+def test_replayed_provenance_lives_in_run_metadata() -> None:
+    """Replayed provenance lives in run metadata, not in a global banner.
+
+    The banner above the summary was retired by design -- it repeated what the
+    Metadata tab records per run. What must never regress is the attribution:
+    run metadata names the environment that performed the conversion -- the
+    recorded one -- and separately names the publishing build.
+    """
 
     index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
     app = (SITE_DIR / "static" / "app.js").read_text(encoding="utf-8")
-    styles = (SITE_DIR / "static" / "styles.css").read_text(encoding="utf-8")
 
-    assert 'id="measured-banner"' in index
-    assert ".measured-banner" in styles
-    # The call, not the definition -- a defined-but-never-called renderer leaves
-    # the banner empty and the page silently claims fresh measurements.
-    assert "renderMeasured();" in app, "the banner must actually be rendered"
-    assert "Recorded results" in app
-
-    # It qualifies the summary numbers, so it has to appear before them.
-    assert index.index('id="measured-banner"') < index.index('id="summary-strip"')
+    assert 'id="measured-banner"' not in index, "the banner must stay retired"
 
     # Run metadata describes the conversion, so it must name the environment that
     # performed it -- the recorded one -- not the environment that built the page.
     assert "measured?.build ?? state.data.build" in app
+    assert "measured.recorded_at" in app
     assert "Published from" in app
 
 
@@ -2043,31 +2040,28 @@ def test_snapshot_carries_the_model_of_every_available_ocr_configuration() -> No
         )
 
 
-def test_dashboard_names_the_model_beside_the_configuration_selector() -> None:
-    """The model has to be readable without opening a tab.
+def test_model_and_token_usage_live_only_in_the_metadata_tab() -> None:
+    """The vision model and its spend are metadata, not detail-pane chrome.
 
-    It previously appeared only in the Metadata tab's usage block, which is absent
-    for every run that made no vision call -- that is, for most of them.
+    They previously rendered twice outside the Metadata tab -- a persistent
+    caption under the configuration selector and a token chip inside each
+    selector button -- duplicating the tab and crowding the header. The facts
+    stay; the caption and chips must not come back.
     """
 
     index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
     app = (SITE_DIR / "static" / "app.js").read_text(encoding="utf-8")
-    styles = (SITE_DIR / "static" / "styles.css").read_text(encoding="utf-8")
 
-    assert 'id="run-backend"' in index
-    assert ".run-backend" in styles
-    assert "renderRunBackend();" in app, "the backend line must actually be rendered"
+    assert 'id="run-backend"' not in index, "the caption line must stay retired"
+    assert "runCostBadge" not in app, "the selector chips must stay retired"
 
-    # It sits with the configuration selector, not buried in a tab.
-    assert index.index('id="run-segments"') < index.index('id="run-backend"')
-    assert index.index('id="run-backend"') < index.index('id="detail-tabs"')
-
+    # The Metadata tab still carries the full story.
+    assert "renderOcrUsageBlock(run)" in app
     # The model is read per configuration, so it survives a run with no usage.
     assert "configurationOf(run).model" in app
-    # All three states are distinguished in words, not by an empty element.
-    assert "no OCR call" in app
-    assert "not recorded" in app
-    assert "No vision model" in app
+    # A run whose spend nobody counted stays distinct from one that spent zero.
+    assert "not recorded for this run" in app
+    assert "without calling the model" in app
 
 
 # --------------------------------------------------------------------------- #

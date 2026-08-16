@@ -69,6 +69,14 @@ function shortSha(value) {
   return value ? value.slice(0, 8) : "unknown";
 }
 
+// Configuration labels arrive as "Likhit (no OCR)". Inside the dashboard every
+// run is Likhit's, so the prefix is noise -- show the qualifier alone.
+function shortLabel(label) {
+  const match = /^Likhit\s*\((.+)\)$/.exec(label ?? "");
+  if (!match) return label ?? "";
+  return match[1].charAt(0).toLocaleUpperCase() + match[1].slice(1);
+}
+
 function safeHttpUrl(value) {
   if (!value) return null;
   try {
@@ -77,6 +85,13 @@ function safeHttpUrl(value) {
   } catch {
     return null;
   }
+}
+
+
+// Counted outcome wording: "1 known issue", "2 known issues", "3 passed".
+function outcomeWord(key, count) {
+  if (key === "known-issue") return count === 1 ? "known issue" : "known issues";
+  return { pass: "passed", blocked: "blocked", fail: "failed", reference: "reference" }[key] ?? key;
 }
 
 function documentById(id) {
@@ -125,99 +140,118 @@ function renderIdentity() {
   `;
 }
 
-// The benchmark cannot run on every commit: CI has no vision backend, and the
-// full corpus takes far longer than a Pages build. So a recorded snapshot is
-// replayed instead -- which is only honest if the page says so and names the
-// commit the numbers were measured at.
-//
-// That commit is almost always an older one, and deliberately not treated as a
-// problem: committing a recording necessarily creates a commit later than the one
-// it was recorded on, so a warning here would fire on every single deploy. It is
-// stated as a fact and left at that. Runs *missing* from the recording are a
-// different matter -- that is a real gap, and it warns.
-function renderMeasured() {
-  const banner = byId("measured-banner");
-  const measured = state.data.measured;
-  if (!measured) {
-    banner.hidden = true;
-    banner.innerHTML = "";
-    return;
-  }
-  banner.hidden = false;
-  const build = measured.build || {};
-  const missing = measured.missing_runs || [];
-  const notes = [];
-  if (missing.length) {
-    notes.push(
-      `${formatNumber(missing.length)} catalog ${
-        missing.length === 1
-          ? "run is newer than the recording and was"
-          : "runs are newer than the recording and were"
-      } skipped.`,
-    );
-  }
-  // Amber only for a recording that does not cover the catalog -- not for the
-  // older recorded commit, which is every deploy.
-  banner.classList.toggle("incomplete", missing.length > 0);
-  banner.innerHTML = `
-    ${icon(missing.length ? "triangle-alert" : "history")}
-    <span>
-      <strong>Recorded results.</strong>
-      Measured at <code>${escapeHtml(shortSha(build.commit))}</code>
-      on ${escapeHtml(formatNpt(measured.recorded_at))}
-      with Likhit ${escapeHtml(build.likhit ?? "unknown")},
-      and published from <code>${escapeHtml(shortSha(state.data.build.commit))}</code>.
-      This build replayed them rather than re-running the benchmark.
-      ${notes.join(" ")}
-    </span>
-  `;
-  refreshIcons();
-}
-
 function renderSummary() {
-  const { summary, integration } = state.data;
-  const integrationClass =
-    integration.status === "passed"
-      ? "pass"
-      : integration.status === "failed"
-        ? "fail"
-        : "";
-  const executedTests = integration.tests - integration.skipped;
-  const passedTests =
-    executedTests - integration.failures - integration.errors;
-  const items = [
-    ["Failed", summary.fail, "needs attention", summary.fail ? "fail" : ""],
-    [
-      "Integration",
-      integration.status === "not-run"
-        ? "—"
-        : `${passedTests}/${executedTests}`,
-      integration.status,
-      integrationClass,
-    ],
-    ["Documents", summary.documents, "source files", ""],
-    ["Runs", summary.runs, "configurations", ""],
-    ["Passed", summary.pass, "verified", "pass"],
-    ["Known", summary.known_issue, "tracked issue", "known"],
-    ["Blocked", summary.blocked, "missing dependency", "blocked"],
+  const { summary, configurations, documents } = state.data;
+
+  // One verdict, not seven equal numbers: the fraction that answers "does this
+  // work?", a proportional outcome bar, and the counts as its legend.
+  const segments = [
+    ["pass", summary.pass, "passed"],
+    ["known", summary.known_issue, "known issues"],
+    ["blocked", summary.blocked, "blocked"],
+    ["fail", summary.fail, "failed"],
   ];
-  byId("summary-strip").innerHTML = items
+  const total = segments.reduce((sum, [, count]) => sum + count, 0);
+  const bar = segments
+    .filter(([, count]) => count > 0)
     .map(
-      ([label, value, note, className]) => `
-        <div class="summary-item">
-          <span class="summary-label">${escapeHtml(label)}</span>
-          <span class="summary-value ${className}">
-            ${escapeHtml(value)}
-            <small>${escapeHtml(note)}</small>
-          </span>
-        </div>
-      `,
+      ([key, count]) =>
+        `<span class="seg seg-${key}" style="flex-grow: ${count}"></span>`,
     )
     .join("");
+  const legend = segments
+    .map(
+      ([key, count, label]) =>
+        `<span class="lgd lgd-${key}"><i aria-hidden="true"></i>${formatNumber(count)} ${label}</span>`,
+    )
+    .join("");
+  const barLabel = segments
+    .map(([, count, label]) => `${count} ${label}`)
+    .join(", ");
+
+  // The benchmark's true shape is documents × configurations. One row of dots
+  // per configuration makes a blocked scan show up as the same gap in the same
+  // position across rows; each dot deep-links to that exact run.
+  const matrix = Object.entries(configurations)
+    .map(([configId, config]) => {
+      const cells = documents
+        .map((doc) => ({
+          doc,
+          run: doc.runs.find((run) => run.config === configId),
+        }))
+        .filter((cell) => cell.run);
+      const tally = new Map();
+      for (const { run } of cells) {
+        tally.set(run.outcome, (tally.get(run.outcome) || 0) + 1);
+      }
+      const tallyText = ["pass", "known-issue", "blocked", "fail"]
+        .filter((key) => tally.get(key))
+        .map((key) => `${tally.get(key)} ${outcomeWord(key, tally.get(key))}`)
+        .join(" · ");
+      const dots = cells
+        .map(({ doc, run }) => {
+          const outcome = outcomeMeta[run.outcome]?.label ?? run.outcome;
+          return `
+            <button
+              class="m-dot m-${escapeHtml(run.outcome)}"
+              type="button"
+              data-document="${escapeHtml(doc.id)}"
+              data-run="${escapeHtml(run.id)}"
+              title="${escapeHtml(doc.title)} — ${escapeHtml(outcome)}"
+              aria-label="${escapeHtml(doc.title)}: ${escapeHtml(outcome)}"
+            ></button>
+          `;
+        })
+        .join("");
+      return `
+        <div class="m-row">
+          <span class="m-label">${escapeHtml(shortLabel(config.label))}</span>
+          <span class="m-dots">${dots}</span>
+          <span class="m-tally">${escapeHtml(tallyText)}</span>
+        </div>
+      `;
+    })
+    .join("");
+
+  byId("summary-strip").innerHTML = `
+    <div class="verdict">
+      <div class="verdict-head">
+        <p class="verdict-stat">
+          <b>${formatNumber(summary.pass)}</b> of ${formatNumber(total)} runs pass
+        </p>
+      </div>
+      ${total ? `<div class="verdict-bar" role="img" aria-label="${escapeHtml(barLabel)}">${bar}</div>` : ""}
+      <div class="verdict-legend">${legend}</div>
+    </div>
+    <div class="matrix" role="group" aria-label="Results by configuration and document">
+      ${matrix}
+    </div>
+  `;
+
+  byId("summary-strip")
+    .querySelectorAll(".m-dot")
+    .forEach((dot) => {
+      dot.addEventListener("click", () => {
+        selectDocument(dot.dataset.document, dot.dataset.run);
+        const reduceMotion = window.matchMedia(
+          "(prefers-reduced-motion: reduce)",
+        ).matches;
+        byId("detail-pane").scrollIntoView({
+          behavior: reduceMotion ? "auto" : "smooth",
+          block: "start",
+        });
+      });
+    });
 }
 
 function renderIntegration() {
   const integration = state.data.integration;
+  // A replayed snapshot carries no junit report. "Suite not attached · 0 tests"
+  // above the search box is noise, not information -- show nothing instead.
+  if (integration.status === "not-run") {
+    byId("integration-banner").innerHTML = "";
+    return;
+  }
   const status =
     integration.status === "passed"
       ? { icon: "circle-check", label: "Integration suite passed" }
@@ -312,11 +346,25 @@ function renderResults() {
           <span class="result-main">
             <span class="result-title-line">
               <span class="result-title">${escapeHtml(item.title)}</span>
-              <span class="file-type">${escapeHtml(item.kind)}</span>
+              <span class="file-type kind-${escapeHtml(item.kind)}">${escapeHtml(item.kind)}</span>
             </span>
             <span class="result-publisher">${escapeHtml(item.publisher)}</span>
             <span class="run-outcomes">
-              ${runs.map((run) => outcomeChip(run)).join("")}
+              ${(() => {
+                // One pill per outcome with its count -- "3 passed" reads at a
+                // glance where three per-run dots needed a tooltip.
+                const counts = new Map();
+                runs.forEach((run) =>
+                  counts.set(run.outcome, (counts.get(run.outcome) || 0) + 1),
+                );
+                return ["pass", "known-issue", "blocked", "fail", "reference"]
+                  .filter((key) => counts.get(key))
+                  .map(
+                    (key) =>
+                      `<span class="outcome outcome-${key}">${counts.get(key)} ${outcomeWord(key, counts.get(key))}</span>`,
+                  )
+                  .join("");
+              })()}
             </span>
           </span>
           <span class="result-chevron">${icon("chevron-right")}</span>
@@ -383,10 +431,6 @@ function renderDetail() {
   }
   byId("empty-state").hidden = true;
   byId("detail-content").hidden = false;
-  byId("detail-kicker").textContent =
-    item.origin === "synthetic"
-      ? `Synthetic · ${item.kind.toUpperCase()}`
-      : `Public institutional · ${item.kind.toUpperCase()}`;
   byId("detail-name").textContent = item.title;
   byId("detail-summary").textContent = item.summary;
 
@@ -433,23 +477,6 @@ function runModel(run) {
   return configurationOf(run).model ?? run.ocr_usage?.model ?? null;
 }
 
-// Tokens an OCR run spent, on the configuration chip itself, so the cost of the
-// OCR column is visible without opening a tab.
-//
-// Zero is a result, not a blank: Likhit only calls a vision model for pages a text
-// layer cannot serve, so most documents spend nothing even with OCR configured.
-// Showing "0 tok" for those distinguishes them from a run whose spend nobody
-// counted, which renders as no badge at all.
-function runCostBadge(run) {
-  const usage = run.ocr_usage;
-  if (!usage) return "";
-  const label = usage.calls
-    ? `${formatTokens(usage.total_tokens)} tok`
-    : "no OCR call";
-  const className = usage.calls ? "run-cost" : "run-cost run-cost-idle";
-  return ` <span class="${className}">${escapeHtml(label)}</span>`;
-}
-
 function renderRunSegments() {
   const item = activeDocument();
   if (!item) return;
@@ -462,7 +489,7 @@ function renderRunSegments() {
           data-run="${escapeHtml(run.id)}"
           aria-pressed="${run.id === state.selectedRun}"
         >
-          ${escapeHtml(run.label)}${runCostBadge(run)}
+          ${escapeHtml(shortLabel(run.label))}
         </button>
       `,
     )
@@ -472,46 +499,6 @@ function renderRunSegments() {
     .forEach((button) => {
       button.addEventListener("click", () => selectRun(button.dataset.run));
     });
-  renderRunBackend();
-}
-
-// The backend line under the configuration selector: which vision model served
-// this run, and what it spent. Every branch here is a distinct, honest state --
-// conflating them is how "no OCR was needed" ends up looking like "we lost the
-// numbers".
-function renderRunBackend() {
-  const target = byId("run-backend");
-  const run = activeRun();
-  if (!target || !run) return;
-  const model = runModel(run);
-  if (!model) {
-    target.innerHTML = `
-      ${icon("file-text")}
-      <span>No vision model — this configuration reads the text layer only.</span>
-    `;
-    refreshIcons();
-    return;
-  }
-
-  const usage = run.ocr_usage;
-  let spend;
-  if (!usage) {
-    spend = "token usage was not recorded for this run";
-  } else if (!usage.calls) {
-    spend = "no OCR call — Likhit read this document without the model";
-  } else {
-    spend =
-      `${formatNumber(usage.calls)} ${usage.calls === 1 ? "call" : "calls"} · ` +
-      `${formatNumber(usage.total_tokens)} tokens ` +
-      `(${formatNumber(usage.input_tokens)} in / ${formatNumber(usage.output_tokens)} out)`;
-  }
-  target.innerHTML = `
-    ${icon("scan-text")}
-    <span>
-      Vision model <code>${escapeHtml(model)}</code> · ${escapeHtml(spend)}
-    </span>
-  `;
-  refreshIcons();
 }
 
 // The source PDF opens in a modal rather than replacing the panel, so the run's
@@ -520,10 +507,8 @@ function renderRunBackend() {
 function openPdfModal(item) {
   const modal = byId("pdf-modal");
   const frame = byId("pdf-modal-frame");
-  const href = `./${item.source.download}`;
-  byId("pdf-modal-title").textContent = item.title;
-  byId("pdf-modal-open").href = href;
-  frame.src = href;
+  frame.src = `./${item.source.download}`;
+  frame.title = `Source PDF — ${item.title}`;
   if (!modal.open) modal.showModal();
 }
 
@@ -534,9 +519,9 @@ function closePdfModal() {
 
 function bindPdfModal() {
   const modal = byId("pdf-modal");
-  byId("pdf-modal-close").addEventListener("click", closePdfModal);
-  // Clicking the backdrop closes it; clicks inside the dialog do not, which is
-  // why this compares the target rather than just listening on the dialog.
+  // The viewer is chromeless: Esc comes from the native <dialog>, and clicking
+  // the backdrop closes it; clicks inside the dialog do not, which is why this
+  // compares the target rather than just listening on the dialog.
   modal.addEventListener("click", (event) => {
     if (event.target === modal) closePdfModal();
   });
@@ -721,43 +706,51 @@ async function renderTranscript(run, token) {
       diagnosticsResponse.text(),
     ]);
     if (token !== state.loadToken) return;
+    // Most runs produce no diagnostics; an empty panel saying so is noise. The
+    // panel exists only for the runs that actually have something to report.
+    const hasDiagnostics = Boolean(diagnostics.trim());
+    // The transcript needs no title -- it IS the tab. Its only control, the
+    // Preview/Source toggle, lives on the tab row instead of a panel header.
     byId("detail-body").innerHTML = `
-      <div class="transcript-grid">
+      <div class="transcript-grid${hasDiagnostics ? "" : " solo"}">
         <section class="transcript-panel">
-          <header class="panel-heading">
-            <h2>Extracted Markdown</h2>
-            <div class="view-toggle" id="transcript-view" role="group" aria-label="Markdown view">
-              <button type="button" data-view="rendered" aria-pressed="true">
-                ${icon("book-open")} Preview
-              </button>
-              <button type="button" data-view="source" aria-pressed="false">
-                ${icon("code")} Source
-              </button>
-            </div>
-            <code title="${escapeHtml(run.transcript_sha256)}">${escapeHtml(shortSha(run.transcript_sha256))}</code>
-          </header>
           <div id="transcript-copy"></div>
         </section>
+        ${
+          hasDiagnostics
+            ? `
         <section class="transcript-panel diagnostic-panel">
           <header class="panel-heading">
             <h2>Diagnostics</h2>
-            <code title="${escapeHtml(run.diagnostics_sha256)}">${escapeHtml(shortSha(run.diagnostics_sha256))}</code>
           </header>
           <pre id="diagnostic-copy"></pre>
         </section>
+      `
+            : ""
+        }
       </div>
     `;
+    const toggle = byId("transcript-view");
+    toggle.hidden = false;
+    toggle.innerHTML = `
+      <button type="button" data-view="rendered" aria-pressed="true">
+        ${icon("book-open")} Preview
+      </button>
+      <button type="button" data-view="source" aria-pressed="false">
+        ${icon("code")} Source
+      </button>
+    `;
     applyTranscriptView(transcript);
-    byId("transcript-view")
-      .querySelectorAll("[data-view]")
-      .forEach((button) => {
-        button.addEventListener("click", () => {
-          state.transcriptView = button.dataset.view;
-          applyTranscriptView(transcript);
-        });
+    toggle.querySelectorAll("[data-view]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.transcriptView = button.dataset.view;
+        applyTranscriptView(transcript);
       });
-    byId("diagnostic-copy").textContent =
-      diagnostics || "No diagnostic output.";
+    });
+    if (hasDiagnostics) {
+      byId("diagnostic-copy").textContent = diagnostics;
+    }
+    refreshIcons();
   } catch (error) {
     if (token !== state.loadToken) return;
     byId("detail-body").innerHTML = `<div class="error-copy">${escapeHtml(error.message)}</div>`;
@@ -845,7 +838,6 @@ function renderSource(item) {
 }
 
 function renderChecks(run) {
-  const meta = outcomeMeta[run.outcome] || outcomeMeta.fail;
   const checkRows = run.checks.length
     ? run.checks
         .map(
@@ -879,7 +871,6 @@ function renderChecks(run) {
     <div class="checks-layout">
       <div class="outcome-summary">
         ${outcomeChip(run, false)}
-        <strong>${escapeHtml(meta.label)}</strong>
       </div>
       <div class="metrics-grid">
         ${metrics
@@ -900,14 +891,6 @@ function renderChecks(run) {
   refreshIcons();
 }
 
-// Token usage for the OCR configurations. Tokens and calls only -- no cost is
-// derived, because vendor token rates are not published for every model and a
-// guessed rate would render a confidently wrong number. The model is shown so the
-// tokens can be priced elsewhere.
-function formatTokens(value) {
-  if (typeof value !== "number") return "—";
-  return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value);
-}
 
 function renderOcrUsageBlock(run) {
   const model = runModel(run);
@@ -1000,6 +983,9 @@ function renderDetailBody() {
       button.classList.toggle("active", selected);
       button.setAttribute("aria-pressed", String(selected));
     });
+  // The Preview/Source toggle belongs to the transcript alone; renderTranscript
+  // reveals it once the transcript has actually loaded.
+  byId("transcript-view").hidden = true;
   if (state.tab === "transcript") {
     renderTranscript(run, token);
   } else if (state.tab === "checks") {
@@ -1061,16 +1047,34 @@ function copyPayload(button) {
 
 function bindCopyButtons() {
   document.querySelectorAll("[data-copy], [data-copy-block]").forEach((button) => {
+    // Both labels are stacked in one grid cell, so the button's size is fixed
+    // by the widest label and never shifts. On success the resting label slides
+    // up and out while the confirmation rises in from below.
+    const resting = button.textContent.trim();
+    button.innerHTML = `
+      <span class="copy-swap">
+        <span class="copy-face copy-face-resting">${escapeHtml(resting)}</span>
+        <span class="copy-face copy-face-done" aria-hidden="true">Copied</span>
+      </span>
+    `;
+    let timer = 0;
     button.addEventListener("click", async () => {
-      const original = button.textContent.trim();
       try {
         await navigator.clipboard.writeText(copyPayload(button));
-        button.textContent = "Copied";
+        button.querySelector(".copy-face-done").textContent = "Copied";
       } catch {
-        button.textContent = "Press ⌘/Ctrl+C";
+        button.querySelector(".copy-face-done").textContent = "Press ⌘/Ctrl+C";
       }
-      window.setTimeout(() => {
-        button.textContent = original;
+      button.classList.add("copied");
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        button.classList.remove("copied");
+        // The hidden face defines the button's width; once the exit transition
+        // ends, restore it so a long clipboard-failure hint can't keep the
+        // button stretched.
+        window.setTimeout(() => {
+          button.querySelector(".copy-face-done").textContent = "Copied";
+        }, 260);
       }, 1800);
     });
   });
@@ -1085,7 +1089,6 @@ async function initialize() {
     if (!response.ok) throw new Error(`Results request failed: ${response.status}`);
     state.data = await response.json();
     renderIdentity();
-    renderMeasured();
     renderSummary();
     renderIntegration();
     populateConfigFilter();
