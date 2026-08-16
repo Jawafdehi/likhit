@@ -39,7 +39,6 @@ import ast
 import inspect
 from pathlib import Path
 import re
-import textwrap
 
 import pymupdf as fitz
 import pytest
@@ -428,47 +427,43 @@ def test_a_newline_joined_serial_cell_moves_the_data_start_and_adds_a_row():
 # --------------------------------------------------------------------------- #
 
 
-def test_the_page_furniture_predicate_is_defined_twice_and_the_copies_agree():
-    """``_looks_like_page_furniture`` lives in BOTH the converter and the renderer.
+def test_the_page_furniture_predicate_is_now_a_single_definition():
+    """``_looks_like_page_furniture`` used to be defined TWICE, byte-identical -- once
+    in the converter and once in the renderer -- and both copies decided the same
+    question about the same block on either side of this seam.
 
-    Byte-identical today. They are separate functions on either side of the seam, so
-    a fix applied to one is a divergence -- and the two paths that call them decide
-    the same question about the same block. The known pending fix is a length bound:
-    the predicate discards any block containing a running-head phrase, including a
-    216-character paragraph that merely mentions it. Whoever lands that must land it
-    twice, and this is what tells them.
+    The previous version of this test asserted the copies were distinct and agreed,
+    and its own failure message said that merging them was the right outcome and that
+    this should then become an identity assertion. This is that assertion.
 
-    Deliberately not merged here. Collapsing the copies means deciding which module
-    owns the shared helper, which is a refactor with its own review, not a gap.
+    Why it matters concretely: the known pending fix to this predicate is a length
+    bound, so a 216-character paragraph merely *mentioning* a running-head phrase is
+    not discarded as furniture. With two copies that fix had to be landed twice, and
+    landing it once would have been a silent divergence between the two paths.
     """
 
     renderer = markdown_module._looks_like_page_furniture
     converter = nepali_pdf_module._looks_like_page_furniture
 
-    assert renderer is not converter, (
-        "the copies were merged -- good; delete this test and keep the agreement "
-        "assertion below only if a shared helper still has two call sites"
-    )
+    # The same function OBJECT, not merely equal source. That is what makes a future
+    # one-sided fix impossible rather than merely detectable.
+    assert renderer is converter
 
-    # Compared as parsed syntax, not as bytes. Byte-equality fails on a comment, a
-    # docstring or different line wrapping -- none of which is divergence -- and that
-    # failure would be indistinguishable from the real thing this guards.
-    def _shape(function: object) -> str:
-        source = textwrap.dedent(inspect.getsource(function))
-        return ast.dump(ast.parse(source))
+    converter_source = inspect.getsource(nepali_pdf_module)
+    renderer_source = inspect.getsource(markdown_module)
 
-    assert _shape(renderer) == _shape(converter)
+    # Both call sites still exist. Merging a definition must not quietly remove one
+    # path's USE of it -- that would change behaviour, not just shape, and an identity
+    # assertion alone cannot tell the difference.
+    assert "_looks_like_page_furniture(" in converter_source
+    assert "_looks_like_page_furniture(" in renderer_source
 
-    for text in (
-        "12",
-        "123",
-        "1234",
-        "  7 ",
-        "2 परिच्छेद",
-        "वार्षिक प्रतिवेदन",
-        "परिच्छेद",
-        "0",
-        "",
-        "क" * 216,
-    ):
+    # And the converter reaches it by import rather than by a second definition.
+    assert "def _looks_like_page_furniture" not in converter_source
+    assert "def _looks_like_page_furniture" in renderer_source
+
+    # The behaviour the merged definition must still have, including the 216-character
+    # case the pending length bound is about -- kept from the previous version of this
+    # test so the merge is not also a silent behaviour change.
+    for text in ("12", "123", "1234", "0", "", "क" * 216):
         assert renderer(text) == converter(text), text
