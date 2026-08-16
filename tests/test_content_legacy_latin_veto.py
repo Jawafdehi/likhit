@@ -277,3 +277,70 @@ def test_font_candidacy_is_untouched_by_the_veto() -> None:
     # `choose_legacy_map` documents that for such spans the returned name is not a
     # stable identification of the face. Asserting one here would pin an accident.
     assert set(detected) == {"Spins"}
+
+
+# --------------------------------------------------------------- CID-marked input
+
+
+def _mark(text: str) -> str:
+    """The same transform `mark_unmappable_cids` applies, spelled out.
+
+    Deliberately NOT built by calling the production marker: a helper that reuses the
+    thing under test moves with it. `_CID_MARK_BASE` is imported so the offset stays
+    pinned to the one the extractor actually uses.
+    """
+
+    from likhit.extractors.font_based import _CID_MARK_BASE
+
+    return "".join(chr(_CID_MARK_BASE + ord(char)) for char in text)
+
+
+def test_marked_genuine_latin_is_still_vetoed() -> None:
+    """Raised in review. `spans` come from `get_cid_marked_page_dict`, so a run whose
+    glyphs failed to decode arrives CID-MARKED -- and every ASCII test in this veto
+    then sees plane-15 codepoints instead of letters.
+
+    Measured before the fix: `True` plain, `False` marked, on the same sentence. A
+    marked run of genuine English was therefore remapped into Devanagari that spells
+    nothing, which is precisely the VOL-126 damage this veto exists to prevent, and it
+    leaves no U+FFFD for any gate to notice.
+
+    `_reads_as_latin_words` already unmarked, and its comment claims the principle --
+    "done here rather than at the call site so every caller inherits it". This sibling
+    predicate did not follow it, so the claim was half true.
+    """
+
+    english = "Random rubble stone masonry work with cement mortar"
+    assert _veto(english) is True, "control: this must read as Latin unmarked"
+    assert _veto(_mark(english)) is True
+
+
+def test_the_dictionary_axis_survives_marking() -> None:
+    """The half a `text = unmark_cids(text)` inside the predicate does NOT fix.
+
+    `decoded` is derived from the same run by the caller. A converter passes a marked
+    codepoint through untouched, so decoding the MARKED form yields no Devanagari at
+    all -- the dictionary axis finds no word, never suppresses, and the veto fails
+    OPEN. Pinned through the caller, because that is where the decode happens.
+    """
+
+    marked = _mark("cbfnt audio eagles")
+    plain_decode = SPINS("cbfnt audio eagles")
+    assert "अदालत" in plain_decode, "fixture must carry a dictionary word"
+    assert SPINS(marked) == marked, (
+        "if a converter ever starts mapping marked codepoints, this test's premise is "
+        "gone and the failure mode it guards is different"
+    )
+
+    spans = [_span("Spins", marked)]
+    assert _content_legacy_veto_flags(spans, {"Spins": "Spins"}) == [False], (
+        "a marked run that decodes to a Nepali word must not be vetoed as Latin"
+    )
+
+
+def test_marked_keystrokes_are_still_not_vetoed() -> None:
+    """The control for both tests above: unmarking must not make the veto over-fire."""
+
+    keystrokes = "cfGtl/s lgoGq0f Joj:yf"
+    assert _veto(keystrokes) is False
+    assert _veto(_mark(keystrokes)) is False

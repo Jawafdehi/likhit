@@ -1092,6 +1092,22 @@ def _reads_as_latin_text(text: str, decoded: str) -> bool:
     bill-of-quantities line is legible where wrong Devanagari is not.
     """
 
+    # Unmark first, for the same reason `_reads_as_latin_words` does and inside the
+    # predicate for the same reason -- so every caller inherits it. That sibling's
+    # comment claims the principle; this function did not follow it, which made the
+    # claim half true. Measured on one sentence of English: `True` plain, **`False`
+    # marked**, so a marked run of genuine Latin was remapped into Devanagari that
+    # spells nothing -- exactly the VOL-126 damage this veto exists to stop, and
+    # invisible because the remap leaves no U+FFFD behind.
+    #
+    # Both axes needed it, not just the ASCII ones. `decoded` is derived from the same
+    # run, and a converter passes a marked codepoint through unchanged, so a marked run
+    # decodes to no Devanagari at all -- the dictionary axis below then finds no word
+    # and never suppresses the veto. It was failing OPEN, not closed. The caller now
+    # decodes the unmarked text; unmarking here as well keeps the two consistent
+    # whatever a future caller passes. Raised in review.
+    text = unmark_cids(text)
+
     non_space = [char for char in text if not char.isspace()]
     if len(non_space) < _LATIN_VETO_MIN_CHARS:
         return False
@@ -1455,9 +1471,14 @@ def _content_legacy_veto_flags(
         map_key = content_legacy_maps.get(font_name)
         if map_key is not None:
             run_text = "".join(str(spans[index]["text"]) for index in range(start, end))
-            if run_text.strip():
-                decoded = get_converter_for_map(map_key)(run_text)
-                if _reads_as_latin_text(run_text, decoded):
+            # `spans` come straight from `get_cid_marked_page_dict`, so this run can
+            # carry marked CIDs. Decode the UNMARKED text: a converter passes a marked
+            # codepoint through untouched, so decoding the marked form yields no
+            # Devanagari and silently disables the veto's dictionary axis.
+            raw_text = unmark_cids(run_text)
+            if raw_text.strip():
+                decoded = get_converter_for_map(map_key)(raw_text)
+                if _reads_as_latin_text(raw_text, decoded):
                     for index in range(start, end):
                         flags[index] = True
         start = end
