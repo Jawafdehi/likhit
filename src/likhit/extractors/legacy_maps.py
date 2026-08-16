@@ -211,6 +211,39 @@ SHIPPED_MAP_KEYS: tuple[str, ...] = (
     "Sagarmatha",
 )
 
+#: Target for the coverage-gap repair below: DEVANAGARI LETTER RA.
+_REPLACEMENT_TARGET = "\u0930"
+
+#: Maps whose table replaces one source code point with a literal ``?``, and for which
+#: that code point is page-verified to be a plain ``\u0930``.
+#:
+#: Every map in the family has EXACTLY ONE source code point whose decode is a bare
+#: ``?`` -- measured over 0x00-0x2FFF, not just the byte range. For these five it is
+#: ``0x3c``; for ``PCS NEPALI`` it is ``0xa9``, which is why that key is absent here.
+#: Because the mapping is one-to-one, replacing ``?`` in the OUTPUT is exactly
+#: equivalent to fixing ``0x3c`` in the input -- and it is the only place that works:
+#: npttf2utf has already reordered the surrounding matras treating the ``?`` slot as
+#: the consonant it should have emitted, so the substitution lands inside the cluster.
+#: Splitting the span at ``0x3c`` and converting the pieces strands the prefix matra
+#: on the wrong side (``ul<`` is ``\u0917\u0930\u093f``, not ``\u0917\u093f\u0930``).
+#:
+#: A ``?`` in the output is never a passthrough of a ``?`` in the input: source ``0x3f``
+#: decodes to ``\u0930\u0941``/``\u0930\u0942`` under every map. So every output ``?``
+#: is a destroyed character and there is nothing legitimate to preserve.
+#:
+#: ``PCS NEPALI`` is deliberately NOT repaired. Its gap is at ``0xa9``, where Preeti,
+#: Kantipur and Spins all emit ``\u0930`` -- but that is a sibling inference with no
+#: page read behind it, which is the exact reasoning that made the original report of
+#: this defect wrong about which map was the outlier.
+#:
+#: The two SYNTHESISED maps are absent on purpose and are still covered: each reaches
+#: ``?`` through its base map's table, so it inherits the repair from Preeti (Spins) or
+#: FONTASY_HIMALI_TT (Siddhi). Listing them would double-apply a substitution that is
+#: idempotent anyway, and would imply they have tables of their own.
+_REPLACEMENT_CHAR_MAPS: frozenset[str] = frozenset(
+    {"Preeti", "Kantipur", "FONTASY_HIMALI_TT", "Sagarmatha"}
+)
+
 #: Maps this library MODELS rather than gets from npttf2utf: a layout upstream does not
 #: ship, expressed as a key translation onto a shipped map. There are two, and they work
 #: the same way -- translate the keystrokes, then decode with the base map -- so they get
@@ -557,6 +590,16 @@ def get_converter_for_map(map_key: str) -> Callable[[str], str]:
             return base_convert(text.translate(_SPINS_TO_PREETI_KEYS))
 
         return _convert_spins
+
+    if map_key in _REPLACEMENT_CHAR_MAPS:
+        base = _get_compiled_map(map_key).convert
+
+        def _convert_repaired(text: str) -> str:
+            # See _REPLACEMENT_CHAR_MAPS: one-to-one with source 0x3c, so this is the
+            # source fix expressed where the reordering has already happened.
+            return base(text).replace("?", _REPLACEMENT_TARGET)
+
+        return _convert_repaired
 
     return _get_compiled_map(map_key).convert
 

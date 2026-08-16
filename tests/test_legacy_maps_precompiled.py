@@ -77,7 +77,11 @@ def _sample_spans(file_name: str, limit: int | None = None) -> list[str]:
 @pytest.mark.parametrize("map_key", SHIPPED_MAP_KEYS)
 def test_compiled_map_matches_upstream_on_edge_cases(map_key: str) -> None:
     mapper = _get_mapper()
-    convert = get_converter_for_map(map_key)
+    # The RAW compiled pipeline, not get_converter_for_map: these sweeps assert the
+    # optimisation is FAITHFUL to upstream. The public converter deliberately
+    # diverges at the 0x3c coverage-gap repair -- see the test below, and
+    # tests/test_legacy_map_coverage_gap.py for why.
+    convert = _get_compiled_map(map_key).convert
 
     for text in EDGE_CASES:
         assert convert(text) == mapper.map_to_unicode(text, from_font=map_key), (
@@ -95,7 +99,11 @@ def test_compiled_map_matches_upstream_on_real_spans(map_key: str) -> None:
         pytest.skip("sample missing: kanunpatrika.pdf")
 
     mapper = _get_mapper()
-    convert = get_converter_for_map(map_key)
+    # The RAW compiled pipeline, not get_converter_for_map: these sweeps assert the
+    # optimisation is FAITHFUL to upstream. The public converter deliberately
+    # diverges at the 0x3c coverage-gap repair -- see the test below, and
+    # tests/test_legacy_map_coverage_gap.py for why.
+    convert = _get_compiled_map(map_key).convert
     differing = [
         text
         for text in spans
@@ -264,3 +272,35 @@ def test_the_synthesised_maps_are_outside_these_sweeps() -> None:
     preeti = get_converter_for_map(_SPINS_BASE_MAP_KEY)
     for probe in ("kl/R5]b", ";'\\][", "0123456789", "cAdM", ""):
         assert spins(probe) == preeti(probe.translate(_SPINS_TO_PREETI_KEYS)), probe
+
+
+def test_the_public_converter_diverges_from_upstream_only_at_the_gap_repair() -> None:
+    """The other half of the sweeps above, and the reason they use the raw pipeline.
+
+    Those assert the compiled pipeline is FAITHFUL to npttf2utf. The public converter is
+    deliberately not: it repairs source 0x3c, which upstream decodes to a literal `?`
+    that deletes the letter. Both claims matter, so both are asserted -- and the
+    divergence is bounded to that one substitution rather than left open.
+    """
+
+    from likhit.extractors.legacy_maps import (
+        _REPLACEMENT_CHAR_MAPS,
+        _REPLACEMENT_TARGET,
+        get_converter_for_map,
+    )
+
+    mapper = _get_mapper()
+    spans = _sample_spans("kanunpatrika.pdf", limit=600)
+    if not spans:
+        pytest.skip("sample missing: kanunpatrika.pdf")
+
+    for map_key in SHIPPED_MAP_KEYS:
+        public = get_converter_for_map(map_key)
+        for text in spans:
+            upstream = mapper.map_to_unicode(text, from_font=map_key)
+            expected = (
+                upstream.replace("?", _REPLACEMENT_TARGET)
+                if map_key in _REPLACEMENT_CHAR_MAPS
+                else upstream
+            )
+            assert public(text) == expected, f"{map_key} on {text!r}"
