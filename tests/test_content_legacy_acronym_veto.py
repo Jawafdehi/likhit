@@ -236,3 +236,49 @@ def test_a_non_candidate_font_is_never_flagged() -> None:
     assert _content_legacy_veto_flags(spans, SPINS_CHOICE, frozenset({"QOC"})) == [
         False
     ]
+
+
+# --------------------------------------------------------------- CID-marked input
+
+
+def _mark(text: str) -> str:
+    """The transform `mark_unmappable_cids` applies, spelled out rather than reused.
+
+    A fixture built by calling the production marker moves with it; `_CID_MARK_BASE` is
+    imported so the offset stays pinned to the one the extractor uses.
+    """
+
+    from likhit.extractors.font_based import _CID_MARK_BASE
+
+    return "".join(chr(_CID_MARK_BASE + ord(char)) for char in text)
+
+
+def test_marked_acronyms_still_qualify() -> None:
+    """Raised in review. Both callers read spans from `get_cid_marked_page_dict`, so a
+    run whose glyphs failed to decode arrives CID-MARKED -- and a marked codepoint sits
+    in plane 15, so it fails the `"A" <= char <= "Z"` and digit tests and NO token
+    qualifies.
+
+    Measured before the fix: `{OAG, CIAA}` plain, `{}` marked.
+
+    The consequence is not a missing token, it is a silently empty survivor vocabulary,
+    which disables this whole third axis for marked spans -- in the direction that
+    vetoes LESS, so the result is more genuine Latin remapped into Devanagari.
+    """
+
+    assert _acronym_tokens("Quality Of Care, QOC") == frozenset({"QOC"})
+    assert _acronym_tokens(_mark("Quality Of Care, QOC")) == frozenset({"QOC"})
+    assert _acronym_tokens(_mark("The OAG and CIAA reports")) == frozenset(
+        {"OAG", "CIAA"}
+    )
+
+
+def test_marking_does_not_manufacture_survivors() -> None:
+    """The control: unmarking must not turn keystrokes into acronym evidence.
+
+    Every one of the 21 measured spurious fires, marked. If unmarking widened the axis
+    these would start qualifying and the survivor vocabulary would attest garbage.
+    """
+
+    for token in KEYSTROKE_WORDS:
+        assert _acronym_tokens(_mark(token)) == frozenset(), token

@@ -1689,8 +1689,20 @@ def _acronym_tokens(text: str) -> frozenset[str]:
     Whitespace-delimited, because the defect this replaces came from tokenizing on
     a punctuation class: `[A-Za-z0-9/&().,:;+\\-]+` splits `w/f}6L` at `}` and
     hands back `6L` as though it were a word.
+
+    🛑 Unmarks first, and inside the function so both callers inherit it -- the same
+    rule `_reads_as_latin_words` and `_reads_as_latin_text` follow. Every caller reads
+    spans from `get_cid_marked_page_dict`, so a run whose glyphs failed to decode
+    arrives CID-marked, and a marked codepoint is in plane 15: it fails the
+    `"A" <= char <= "Z"` and `"0" <= char <= "9"` tests below, so NO token qualifies.
+    Measured: `The OAG and CIAA reports` yields `{OAG, CIAA}` plain and `{}` marked.
+
+    That silently emptied the survivor vocabulary, which disables this whole third
+    axis for marked spans -- and it disables it in the direction that vetoes LESS, so
+    the failure is more remapping of genuine Latin, not less. Raised in review.
     """
 
+    text = unmark_cids(text)
     tokens: set[str] = set()
     for raw in text.split():
         token = raw.strip(_ACRONYM_EDGE)
