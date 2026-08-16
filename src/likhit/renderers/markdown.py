@@ -750,6 +750,85 @@ def _merge_continuation_rows(
     return merged
 
 
+#: A line that is nothing but a figure -- `verify_table_integrity.py`'s own
+#: definition, so "is this line a bare figure" means the same in the renderer as
+#: in the instrument that measures the renderer.
+_BARE_FIGURE = re.compile(r"^[\s0-9०-९,.।-]+$")
+_ANY_DIGIT = re.compile(r"[0-9०-९]")
+#: A line whose last token is a figure. This is the tell that separates a REGISTER ROW
+#: from a wrapped sentence, and it is needed because the bare-figure test below cannot
+#: see one any more.
+#:
+#: Before the swallowed-sub-table extraction fix, a cell that had swallowed a register
+#: held one value per line -- "190", "SCA Dalit", "7980" -- so several lines WERE bare
+#: figures and `_wrapped_lines_are_one_row` refused to rejoin on that basis. The fix
+#: space-joins each printed row instead, so the lines now read
+#: "190 SCA Dalit Seti Kamani 7980". Every one of them contains letters, no line is a
+#: bare figure, the guard stops firing, and the whole register is mashed into one row.
+#: Measured on that fix's own fixture: 3 rows became 1, with the full suite green.
+#:
+#: A wrapped sentence breaks at an arbitrary point, so its non-final lines rarely end
+#: on a figure. A register row always ends on its amount. Requiring EVERY line to end
+#: that way keeps the rule conservative -- a false negative merely declines to rejoin,
+#: which is the direction this whole guard already errs in.
+_TRAILING_FIGURE = re.compile(r"[0-9०-९][0-9०-९,.]*[\s।]*$")
+
+
+def _wrapped_lines_are_one_row(cell_lines: list[list[str]]) -> bool:
+    """Is this row's multi-line text one wrapped row that can safely be rejoined?
+
+    Only when both hold:
+
+    **At most one column carries several lines.** The transposed form is otherwise
+    ambiguous: `[["a1","a2"], ["b1","b2"]]` renders the same whether it is one row
+    whose two cells each wrapped, or two sub-rows pairing a1 with b1 and a2 with
+    b2. The cell text cannot tell those apart -- only the fragment y-coordinates
+    could, and `_extract_cell_text` has discarded them by this point. When two or
+    more columns wrap, a real pairing may exist and collapsing would destroy it.
+
+    **None of that column's lines is a bare figure.** A line that is only a number
+    is not a sentence continuation, and joining it would corrupt one of two things
+    this corpus is full of:
+
+    - a figure split across visual lines (`185929593.` + `20` is one amount). A
+      space join yields `185929593. 20`; a bare concatenation builds the >=15-digit
+      run `verify_numeric_boundaries.py` flags, feeding the D7 gate.
+    - a cell bbox that swallowed a nested sub-table, so it holds a whole register
+      of distinct values rather than one wrapped sentence. Joining would mash the
+      sub-table into a single string. That is an extraction defect and is not the
+      renderer's to paper over.
+
+    So this deliberately leaves most of the corpus's one-cell rows alone. The share
+    it does fix is measured, not assumed -- `runs/vol71/` in the OAG corpus.
+    """
+
+    wrapped = [parts for parts in cell_lines if len(parts) > 1]
+    if len(wrapped) != 1:
+        return not wrapped
+    if _looks_like_register_rows(wrapped[0]):
+        return False
+    return not any(
+        _BARE_FIGURE.match(part) and _ANY_DIGIT.search(part) for part in wrapped[0]
+    )
+
+
+def _looks_like_register_rows(parts: list[str]) -> bool:
+    """Do these lines read as separate records rather than one wrapped sentence?
+
+    See `_TRAILING_FIGURE`. Two or more lines, every one of them ending on a figure,
+    and at least one carrying a letter -- the letter requirement keeps this from
+    duplicating the bare-figure test, so the two clauses stay independently meaningful
+    and a mutation of either is visible.
+    """
+
+    lines = [part for part in parts if part.strip()]
+    if len(lines) < 2:
+        return False
+    if not all(_TRAILING_FIGURE.search(line) for line in lines):
+        return False
+    return any(re.search(r"[^\s0-9०-९,.।-]", line) for line in lines)
+
+
 def _render_raw_table_lines(
     table: Table,
     *,
@@ -790,6 +869,18 @@ def _render_raw_table_lines(
             default=0,
         )
         if max_line_count == 0:
+            continue
+        if _wrapped_lines_are_one_row(cell_lines):
+            # One logical row, whose text wrapped over several PDF lines. Emitting
+            # a Markdown line per wrapped line would state a row boundary that the
+            # grid does not contain, and every consumer that reads a line as a row
+            # then reads one finding as several -- and cannot tell that a line
+            # continues the previous cell rather than starting a new row, because
+            # nothing in the output distinguishes the two. Rejoin instead, the same
+            # way `_merge_continuation_rows` rejoins a continuation onto its anchor.
+            values = [" ".join(parts) for parts in cell_lines]
+            if any(values):
+                lines.append(f"| {' | '.join(values)} |")
             continue
         for line_index in range(max_line_count):
             values = [
