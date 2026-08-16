@@ -912,14 +912,48 @@ def test_a_real_difference_in_garble_still_outranks_the_ratio() -> None:
 
 
 def test_nepali_validity_reports_both_forms_of_the_garble_measure() -> None:
-    # The ranking compares candidates on one span, so it uses the raw count; the
-    # gate compares one span against an absolute ceiling, so it needs the rate.
-    # Both must be present, and the rate must remain the quotient of the count.
-    garble = "���" + "नेपाल"
-    validity = _nepali_validity(garble)
-    assert validity["penalty"] == pytest.approx(
-        validity["penalty_per_deva"] * validity["devanagari"]
+    """Both forms are present, and they are NOT the same numerator.
+
+    This test used to assert `penalty == penalty_per_deva * devanagari`, i.e. that the
+    rate stays the quotient of the count. True when written; false by design now.
+    `penalty` comes from `_legacy_map_garble`, which DROPS the doubled-consonant term
+    because it charges correct readings when maps are compared, while `penalty_per_deva`
+    divides `_text_quality_penalty`, which KEEPS it because that is the measure the gate's
+    ceiling was calibrated against.
+
+    The old assertion survived only because its fixture contained no doublet, so the two
+    numerators coincided:
+
+        no doublet   penalty=36  per_deva=7.20 x deva=5 -> 36   quotient holds
+        a doublet    penalty=36  per_deva=9.75 x deva=4 -> 39   quotient FAILS
+
+    So the SEPARATION is pinned now rather than the coincidence, and a doublet-bearing
+    fixture is used deliberately -- on the old one this test could not tell the two
+    designs apart.
+    """
+
+    from likhit.extractors.font_based import _legacy_map_garble, _text_quality_penalty
+
+    replacement = "\ufffd" * 3
+
+    # No doublet: the two numerators agree, which is why the old assertion passed.
+    plain = replacement + "\u0928\u0947\u092a\u093e\u0932"
+    plain_validity = _nepali_validity(plain)
+    assert plain_validity["penalty"] == pytest.approx(
+        plain_validity["penalty_per_deva"] * plain_validity["devanagari"]
     )
+
+    # WITH a doublet: they must diverge, and each must equal its own source.
+    doubled = replacement + "\u0916\u0930\u0930\u0926"
+    validity = _nepali_validity(doubled)
+    assert validity["penalty"] == _legacy_map_garble(doubled)
+    assert validity["penalty_per_deva"] == pytest.approx(
+        _text_quality_penalty(doubled) / validity["devanagari"]
+    )
+    assert validity["penalty"] != pytest.approx(
+        validity["penalty_per_deva"] * validity["devanagari"]
+    ), "the two measures have collapsed back into one numerator"
+
     assert isinstance(validity["penalty"], int)
 
 
