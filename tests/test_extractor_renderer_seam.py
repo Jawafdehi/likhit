@@ -39,6 +39,7 @@ import ast
 import inspect
 from pathlib import Path
 import re
+import textwrap
 
 import pymupdf as fitz
 import pytest
@@ -467,3 +468,64 @@ def test_the_page_furniture_predicate_is_now_a_single_definition():
     # test so the merge is not also a silent behaviour change.
     for text in ("12", "123", "1234", "0", "", "क" * 216):
         assert renderer(text) == converter(text), text
+
+
+def _emptiness_skip_is_inside_the_furniture_branch(function) -> bool:
+    """True when the `if not ....strip(): continue` guard sits INSIDE the `if` that
+    tests `_looks_like_page_furniture`, rather than beside it."""
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+
+    def is_skip(node) -> bool:
+        return (
+            isinstance(node, ast.If)
+            and any(isinstance(child, ast.Continue) for child in node.body)
+            and "strip()" in ast.unparse(node.test)
+        )
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and "_looks_like_page_furniture" in ast.unparse(
+            node.test
+        ):
+            return any(is_skip(child) for child in ast.walk(node))
+    raise AssertionError("no furniture branch found -- this test is looking at nothing")
+
+
+def test_both_render_paths_skip_an_emptied_block_at_the_same_point():
+    """Sharing the PREDICATE is not the same as sharing the control flow around it.
+
+    Found in review. The furniture fix added `if not text.strip(): continue` to both
+    paths, but at different nesting -- inside the furniture branch in the renderer and
+    outside it in the converter, where it also skipped every whitespace-only
+    `ParagraphBlock`. That is a second behaviour change riding along with the first,
+    and it re-opened this seam at the same join the merged predicate closed.
+
+    🛑 Asserted on SHAPE, and that is a deliberate choice with a reason: the two
+    placements produce identical output today, so a behavioural test cannot tell them
+    apart. `_assemble_with_page_anchors` drops empty parts at all three of its sites,
+    so the extra skip is unobservable -- which is exactly why nothing caught it, and
+    why the first draft of this test passed against both arms. The divergence becomes
+    observable the moment table continuation is implemented, since the skip also
+    bypasses the `previous_table_key` reset; then `Table | empty paragraph | Table`
+    would merge on one path and not the other. Pinning the shape now is what stops
+    the two paths drifting before that day.
+    """
+
+    assert _emptiness_skip_is_inside_the_furniture_branch(
+        markdown_module._render_section
+    ), "renderer: the emptiness skip escaped the furniture branch"
+    assert _emptiness_skip_is_inside_the_furniture_branch(
+        nepali_pdf_module._render_markdown_from_blocks
+    ), "converter: the emptiness skip escaped the furniture branch"
+
+
+def test_assembly_drops_empty_parts_which_is_what_makes_that_seam_inert():
+    """The invariant the test above leans on, pinned so its reasoning stays true.
+
+    If assembly ever stops filtering empty parts, a whitespace-only block starts
+    emitting a blank chunk and the placement above becomes output-visible.
+    """
+
+    assemble = nepali_pdf_module._assemble_with_page_anchors
+    assert assemble([(1, "क"), (1, ""), (1, "ख")], [1]).count("\n\n") == 2
+    assert assemble([(1, "क"), (1, ""), (1, "ख")], []) == "क\n\nख"

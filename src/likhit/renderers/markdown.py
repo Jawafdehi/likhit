@@ -845,12 +845,31 @@ def render_table_preformatted_markdown(
     return f"```text\n{rendered}\n```"
 
 
+#: The running header, with the space the PDF prints it with compacted away. Named
+#: rather than repeated because `strip_page_furniture_lines` has to reason about the
+#: same token to find a header that WRAPS, and two literals would drift apart.
+_RUNNING_HEADER = "वार्षिकप्रतिवेदन"
+
+#: How many text-carrying lines a wrapped running header may be sought across. A
+#: header wraps once, occasionally twice, so 3 covers every plausible layout.
+#:
+#: This is a bound on blast radius and cost, NOT a correctness threshold, and the
+#: distinction is worth stating because a length cap was already refuted for this
+#: rule. The scan can only ever match when the lines between the two halves of the
+#: token are themselves token fragments -- body text between them stops the token
+#: forming at all -- so a larger bound would not delete prose. What it would do is
+#: make an unbounded O(n^2) pass over every block that mentions the header. A header
+#: split across MORE than this many lines is therefore left rendered, and that is
+#: the deliberate trade: the failure mode is a visible header, not deleted body.
+_MAX_WRAPPED_HEADER_LINES = 3
+
+
 def _looks_like_page_furniture(text: str) -> bool:
     compact = re.sub(r"\s+", "", text)
     stripped = text.strip()
     return (
         bool(re.match(r"^\d+\s*परिच्छेद", text))
-        or "वार्षिकप्रतिवेदन" in compact
+        or _RUNNING_HEADER in compact
         or (stripped.isdigit() and len(stripped) <= 3)
     )
 
@@ -889,6 +908,36 @@ def strip_page_furniture_lines(text: str) -> str:
     and the caller skips the emptied block — while a page of body text can no
     longer be deleted by the header printed above it.
 
+    🛑 Line grain alone does NOT keep that guarantee, and this is why the run scan
+    below exists. Clause 2 of the predicate tests whitespace-**compacted** text, so
+    a running header the layout wrapped across a line break —
+    `वार्षिक\\nप्रतिवेदन` — matches at block grain and at **no** line grain. Testing
+    only single lines therefore turned a block that was discarded whole into one
+    rendered in full: the exact opposite of the promise above, and invisible to a
+    suite whose header fixture is a single-line constant. Found in review.
+
+    Dropping the whole block in that case is the wrong repair — it re-opens this
+    defect for the mixed shape `header / header / body`, which is precisely the 84.
+    So the scan instead drops the **shortest run** of consecutive lines whose joined
+    text carries the header, which is exactly what the single-line rule would have
+    done had the header not wrapped. It is therefore no more eager than the line
+    rule already is: a body line containing `वार्षिक प्रतिवेदन` inline is dropped
+    whole today, and a body line pair that straddles it is now dropped the same way.
+    Shortest-run-first is what keeps the body: `वार्षिक / प्रतिवेदन / यो वाक्य` loses
+    its first two lines and keeps the third.
+
+    Two bounds matter. The run is capped at `_MAX_WRAPPED_HEADER_LINES`, or a stray
+    `वार्षिक` and a `प्रतिवेदन` fifty lines apart would condemn everything between
+    them. And "nothing but a header plus digits" was tried first and REJECTED: the
+    real running header is `परिच्छेद-६, तामेली तथा मुल्तबी २४५ वार्षिक प्रतिवेदन,
+    २०८१/८२`, so a strictness test on the token alone leaves the realistic wrap
+    undetected and only catches a bare `वार्षिक\\nप्रतिवेदन` that no report prints.
+
+    Measured over the 13 reports: **0** blocks change, because every body-carrying
+    block in this corpus prints its header on its own line. The scan is for the
+    shape the corpus happens not to contain, which is the only kind of hole a corpus
+    measurement cannot close.
+
     Callers must apply this only to a block the whole-block predicate already
     rejected, i.e. one that was going to be discarded outright. Two of the three
     clauses are strictly more eager per line than per block — `^\\d+\\s*परिच्छेद`
@@ -899,9 +948,32 @@ def strip_page_furniture_lines(text: str) -> str:
     2071-72 −7). Gating on the block predicate makes the change purely additive —
     it can only ever return text that was about to be thrown away.
     """
-    return "\n".join(
-        line for line in text.splitlines() if not _looks_like_page_furniture(line)
-    )
+    lines = text.splitlines()
+    drop = [_looks_like_page_furniture(line) for line in lines]
+
+    # The wrapped-header run scan. Gated on the token being in the compacted block,
+    # which is both the only way a wrap can exist and the cheap common-case exit --
+    # a block flagged by the chapter or bare-page-number clause never enters here.
+    if _RUNNING_HEADER in re.sub(r"\s+", "", text):
+        # Over the lines that carry text and are not already going: a blank line, or
+        # a page number between the two halves, must not consume the run budget.
+        live = [
+            index
+            for index, line in enumerate(lines)
+            if line.strip() and not drop[index]
+        ]
+        # SHORTEST run first, so a header spanning two lines cannot swallow a third
+        # that carries body text.
+        for first in range(len(live)):
+            limit = min(first + _MAX_WRAPPED_HEADER_LINES, len(live))
+            for last in range(first + 2, limit + 1):
+                run = "".join(lines[index] for index in live[first:last])
+                if _RUNNING_HEADER in re.sub(r"\s+", "", run):
+                    for index in live[first:last]:
+                        drop[index] = True
+                    break
+
+    return "\n".join(line for line, dropped in zip(lines, drop) if not dropped)
 
 
 def _render_paragraph_markdown(text: str) -> str:

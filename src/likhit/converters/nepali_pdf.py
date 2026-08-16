@@ -970,8 +970,17 @@ def _render_markdown_from_blocks(
                 # so a running header merged into the page's body condemned the
                 # entire page (VOL-668).
                 text = strip_page_furniture_lines(text)
-            if not text.strip():
-                continue
+                # INSIDE the branch, matching `markdown._render_section`. Outside,
+                # it also skips every whitespace-only ParagraphBlock, which is a
+                # second behaviour change smuggled in with this one -- and it made
+                # the two render paths differ again in exactly the place #61
+                # deduplicated. Inert today only because `previous_table_key` is
+                # dead (`_render_table` discards it); it stops being inert the
+                # moment table continuation is implemented, and then
+                # `Table | empty paragraph | Table` would merge at one site and
+                # not the other. Found in review.
+                if not text.strip():
+                    continue
             rendered.append((page_number, _render_paragraph_markdown(text)))
             previous_table_key = None
         elif isinstance(block, TableBlock):

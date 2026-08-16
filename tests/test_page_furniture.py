@@ -79,6 +79,94 @@ def test_stripping_an_all_furniture_block_leaves_nothing() -> None:
     assert strip_page_furniture_lines(f"{HEADER}\n२४५").strip() == ""
 
 
+#: `HEADER` with the line break the layout puts in when the column is narrow. The
+#: token the predicate matches -- "वार्षिकप्रतिवेदन" -- straddles the break, so it is
+#: present in the whitespace-compacted BLOCK and in neither LINE.
+WRAPPED_HEADER = "परिच्छेद-६, तामेली तथा मुल्तबी २४५ वार्षिक\nप्रतिवेदन, २०८१/८२"
+
+
+def test_a_wrapped_header_matches_at_block_grain_and_at_no_line_grain() -> None:
+    """The premise of the next three tests, asserted rather than assumed.
+
+    If this ever stops holding -- because the predicate stops compacting whitespace,
+    say -- the wrapped-header run scan is dead code and these tests pass vacuously.
+    """
+
+    assert _looks_like_page_furniture(WRAPPED_HEADER)
+    assert not any(
+        _looks_like_page_furniture(line) for line in WRAPPED_HEADER.splitlines()
+    )
+
+
+def test_a_wrapped_header_standing_alone_still_renders_as_nothing() -> None:
+    """The guarantee the docstring makes, for the shape that breaks line grain.
+
+    Found in review. Testing single lines only, this block went from discarded whole
+    to rendered in full -- the exact opposite of the rule's purpose -- and the suite
+    could not see it because its header fixture was a single line.
+    """
+
+    assert strip_page_furniture_lines(WRAPPED_HEADER).strip() == ""
+
+
+def test_a_wrapped_header_does_not_take_the_body_with_it() -> None:
+    """Why the repair is a shortest-run scan and not "drop the whole block".
+
+    Dropping the block whenever no single line matched would delete this body text,
+    which is the defect the fix exists to close -- so the cheap repair re-opens it.
+    """
+
+    assert strip_page_furniture_lines(f"{WRAPPED_HEADER}\n{BODY}") == BODY
+
+
+def test_a_wrapped_header_is_found_across_blank_lines() -> None:
+    """A blank line inside the block must not consume the run budget.
+
+    Two blanks and three fragments, so counting blanks would put the second half of
+    the token outside `_MAX_WRAPPED_HEADER_LINES` and leave the header rendered. A
+    single blank line does NOT discriminate -- it still fits in the budget -- which
+    is how the first version of this test passed against both arms.
+    """
+
+    assert strip_page_furniture_lines("वार्षिक\n\n\nप्रति\nवेदन").strip() == ""
+
+
+def test_the_run_scan_is_confined_to_the_header_clause() -> None:
+    """The scan is gated on the header token, so the other two clauses are untouched.
+
+    A block flagged as a chapter heading or a bare page number has no wrap to find,
+    and paying for the scan there would be the only way this change could alter what
+    those clauses do. Written after a first draft of the test above asserted on a
+    block that the WHOLE-BLOCK predicate does not even flag -- outside this helper's
+    contract, and so a claim about behaviour no caller can reach.
+    """
+
+    chapter = "६ परिच्छेद\n" + BODY
+    assert _looks_like_page_furniture(chapter)
+    assert strip_page_furniture_lines(chapter) == BODY
+
+
+def test_the_run_scan_stops_at_its_bound() -> None:
+    """The limit, pinned as behaviour so it is a decision and not an accident.
+
+    Four fragments exceed `_MAX_WRAPPED_HEADER_LINES`, so this header is left
+    rendered. Body text can never be caught by widening the bound -- prose between
+    the halves stops the token forming at all -- so the bound costs only detection,
+    and the failure mode it chooses is a visible header rather than deleted text.
+    """
+
+    assert _looks_like_page_furniture("वार्षि\nक\nप्रति\nवेदन")
+    assert strip_page_furniture_lines("वार्षि\nक\nप्रति\nवेदन").strip() != ""
+
+
+def test_the_scan_never_joins_across_body_text() -> None:
+    """Why widening the bound could not delete prose: the token stops forming."""
+
+    scattered = "\n".join(["वार्षिक", BODY, BODY, "प्रतिवेदन"])
+    assert not _looks_like_page_furniture(scattered)
+    assert strip_page_furniture_lines(scattered).count(BODY) == 2
+
+
 def test_a_table_adjacent_page_of_body_survives_rendering() -> None:
     """The regression test proper: page 2's text must reach the output even though
     its block carries the running header and sits next to a table."""
