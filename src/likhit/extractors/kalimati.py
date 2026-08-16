@@ -397,16 +397,22 @@ def _is_ra_virama_swap(old_value: str, new_value: str) -> bool:
     structural check can see.
 
     Measured over all 13 CIAA report PDFs (run 384bcc86): the `old र् -> new ्र`
-    direction fires on 10 GIDs in the 33rd (क्र ट्र त्र द्र प्र भ्र श्र ह्र) and
-    1 in the 32nd; the `old ्र -> new र्` direction fires on **none**, in any
-    report. So the branch retained below is the one with no measured hits and the
-    branch removed was carrying the entire defect.
+    direction fires 10 times in the 33rd, over 8 distinct GIDs
+    (क्र ट्र त्र द्र प्र भ्र श्र ह्र) -- 10 rather than 8 because two of them,
+    प्र and श्र, occur in both embedded Kalimati subsets (xref 2469 and 2490) --
+    and once in the 32nd. The `old ्र -> new र्` direction fires on **none**, in
+    any report. So the branch retained below is the one with no measured hits and
+    the branch removed was carrying the entire defect.
 
     The retained direction is kept rather than dropped because likhit derives
     correction values per font at run time: `_analyze_gsub` reaching a rakar
-    through a ligature rule produces ra-then-virama and has to swap it back (see
-    `lohit.BELOW_FORM_RA_CORRECTIONS` and
-    `tests/test_kalimati_reference.py::…no_value_orders_a_below_form_ra…`). If
+    through a ligature rule produces ra-then-virama and has to swap it back. Both
+    reference tables record the pair it swaps --
+    `kalimati_reference.BELOW_FORM_RA_CORRECTIONS` keyed by outline digest and
+    `lohit.BELOW_FORM_RA_CORRECTIONS` keyed by CID -- and
+    `tests/test_kalimati_reference.py::test_below_form_ra_corrections_are_applied_to_the_table`
+    pins the direction of every entry (`derived == र्`, `corrected == ्र`).
+    `::test_analyze_gsub_orders_a_rakar_after_its_base` pins the swap itself. If
     that swap ever misses for some subset, the PDF's own correct value is the
     better of the two and this predicate preserves it.
     """

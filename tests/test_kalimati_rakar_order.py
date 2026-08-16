@@ -12,11 +12,20 @@ order survived into the Markdown.
 
 Measured over the 13 CIAA annual reports (run 384bcc86, artifacts under
 `ciaa-transcript-quality/_audit/runs/vol705-384bcc86/`): the direction fixed here
-fires on 10 GIDs in the 33rd report (क्र ट्र त्र द्र प्र भ्र श्र ह्र) and 1 in
-the 32nd, leaving 169 structurally invalid `[consonant] र ् [matra]` sequences in
-the published 33rd; the opposite direction fires on none, in any report.
+fires 10 times in the 33rd report, over 8 distinct GIDs (क्र ट्र त्र द्र प्र भ्र
+श्र ह्र) across two embedded Kalimati subsets (xref 2469 and 2490), and once in the
+32nd -- leaving 169 structurally invalid `[consonant] र ् [matra]` sequences in the
+published 33rd. The opposite direction fires on none, in any report.
 
-Every test here fails on the pre-fix code.
+The 11 tests asserting the fixed direction fail on the pre-fix code; the 4
+retained-direction controls -- `test_swap_predicate_still_defends_a_correct_rakar`,
+`test_a_correct_pdf_rakar_survives_the_patcher`,
+`test_a_genuine_repha_still_becomes_a_reordering_marker` and
+`test_a_correct_rakar_is_not_a_meaningful_difference` -- pass both ways, by design.
+Restoring the deleted branch gives exactly `11 failed, 4 passed`. A blanket "every
+test here fails" would be the weaker claim as well as the false one: the four that
+hold in both arms are what make this a directional bite rather than an assertion
+that the predicate was simply switched off.
 """
 
 from __future__ import annotations
