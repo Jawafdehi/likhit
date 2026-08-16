@@ -124,10 +124,8 @@ _REGISTRY: dict[str, dict[int, str]] = {
     "wingdings 2": WINGDINGS2_PUA,
     "wingdings2": WINGDINGS2_PUA,
     "wingdings": WINGDINGS_PUA,
-    "webdings": WINGDINGS_PUA,
     "symbolmt": SYMBOL_PUA,
     "symbol": SYMBOL_PUA,
-    "zapfdingbats": WINGDINGS_PUA,
 }
 
 _SUBSET_PREFIX = re.compile(r"^[A-Z]{6}\+")
@@ -157,8 +155,21 @@ def pua_table_for_font(font_name: str) -> dict[int, str] | None:
     base = _base_font_name(font_name)
     if not base:
         return None
+    # PREFIX, not substring. A substring test routes any font whose name merely
+    # CONTAINS a key: "SegoeUISymbol" (present in the CIAA corpus) and even
+    # "SomeSymbolicFont" both resolved to SYMBOL_PUA. That matters because the caller
+    # in font_based returns immediately on a symbol-font hit, so a misrouted font
+    # bypasses every other handler. Latent rather than live here -- SegoeUISymbol's
+    # spans carry 0 private-use characters, so the remap was a no-op on them -- but
+    # the class is unbounded, and it is the same unguarded-substring-router defect
+    # tests/test_legacy_map_difference.py pins for legacy_maps._match_font.
+    #
+    # A prefix still admits every form the corpus actually contains: "Symbol",
+    # "SymbolMT", "Symbol-Identity-H", "Symbol,Bold", "ABCDEE+Symbol",
+    # "Wingdings-Identity-H", "ABCEEE+Wingdings 2". Longest key first, so
+    # "wingdings 2" is tested before "wingdings".
     for key in sorted(_REGISTRY, key=len, reverse=True):
-        if key in base:
+        if base.startswith(key):
             return _REGISTRY[key]
     return None
 

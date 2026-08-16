@@ -249,8 +249,17 @@ def normalize_press_release_paragraph(text: str) -> str:
     # the literal glyph, because rewriting a mid-sentence bullet as a hyphen would
     # corrupt the sentence. Measured on the CIAA corpus: 2,227 of the 4,210 U+F0B7
     # are leading.
+    # The private-use part of this class is U+F020-U+F0FF, i.e. pua_maps.SYMBOL_PUA_RANGE,
+    # NOT the whole BMP private-use area. A full \ue000-\uf8ff class also matches
+    # kalimati._PUA_REPH (U+F000) and _PUA_IKAR (U+F001), and this rule fires on
+    # position: a sentinel that reached the start of a line followed by whitespace was
+    # rewritten to "- ", destroying it and disguising the failure as a list item.
+    # Verified both ways -- U+F0B7, the bullet this rule exists for and the corpus's most
+    # common private-use character at 4,210 occurrences, is inside F020-F0FF; both
+    # sentinels are below it. The agreement with SYMBOL_PUA_RANGE is asserted in
+    # tests/test_pua_maps.py so the two cannot drift.
     normalized = re.sub(
-        r"^[\ufffd\u2022\u25aa\u27a2\ue000-\uf8ff\U000F0000-\U000FFFFD](?=\s)",
+        r"^[\ufffd\u2022\u25aa\u27a2\uf020-\uf0ff\U000F0000-\U000FFFFD](?=\s)",
         "-",
         normalized,
     )
