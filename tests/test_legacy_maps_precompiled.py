@@ -1,7 +1,7 @@
 """The precompiled legacy mapper must agree with npttf2utf exactly.
 
 ``legacy_maps._CompiledMap`` bypasses ``FontMapper.map_to_unicode`` for speed
-(31.9x on real spans, see its docstring), so its whole justification rests on the
+(32.5x on real spans, see its docstring), so its whole justification rests on the
 output being byte-identical. These tests compare the two implementations directly
 rather than asserting on expected strings: a hand-written expectation would drift
 if npttf2utf ever ships a new ``map.json``, whereas a differential test keeps
@@ -87,7 +87,7 @@ def test_compiled_map_matches_upstream_on_edge_cases(map_key: str) -> None:
 @pytest.mark.parametrize("map_key", ALL_MAP_KEYS)
 def test_compiled_map_matches_upstream_on_real_spans(map_key: str) -> None:
     # A page cap keeps this to 0.20s per map while still covering real legacy
-    # text; the full 12,153-case sweep over every distinct span of all four
+    # text; the full 12,154-case sweep over every distinct span of all four
     # samples ran 0 differences on all five maps when the mapper was written.
     spans = _sample_spans("kanunpatrika.pdf", limit=600)
     if not spans:

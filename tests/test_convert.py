@@ -31,11 +31,15 @@ def _convert_text(path: Path, *, pages: str | None = None) -> str:
     """Convert ``path``, optionally restricting to a ``pages`` range.
 
     Pass ``pages`` when a test asserts only on the opening of a long document.
-    ``samples/kanunpatrika.pdf`` is 128 pages and ``samples/aarop-patra.pdf`` 67,
-    and a full conversion of either costs ~14.2s / ~9.9s -- measured, and together
-    with the two integration tests over the same documents that was 79% of the
-    whole suite's 130.6s. Restricting to the pages actually asserted on is 0.37s /
-    0.33s.
+    ``samples/kanunpatrika.pdf`` is 128 pages and ``samples/aarop-patra.pdf`` 67, and
+    a full conversion of either costs ~14.1s / ~9.6s -- measured. Together with the
+    integration tests over the same two documents that was **105s of a 136s suite,
+    77%**, in eight tests, with a 7.9x cliff to 9th place at 1.25s. Restricting each
+    to the pages it actually asserts on:
+
+        test_convert_preserves_two_column_reading_order          14.46s -> 0.30s
+        ..._normalizes_replacement_char_bullets_in_two_column    14.69s -> 0.21s
+        test_convert_keeps_aarop_patra_title_lines_readable       9.99s -> 0.38s
 
     This is not a weaker input. ``pages`` slices the PDF before extraction, and
     :func:`test_convert_honors_page_range_selection_for_pdf` below asserts that

@@ -175,11 +175,11 @@ class TestPluginConversion:
         # Was test_data/kanun_patrika_sample.pdf, which was byte-identical to
         # samples/kanunpatrika.pdf (sha256 fee0399...) -- the same 128-page
         # document under two names, so a per-path conversion cache could never
-        # collapse the two and the suite paid ~14.2s for each. The duplicate is
+        # collapse the two and the suite paid ~14.1s for each. The duplicate is
         # gone; this reads the sample directly.
         #
         # pages="1-2" because every line asserted below is on page 1: measured
-        # 0.37s against 14.13s for the full document. Whole-document coverage is
+        # 0.20s against 14.45s for the full document. Whole-document coverage is
         # in test_sample_pdfs.py, which converts this sample in full.
         two_column_pdf = SAMPLES_DIR / "kanunpatrika.pdf"
         if not two_column_pdf.exists():

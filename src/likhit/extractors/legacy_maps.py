@@ -187,9 +187,9 @@ class _CompiledMap:
     non-empty spans** of that document pushed through the Preeti map directly, so
     they are not the 9,460 above and the two counts should not be mixed.
 
-        upstream                          2.351s
-        rules compiled once per map       0.448s   5.0x
-        plus per-word memoization         0.070s  31.9x
+        upstream                          2.362s
+        rules compiled once per map       0.445s   5.3x
+        plus per-word memoization         0.073s  32.5x
 
     Two independent wins, and the second is the larger one. Memoizing whole
     *spans* would not have paid -- those 11,268 spans hold 8,757 distinct ones,
@@ -197,9 +197,11 @@ class _CompiledMap:
     7,899 distinct words, an **11.4x** dedupe (82,453 hits to 7,899 misses),
     because Nepali function words and the whitespace tokens recur on every line.
 
-    Output is byte-identical to upstream: 0 differences over 12,153 cases (every
-    distinct span of the four legacy samples plus 15 hand-built edge cases) on all
-    five maps, 60,765 conversions in total. The unknown-map and ``"unicode"``
+    End to end that is 3s off a full conversion of the sample: **14.11s -> 11.11s**.
+
+    Output is byte-identical to upstream: 0 differences over 12,154 cases (every
+    distinct span of the four legacy samples plus 16 hand-built edge cases) on all
+    five maps, 60,770 conversions in total. The unknown-map and ``"unicode"``
     passthrough contracts are preserved too; see
     ``tests/test_legacy_maps_precompiled.py``.
 

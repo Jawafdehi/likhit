@@ -245,8 +245,8 @@ uv run pre-commit install
 
 Run all tests:
 ```bash
-uv run pytest           # ~60s
-uv run pytest -n auto   # ~21s on 64 cores, ~31s on 4 — same 559 passed
+uv run pytest           # ~63s
+uv run pytest -n auto   # ~21s on 64 cores, ~31s on 4 — same 722 passed
 ```
 
 `-n auto` (pytest-xdist) is not in `addopts`, because worker startup is a net
