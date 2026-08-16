@@ -93,8 +93,18 @@ STABLE_SAMPLE_CASES = (
     SampleCase(
         expectation=SamplePdfExpectation(
             file_name="kanunpatrika.pdf",
+            # The masthead year below read "द्दण्टछ, अंक ट" until the "Himalb" family
+            # was routed to the Preeti map, and this expectation asserted that as
+            # ground truth -- it was captured FROM the corrupt output. The masthead
+            # is a Himalb span whose raw bytes are "@)^%", which is Preeti's shifted
+            # number row; the next marker cites the same year off a genuine Preeti
+            # span and has always read "२०६५". The document corroborates itself, so
+            # the two markers below only agree under the corrected routing.
+            #
+            # Recorded here rather than only in a commit message, because a recorded
+            # expectation is exactly where a decode defect goes to become permanent.
             required_markers=(
-                "नेपाल कानून पत्रिका द्दण्टछ, अंक ट",
+                "नेपाल कानून पत्रिका २०६५, अंक ६",
                 "निर्णय नं.७९७३ ने.का.प. २०६५",
                 "बिषयः– नेपालको अन्तरिम संविधान २०६३",
                 "- अपराध गर्ने व्यक्तिको पीडितसंगको",
@@ -102,7 +112,7 @@ STABLE_SAMPLE_CASES = (
                 "प्रचलित मुलुकी ऐन, २०२० को",
             ),
             ordered_markers=(
-                "नेपाल कानून पत्रिका द्दण्टछ, अंक ट",
+                "नेपाल कानून पत्रिका २०६५, अंक ६",
                 "निर्णय नं.७९७३ ने.का.प. २०६५",
                 "सर्बोच्च अदालत विशेष इजलास",
                 "सम्माननीय प्रधानन्यायाधीश श्री केदारप्रसाद",
