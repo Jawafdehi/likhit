@@ -1938,7 +1938,16 @@ def _nepali_validity(text: str) -> dict[str, float]:
         # compared; ``penalty_per_deva`` keeps it because that is the measure the
         # gate's 0.05 ceiling was calibrated against. See
         # :func:`_legacy_map_garble` for what happens when one substitution moves both.
-        "penalty": penalty - duplicates * _DUPLICATE_CONSONANT_WEIGHT,
+        # ⚠️ `min(..., _RANKING_DOUBLET_FORGIVENESS)`, matching this commit's change to
+        # `_legacy_map_garble`. The parent inlined the subtraction here to avoid
+        # recomputing the penalty and the doublet count (44.0% of the call on a
+        # 7,680-character span), so the forgiveness floor has to be carried into the
+        # inlined copy too -- without it the floor simply does not apply on the
+        # ranking path, which is the only path it exists for.
+        # `test_the_inlined_ranking_penalty_still_equals_the_named_helper` is what
+        # caught that, and it is the reason that test was written.
+        "penalty": penalty
+        - min(duplicates, _RANKING_DOUBLET_FORGIVENESS) * _DUPLICATE_CONSONANT_WEIGHT,
         "penalty_per_deva": penalty / devanagari if devanagari else float("inf"),
         # Reported separately so `_map_ranking_key` can forgive a bounded number of
         # these sites WITHOUT the gate forgiving any -- see
