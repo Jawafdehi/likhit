@@ -81,6 +81,15 @@ _EXPLICIT_FLAG_SITES: dict[tuple[str, str, str], str] = {
     ): "the numeric-boundary repair reads character ORIGINS, so a clipped glyph is "
     "a lost digit, not merely a lost glyph. See the behavioural test at the "
     "bottom of this file, which is what this site was missing.",
+    (
+        "likhit/extractors/digit_companion.py",
+        "detect_digit_companion_fonts",
+        "fitz.TEXT_PRESERVE_WHITESPACE",
+    ): "VOL-323's companion detection decides whether a FONT is digit-dominant by "
+    "counting the characters of its spans, so a clipped span is a span the gate never "
+    "counts -- the default word would let page geometry decide whether a face gets its "
+    "digit row transliterated. Non-additive for the same reason as every other site "
+    "here: OR-ing a TEXTFLAGS_* default back in sets TEXT_MEDIABOX_CLIP.",
 }
 
 # Call sites that pass no flags at all and therefore accept the clipping default.

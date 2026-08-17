@@ -516,6 +516,78 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "MiB. A bound only needs to stop an unbounded corpus run, so anything well "
         "above the per-document count does the same work",
     ),
+    (
+        "likhit/extractors/digit_companion.py",
+        "_RENDER_PT",
+    ): (
+        48,
+        "point size a probe glyph is drawn at. Large enough that the ink box exceeds "
+        "the 16x16 sampling grid for every digit including `1`, which is the narrowest; "
+        "a signature is discarded as unreadable when the box is smaller than the grid",
+    ),
+    (
+        "likhit/extractors/digit_companion.py",
+        "_ZOOM",
+    ): (2, "render zoom, so a 48pt glyph gives ~96px of ink to sample from"),
+    (
+        "likhit/extractors/digit_companion.py",
+        "_SIG_SIZE",
+    ): (
+        16,
+        "signature grid edge, giving 256 cells. Coarse on purpose: the comparison has "
+        "to hold across foundries and stroke weights, and a finer grid makes the "
+        "same shape in two typefaces read as different",
+    ),
+    (
+        "likhit/extractors/digit_companion.py",
+        "_FAMILY_MATCH_MAX",
+    ): (
+        25,
+        "Hamming distance, of 256 cells, below which two signatures are the same shape. "
+        "Read off a measured GAP rather than chosen: over 966 distinct faces from 60 "
+        "corpus PDFs, faces matching the family reference sit at median 0 / p90 15, and "
+        "faces that do not at median 80 / p90 133. 25 is inside that gap with room on "
+        "both sides -- the gap, not the number, is the evidence",
+    ),
+    (
+        "likhit/extractors/digit_companion.py",
+        "_ROW_MATCH_MIN",
+    ): (
+        7,
+        "how many of the ten plain-row glyphs must match, and also the minimum readable "
+        "for a verdict at all. Ten is too strict: real subsets omit glyphs, and readable "
+        "companion faces in the acceptance sweep carry 7-10 of the row. Below this the "
+        "instrument returns None (abstains) rather than False",
+    ),
+    (
+        "likhit/extractors/digit_companion.py",
+        "_MAX_ALPHA_SHARE",
+    ): (
+        0.05,
+        "maximum ASCII-alphabetic share for a face to be digit-dominant. The measured "
+        "gap is nearly three orders of magnitude wide (VOL-317, whole corpus): the two "
+        "companion faces sit at 0.42% and 0.85%, the prose face of the same family at "
+        "54.7%. 5% is deliberately far above the companions and far below the prose "
+        "face, so it is not a boundary anyone discovered",
+    ),
+    (
+        "likhit/extractors/digit_companion.py",
+        "_MIN_DIGIT_SHARE",
+    ): (
+        0.5,
+        "minimum digit share of non-space characters. Secondary to the alpha share, "
+        "which is what actually separates the classes; this only rejects a face that is "
+        "neither words nor figures (rules, separators, punctuation)",
+    ),
+    (
+        "likhit/extractors/digit_companion.py",
+        "_MIN_CHARS",
+    ): (
+        40,
+        "characters before the content test is trusted at all. A three-character font "
+        "is not evidence of anything, and the two shares above are ratios that a tiny "
+        "denominator makes meaningless",
+    ),
 }
 
 

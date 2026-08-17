@@ -15,6 +15,10 @@ import fitz
 
 from likhit.errors import ExtractionError, ScannedPdfError, ValidationError
 from likhit.extractors.base import ExtractionStrategy, RawDocument, TextFragment
+from likhit.extractors.digit_companion import (
+    detect_digit_companion_fonts,
+    devanagarize_companion_digits,
+)
 from likhit.extractors.font_classifier import (
     SCANNED_DECOY_TEXT,
     classify_font,
@@ -3731,6 +3735,10 @@ class FontBasedStrategy(ExtractionStrategy):
                 page for page in range(1, doc.page_count + 1) if page not in in_range
             )
             content_legacy_maps = detect_content_legacy_fonts(doc, skip_for_content)
+            # VOL-323 decision (a). Scoped by the SAME skip set as the content-map
+            # gate, for the same reason: text the caller never asked for must not be
+            # able to decide how in-range text is converted.
+            digit_companion_fonts = detect_digit_companion_fonts(doc, skip_for_content)
             # VOL-180's third Latin veto reads document-scope evidence, so its
             # vocabulary is built once here and shared by every extraction pass
             # below -- including the broken-CMap repaired pass, which is the same
@@ -3765,6 +3773,7 @@ class FontBasedStrategy(ExtractionStrategy):
                 needs_reorder=False,
                 decoy_pages=decoy_pages,
                 content_legacy_maps=content_legacy_maps,
+                digit_companion_fonts=digit_companion_fonts,
                 acronym_survivors=acronym_survivors,
                 detect_tables=detect_tables,
             )
@@ -3786,6 +3795,7 @@ class FontBasedStrategy(ExtractionStrategy):
                     needs_reorder=needs_reorder,
                     decoy_pages=decoy_pages,
                     content_legacy_maps=content_legacy_maps,
+                    digit_companion_fonts=digit_companion_fonts,
                     acronym_survivors=acronym_survivors,
                 )
                 tables = repaired_document.tables
@@ -3801,6 +3811,7 @@ class FontBasedStrategy(ExtractionStrategy):
                         needs_reorder=False,
                         decoy_pages=decoy_pages,
                         content_legacy_maps=content_legacy_maps,
+                        digit_companion_fonts=digit_companion_fonts,
                         acronym_survivors=acronym_survivors,
                     ).tables
                 raw_document = _raw_document_from_fragments(
@@ -3848,6 +3859,12 @@ class FontBasedStrategy(ExtractionStrategy):
         needs_reorder: bool,
         decoy_pages: frozenset[int] = frozenset(),
         content_legacy_maps: dict[str, LegacyMapChoice] | None = None,
+        # VOL-323: threaded rather than re-detected, so every extraction pass over one
+        # document -- including the broken-CMap repaired pass -- agrees about which fonts
+        # are digit companions. Re-detecting per pass would let two passes of the same
+        # document disagree, which is the class of bug `acronym_survivors` is threaded to
+        # avoid.
+        digit_companion_fonts: frozenset[str] | None = None,
         acronym_survivors: frozenset[str] = frozenset(),
         detect_tables: bool = True,
     ) -> RawDocument:
@@ -3889,6 +3906,7 @@ class FontBasedStrategy(ExtractionStrategy):
                             page_font_strategies,
                             needs_reorder,
                             content_legacy_maps=content_legacy_maps,
+                            digit_companion_fonts=digit_companion_fonts,
                             skip_content_legacy=latin_veto[span_index],
                         )
                         if not text:
@@ -3975,9 +3993,29 @@ class FontBasedStrategy(ExtractionStrategy):
         # Both, not either.
         content_legacy_maps: dict[str, LegacyMapChoice] | None = None,
         skip_content_legacy: bool = False,
+        # VOL-323: full font names whose plain ASCII digit row draws `०-९` in their own
+        # glyph program and which no map already handles. Keyed on the FULL name, like
+        # `content_legacy_maps`, because the decision is per font resource.
+        digit_companion_fonts: frozenset[str] | None = None,
     ) -> str:
         base = _span_base_font(font_name)
         strategy = font_strategies.get(base, "correct")
+
+        # VOL-323, decision (a): the digit-dominant legacy companion. Its plain ASCII
+        # digit row draws `०-९` in its own glyph program, it matches no shipped map key
+        # (its decimal separator is a literal `.` where every map emits `।`), and the
+        # `hits >= 2` candidacy gate excludes it by design -- so without this branch its
+        # figures survive into the transcript as raw ASCII.
+        #
+        # FIRST, and deliberately so. This is not a legacy remap and must not reach one:
+        # `Preeti`/`Spins` would turn `2075` into `द्दण्ठछ` and `FONTASY_HIMALI_TT` would
+        # turn the `.` into `।`. It is a digit-row transliteration and nothing else.
+        # Placing it here rather than after the strategy branches also means it cannot be
+        # reached by a font that IS routed -- `detect_digit_companion_fonts` already
+        # requires `_matched_registry_key(name) is None`, so the two populations are
+        # disjoint by construction and this cannot double-convert.
+        if digit_companion_fonts and font_name in digit_companion_fonts:
+            return devanagarize_companion_digits(text)
 
         # Decoy suppression happens page-level in _extract_from_document (decoy
         # pages are skipped wholesale), so no span-level decoy branch is needed.
