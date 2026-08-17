@@ -2684,7 +2684,28 @@ def _content_legacy_veto_flags(
                 elif acronym_survivors and (
                     _acronym_tokens(run_text) & acronym_survivors
                 ):
-                    # VOL-180's third axis. ⚠️ The `elif` is a SHORT-CIRCUIT, not the
+                    # 🛑 **This axis has NO evidence floor of any kind, and that is a
+                    # deliberate, priced position rather than an oversight.** The fire
+                    # condition is membership alone: one 2-5 character token attested
+                    # once anywhere in the document vetoes every run containing it, and
+                    # the unit of damage is the whole same-font run. Axis 1 requires
+                    # >=16 non-space characters, >=0.88 alpha, >=0.30 vowels and zero
+                    # dictionary hits in the decode; axis 2 requires a >=10%
+                    # function-word share. So the loosest of the three is the one that
+                    # fires on the residue the other two rejected, and VOL-180 §9's
+                    # own flag for this was dropped.
+                    #
+                    # Measured before leaving it: a deterministic 700-PDF sample (11.2%
+                    # of the corpus, seeded) produced **0** axis-3 fires, and the
+                    # obvious fix -- adding axis 1's dictionary condition here, where
+                    # `decoded` is already in scope -- would have changed **0** of them.
+                    # A sample this size cannot bound a rare axis tightly, and that is
+                    # the point: the footprint is small enough that a floor cannot be
+                    # calibrated on it, so adding one would be guessing. If this axis is
+                    # ever widened, the floor is the first thing to add, and axis 1's
+                    # dictionary condition is the cheapest one.
+                    #
+                    # ⚠️ The `elif` is a SHORT-CIRCUIT, not the
                     # second-pass rule: both branches set the same flags, so
                     # `if A: flag elif B: flag` is `if A or B: flag` and replacing the
                     # `elif` with an independent `if` leaves the whole suite green. All
