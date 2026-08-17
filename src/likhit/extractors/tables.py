@@ -46,7 +46,7 @@ def detect_page_tables(
         )
         if table is not None and _is_accepted_table(table):
             tables.append(table)
-    return tables
+    return _drop_container_tables(tables)
 
 
 def merge_continuation_tables(tables: list[Table]) -> list[Table]:
@@ -124,7 +124,7 @@ def _build_table(
     return Table(
         row_count=fitz_table.row_count,
         col_count=fitz_table.col_count,
-        cells=cells,
+        cells=_drop_frame_cells(cells),
         caption=_extract_caption(fitz_table, page_fragments),
         index=index,
         regions=[
@@ -138,6 +138,217 @@ def _build_table(
             )
         ],
     )
+
+
+#: Slack when testing whether one table's REGION contains another's, in points.
+#: Larger than :data:`_EDGE_TOLERANCE` on purpose: this compares two independently
+#: detected grids, whose ruled borders sit a stroke width apart, not two cells of one
+#: grid.
+_REGION_TOLERANCE = 3.0
+
+#: A word of the corpus: a Devanagari run, or a run of digits in EITHER script. Used
+#: only to ask whether one table's content is already covered by another's.
+#:
+#: ASCII digits are inside it deliberately, and the cost is known and accepted. A page
+#: footer's counter (`11 of 13`, `Page 70 of 76`) therefore counts as content and can
+#: stop a coarse table being stripped -- measured on 200 residual pages, that is the
+#: SOLE blocker on 2 of them. Excluding ASCII digits to recover those 2 would put the
+#: corpus's ~5.7 million genuine ASCII digits (VOL-323) outside the safety test, so a
+#: container holding the only copy of an ASCII figure would be stripped and the figure
+#: lost. Two doubled pages is the cheaper error.
+_CONTENT_WORD = re.compile(r"[ऀ-ॿ‌‍]+|[0-9]+|[०-९]+")
+
+
+def _drop_container_tables(tables: list[Table]) -> list[Table]:
+    """Strip the duplicated cells of a COARSE table that contains a finer one.
+
+    `find_tables()` can return two grids for one printed table: a coarse one whose few
+    cells swallow the whole page, and the real one. Both are accepted, both are
+    rendered, and the page then says everything twice -- the same duplication
+    :func:`_drop_frame_cells` fixes one level down, where the container is a cell of a
+    single grid rather than a grid of its own.
+
+    Witness (VOL-744): `12788__मालिकार्जुन गाउँपालिका, दार्चुला.pdf` p61 returns a 2x3
+    grid of **5** cells over the whole page (0,0,792,612) and a 27x24 grid of **629**
+    cells at (51.5,30.3,741.1,588.0). Both carry the same 674 tokens over the same 105
+    distinct words, and the coarse one renders them as a single 2,009-character line.
+
+    🛑 **The coarse table is stripped CELL BY CELL rather than dropped whole, and that is
+    not fastidiousness -- dropping it whole loses real content.** On p61 the container
+    also holds the page-furniture row (`8 of 10`, the NAMS URL, `Page 58 of 64`), and the
+    fine grid does NOT: its last row is the 24th school. That footer is the only record
+    of which printed page a transcript page came from, so a rule that deletes the
+    container deletes it. Measured, on the first page this was tried against.
+
+    A cell goes only if its own content words are a non-empty subset of what the
+    contained tables already hold. So the swallowing cell goes and the footer stays,
+    and the safety argument is made per cell instead of per table.
+
+    Two conditions gate the table before any cell is examined:
+
+    * **containment** -- the coarse region must enclose the fine one, within
+      :data:`_REGION_TOLERANCE`;
+    * **coarser** -- strictly fewer cells than the finest table it contains, so a rich
+      table that merely encloses a small nested one is left alone, and two grids with
+      equal cell counts leave each other alone rather than stripping both.
+
+    A table stripped to nothing is dropped. `_is_accepted_table` is deliberately NOT
+    re-run on a stripped table: it was accepted on the grid the page actually has, and
+    re-testing it would delete the footer row for failing a two-populated-rows rule that
+    the duplicate had been satisfying.
+    """
+    if len(tables) < 2:
+        return tables
+
+    words = [_table_content_words(table) for table in tables]
+    cell_counts = [len(table.cells) for table in tables]
+    stripped: list[Table] = []
+    for outer, table in enumerate(tables):
+        contained = [
+            inner
+            for inner in range(len(tables))
+            if inner != outer and _region_contains(table, tables[inner])
+        ]
+        if not contained or cell_counts[outer] >= max(
+            cell_counts[inner] for inner in contained
+        ):
+            stripped.append(table)
+            continue
+
+        covered: set[str] = set()
+        for inner in contained:
+            covered |= words[inner]
+        keep = [cell for cell in table.cells if not _cell_is_covered_by(cell, covered)]
+        if len(keep) == len(table.cells):
+            stripped.append(table)
+        elif any(cell.text.strip() for cell in keep):
+            stripped.append(replace(table, cells=keep))
+    return stripped
+
+
+def _cell_is_covered_by(cell: TableCell, covered: set[str]) -> bool:
+    """Is every content word of ``cell`` already held by the finer tables?
+
+    An empty cell is never "covered": it carries nothing to duplicate, and treating the
+    empty set as a subset would strip the grid's blank cells and shift every column.
+    """
+    own = set(_CONTENT_WORD.findall(cell.text))
+    return bool(own) and own <= covered
+
+
+def _table_content_words(table: Table) -> set[str]:
+    return set(_CONTENT_WORD.findall(" ".join(cell.text for cell in table.cells)))
+
+
+def _region_contains(outer: Table, inner: Table) -> bool:
+    """Does ``outer``'s region enclose ``inner``'s, within the region tolerance?
+
+    Compared on the tables' own regions rather than on their cells: a table detected
+    over a whole page has a region that says so even when only five of its cells carry
+    anything.
+    """
+    if not outer.regions or not inner.regions:
+        return False
+    left, right = outer.regions[0], inner.regions[0]
+    if left.page_number != right.page_number:
+        return False
+    if (left.x0, left.y0, left.x1, left.y1) == (right.x0, right.y0, right.x1, right.y1):
+        return False
+    return (
+        left.x0 <= right.x0 + _REGION_TOLERANCE
+        and left.y0 <= right.y0 + _REGION_TOLERANCE
+        and left.x1 >= right.x1 - _REGION_TOLERANCE
+        and left.y1 >= right.y1 - _REGION_TOLERANCE
+    )
+
+
+def _drop_frame_cells(cells: list[TableCell]) -> list[TableCell]:
+    """Drop cells that are the table's ruled FRAME rather than one of its cells.
+
+    A frame cell's grid rectangle strictly contains another cell's, so
+    :func:`_extract_cell_text` reads every fragment inside it a SECOND time -- once
+    into the frame and once into the cell that actually owns it. The page then says
+    everything twice.
+
+    🛑 This is not a rounding error and it is not rare. Measured on the OAG corpus
+    (VOL-744): **2,423 pages of 309,231 emitted their own content twice**, 634,084
+    duplicated word tokens across 981 of 6,235 documents, identically in three
+    successive generations. The witness is
+    `11781__ललितपुर महानगरपालिका.pdf` p105, where `find_tables()` returns ONE 17x9 grid
+    whose `r0 c1` spans 16x8 -- the whole grid -- and carries all 1,958 characters,
+    while the 90 cells inside it carry the same 1,875. An independent vision read of
+    that page returns the content ONCE over the same distinct vocabulary.
+
+    🛑 **No character-level audit axis can see this**, which is why it survived so
+    long: duplicated Devanagari is well-formed Devanagari, with no U+FFFD, no PUA,
+    correct repha and correct matras. A line-grain repetition test misses it too --
+    the two copies are laid out with different pipe padding, so on p105 only 4 of 83
+    lines repeat while the token stream is 100% doubled.
+
+    Containment, not span size, is the discriminator, and the distinction is
+    load-bearing: a LEGITIMATE merged cell -- a header spanning three columns -- holds
+    the only claim on its own rectangle, because `find_tables()` gives each grid
+    region to exactly one cell. So a wide or tall cell is kept; only one that another
+    cell sits *inside* is dropped. Sizing the rule on `rowspan`/`colspan` instead
+    would delete real spanned headers.
+
+    🛑 **Containment alone is NOT sufficient, and assuming it was deleted real content.**
+    A spanning cell can enclose cells that are EMPTY, in which case it holds the only
+    copy of what it read and dropping it destroys the page. Measured on the paired
+    control sweep that exists to catch exactly this:
+    `11727__भरतपुर महानगरपालिका.pdf` p101 has one 6x11 grid of 34 cells whose spanning
+    cell carries 143 of the page's 169 tokens and 80 of its 101 distinct words, while
+    the 33 cells inside it carry 26 tokens between them. Containment-only took that page
+    from **101 distinct words to 21**, on a page that was never doubled -- 27 of 1,400
+    control pages lost content the same way, which is a worse defect than the one being
+    fixed. So a frame goes only when its content words are already held by the cells
+    inside it, the same guard :func:`_drop_container_tables` uses one level up.
+
+    Equal rectangles are deliberately NOT treated as containment. Two cells sharing a
+    rectangle would also duplicate, but that is a different defect with a different
+    fix (neither is the frame of the other, so dropping "the container" would pick one
+    arbitrarily); it does not occur in this corpus and is left to argue with its own
+    evidence.
+    """
+
+    # Only a multi-span cell can strictly contain another, so the scan is over those
+    # rather than every pair -- a 1x1 cell can only contain a cell with its own exact
+    # rectangle, which is excluded above.
+    def rect(cell: TableCell) -> tuple[int, int, int, int]:
+        return (cell.row, cell.col, cell.row + cell.rowspan, cell.col + cell.colspan)
+
+    rects = [rect(cell) for cell in cells]
+    spanning = [
+        position
+        for position, cell in enumerate(cells)
+        if cell.rowspan > 1 or cell.colspan > 1
+    ]
+    if not spanning:
+        return cells
+
+    frames: set[int] = set()
+    for outer in spanning:
+        o_row0, o_col0, o_row1, o_col1 = rects[outer]
+        covered: set[str] = set()
+        contains_any = False
+        for inner, (i_row0, i_col0, i_row1, i_col1) in enumerate(rects):
+            if inner == outer:
+                continue
+            if (
+                o_row0 <= i_row0
+                and o_col0 <= i_col0
+                and o_row1 >= i_row1
+                and o_col1 >= i_col1
+                and rects[outer] != rects[inner]
+            ):
+                contains_any = True
+                covered |= set(_CONTENT_WORD.findall(cells[inner].text))
+        if contains_any and _cell_is_covered_by(cells[outer], covered):
+            frames.add(outer)
+
+    if not frames:
+        return cells
+    return [cell for position, cell in enumerate(cells) if position not in frames]
 
 
 def _extract_caption(

@@ -527,9 +527,22 @@ def test_convert_renders_tables_as_raw_pipe_separated_rows() -> None:
     # word -- `आन्तरिक`, `मामिला` and `तथा` all sit at y 241.49..258.21 -- and
     # `_extract_cell_text` emitted one output row per fragment. VOL-91.
     assert (
-        "| 1 |  | आन्तरिक मामिला तथा |  | प्रतिवादीहरूको मिलेमतोमा |  |  | 2081/04/24, |"
+        "| 1 |  | आन्तरिक मामिला तथा |  | प्रतिवादीहरूको मिलेमतोमा |  |  |  | 2081/04/24, |"
     ) in markdown
-    assert ("|  |  |  |  | इलाका प्रहरी कार्यालय, |  |  | 2081/04/31, |") in markdown
+    assert ("|  |  |  |  | इलाका प्रहरी कार्यालय, |") in markdown
+    # 🛑 Both rows above USED TO carry a second copy of the decision date, because
+    # this table's grid has a FRAME cell spanning it whole and `_extract_cell_text`
+    # read every fragment into that too (VOL-744). The two assertions were written
+    # against the doubled output and are corrected here, not relaxed.
+    #
+    # The frame's copy was also MISALIGNED, which is why keeping it was worse than
+    # dropping it rather than merely redundant: `2081/04/31` belongs to the record on
+    # the `कानुन मन्त्रालय, मधेस` row, and the frame printed it against
+    # `इलाका प्रहरी कार्यालय,` five rows earlier. Each date now appears exactly once,
+    # on its own row -- assert the count, so a returning frame fails here.
+    assert markdown.count("2081/04/24") == 1
+    assert markdown.count("2081/04/31") == 1
+    assert ("|  |  | कानुन मन्त्रालय, मधेस |  |  |  |  |  | 2081/04/31, |") in markdown
     assert "**1**" not in markdown
     assert "- **उजुरीको व्यहोरा:**" not in markdown
 
