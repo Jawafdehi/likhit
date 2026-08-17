@@ -1905,12 +1905,26 @@ _MEDIAL_CAPS = re.compile(r"[a-z][A-Z]")
 # an acronym that is genuine Latin here almost always also appears somewhere in
 # this document in text the remap never rewrites.
 #
-# Calibration, from `runs/vol180/strict-calibration-635286f0.json`: 7,864 runs hold
-# a short all-caps ASCII token that both shipped vetoes miss. Vetoing on that shape
-# alone would be 41x the whole of `27d74f0` -- a licence to stop decoding wherever
-# two capitals appear -- so the shape is only the candidate generator. Requiring
-# document-scope survivor evidence cuts 7,864 to **16 fires, 16/16 genuine English,
-# 0 Nepali touched**, every one read individually.
+# Calibration, from `runs/vol180/strict-calibration-635286f0.json`. 🛑 **Three numbers,
+# two tokenizers, and they must not be chained as though they were one funnel** -- an
+# earlier form of this comment wrote "cuts 7,864 to 16 fires", which mixes them:
+#
+#   7,864  `considered` -- runs holding a short all-caps ASCII token under the LOOSE
+#          tokenizer, i.e. the candidate population before the strict shape test;
+#     386  `shape_ok` -- the same population under the STRICT whitespace-delimited
+#          tokenizer this module ships;
+#      16  fires -- what survives requiring document-scope survivor evidence, 16/16
+#          genuine English, 0 Nepali touched, every one read individually.
+#
+# Vetoing on shape alone would be 41x the whole of `27d74f0` -- a licence to stop
+# decoding wherever two capitals appear -- so the shape is only the candidate generator
+# and the survivor condition is what makes the axis usable.
+#
+# ⚠️ The 16 is VOL-180's own calibration figure and it is NOT the current fire count:
+# later commits in this chain re-measured the axis at **26 fires**, which the purity
+# clause takes to **25** (see `detect_latin_acronym_survivors`). So 7,864 / 386 / 16 is
+# one snapshot, taken together, and quoting the 16 beside a later fire count chains two
+# instruments. `tests/test_content_legacy_acronym_veto.py` carries the same split.
 #
 # Three things the calibration forces that the issue's sketch did not say:
 #
@@ -2957,10 +2971,17 @@ def _rewritten_outside_the_content_remap(font_name: str) -> bool:
     answer depends on nothing but the name.
     """
 
-    base = _span_base_font(font_name)
+    # 🛑 The FULL name, not `_span_base_font(font_name)`. `_match_font` strips the subset
+    # prefix itself, so the wrapper bought nothing and introduced a divergence from the
+    # predicate this mirrors: `classify_font` and `is_latin_cid_font` both pass the full
+    # name to `is_legacy_font`, while `_span_base_font` takes the tail after the FIRST
+    # `+` and can discard the segment carrying the registry key. Measured on
+    # `XXXXXX+Preeti+Bold`: `is_legacy_font(full)` is True and `is_legacy_font(base)` is
+    # False, so the guard admitted a span the remap rewrites -- the same hole this
+    # function exists to close, reopened one name-shape later.
     return (
-        is_legacy_font(base)
-        or classify_font(base, "") in _TEXT_REWRITING_STRATEGIES
+        is_legacy_font(font_name)
+        or classify_font(font_name, "") in _TEXT_REWRITING_STRATEGIES
         or is_symbol_pua_font(font_name)
     )
 

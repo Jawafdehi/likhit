@@ -470,9 +470,12 @@ def test_a_marked_span_contributes_nothing_to_the_survivor_vocabulary(
 # ---------------------------------------------------------------------------
 # VOL-212: SURVIVOR PURITY. Latin *shape* is not evidence of Latin.
 #
-# The 13 tests above guard the shape test and the veto's scope. None of them can
-# see this defect, because all of them hand the veto a survivor set built by
-# hand: the defect is in how `detect_latin_acronym_survivors` BUILDS that set.
+# The 15 tests above guard the shape test and the veto's scope -- 6 of them through
+# `_content_legacy_veto_flags` -- and NONE of them reaches
+# `detect_latin_acronym_survivors` (0 references above this line, re-derived). All of
+# them hand the veto a survivor set built by hand, and the defect is in how that set is
+# BUILT. ⚠️ This said "13 tests" and neither half of that was right; the load-bearing
+# clause is the reach, not the count.
 # ---------------------------------------------------------------------------
 
 # Verbatim from `runs/vol197/fire-sweep-caps-token-f7071d15.json`, fire 26:
@@ -659,10 +662,14 @@ def test_a_document_with_no_candidate_map_has_no_purity_opinion() -> None:
 
 # --- the survivor VOCABULARY, and the second remap it was blind to (VOL-247) -------
 #
-# The 13 tests above all exercise `_content_legacy_veto_flags`, which takes the
-# survivor set as a parameter. None of them reaches `detect_latin_acronym_survivors`,
-# which is what *builds* that set — and that is where VOL-247 found the axis's one
-# measured false positive, over the 74 corpus documents that can fire.
+# 24 tests precede this block and **7** of them exercise `_content_legacy_veto_flags`,
+# which takes the survivor set as a parameter. The clause that matters is the reach, and
+# it is re-derived: exactly 1 reference to `detect_latin_acronym_survivors` above this
+# line, added by the round-6 fix for finding 87-6 -- before that, none. That function is
+# what *builds* the set, and it is where VOL-247 found the axis's one measured false
+# positive over the 74 corpus documents that can fire. ⚠️ This said "the 13 tests above
+# all exercise" and both halves were wrong: the 13 predates the two marked-CID tests and
+# the nine VOL-212 ones, and "all" was never true.
 #
 # `detect_content_legacy_fonts` only ever considers fonts the name classifier calls
 # "correct", so `Preeti` is never a CONTENT-legacy candidate. But
@@ -712,15 +719,36 @@ def test_a_name_legacy_font_never_attests_a_survivor(monkeypatch) -> None:
     )
 
 
-def test_a_subset_prefixed_name_legacy_font_is_also_excluded(monkeypatch) -> None:
-    """Producers emit `ABCDEF+Preeti`; the guard reads the base name like the remap."""
+@pytest.mark.parametrize(
+    "font_name",
+    [
+        "Preeti",
+        "BCDEEE+Preeti",
+        # 🛑 The registry is a SUBSTRING matcher, and only these two shapes can tell it
+        # apart from an exact-key one. `Preeti` and `BCDEEE+Preeti` both match a bare
+        # registry key exactly, so a narrowing to exact-name lookup -- which would
+        # re-admit both of the names below -- passed green.
+        "Himalb,Bold",
+        "ARAP 11",
+        # And the shape that reopened the hole once: `_span_base_font` takes the tail
+        # after the FIRST `+`, which discards the segment carrying the registry key.
+        "XXXXXX+Preeti+Bold",
+    ],
+)
+def test_a_name_legacy_font_is_excluded_however_its_name_is_spelled(
+    monkeypatch, font_name: str
+) -> None:
+    """Producers emit `ABCDEF+Preeti`, style suffixes, and space-bearing family names.
+
+    The exclusion must use the remap's OWN matcher, which is what decides whether the
+    span is rewritten -- anything narrower admits a span the remap rewrites, which is the
+    hole this guard exists to close.
+    """
 
     assert (
-        _survivors_for(
-            monkeypatch, [_span("BCDEEE+Preeti", "yk Jooef/ PG6L :g]s e]gd ")]
-        )
+        _survivors_for(monkeypatch, [_span(font_name, "yk Jooef/ PG6L :g]s e]gd MIS ")])
         == frozenset()
-    )
+    ), font_name
 
 
 def test_a_genuinely_non_legacy_font_still_attests(monkeypatch) -> None:
