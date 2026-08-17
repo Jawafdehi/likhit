@@ -114,6 +114,56 @@ _IMPOSSIBLE_IKAR_NASAL_PATTERN = re.compile(
     # (?<! consonant | nukta | virama ) ikar (?= candrabindu | anusvara | visarga )
     "(?<![\u0915-\u0939\u093c\u094d])\u093f(?=[\u0901\u0902\u0903])"
 )
+#: How many sites of the term above are forgiven when RANKING two decodes of one span.
+#:
+#: The term is a gate signal first: 1,451 of its 1,550 sites sit in words whose whole
+#: penalty is otherwise 0, and without it `_passes_content_legacy_gate` accepts garble
+#: (see the block above). But `_map_ranking_key` reuses the same raw `penalty` to CHOOSE
+#: between candidate maps, and there a single site is not evidence about the map at all:
+#: it can be evidence about the SOURCE, which every candidate decodes alike.
+#:
+#: `3229__1613898700sidingwa gapa.pdf`, font `Spins`, 687 raw / 592 Devanagari characters,
+#: is the measured instance. One source region decodes as `\u092e\u094d\u0926\u093e\u093f\u0901` under Spins and Preeti
+#: and as `\u092e\u094d\u0926\u093e\u093e\u093f` under Kantipur, PCS NEPALI and FONTASY_HIMALI_TT -- malformed either
+#: way (two vowel signs in sequence), so it says nothing about which map is right, but
+#: only the first ordering matches this pattern. That single site costs 6 penalty points,
+#: and `penalty` ranks ABOVE the stranded-bracket tell, so it decides the span before any
+#: axis that actually separates the maps is consulted:
+#:
+#:     map           hits  penalty  stranded   ratio   deva
+#:     Spins            4        6         0  0.9801    592   <- correct
+#:     Kantipur         4        0        12  0.9681    577
+#:
+#: Spins is right and not marginally so: it reads `\u0915\u093e\u0932\u0940\u0916\u094b\u0932\u093e`, `\u092d\u091e\u094d\u091c\u094d\u092f\u093e\u0901`, `\u0924\u093f\u092e\u094d\u092c\u0941\u0901\u092a\u094b\u0916\u0930\u0940`,
+#: `\u0938\u093f\u0926\u094d\u0927\u0947\u0936\u0935\u0930\u0940 \u092e\u093e.\u0935\u093f.`, `\u091c\u0928\u0924\u093e \u092a\u094d\u0930\u093e.\u0935\u093f.` where Kantipur strands `)` mid-word twelve times
+#: and PCS NEPALI injects digits (`\u092e\u096c\u093f\u096c\u093e\u0930` for `\u092e\u091f\u093f\u091f\u093e\u0930`). Charged, the whole font unit is
+#: lost: `main` elects a wrong map that then FAILS the gate, so 592 Devanagari characters
+#: go undecoded -- the drop-rather-than-remap hazard `_map_ranking_key` names.
+#:
+#: One, not two, and only on the ranking axis:
+#:   * the gate keeps every site, because that is where the fails-open evidence is;
+#:   * a systematic mis-map fires far more than once -- the block above measures the
+#:     recovered mass at 1,550 sites in 240 documents, ~6 per document, and the two
+#:     windows it measured for the gate carry 3 and 4 in 100 and 160 characters;
+#:   * corpus-wide this forgiveness changes exactly ONE (document, font) pair out of
+#:     6,236 source PDFs swept, the one above.
+#:
+#: \u26a0\ufe0f Widening the lookbehind instead was measured and is WORSE than the defect: excluding
+#: a preceding vowel sign gives up **300 of 1,523 sites across 65 documents** (19.7%),
+#: because `\u093e`/`\u0941`/`\u0942` before the ikar is the second-commonest shape the term catches --
+#: after SPACE (629) and `\u090f` (479) it is `\u0941` (126) and `\u093e` (83). This forgiveness gives up
+#: one site in one document.
+#:
+#: \u26a0\ufe0f **1,550/240 and 1,523/227 are the same term on different generations, not a
+#: correction.** The block above counted v11 (`markdown-quality-v11`, 6,223 documents);
+#: the 1,523 here and the 300 given up are v16 (`markdown-quality-v16`, 6,235). Re-derive
+#: against the generation you mean and say which one, rather than reconciling them.
+_RANKING_IKAR_NASAL_FORGIVENESS = 1
+#: The weight the term carries in `_text_quality_penalty`. Named because
+#: `_map_ranking_key` has to subtract exactly it to forgive a site, and a literal in both
+#: places is a two-site edit that only an equality test would catch -- the failure mode
+#: `_RANKING_DOUBLET_FORGIVENESS`'s sibling term already produced once in this stack.
+_IKAR_NASAL_WEIGHT = 6
 _HALANT_IKAR_PATTERN = re.compile(r"्ि")
 _DUPLICATE_CONSONANT_PATTERN = re.compile(r"([क-ह])\1")
 # Two identical adjacent consonants are a real garble signal, but adjacency ALONE
@@ -190,6 +240,74 @@ _SUSPICIOUS_ARTIFACT_PATTERN = re.compile(
 # Measured on 70 characters of clean prose: 0 hits as written, 11 after
 # normalization, every one a false positive.
 _INVALID_SIGN_PATTERN = re.compile(r"[\u094a\u0929\u0931\u0934]")
+
+# Devanagari letters and combining marks, EXCLUDING the digits U+0966-U+096F and the
+# two dandas U+0964/U+0965.
+_DEVANAGARI_LETTER_RANGE = "\u0900-\u0963\u0970-\u097f"
+# An ASCII bracket wedged between two Devanagari LETTERS is a positive tell that a
+# legacy map does not fit the face. A map that fits turns every keystroke into
+# Devanagari; a wrong one leaves its own literal reading behind. `Spins` reads the byte
+# that Preeti and PCS NEPALI read as `)` as the anusvara `ं`, so `संख्या` ("number")
+# comes out of the wrong map as `स)ख्या` (VOL-77, VOL-89, VOL-131).
+#
+# Digits are excluded because `दफा ३५(२)` -- "section 35(2)" -- is ordinary legal
+# citation in these reports, and U+0966-U+096F sit inside the Devanagari block, so the
+# obvious `[ऀ-ॿ]` class charges correct text. That is a live defect in
+# `runs/vol89/adjudicate_font.py`, which counts this tell with the digits included.
+#
+# This count is DELIBERATELY NOT a term in `_text_quality_penalty`. On the 6,223
+# published v11 transcripts it fires 33,256 times in 4,878 of them, and most of those
+# are Nepali alphabetic list labels -- `क)वित्तीय`, `ख)राजस्व`, `ग)सशर्त` -- which is how
+# Nepali writes `a)`, `b)`, `c)`, plus ordinary parentheticals like `फिर्ता(साँवा)`. As an
+# absolute quantity it is therefore not a damage measure, and the penalty feeds an
+# absolute accept ceiling. Comparison between two decodes of the same span is the only
+# use here.
+#
+# ⚠️ 33,256 is the LOOKAHEAD form's count, the one shipped below. The consuming form this
+# commit replaced fires 33,204 on the same corpus -- a 52-hit difference, and the reason
+# the two figures both appear in this lineage's records. The 4,878 is right for both.
+#
+# 🛑 **"A shared label is shared by both" is not true of these maps, and the axis is
+# narrower than it looks.** Measured by inverting every map over 0x00-0x2FFF: an output
+# `)` comes from source `_` (0x5f) under Preeti / Kantipur / PCS NEPALI /
+# FONTASY_HIMALI_TT / Sagarmatha, and from source `{` (0x7b) under Spins; an output `(`
+# comes from `-` (0x2d, plus 0xad on three of them) under the five and from `[` (0x5b)
+# under Spins. So a label is shared only WITHIN a map family, the one boundary this axis
+# can ever act on is {Spins} vs {the other five}, and its sign is set by ground truth: on
+# a genuine Spins face a `_` is an anusvara and the tell correctly charges the five, but
+# on a genuine Preeti-family face a `_` is a real `)` and the tell charges the CORRECT map
+# while sparing Spins. A single ordinary list label (`क)वित्तीय`, 1,506 corpus
+# occurrences) is enough to hand Spins a 1-0 advantage on an axis that outranks `ratio`.
+#
+# That direction is real but it cannot ship on its own: `_RANKING_STRANDED_FORGIVENESS`
+# (VOL-185, later in this same chain) forgives the first bracket, which is exactly the
+# `>= 2` floor the exposure needs -- both spans this axis was calibrated on clear it at
+# 3-vs-0 and 6-vs-0. A 400-document sample found no accepted-map change either way.
+#
+# ⚠️ The gap in the OTHER direction, recorded as a decision rather than fixed: the
+# pattern requires EXACTLY ONE bracket between the two letters, so a run -- `क))ख`,
+# `क)(ख`, `क()ख`, `क[]ख` -- counts 0. Measured on the same corpus: 148 occurrences in 76
+# documents, and the top contexts are `न)(म` (25), `ख)(ग` (18), `ग)(घ` (8), `क)(ख` (6),
+# i.e. overwhelmingly two adjacent legitimate parenthesised list labels rather than
+# residue. Reading 0 there is fail-OPEN (both candidates read 0, so the axis is silenced,
+# not inverted) and on this evidence it is the safer half of the trade. Widening to
+# `[)(\]\[}{]+` would need those 148 adjudicated first.
+#
+# The trailing letter is matched by LOOKAHEAD, not consumed. `findall` scans
+# non-overlapping, so consuming it made consecutive tells invisible: `क)ख)ग` -- which is
+# exactly how a wrong map renders two adjacent Nepali list labels -- counted 1 instead of
+# 2, because `ख` belonged to the first match. That is the shape a forgiveness floor of
+# one then waves through entirely, so the undercount is worst precisely where the tell
+# matters most.
+_STRANDED_BRACKET_PATTERN = re.compile(
+    "["
+    + _DEVANAGARI_LETTER_RANGE
+    + "]"
+    + r"[)(\]\[}{]"
+    + "(?=["
+    + _DEVANAGARI_LETTER_RANGE
+    + "])"
+)
 
 
 def parse_page_range(spec: str, total_pages: int) -> tuple[int, int]:
@@ -508,7 +626,7 @@ def _text_quality_penalty(text: str) -> int:
         + len(_INVALID_SIGN_PATTERN.findall(text)) * 8
         + len(_PREFIX_IKAR_PATTERN.findall(text)) * 6
         + len(_INVALID_IKAR_PATTERN.findall(text)) * 6
-        + len(_IMPOSSIBLE_IKAR_NASAL_PATTERN.findall(text)) * 6
+        + len(_IMPOSSIBLE_IKAR_NASAL_PATTERN.findall(text)) * _IKAR_NASAL_WEIGHT
         + len(_HALANT_IKAR_PATTERN.findall(text)) * 4
         + _duplicate_consonant_count(text) * 3
         + len(_SUSPICIOUS_ARTIFACT_PATTERN.findall(text)) * 8
@@ -789,7 +907,14 @@ def _nepali_validity(text: str) -> dict[str, float]:
         # normalised form to rank candidates is a bug.
         "penalty": penalty,
         "penalty_per_deva": penalty / devanagari if devanagari else float("inf"),
+        # Reported separately so `_map_ranking_key` can forgive a bounded number of
+        # these sites WITHOUT the gate forgiving any -- see
+        # `_RANKING_IKAR_NASAL_FORGIVENESS`. It is a component of `penalty`, not an
+        # extra axis, so it must not be read as evidence on its own.
+        "ikar_nasal": len(_IMPOSSIBLE_IKAR_NASAL_PATTERN.findall(text)),
         "hits": hits,
+        # Not part of `penalty`: see `_STRANDED_BRACKET_PATTERN`. Ranking only.
+        "stranded": len(_STRANDED_BRACKET_PATTERN.findall(text)),
     }
 
 
@@ -802,7 +927,9 @@ def _passes_content_legacy_gate(validity: dict[str, float]) -> bool:
     )
 
 
-def _map_ranking_key(validity: dict[str, float]) -> tuple[float, float, float, float]:
+def _map_ranking_key(
+    validity: dict[str, float],
+) -> tuple[float, float, float, float, float]:
     """Evidence axes for a candidate map, most decisive first, higher is better.
 
     ``hits`` and ``penalty`` are the calibrated primary axes. ``ratio`` and
@@ -834,8 +961,8 @@ def _map_ranking_key(validity: dict[str, float]) -> tuple[float, float, float, f
     18/576 < 18/562 — a denominator difference, not a garble difference — which
     rendered ``;_Vof`` as ``स)ख्या`` where the correct Spins read is ``संख्या``.
 
-    Ranking on the raw count makes equal evidence an exact tie, so ``ratio``
-    decides those spans, and it needs no epsilon or threshold to do it.
+    Ranking on the raw count makes equal evidence an exact tie, so the axes below
+    it decide those spans, and it needs no epsilon or threshold to do it.
     ``penalty_per_deva`` remains the right statistic for
     :func:`_passes_content_legacy_gate`, which compares one span against an
     absolute ceiling and therefore does need cross-span comparability.
@@ -860,11 +987,53 @@ def _map_ranking_key(validity: dict[str, float]) -> tuple[float, float, float, f
     control test :func:`test_a_real_difference_in_garble_still_outranks_the_ratio`
     names the same hazard for a ratio-*first* key; this is that hazard reached
     through the tie band instead.
+
+    **``stranded`` sits between ``penalty`` and ``ratio`` (VOL-131).** It counts the
+    wrong-map tell directly — an ASCII bracket left inside a Devanagari word — where
+    ``ratio`` only sees it diluted, as one non-Devanagari character among several
+    hundred. That dilution is why ``ratio`` was deciding these spans at its
+    resolution limit: across the corpus ``ratio`` decides 486 remaps, and every one
+    of its wrong decisions sits at a margin below 0.004 while all 404 decisions at
+    a margin of 0.005 or more are right. On ``2573__…चामुण्डा विन्द्रासैनि`` the
+    margin was **0.000016** and on ``3544__…Thasang Ga. Pa.`` **0.000724**; the
+    stranded count on those same spans is 3 and 6 for the wrong maps against 0 for
+    ``Spins``. A resolution floor on ``ratio`` was the alternative and is worse: it
+    buys those two spans by abstaining on 25 to 44 others, several of them
+    independently verified correct, and an abstention loses the span outright.
+
+    It sits *below* ``penalty`` by choice, and it is deliberately absent from
+    ``_text_quality_penalty`` because as an absolute quantity it is not a damage
+    measure at all. See :data:`_STRANDED_BRACKET_PATTERN`.
+
+    🛑 **The corpus record does not settle penalty-vs-stranded, and an earlier form of
+    this docstring claimed it did.** It cited ``4487__…बसबरिया गाउँपालिका`` as showing
+    that ``penalty`` must decide first. Re-measured on the real 4487 ``Spins`` aggregate
+    (3,357 characters) at this head, the wrong map carries MORE of both — ``stranded`` 1
+    and ``penalty`` 48 against PCS NEPALI's 0 and 0 — so the two axes agree, all three
+    candidate orderings (this one, its parent's without ``stranded``, and
+    stranded-above-penalty) return PCS NEPALI, and Spins fails the accept gate there
+    anyway (48/655 = 0.0733 over the 0.05 ceiling). 4487 is a consistency check, not a
+    discriminator. The ordering below is the conservative default — the axis with a
+    calibrated absolute meaning goes first — and the sweep that would settle it is still
+    owed. Anything reordering these two must run it rather than cite 4487.
     """
 
     return (
         validity["hits"],
-        -validity["penalty"],
+        # The raw count, minus a bounded forgiveness for the ikar+nasal term only. That
+        # term is a GATE signal (its sites are otherwise invisible and the miss
+        # fails-open), but between two decodes of ONE span a single site can be evidence
+        # about the source rather than about the map: the same region decodes malformed
+        # under every candidate and only some orderings match the pattern. Six points is
+        # then enough to settle a span before the stranded-bracket tell below -- let
+        # alone `ratio` -- is consulted. See `_RANKING_IKAR_NASAL_FORGIVENESS` for the
+        # measured instance and why one is the right bound.
+        -(
+            validity["penalty"]
+            - min(validity["ikar_nasal"], _RANKING_IKAR_NASAL_FORGIVENESS)
+            * _IKAR_NASAL_WEIGHT
+        ),
+        -validity["stranded"],
         validity["ratio"],
         validity["devanagari"],
     )
@@ -934,9 +1103,11 @@ def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
     tie-break, which is the thing this function stopped doing.
     """
 
-    scored: list[
-        tuple[tuple[float, float, float, float], str, dict[str, float], str]
-    ] = []
+    # `tuple[float, ...]`, not a fixed arity: this used to spell out four floats and was
+    # left at four when `_map_ranking_key` grew a fifth, so the declared arity became a
+    # second, disagreeing record of how many axes there are. Later commits in this chain
+    # add more. One place to change is `_map_ranking_key`'s own annotation.
+    scored: list[tuple[tuple[float, ...], str, dict[str, float], str]] = []
     for map_key in ALL_MAP_KEYS:
         try:
             converted = get_converter_for_map(map_key)(text)

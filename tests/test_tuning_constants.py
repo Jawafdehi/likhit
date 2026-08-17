@@ -216,6 +216,24 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "likhit/extractors/font_based.py",
         "_CONTENT_LEGACY_MIN_DEVA",
     ): (8, "absolute floor, so a two-word span cannot clear the ratio on volume"),
+    (
+        "likhit/extractors/font_based.py",
+        "_RANKING_IKAR_NASAL_FORGIVENESS",
+    ): (
+        1,
+        "ikar+nasal sites forgiven when RANKING two decodes of one span, never by the "
+        "gate. One site can be evidence about the SOURCE, which every candidate decodes "
+        "alike (3229__...sidingwa gapa, font Spins); a systematic mis-map fires ~6 times "
+        "per affected document, so raising this to 2 would start discounting real garble",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_IKAR_NASAL_WEIGHT",
+    ): (
+        6,
+        "what one ikar+nasal site costs in _text_quality_penalty. Named so "
+        "_map_ranking_key can subtract exactly it; the two must not drift apart",
+    ),
     # -- scanned / decoy page classification ---------------------------------- #
     (
         "likhit/extractors/font_classifier.py",

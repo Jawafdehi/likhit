@@ -23,10 +23,13 @@ from likhit.extractors.font_based import (
     FontBasedStrategy,
     _choose_fragment_text,
     _has_severe_noise,
+    _IKAR_NASAL_WEIGHT,
+    _IMPOSSIBLE_IKAR_NASAL_PATTERN,
     _is_probably_legacy_ascii,
     _map_ranking_key,
     _nepali_validity,
     _passes_content_legacy_gate,
+    _RANKING_IKAR_NASAL_FORGIVENESS,
     _text_quality_penalty,
     choose_legacy_map,
     detect_content_legacy_fonts,
@@ -489,16 +492,30 @@ def test_all_map_keys_order_does_not_decide_the_text(
 
 
 def _validity(
-    hits: int, penalty: int, devanagari: int, ratio: float
+    hits: int,
+    penalty: int,
+    devanagari: int,
+    ratio: float,
+    stranded: int = 0,
+    ikar_nasal: int = 0,
 ) -> dict[str, float]:
-    """A validity dict as `_nepali_validity` would return it, for ranking tests."""
+    """A validity dict as `_nepali_validity` would return it, for ranking tests.
+
+    ``ikar_nasal`` defaults to 0 -- no forgiveness -- because every fixture here is
+    about a different axis and a nonzero default would silently discount their
+    penalties. It is spelled out rather than omitted so `_map_ranking_key` can read
+    the key strictly: a validity dict built without it is a bug, not a dict to be
+    tolerated with `.get`.
+    """
 
     return {
         "hits": hits,
         "penalty": penalty,
         "penalty_per_deva": penalty / devanagari if devanagari else float("inf"),
+        "ikar_nasal": ikar_nasal,
         "devanagari": devanagari,
         "ratio": ratio,
+        "stranded": stranded,
     }
 
 
@@ -704,6 +721,62 @@ def test_a_false_positive_no_longer_decides_a_real_legacy_span() -> None:
     assert _passes_content_legacy_gate(spins)
 
 
+def test_a_stranded_bracket_decides_before_the_ratio_does() -> None:
+    # `2573__...चामुण्डा विन्द्रासैनि`, font "Spins", 446 characters. The two candidates
+    # modelled here score hits=3 and (after VOL-131) penalty 0, so the garble axis ties
+    # and the decision falls through to `ratio`, which gets it wrong.
+    #
+    # ⚠️ The margin, corrected: `ratio` puts Kantipur over the correct Spins by
+    # **0.002255** (0.992974 - 0.990719, the two numbers in this fixture). The
+    # oft-quoted **0.000016** is a different margin -- Kantipur over PREETI, i.e. the
+    # top-two gap between two maps that are BOTH wrong (`runs/vol89`). An earlier form of
+    # this comment attached 0.000016 to the Kantipur/Spins pair, which makes the correct
+    # map look 141x closer to the wrong one than it is; anyone calibrating a `ratio`
+    # resolution floor off that figure would set it 141x too low to catch this span.
+    #
+    # The wrong-map tell is not close either way: the rivals leave three `स)ख्या`
+    # behind and Spins leaves none.
+    kantipur = _validity(hits=3, penalty=0, devanagari=424, ratio=0.992974, stranded=3)
+    spins = _validity(hits=3, penalty=0, devanagari=427, ratio=0.990719, stranded=0)
+    assert kantipur["ratio"] > spins["ratio"]  # ratio prefers the wrong map
+    assert abs(kantipur["ratio"] - spins["ratio"]) < 0.005  # at its noise floor
+
+    assert _map_ranking_key(spins) > _map_ranking_key(kantipur)
+    # And it must decide ABOVE ratio, not below it: below, the 0.000016 still wins.
+    assert _map_ranking_key(spins)[:2] == _map_ranking_key(kantipur)[:2]
+    assert _map_ranking_key(spins)[2] > _map_ranking_key(kantipur)[2]
+
+
+def test_a_real_garble_difference_still_outranks_the_stranded_count() -> None:
+    # The control that keeps VOL-89's counter-case working. On
+    # `4487__...बसबरिया गाउँपालिका` the wrong map (Spins) leaves one stranded bracket
+    # in `दनवा)टोल` AND carries 48 penalty points; the right map carries zero of both.
+    # Here the two signals agree, so it proves nothing on its own -- the point is the
+    # hypothetical where they disagree: a candidate with less stranding must not win
+    # on that alone while carrying more garble.
+    pcs = _validity(hits=2, penalty=0, devanagari=658, ratio=0.679752, stranded=4)
+    spins = _validity(hits=2, penalty=48, devanagari=655, ratio=0.688025, stranded=0)
+    assert spins["stranded"] < pcs["stranded"]
+    assert _map_ranking_key(pcs) > _map_ranking_key(spins)
+
+
+def test_stranded_count_excludes_devanagari_digits() -> None:
+    # `दफा ३५(२)` -- "section 35(2)" -- is ordinary legal citation in these reports,
+    # and the Devanagari digits U+0966-U+096F sit inside the Devanagari block, so a
+    # `[ऀ-ॿ]` class would charge the correct map for reading a section number.
+    # `runs/vol89/adjudicate_font.py` has exactly that defect and reports Spins with
+    # 2 and 3 "stranded" hits on the two documents where it in fact has none.
+    assert _nepali_validity("३५(२")["stranded"] == 0
+    assert _nepali_validity("दफा ३५(२) बमोजिम")["stranded"] == 0
+    assert _nepali_validity("स)ख्या")["stranded"] == 1
+    # Nepali list labels are NOT excluded -- they cannot be, they are structurally
+    # identical to the tell. That is precisely why this count stays out of
+    # `_text_quality_penalty`, which is an absolute measure, and is used only to
+    # compare two decodes of one span, where a shared label is shared by both.
+    assert _nepali_validity("क)वित्तीय")["stranded"] == 1
+    assert _text_quality_penalty("क)वित्तीय") == 0
+
+
 def test_detect_content_legacy_fonts_ignores_english() -> None:
     doc = fitz.open(stream=build_mixed_scan_and_text_pdf(), filetype="pdf")
     try:
@@ -782,3 +855,128 @@ def test_npttf2utf_syntaxwarning_is_suppressed(tmp_path: Path) -> None:
     # Compiled fresh, so an unsuppressed warning would surface here. Under
     # `error::SyntaxWarning` it arrives as a SyntaxError naming the escape.
     assert "invalid escape sequence" not in completed.stderr
+
+
+def test_consecutive_stranded_brackets_are_both_counted() -> None:
+    """`findall` scans non-overlapping, so the trailing letter must not be consumed.
+
+    Two adjacent Nepali list labels under a wrong map render as `क)ख)ग`. With the
+    trailing letter consumed, `ख` belonged to the first match and the second tell was
+    invisible -- counted 1 instead of 2. That is the shape a forgiveness floor of one
+    then waves through entirely, so the undercount was worst exactly where the tell
+    matters most.
+
+    The digit case is the control: it must stay 0, or the fix has widened the class into
+    ordinary legal citation.
+    """
+
+    from likhit.extractors.font_based import _STRANDED_BRACKET_PATTERN
+
+    def count(text: str) -> int:
+        return len(_STRANDED_BRACKET_PATTERN.findall(text))
+
+    assert count("क)ख") == 1
+    assert count("क)ख)ग") == 2
+    assert count("क)ख ग)घ") == 2
+    # ordinary legal citation -- "section 35(2)" -- must not be charged
+    assert count("दफा ३५(२)") == 0
+    assert count("abc") == 0
+
+
+# --- one ikar+nasal site must not decide a map, but two must ------------------------
+#
+# `3229__1613898700sidingwa gapa.pdf`, font `Spins`: 687 raw characters whose correct
+# decode carries exactly one site of `_IMPOSSIBLE_IKAR_NASAL_PATTERN`, in a source
+# region that is malformed under EVERY candidate map (`म्दािँ` under Spins and Preeti,
+# `म्दााि` under Kantipur, PCS NEPALI and FONTASY_HIMALI_TT -- two vowel signs in
+# sequence either way, so it says nothing about which map is right, but only the first
+# ordering matches the pattern).
+#
+# Charged, those six points settled the span on the raw-count axis **above** the
+# stranded-bracket tell this commit's parent added, so the tell never got to speak:
+#
+#     map           hits  penalty  stranded   ratio   deva
+#     Spins            4        6         0  0.9801    592   <- correct
+#     Kantipur         4        0        12  0.9681    577
+#
+# The wrong map was elected, it then failed the gate, and all 592 Devanagari characters
+# were dropped rather than remapped.
+
+
+def test_one_ikar_nasal_site_does_not_outrank_the_stranded_bracket_tell() -> None:
+    # The measured 3229 pair, with its real stranded counts. Spins carries the site;
+    # Kantipur does not and is wrong.
+    spins = _validity(
+        hits=4, penalty=6, devanagari=592, ratio=0.9801, stranded=0, ikar_nasal=1
+    )
+    kantipur = _validity(hits=4, penalty=0, devanagari=577, ratio=0.9681, stranded=12)
+
+    # Level on the garble axis once the single site is forgiven...
+    assert _map_ranking_key(spins)[:2] == _map_ranking_key(kantipur)[:2]
+    # ...so the tell is reached and decides, which is the whole point of this branch.
+    assert _map_ranking_key(spins)[2] > _map_ranking_key(kantipur)[2]
+    assert _map_ranking_key(spins) > _map_ranking_key(kantipur)
+
+
+def test_one_ikar_nasal_site_does_not_outrank_a_real_ratio_margin() -> None:
+    # The same forgiveness, reached through the axis BELOW the tell: with the tell tied
+    # as well, `ratio` decides. This is the form the fix takes on `main`, where no
+    # stranded axis exists yet, so it pins the behaviour on both sides of that change.
+    spins = _validity(hits=4, penalty=6, devanagari=592, ratio=0.9801, ikar_nasal=1)
+    kantipur = _validity(hits=4, penalty=0, devanagari=577, ratio=0.9681)
+
+    assert _map_ranking_key(spins)[:3] == _map_ranking_key(kantipur)[:3]
+    assert _map_ranking_key(spins) > _map_ranking_key(kantipur)
+
+
+def test_a_second_ikar_nasal_site_still_decides() -> None:
+    # The bound is what makes the forgiveness a noise allowance rather than a repeal:
+    # a systematic mis-map fires repeatedly (the term's own mass is ~6 sites per
+    # affected document), and two sites must still lose to a clean rival -- even one
+    # carrying twelve stranded brackets, i.e. the garble axis must still come first.
+    two_sites = _validity(
+        hits=4, penalty=12, devanagari=592, ratio=0.9801, stranded=0, ikar_nasal=2
+    )
+    clean = _validity(hits=4, penalty=0, devanagari=577, ratio=0.9681, stranded=12)
+
+    assert _map_ranking_key(clean) > _map_ranking_key(two_sites)
+    # ...and for the right reason: the garble axis, not a lower tie-break.
+    assert _map_ranking_key(clean)[:2] > _map_ranking_key(two_sites)[:2]
+
+
+def test_the_gate_forgives_no_ikar_nasal_site_at_all() -> None:
+    # The other half, and the half the ranking assertions cannot reach. The term exists
+    # because 1,451 of its 1,550 sites sit in words scoring 0 otherwise, and dropping it
+    # flips `_passes_content_legacy_gate` from False to True -- fails-open. So the gate's
+    # statistic must keep every site even while the ranking axis forgives one.
+    text = "एिं" * 3 + "नेपाल सरकार अदालत " * 4
+    validity = _nepali_validity(text)
+
+    assert validity["ikar_nasal"] == 3
+    # The gate reads `penalty_per_deva`, and it must be the quotient of the FULL quality
+    # penalty -- every nasal site included. Asserted against `_text_quality_penalty`
+    # directly rather than against `validity["penalty"]`, because a descendant (#85's
+    # VOL-185 split) makes `penalty` a DIFFERENT numerator; this form stays exact on both
+    # sides of that change, where `penalty == _text_quality_penalty` would be a coincidence
+    # of this doublet-free fixture on the far side.
+    assert validity["penalty_per_deva"] == pytest.approx(
+        _text_quality_penalty(text) / validity["devanagari"]
+    )
+    # The ceiling therefore sees all three sites, at 6 points each.
+    assert (
+        validity["penalty_per_deva"] * validity["devanagari"] >= 3 * _IKAR_NASAL_WEIGHT
+    )
+    # Only the ranking key discounts, and by exactly one site's worth off `penalty`.
+    assert -_map_ranking_key(validity)[1] == validity["penalty"] - _IKAR_NASAL_WEIGHT
+
+
+def test_the_forgiven_amount_matches_what_the_penalty_charges_per_site() -> None:
+    # An equality test, because the weight lives in two places -- the term in
+    # `_text_quality_penalty` and the subtraction in `_map_ranking_key`. A literal that
+    # drifts in one of them is exactly how #86's doublet floor stopped applying on the
+    # ranking path while every other test stayed green.
+    one_site = "एिं"
+    assert len(_IMPOSSIBLE_IKAR_NASAL_PATTERN.findall(one_site)) == 1
+    charged = _text_quality_penalty(one_site) - _text_quality_penalty("")
+    forgiven = _RANKING_IKAR_NASAL_FORGIVENESS * _IKAR_NASAL_WEIGHT
+    assert charged == forgiven == 6
