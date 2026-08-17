@@ -430,7 +430,10 @@ def test_the_span_level_veto_returns_a_short_english_span_unchanged() -> None:
         "Arial",
         {"Arial": "correct"},
         needs_reorder=False,
-        content_legacy_maps={"Arial": "Spins"},
+        # ⚠️ `LegacyMapChoice`, not a bare map key: `b236646` widened this map's values
+        # earlier in this branch, and a fixture written against the parent's `str` hands
+        # a string to `.map_key`. Same widening as `8d88c7d` applied to 27d74f0's cases.
+        content_legacy_maps={"Arial": LegacyMapChoice("Spins", None)},
     )
 
     assert kept == short_english, (
