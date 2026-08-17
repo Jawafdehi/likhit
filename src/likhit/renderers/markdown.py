@@ -759,9 +759,26 @@ def _merge_continuation_rows(
 #: text has already become a column separator by the time it classifies the value.
 #: Here the raw cell text is all there is, so without `|` the two sides disagree
 #: about the same value: `८५०००|` reads as prose to the renderer and as a bare
-#: figure to everything downstream. Measured, not hypothetical -- it is why
-#: `local-level-report/3876__NoRKt...भानु नगरपालीका, २०७८` had a swallowed
-#: sub-table joined into a narrative cell.
+#: figure to everything downstream.
+#:
+#: ⚠️ That is the argument, and it stands on the two definitions agreeing -- it needs no
+#: corpus case. An earlier version of this comment cited
+#: `local-level-report/3876__NoRKt...भानु नगरपालीका, २०७८` as the document where a
+#: swallowed sub-table was joined into a narrative cell "because" of `८५०००|`. Re-derived
+#: on this head: that document DOES change, but on its fiscal-year labels -- the wrapped
+#: pair `२०७५|०७६-` and `०७६|७७`, which the parent joined and this rule leaves split. The
+#: `८५०००|` case does **not** flip (`old_rejoin=True, new_rejoin=True`): that cell is a
+#: seven-line narrative whose last two lines are the sub-table's header and its single
+#: row, and that row carries letters, so it is not a bare figure under either class. The
+#: sub-table is still mashed into the narrative cell here, identically to `main` --
+#: `_TRAILING_FIGURE` below explains why, and the citation predates it.
+#:
+#: 🛑 The class also widened in a second way, and the widening is what makes `_ANY_DIGIT`
+#: at the use site load-bearing: `|`, `| |` and `||` match this pattern and did not match
+#: the parent's. A stray pipe "where a rule crossed the text" is exactly what can leave a
+#: line that is nothing but a pipe, so the digit conjunct is the only thing keeping a
+#: content-free line from counting as a figure. It is pinned in
+#: `test_table_rendering.py`; do not drop it as redundant.
 _BARE_FIGURE = re.compile(r"^[\s0-9०-९,.।|-]+$")
 _ANY_DIGIT = re.compile(r"[0-9०-९]")
 #: A line whose last token is a figure. This is the tell that separates a REGISTER ROW

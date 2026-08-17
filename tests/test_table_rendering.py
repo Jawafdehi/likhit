@@ -121,12 +121,16 @@ def test_render_table_does_not_join_a_figure_carrying_a_stray_pipe():
     # has to see it as one: `रकम` above it is a header, not a sentence this value
     # continues, so joining would mash a header onto its own datum.
     #
-    # Found in the corpus, not invented: `local-level-report/3876__NoRKt...भानु
-    # नगरपालीका, २०७८` is the one document in 3,690 whose `figure_one_cell` count
-    # moved under the VOL-71 fix, and this was why. The renderer read the raw cell
-    # text `८५०००|` and called it prose, while every consumer reads the emitted
-    # line *after* splitting on `|` and so sees a clean figure -- the two sides
-    # disagreed about the same value.
+    # The renderer read the raw cell text `८५०००|` and called it prose, while every
+    # consumer reads the emitted line *after* splitting on `|` and so sees a clean
+    # figure -- the two sides disagreed about the same value. That agreement is the
+    # whole argument and it needs no corpus case.
+    #
+    # ⚠️ This shape was previously credited to `local-level-report/3876__NoRKt...भानु
+    # नगरपालीका, २०७८`. Re-derived: that document changes on its fiscal-year labels
+    # (`२०७५|०७६-` / `०७६|७७`), NOT on `८५०००|`, whose rejoin verdict is True under
+    # both classes because the sub-table row beside it carries letters. See
+    # `_BARE_FIGURE`'s comment. The fixture below is the shape, stated as a shape.
     table = Table(
         row_count=1,
         col_count=3,
@@ -376,3 +380,45 @@ def test_the_register_rule_stays_conservative_on_ambiguous_input():
     assert _looks_like_register_rows(ambiguous) is True
     # ...and True is what stops the rejoin, which is the whole point.
     assert _wrapped_lines_are_one_row([ambiguous]) is False
+
+
+def test_a_pipe_only_wrapped_line_does_not_block_the_rejoin():
+    """🛑 `_ANY_DIGIT` became load-bearing when `|` entered `_BARE_FIGURE`, and nothing
+    pinned it -- dropping the conjunct left the full suite green at 1070 passed.
+
+    The widening is not just "one more separator character". These three lines match the
+    new class and did NOT match the parent's: `|`, `| |`, `||`. A stray pipe "where a rule
+    crossed the text" is exactly what leaves a line that is nothing but pipes, so without
+    the digit conjunct a content-free line would count as a bare figure and REFUSE a
+    rejoin that should happen.
+
+    Asserted as a contrasting pair through the renderer, so it covers the conjunct at its
+    use site: the same shape with and without a digit must render differently.
+    """
+
+    from likhit.renderers.markdown import _ANY_DIGIT, _BARE_FIGURE
+
+    for line in ("|", "| |", "||"):
+        assert _BARE_FIGURE.match(line), f"{line!r} should match the widened class"
+        assert not _ANY_DIGIT.search(line), f"{line!r} carries no digit"
+
+    def rendered(continuation: str) -> str:
+        return render_table_preformatted_markdown(
+            Table(
+                row_count=1,
+                col_count=2,
+                cells=[
+                    TableCell(row=0, col=0, text="\u0915"),
+                    TableCell(row=0, col=1, text=continuation),
+                ],
+            )
+        )
+
+    # No digit: one wrapped value, rejoined into a single row.
+    assert rendered("\u092f\u094b \u0935\u093e\u0915\u094d\u092f\n|") == (
+        "```text\n| \u0915 | \u092f\u094b \u0935\u093e\u0915\u094d\u092f | |\n```"
+    )
+    # A digit: a real bare figure, so the rejoin is refused and the row stays split.
+    assert rendered("\u0930\u0915\u092e\n\u096e\u096b\u0966\u0966\u0966|") == (
+        "```text\n| \u0915 | \u0930\u0915\u092e |\n|  | \u096e\u096b\u0966\u0966\u0966| |\n```"
+    )
