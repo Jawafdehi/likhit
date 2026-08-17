@@ -512,6 +512,17 @@ def test_equal_garble_counts_do_not_decide_however_they_normalise() -> None:
     assert _map_ranking_key(pcs)[:2] == _map_ranking_key(spins)[:2]
     assert _map_ranking_key(spins) > _map_ranking_key(pcs)
 
+    # 🛑 The OTHER half of this change's thesis, and the half the ranking
+    # assertions above cannot reach: the GATE must keep reading the RATE. This
+    # fixture is the one that separates them, because 18 is far over the 0.05
+    # ceiling read as a count and comfortably under it read as a rate
+    # (18/576 = 0.031, 18/562 = 0.032). So a "unification" of the two measures in
+    # the gate's direction -- the same conflation this commit removes from the
+    # ranking, applied the other way round -- fails here instead of shipping every
+    # legacy font that carries a single duplicate-consonant charge as raw ASCII.
+    assert _passes_content_legacy_gate(pcs)
+    assert _passes_content_legacy_gate(spins)
+
 
 def test_a_real_difference_in_garble_still_outranks_the_ratio() -> None:
     # The control, and the reason `ratio` is NOT promoted above the garble axis:

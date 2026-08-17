@@ -764,6 +764,27 @@ def _map_ranking_key(validity: dict[str, float]) -> tuple[float, float, float, f
     ``penalty_per_deva`` remains the right statistic for
     :func:`_passes_content_legacy_gate`, which compares one span against an
     absolute ceiling and therefore does need cross-span comparability.
+
+    ⚠️ **A consequence worth naming, because splitting the two statistics is what
+    creates it.** :func:`choose_legacy_map` elects a winner on this key and only
+    then applies the gate, to that winner alone. While the garble axis WAS the
+    gate's statistic, the winner among equal-``hits`` candidates was by
+    construction the lowest-rate one, so it was the likeliest of them to clear the
+    ceiling. Now the two differ, and inside the tie band ``ratio`` favours the
+    candidate with the *smaller* Devanagari count — the gate's denominator. So an
+    elected candidate can sit over the ceiling while a candidate ranked below it
+    sits under, and the whole font unit is dropped rather than remapped.
+
+    Measured rather than asserted: over 60,000 synthetic aggregates the two keys
+    lose 49 and 50 units respectively, i.e. the mechanism is **not** a regression
+    — it exists at the same rate on either side of this change, and on the corpus
+    sample it fires zero times. It is recorded here and not fixed because the fix
+    is a behavioural change of its own (re-rank among gate-passing candidates, the
+    shape the mixed-margin gate uses for its second pass) and because a descendant
+    that tightens the gate or widens ``ALL_MAP_KEYS`` will make it commoner. The
+    control test :func:`test_a_real_difference_in_garble_still_outranks_the_ratio`
+    names the same hazard for a ratio-*first* key; this is that hazard reached
+    through the tie band instead.
     """
 
     return (
