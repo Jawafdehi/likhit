@@ -1609,6 +1609,14 @@ def _hermetic_latin_lexicon(tmp_path_factory, monkeypatch):
     Autouse so no test has to remember it. The one test that asserts the recovery FAILS
     CLOSED without a lexicon sets its own nonexistent path with monkeypatch, which runs
     after this and therefore still wins.
+
+    ⚠️ **This list is the tests' OWN vocabulary, not a hunspell subset**, and the notes
+    above that justify individual entries by hunspell fidelity invite the opposite
+    reading. Measured against what `_latin_cid_lexicon` parses out of a host dictionary:
+    `a`, `accounts`, `auditing`, `promoting` and `reviewed` are ABSENT from it, because
+    the loader keeps only the base form before `/` -- so no affixed forms -- and (before
+    that filter was removed as dead) dropped entries under 2 characters. The entries are
+    here because these tests need them, and that is the whole of their warrant.
     """
 
     path = tmp_path_factory.mktemp("lexicon") / "test_en.dic"
@@ -1676,6 +1684,100 @@ def test_latin_cid_recovery_refuses_preeti_read_as_ascii() -> None:
     assert hits >= _CID_RECOVERY_MIN_HITS, "premise: this scores as English"
     assert recover_latin_cid_text(_cids(garble), "Preeti") is None
     assert recover_latin_cid_text(_cids(garble), "ABCDEF+Preeti") is None
+
+
+def test_two_admissible_offsets_that_both_accept_are_a_decline(
+    tmp_path, monkeypatch
+) -> None:
+    """🛑 The offset tie-break, which had zero coverage and pointed the wrong way.
+
+    The arg-max used a strict `>` over `(hits, coverage)`, so on a tie the FIRST entry of
+    `_CID_RECOVERY_OFFSETS` won -- and that tuple is ordered `(0, 29)`. Where the true
+    encoding is k=29, the standard glyph-order subset this feature exists to read,
+    first-wins emitted a different, confidently-wrong word.
+
+    Ambiguity is now a decline, which leaves the run marked exactly as it was.
+
+    ⚠️ Constructing the case needs a synthetic lexicon, and the reason is the structural
+    fact that makes it rare in practice: k=29's space glyph is cid 3, which fails k=0's
+    `>= 0x20` range test, so any run containing a SPACE is admissible at one offset only.
+    A single word can be admissible at both -- and then only the one-hit + coverage leg
+    can accept it, since one token cannot give two hits. Measured over 331 real
+    recoveries: 0 had more than one accepted offset.
+    """
+
+    # `report` at k=29; the same cids read at k=0 spell `UHSRUW`.
+    both = ("report", "uhsruw")
+    path = tmp_path / "ambiguous.dic"
+    path.write_text("\n".join(both) + "\n", encoding="utf-8")
+    monkeypatch.setenv(_CID_RECOVERY_LEXICON_ENV, str(path))
+    _latin_cid_lexicon.cache_clear()
+
+    cids = _cids("report", 29)
+    assert min(cids) >= 0x20, "premise: k=0 must also be admissible"
+    assert "".join(chr(c) for c in cids) == "UHSRUW"
+
+    # Both readings clear the acceptance rule on their own...
+    for reading in ("report", "UHSRUW"):
+        hits, coverage = _latin_cid_score(reading)
+        assert hits >= 1 and coverage >= _CID_RECOVERY_MIN_COV_ONE_HIT, reading
+
+    # ...so the decode is ambiguous and must be declined rather than guessed.
+    assert recover_latin_cid_text(cids, "TimesNewRomanPSMT") is None
+
+    # The control: with only the true reading in the lexicon it recovers as before.
+    path.write_text("report\n", encoding="utf-8")
+    _latin_cid_lexicon.cache_clear()
+    assert recover_latin_cid_text(cids, "TimesNewRomanPSMT") == "report"
+
+
+def test_the_two_hit_floor_is_asserted_not_read_from_the_constant() -> None:
+    """🛑 `_CID_RECOVERY_MIN_HITS` had no behavioural coverage.
+
+    Mutating it from 2 to 1 left the whole suite green except the value pin, because the
+    two tests that look like they cover it assert `hits >= _CID_RECOVERY_MIN_HITS` --
+    which holds at any value. That is the exact anti-pattern
+    `tests/test_tuning_constants.py`'s own docstring names: a test that reads the
+    constant to build its own expectation holds at any value.
+
+    A LITERAL expectation instead: one hit at coverage under the one-hit leg's floor must
+    be declined.
+    """
+
+    text = "report qxzjvk wgtplm"
+    hits, coverage = _latin_cid_score(text)
+    assert hits == 1, hits
+    assert coverage < _CID_RECOVERY_MIN_COV_ONE_HIT, coverage
+
+    assert recover_latin_cid_text(_cids(text), "TimesNewRomanPSMT") is None
+
+
+def test_a_symbol_family_is_not_a_latin_cid_font() -> None:
+    """`book` is an unanchored substring, and it admitted `Bookshelf Symbol 7`.
+
+    Gate 1 is a POSITIVE Latin requirement whose stated purpose is to exclude fonts of
+    undetermined script. A pictorial family's glyph order is not ASCII+k at all, so with
+    the measured 1.5-2.1% false-recovery rate on arbitrary glyph ids its dingbats could
+    be rewritten as English.
+
+    The exclusion is a name list, not a word boundary, because `Bookman Old Style` and
+    `Bookerly` are real Latin text faces that a boundary rule would also drop.
+    """
+
+    for name in (
+        "Bookshelf Symbol 7",
+        "SymbolMT",
+        "Wingdings",
+        "Wingdings-Regular",
+        "Webdings",
+        "ZapfDingbats",
+        "ABCDEE+Bookshelf Symbol 7",
+    ):
+        assert is_latin_cid_font(name) is False, name
+
+    # ...and the Latin text faces that share the substring are kept.
+    for name in ("Bookman Old Style", "Bookerly", "BookAntiqua"):
+        assert is_latin_cid_font(name) is True, name
 
 
 @pytest.mark.parametrize(
@@ -1801,6 +1903,33 @@ def test_recover_or_mark_span_emits_recovered_text_not_marks() -> None:
     recovered = "".join(char["c"] for char in span["chars"])
     assert recovered == title
     assert count_marked_cids(recovered) == 0
+
+
+def test_a_multi_code_point_glyph_is_marked_and_does_not_raise() -> None:
+    """🛑 The one-code-point-per-glyph guard is untested, and it is not a no-op.
+
+    Its comment says a multi-character glyph is "left to the marking path rather than
+    guessed at". Removing the guard leaves the whole suite green -- and it does not turn
+    a recovery into a wrong recovery, it turns a DECLINE into a CRASH: `ord()` raises
+    `TypeError` on a two-code-point ligature glyph, so extraction of any document
+    carrying one would fail outright.
+
+    A ligature is an ordinary thing for a Latin font to hold, so this is the shape that
+    reaches it.
+    """
+
+    span, unmappable = _span("abc", "abc", "TimesNewRomanPSMT")
+    # A ligature glyph: one glyph, two code points. `fi` is the canonical one.
+    span["chars"][1]["c"] = "fi"
+
+    _recover_or_mark_unmappable_span(span, unmappable)
+
+    emitted = "".join(char["c"] for char in span["chars"])
+    # Marked, not recovered, and above all not raised on.
+    assert count_marked_cids(emitted) > 0
+    assert emitted == mark_unmappable_cids("a") + mark_unmappable_cids(
+        "fi"
+    ) + mark_unmappable_cids("c")
 
 
 def test_recover_or_mark_span_marks_what_it_cannot_read() -> None:

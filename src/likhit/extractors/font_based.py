@@ -461,6 +461,24 @@ def unmark_cids(text: str) -> str:
 #    same trap as the Preeti digraphs `of]`/`If]q` reading as "of"/"if". Measured:
 #    without this gate the rule accepts `n]fk/LIf0fsf]k|tj]gdf pNn]vt Joxf]fsf `
 #    as English on two audit bulletins.
+#
+#    ⚠️ **It closes that class only for fonts NAMED after a legacy layout, and this
+#    comment used to read as though the class were closed outright.** `is_legacy_font`
+#    matches on the NAME, so mislabeled Preeti -- this repo's own
+#    `build_mislabeled_preeti_pdf`, "a born-digital page whose bare Helvetica font
+#    carries Preeti keystrokes", and the `ABCDE+Helvetica` shape
+#    `detect_content_legacy_fonts` names -- passes gate 2 and is caught only by gate 1
+#    (`Helvetica` IS in the Latin family list, so it is not caught there either) and
+#    gate 4.
+#
+#    What bounds it is that gate 2 is never the OPERATIVE exclusion in practice:
+#    measured over 1,631 distinct corpus font names, **0** are both Latin-family-named
+#    and legacy-registered, so the two name tests never disagree on a real font. The
+#    demonstration case above is the identity map at k=0, where the "recovered" text is
+#    the keystrokes themselves. A content-side exclusion -- declining any font the same
+#    document's content-legacy pass has made a candidate -- is the right shape if this
+#    is ever widened; it is not added here because gate 2 currently excludes nothing
+#    that gate 1 does not.
 # 3. Only two offsets are tried. A wide search is what lets a repeated boilerplate
 #    span reach 99.7% per-font offset coherence and still decode to
 #    `RQPONMPLKJIPOHGFEKEDEK...`; coherence across repeated content is not
@@ -474,6 +492,17 @@ _LATIN_CID_FONT_FAMILIES = re.compile(
     r"franklin|gill|futura|myriad|minion",
     re.I,
 )
+# 🛑 The family list is an unanchored SUBSTRING match, and `book` admits
+# `Bookshelf Symbol 7` -- a pictorial family whose glyph order is not ASCII+k at all.
+# Combined with the measured 1.5-2.1% false-recovery rate on arbitrary glyph ids, that
+# is a font whose dingbats could be rewritten as English. Gate 1 is described as a
+# POSITIVE Latin requirement that excludes fonts of undetermined script, and a
+# pictorial family is exactly such a font, so the exclusion belongs here rather than in
+# a wider word-boundary rule (`Bookman Old Style` and `Bookerly` are real Latin text
+# faces and a boundary would keep them out).
+#
+# Same kind of evidence as the family list itself: a name list.
+_SYMBOL_FONT_NAMES = re.compile(r"symbol|dingbat|wingding|webding|ornament", re.I)
 # k=0 is the identity mapping and the modal case: the CID already *is* the ASCII
 # code and the only defect is the missing /ToUnicode. k=29 is the standard
 # glyph-order subset where glyph 3 is the space. Nothing else is tried.
@@ -514,11 +543,16 @@ def _latin_cid_lexicon() -> frozenset[str]:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
-        for index, line in enumerate(lines):
-            if index == 0 and line.strip().isdigit():
-                continue  # hunspell header = entry count
+        # ⚠️ Two filters that used to be in this loop are DEAD, and each carried a
+        # comment asserting it did work. A hunspell header skip
+        # (`index == 0 and line.strip().isdigit()`) is unreachable because a numeric
+        # header already fails `word.isalpha()`; a `len(word) >= 2` floor is unreachable
+        # because `_CID_RECOVERY_MIN_TOKEN` is 3, so a two-letter entry is never looked
+        # up. Removed rather than annotated -- a dead filter with a confident comment is
+        # what made the audit of these gates read as more complete than it was.
+        for line in lines:
             word = line.split("/", 1)[0].strip()
-            if word.isalpha() and len(word) >= 2:
+            if word.isalpha():
                 words.add(word.lower())
     return frozenset(words)
 
@@ -544,6 +578,8 @@ def is_latin_cid_font(font_name: str) -> bool:
     if not font_name or is_legacy_font(font_name):
         return False
     base = font_name.split("+", 1)[-1] if "+" in font_name else font_name
+    if _SYMBOL_FONT_NAMES.search(base):
+        return False
     return bool(_LATIN_CID_FONT_FAMILIES.search(base))
 
 
@@ -554,6 +590,30 @@ def recover_latin_cid_text(cids: list[int], font_name: str) -> str | None:
     ASCII *and* the result reads as English. Declining is the common case and is
     not a failure: the caller then marks the run as an unmappable CID exactly as
     before, so a document this cannot read is left byte-identical.
+
+    🛑 **A recovered run is NOT only new output; it is new INPUT to two decisions
+    upstream of it, and no record said so.** The recovered ASCII enters that font's
+    per-document aggregate, and neither `_is_probably_legacy_ascii` nor
+    `choose_legacy_map_detailed` unmarks, so the aggregate they score after this change
+    is not the aggregate they scored before. Two consequences, both real:
+
+    * **content-legacy CANDIDACY** can flip -- a font that was mostly undecodable marks
+      now presents ASCII keystroke-shaped text; and
+    * **every map-ranking scalar** moves, because the aggregate is longer and carries
+      Latin letters.
+
+    So this change moves corpus output on the MAP-CHOICE axis too, not only on the runs
+    it recovers. The docstring's "byte-identical" promise holds only for a DECLINED run.
+
+    ⚠️ And a recovered run then becomes eligible for the content-legacy remap itself, so
+    a short recovered Latin word inside a candidate font can be rewritten into Devanagari
+    that spells nothing -- all three Latin vetoes are blind to a short run by
+    construction (axis 1 needs >=16 non-space characters). Measured: **0 of 331** real
+    recoveries land in a candidate font, and the harm predates this change (an
+    undecodable run already shipped as a visible U+FFFD gap), so it is disclosed rather
+    than fixed. The fix shape, if the footprint ever grows, is to record recovery
+    provenance on the span and treat a recovered run as veto-flagged unconditionally --
+    not to lower a Latin veto's floor, which costs Nepali faster than it saves English.
     """
 
     if not cids or not is_latin_cid_font(font_name):
@@ -562,8 +622,7 @@ def recover_latin_cid_text(cids: list[int], font_name: str) -> str | None:
         return None
 
     low, high = min(cids), max(cids)
-    best_text: str | None = None
-    best_score = (0, 0.0)
+    accepted: list[str] = []
     for offset in _CID_RECOVERY_OFFSETS:
         # The whole run must land in printable ASCII. This range test is what
         # keeps the transform away from Devanagari glyph ids, which sit far above
@@ -571,18 +630,30 @@ def recover_latin_cid_text(cids: list[int], font_name: str) -> str | None:
         if low + offset < 0x20 or high + offset > 0x7E:
             continue
         text = "".join(chr(cid + offset) for cid in cids)
-        score = _latin_cid_score(text)
-        if score > best_score:
-            best_text, best_score = text, score
+        hits, coverage = _latin_cid_score(text)
+        if hits >= _CID_RECOVERY_MIN_HITS or (
+            hits >= 1 and coverage >= _CID_RECOVERY_MIN_COV_ONE_HIT
+        ):
+            accepted.append(text)
 
-    if best_text is None:
+    # 🛑 **Every admissible offset is scored against the acceptance rule, and TWO
+    # acceptances is a decline.** This used to keep the arg-max on `(hits, coverage)`
+    # with a strict `>`, i.e. FIRST-WINS on a tie -- and `_CID_RECOVERY_OFFSETS` is
+    # ordered `(0, 29)`, so k=0 won. For a run short enough that both offsets are
+    # admissible the two routinely score identically at (1, 1.0), and where the true
+    # encoding is k=29 -- the standard glyph-order subset this feature exists to read --
+    # first-wins emits a different, confidently-wrong word. An ambiguous decode is not
+    # evidence of anything, and declining costs nothing: the caller marks the run
+    # exactly as before, which is the same outcome the run had without this feature.
+    #
+    # ⚠️ Structurally rare rather than common, and that is why it went unnoticed: k=29's
+    # space glyph is cid 3, which fails k=0's `low + 0 >= 0x20` test, so any run
+    # containing a space is admissible at one offset only. Measured over 331 real
+    # recoveries: **0** had more than one accepted offset, so this changes no recovery in
+    # the corpus and removes a wrong-decode path.
+    if len(accepted) != 1:
         return None
-    hits, coverage = best_score
-    if hits >= _CID_RECOVERY_MIN_HITS or (
-        hits >= 1 and coverage >= _CID_RECOVERY_MIN_COV_ONE_HIT
-    ):
-        return best_text
-    return None
+    return accepted[0]
 
 
 def strip_marked_cids(text: str, replacement: str = "�") -> str:
@@ -2875,6 +2946,19 @@ def detect_latin_acronym_survivors(
     1. spans of a font that is not a content-legacy candidate at all;
     2. spans of a run `27d74f0` vetoes (:func:`_reads_as_latin_text`);
     3. spans `5084fb8` vetoes (:func:`_reads_as_latin_words`).
+
+    ⚠️ **There is now a FOURTH source and it is not text the extractor read -- it is
+    text the extractor GUESSED.** `recover_latin_cid_text` turns a run of undecodable
+    glyph ids into ASCII, and that ASCII flows into this pass like any other span, so a
+    recovered token can enter the survivor vocabulary un-flagged as a guess. This veto
+    is one-sided in the direction "veto more", so a fabricated acronym costs a correct
+    remap of genuine Nepali. Measured false-recovery rate on arbitrary glyph ids:
+    1.5-2.1%.
+
+    Not excluded here because that needs recovery provenance carried on the span, which
+    `get_cid_marked_page_dict` does not record, and because the marked-CID exclusion
+    below already removes the runs that were NOT recovered. Stated so the enumeration
+    above is honest at three-of-four rather than reading as complete.
 
     A surviving token additionally has to be **pure** -- not itself a legacy keystroke
     word -- or the vocabulary attests Nepali as English. See VOL-212 and
