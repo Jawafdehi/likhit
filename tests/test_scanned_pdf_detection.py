@@ -187,8 +187,16 @@ def _chosen_maps(detected: dict) -> dict[str, str]:
     """`{font: map_key}` from `detect_content_legacy_fonts`, dropping the mask.
 
     The mask matters wherever a tie survived (VOL-156); these cases assert which
-    map was chosen, and each one carries an empty mask, which
-    :func:`_no_font_carries_a_mask` pins separately.
+    map was chosen, and each one carries an empty mask.
+
+    ⚠️ That empty-mask property IS covered, but not by the helper an earlier form of
+    this docstring pointed at: `_no_font_carries_a_mask` is defined nowhere in this
+    repo on any branch -- the reference was its only occurrence. What actually catches a
+    spurious mask is the end-to-end extraction assertions, which compare emitted TEXT:
+    a mask leaves raw keystrokes in the output, so `test_mislabeled_preeti_is_decoded`,
+    `test_subset_named_font_is_decoded`, `test_content_legacy_detection_is_scoped_to_
+    requested_pages` and `test_content_based_span_conversion_is_gated_too` all fail if
+    one appears.
     """
 
     return {font: choice.map_key for font, choice in detected.items()}
@@ -586,6 +594,172 @@ def test_a_disagreement_that_masking_cannot_localise_still_abstains(
     assert choice.map_key is None
     # And it abstained over a real ambiguity, not a gate refusal.
     assert choice.validity is not None and _passes_content_legacy_gate(choice.validity)
+
+
+def test_a_non_empty_mask_that_still_disagrees_abstains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🛑 The `len(readings) != 1` half of the verification, which nothing reached.
+
+    Its sibling `test_a_disagreement_that_masking_cannot_localise_still_abstains`
+    injects a fault that produces an EMPTY mask, so the abstention there comes from
+    the `not masked` clause. Measured before this test: deleting `len(readings) != 1`
+    left the whole suite green, and it is not a no-op.
+
+    The fault here differs from Preeti on ONE code point in isolation -- so the mask
+    comes out non-empty, `{'k'}` -- and ALSO transposes the last two output characters,
+    so masking that code point does not remove the disagreement. That is the shape the
+    whole-span verification exists for, and the only shape that can reach it.
+    """
+
+    from likhit.extractors import font_based as font_based_module
+
+    real = get_converter_for_map("Preeti")
+    # `wx` decodes to धह, two Devanagari letters outside any dictionary word and not
+    # present in the prefix, so substituting one of them and transposing the pair holds
+    # every axis exactly level -- (3, 0, 0, 1.0, 17) either way. `w` is the only code
+    # point that differs in isolation, so the mask is exactly {"w"}.
+    keystrokes = f"{_TIE_PREFIX} wx"
+
+    def localised_and_contextual(text: str) -> str:
+        # Differs on `w` read alone, so `_ambiguous_code_points` finds it...
+        out = real(text).replace("ध", "घ")
+        # ...and also transposes, so masking `w` still leaves the readings different.
+        if len(text) <= 1 or len(out) < 2:
+            return out
+        return out[:-2] + out[-1] + out[-2]
+
+    def fake_get_converter_for_map(map_key: str):
+        return localised_and_contextual if map_key == "Kantipur" else real
+
+    monkeypatch.setattr(
+        font_based_module, "get_converter_for_map", fake_get_converter_for_map
+    )
+    monkeypatch.setattr(font_based_module, "ALL_MAP_KEYS", ("Preeti", "Kantipur"))
+
+    # The fault is real: the two candidates tie on every axis and disagree.
+    assert _map_ranking_key(_nepali_validity(real(keystrokes))) == _map_ranking_key(
+        _nepali_validity(localised_and_contextual(keystrokes))
+    )
+    assert real(keystrokes) != localised_and_contextual(keystrokes)
+
+    # ⚠️ The two clauses cannot be told apart from the RETURNED choice: both abstention
+    # paths build `LegacyMapChoice(None, best)`, whose `ambiguous` defaults to empty. So
+    # the mask and the post-mask readings are computed directly here, and it is those
+    # that establish which clause is doing the work.
+    mask = font_based_module._ambiguous_code_points(
+        keystrokes, real, [localised_and_contextual]
+    )
+    assert mask == frozenset({"w"}), mask  # non-empty -> `not masked` cannot decide
+    readings = {
+        font_based_module._decode_masking(keystrokes, convert, mask)
+        for convert in (real, localised_and_contextual)
+    }
+    assert len(readings) == 2, readings  # ...and masking does not settle it
+
+    choice = font_based_module.choose_legacy_map_detailed(keystrokes)
+
+    # So only `len(readings) != 1` can abandon this span, and it must.
+    assert choice.map_key is None
+
+
+def test_the_gate_reads_the_masked_reading_not_the_unmasked_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🛑 `best = _nepali_validity(readings.pop())` -- deleting it left the suite green.
+
+    It is the only thing stopping a span whose MASKED reading is mostly raw keystrokes
+    from being accepted on the strength of the reading it does not emit. That is the
+    fail-open direction: the text that ships is the masked one.
+
+    The fixture masks a long enough run that the emitted reading's Devanagari ratio
+    falls under `_CONTENT_LEGACY_MIN_DEVA_RATIO` while the unmasked reading clears the
+    gate comfortably.
+    """
+
+    from likhit.extractors import font_based as font_based_module
+
+    real = get_converter_for_map("Preeti")
+    # 40 `wx` pairs, so masking `w` leaves 40 raw keystrokes against 55 Devanagari
+    # characters: ratio 0.5789, under the 0.6 floor. Unmasked it is 1.0. The pair
+    # alternates deliberately -- a repeated `w` would decode to धध and pick up a
+    # duplicate-consonant penalty, which fails the gate on BOTH readings and would make
+    # this test pass for the wrong reason.
+    keystrokes = _TIE_PREFIX + " " + "wx" * 40
+
+    def disagrees_on_w(text: str) -> str:
+        return real(text).replace("ध", "घ")
+
+    def fake_get_converter_for_map(map_key: str):
+        return disagrees_on_w if map_key == "Kantipur" else real
+
+    monkeypatch.setattr(
+        font_based_module, "get_converter_for_map", fake_get_converter_for_map
+    )
+    monkeypatch.setattr(font_based_module, "ALL_MAP_KEYS", ("Preeti", "Kantipur"))
+
+    # The mask localises cleanly, so this is NOT an abstention over ambiguity: both
+    # readings agree once `w` is masked, and the verification is satisfied.
+    mask = font_based_module._ambiguous_code_points(keystrokes, real, [disagrees_on_w])
+    assert mask == frozenset({"w"}), mask
+    emitted = font_based_module._decode_masking(keystrokes, real, mask)
+    assert emitted == font_based_module._decode_masking(
+        keystrokes, disagrees_on_w, mask
+    )
+
+    # The UNMASKED reading would sail through the gate...
+    assert _passes_content_legacy_gate(_nepali_validity(real(keystrokes)))
+    # ...and the text that would actually be EMITTED must not.
+    assert not _passes_content_legacy_gate(_nepali_validity(emitted))
+    assert _nepali_validity(emitted)["ratio"] < 0.6
+
+    choice = font_based_module.choose_legacy_map_detailed(keystrokes)
+
+    # So the only thing that can decline this span is gating the masked reading.
+    assert choice.map_key is None
+    assert choice.validity is not None
+    assert not _passes_content_legacy_gate(choice.validity)
+
+
+def test_a_lifted_span_is_un_lifted_before_the_mask_is_applied() -> None:
+    """🛑 Two findings in one fixture: the un-lift is reachable, and its ORDER matters.
+
+    `decode_with_legacy_map` un-lifts because a symbol-style cmap delivers glyphs at
+    `0xF000 + code`. Deleting the un-lift left all tests green, and the comment
+    justifying it named `ARAP 11` -- a face that classifies `legacy_remap`, so
+    `detect_content_legacy_fonts` skips it and it can never reach this path. `Symbol`,
+    `SymbolMT` and `Wingdings` can: all three classify `correct` AND are
+    `is_symbol_pua_font`.
+
+    The order is the second half. With the mask applied to the still-lifted span, a
+    masked code point arriving as `chr(0xF000 + ord(c))` is not recognised as masked --
+    it lands inside a run, is un-lifted there, and is decoded with the winner's map,
+    which is the exact commitment the mask exists to avoid.
+    """
+
+    from likhit.extractors.font_based import (
+        LegacyMapChoice,
+        decode_with_legacy_map,
+    )
+    from likhit.extractors.font_classifier import classify_font
+    from likhit.extractors.pua_maps import is_symbol_pua_font
+
+    # The reachability half, stated as an assertion rather than as prose.
+    for name in ("Symbol", "SymbolMT", "Wingdings"):
+        assert classify_font(name, "") == "correct"
+        assert is_symbol_pua_font(name)
+
+    lifted = "".join(chr(0xF000 + ord(char)) for char in "g]kfn")
+    plain = LegacyMapChoice("Preeti", None)
+    assert decode_with_legacy_map(lifted, plain) == "नेपाल"
+
+    # ...and with `n` masked, the lifted `n` must be LEFT RAW rather than decoded.
+    masked = LegacyMapChoice("Preeti", None, frozenset({"n"}))
+    out = decode_with_legacy_map(lifted, masked)
+    assert "n" in out, f"the masked code point was decoded anyway: {out!r}"
+    assert out == "नेपाn", out
+    # And nothing lifted survives into the output either way.
+    assert not any(0xF000 <= ord(char) <= 0xF0FF for char in out)
 
 
 def test_identical_readings_are_not_an_ambiguity() -> None:

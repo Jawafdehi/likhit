@@ -199,6 +199,18 @@ def test_the_veto_decides_a_whole_same_font_run_not_one_span() -> None:
 
 
 def test_a_keystroke_run_split_across_spans_still_decodes() -> None:
+    """The negative direction of the run-level veto.
+
+    ⚠️ **Correcting this PR's bite proof, which is measured wrong in its commit
+    message.** That message says stubbing `_reads_as_latin_text` to `return False`
+    "fails 10 cases in this file including all three edited here". Re-measured on this
+    head: **11** fail under the `False` stub, and of the four call sites the commit
+    edited only **two** are among them -- this test and its sibling assert the NEGATIVE
+    direction, so they bite under `return True` instead, where 20 of the 31 cases fail.
+    A one-directional stub cannot exercise a two-directional predicate, and quoting one
+    count for both reads as though it did.
+    """
+
     spans = [
         _span("Spins", "cfGtl/s "),
         _span("Spins", "lgoGq0f "),
@@ -443,7 +455,7 @@ def test_an_extraction_error_from_the_veto_is_not_swallowed(monkeypatch) -> None
 
     Review proposed wrapping the veto's decode in `except Exception`. Declined, and this
     pins the decisive reason so the suggestion cannot be applied in that form later:
-    `_choose_legacy_map_ranked` RE-RAISES `ExtractionError` on purpose -- "a
+    `choose_legacy_map_detailed` RE-RAISES `ExtractionError` on purpose -- "a
     missing/broken npttf2utf is a real config error -- surface it rather than silently
     disabling Part B". A blanket catch here would do what that comment forbids, one run
     at a time, so a broken install would look like a corpus with no Latin in it.
@@ -466,6 +478,37 @@ def test_an_extraction_error_from_the_veto_is_not_swallowed(monkeypatch) -> None
         _content_legacy_veto_flags(
             [_span("Spins", "Random rubble stone masonry")], SPINS_CHOICE
         )
+
+
+def test_an_undecided_choice_falls_through_to_the_strategy_branches() -> None:
+    """🛑 `LegacyMapChoice(map_key=None)` is not None, and the guard tested the wrapper.
+
+    The parent branch guarded on the map KEY. When the value became a `LegacyMapChoice`,
+    `_convert_span_text` was widened to `if content_choice is not None`, so an UNDECIDED
+    choice -- the abstention a surviving tie or a failed gate produces -- entered the
+    content branch, `decode_with_legacy_map` returned the text unchanged, and the
+    `legacy_remap`, `is_symbol_pua_font` and reorder branches below were skipped for
+    that span. The sibling helper added in the same commit kept both halves.
+
+    `Preeti` is used as the span font because it classifies `legacy_remap`, so its own
+    branch is what must still run. If the wrapper guard is restored, this span comes
+    back as raw keystrokes instead.
+    """
+
+    from likhit.extractors.font_based import FontBasedStrategy, LegacyMapChoice
+
+    keystrokes = "g]kfn ;/sf/"
+    undecided = LegacyMapChoice(None, None)
+
+    out = FontBasedStrategy()._convert_span_text(
+        keystrokes,
+        "Preeti",
+        {"Preeti": "legacy_remap"},
+        needs_reorder=False,
+        content_legacy_maps={"Preeti": undecided},
+    )
+
+    assert out == "नेपाल सरकार", out
 
 
 def test_the_veto_decode_has_no_demonstrated_failing_input() -> None:

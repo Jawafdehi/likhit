@@ -1325,6 +1325,12 @@ class LegacyMapChoice:
     differently. It is empty unless a tie survived every evidence axis, and when
     it is non-empty those code points are left as raw keystrokes by
     :func:`decode_with_legacy_map` — see :func:`choose_legacy_map_detailed`.
+
+    ⚠️ ``validity`` is **one reading's** axis -> value dict (``hits``, ``penalty``,
+    ``penalty_per_deva``, ``devanagari``, ``ratio``, ``stranded``), not a per-map
+    mapping: it is the winning reading's, or the MASKED reading's when a tie was
+    scoped. Nothing per-map survives the call. Records had it as "the per-map
+    validity scores", which is a different object entirely.
     """
 
     map_key: str | None
@@ -1522,14 +1528,28 @@ def decode_with_legacy_map(text: str, choice: LegacyMapChoice) -> str:
     # The GATED converter, and the un-lift, because this is an output path: its only
     # caller in src/ is the content-legacy branch, which emits final text. Both used to
     # be applied at that call site, and moving the decode into this helper would have
-    # dropped them -- reintroducing "(1)" -> "ढ१ण्" and leaving ARAP 11's 0xF000-lifted
-    # bytes unconverted. choose_legacy_map keeps using the RAW get_converter_for_map to
+    # dropped them -- reintroducing "(1)" -> "ढ१ण्" and leaving 0xF000-lifted bytes
+    # unconverted. choose_legacy_map keeps using the RAW get_converter_for_map to
     # compare candidates, which is the distinction that matters here.
+    #
+    # 🛑 **The un-lift runs BEFORE the mask, and that order is load-bearing.** It was
+    # the other way round: `_decode_masking` split the still-lifted span, so a masked
+    # code point arriving as `chr(0xF000 + ord(c))` was not recognised as masked at all
+    # -- it went into a run, got un-lifted there, and was decoded with the ranking
+    # winner's map. That is exactly the commitment the mask exists to avoid, and it also
+    # emitted a raw PUA code point for any mask hit that WAS recognised. Un-lifting
+    # first fixes both: the mask sees bare code points, and an unresolvable one is left
+    # as legible ASCII rather than as U+F0xx.
+    #
+    # ⚠️ Reachable, contrary to an earlier form of this comment, which cited `ARAP 11`.
+    # That face classifies `legacy_remap`, so `detect_content_legacy_fonts` skips it and
+    # it can never appear on the content-legacy path. `Symbol`, `SymbolMT` and
+    # `Wingdings` can: measured, all three classify `correct` AND are
+    # `is_symbol_pua_font`, which is precisely the combination that reaches here
+    # carrying lifted bytes.
     return _decode_masking(
-        text,
-        lambda part: get_output_converter_for_map(choice.map_key)(
-            unlift_symbol_pua(part)
-        ),
+        unlift_symbol_pua(text),
+        get_output_converter_for_map(choice.map_key),
         choice.ambiguous,
     )
 
@@ -1651,9 +1671,12 @@ def _content_legacy_veto_flags(
                 #   1. No reachable input raises. Probed all 6 candidate maps against 18
                 #      adversarial inputs -- NUL, embedded NUL, U+FFFD, BMP private use,
                 #      a plane-15 CID mark, an astral emoji, every Latin-1 byte, control
-                #      characters, a combining storm, 2,000 chars -- 108 pairs, 0 raises.
+                #      characters, a combining storm, 2,000 chars -- 0 raises. That run probed 18
+                #      inputs x 6 maps = 108 pairs; the version KEPT as a test carries 16 of the
+                #      18, so it performs 96. Two inputs did not survive the move, and quoting
+                #      108 for the test overstates what CI re-checks.
                 #   2. A blanket `except Exception` here would swallow `ExtractionError`,
-                #      which `_choose_legacy_map_ranked` above RE-RAISES on purpose: "a
+                #      which `choose_legacy_map_detailed` above RE-RAISES on purpose: "a
                 #      missing/broken npttf2utf is a real config error -- surface it
                 #      rather than silently disabling Part B". Catching it here would do
                 #      exactly what that comment forbids, and it would do it one run at a
@@ -1986,7 +2009,14 @@ class FontBasedStrategy(ExtractionStrategy):
         # unchanged for a font the name classifier calls "correct".
         if content_legacy_maps and not skip_content_legacy:
             content_choice = content_legacy_maps.get(font_name)
-            if content_choice is not None:
+            # ⚠️ BOTH halves, matching `_content_legacy_veto_flags`. The parent tested
+            # the map key; when this became a `LegacyMapChoice` wrapper the test was
+            # widened to the wrapper, and a `LegacyMapChoice(map_key=None)` is not None
+            # -- so an UNDECIDED choice entered the branch, `decode_with_legacy_map`
+            # returned the text unchanged, and the `legacy_remap`, `is_symbol_pua_font`
+            # and reorder branches below were all short-circuited for that span. The
+            # sibling helper added in the same commit kept both halves; this one did not.
+            if content_choice is not None and content_choice.map_key is not None:
                 # Candidacy was decided per font over the whole document, so this
                 # span may be genuine Latin that merely shares the face. Leaving
                 # readable English alone is strictly better than remapping it into
