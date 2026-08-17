@@ -355,6 +355,22 @@ def _map_reads_ascii_digits_as_digits(map_key: str) -> bool:
     return cached
 
 
+def devanagarize_ascii_digits(text: str) -> str:
+    """Translate ASCII digits to Devanagari, leaving every other character alone.
+
+    The digit half of :func:`_decode_ascii_bracketed_number`'s effect, factored out so a
+    caller that needs the same table -- rather than the same gate -- uses this one instead
+    of a second copy of it. Translating rather than passing digits through is the
+    load-bearing part: ``PCS NEPALI`` and ``FONTASY_HIMALI_TT`` map all ten ASCII digits
+    onto Devanagari digits, so a caller that merely passed its bytes through would emit
+    ``123`` where the pipeline already emits ``१२३``.
+
+    A no-op on digits that are already Devanagari.
+    """
+
+    return text.translate(_LATIN_TO_DEVANAGARI_DIGITS)
+
+
 def _decode_ascii_bracketed_number(text: str) -> str | None:
     """Digit-only decode for a whole span shaped like ``"(12)"``, else ``None``.
 
@@ -366,21 +382,42 @@ def _decode_ascii_bracketed_number(text: str) -> str | None:
     if match is None:
         return None
     lead, digits, trail = match.groups()
-    return f"{lead}({digits.translate(_LATIN_TO_DEVANAGARI_DIGITS)}){trail}"
+    return f"{lead}({devanagarize_ascii_digits(digits)}){trail}"
 
 
 _mapper = None
 _mapper_lock = threading.Lock()
 
 
-def _match_font(font_name: str) -> str | None:
+def _matched_registry_key(font_name: str) -> str | None:
+    """Which :data:`_REGISTRY` key ``font_name`` matches, first hit wins.
+
+    The lookup :func:`_match_font` performs, exposed as the *key* rather than the map, so
+    a caller that needs to know which FAMILY a font is routed as asks the registry the
+    same question routing asks, instead of re-implementing the string rule and being able
+    to disagree with it. Order is load-bearing for the reason documented on
+    :data:`_REGISTRY`.
+
+    ⚠️ The base-name derivation stays inline here rather than becoming its own helper.
+    ``pua_maps`` already defines a ``_base_font_name`` that *mirrors* this rule without
+    being identical to it -- it strips the subset prefix by regex as well -- and
+    ``tests/test_no_duplicated_definitions.py`` refuses a second module-level function of
+    that name, correctly: unifying them would change PUA routing, and importing
+    ``pua_maps`` here would add an import direction that does not exist today. So the rule
+    lives exactly once, in this function, and :func:`_match_font` delegates to it.
+    """
+
     base = font_name.split("+", 1)[-1] if "+" in font_name else font_name
-    base = base.split(",")[0]
-    base_lower = base.lower().strip()
-    for key, map_key in _REGISTRY.items():
+    base_lower = base.split(",")[0].lower().strip()
+    for key in _REGISTRY:
         if key in base_lower:
-            return map_key
+            return key
     return None
+
+
+def _match_font(font_name: str) -> str | None:
+    key = _matched_registry_key(font_name)
+    return None if key is None else _REGISTRY[key]
 
 
 def _get_mapper():

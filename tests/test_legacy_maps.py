@@ -9,7 +9,9 @@ from likhit.extractors.legacy_maps import (
     _decode_ascii_bracketed_number,
     _map_reads_ascii_digits_as_digits,
     _match_font,
+    _matched_registry_key,
     _REGISTRY,
+    devanagarize_ascii_digits,
     get_converter,
     get_converter_for_map,
     get_output_converter_for_map,
@@ -585,3 +587,61 @@ def test_every_registry_target_is_a_real_map():
     # The distinction this test now rests on, asserted rather than assumed: a map can be
     # name-routed and decodable without being a content-detection candidate.
     assert set(DECODABLE_MAP_KEYS) - set(ALL_MAP_KEYS) == {"Siddhi"}
+
+
+# --------------------------------------------------------------------------- #
+# The two helpers extracted from this module's own routing and marker gate.
+# Both are refactors, so the tests that matter are the EQUIVALENCE ones: they
+# fail if the extraction drifts from the code it came out of.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_matched_key_and_the_routed_map_are_one_decision() -> None:
+    """`_matched_registry_key` must answer exactly what `_match_font` routes on.
+
+    The point of exposing the key is that a caller asking "which family is this font
+    routed as" gets the routing's own answer rather than a second string rule. If these
+    two ever disagree that guarantee is gone -- so it is asserted over every registry
+    key, in the name forms a PDF actually carries.
+    """
+
+    for key in _REGISTRY:
+        for name in (key, key.upper(), f"ABCDEF+{key}", f"{key},Bold", f"  {key}  "):
+            matched = _matched_registry_key(name)
+            assert matched is not None, name
+            assert _match_font(name) == _REGISTRY[matched], name
+
+    # A non-matching name is None on both, not merely falsy on one.
+    for name in ("Arial", "LiberationSerif-Bold", "CIDFont+F2", ""):
+        assert _matched_registry_key(name) is None, name
+        assert _match_font(name) is None, name
+
+
+def test_the_matched_key_keeps_the_registry_order() -> None:
+    # First hit wins, and which hit is first is load-bearing (see `_REGISTRY`). A name
+    # containing two registry keys must resolve to the earlier one.
+    keys = list(_REGISTRY)
+    first = keys[0]
+    second = next(k for k in keys[1:] if k not in first and first not in k)
+    assert _matched_registry_key(f"{first}{second}") == first
+
+
+def test_devanagarizing_ascii_digits_touches_digits_and_nothing_else() -> None:
+    assert devanagarize_ascii_digits("0123456789") == "०१२३४५६७८९"
+    # A no-op on digits that are already Devanagari -- asserted, because the caller runs
+    # it over mixed text.
+    assert devanagarize_ascii_digits("०१२३४५६७८९") == "०१२३४५६७८९"
+    # Letters, punctuation and the danda are left exactly alone.
+    for text in ("दफा", "abc", "(x)", "।", "क1ख2"):
+        expected = "".join(
+            "०१२३४५६७८९"[int(c)] if c.isascii() and c.isdigit() else c for c in text
+        )
+        assert devanagarize_ascii_digits(text) == expected, text
+
+
+def test_the_marker_gate_still_uses_the_extracted_table() -> None:
+    # The extraction's whole risk is that the gate keeps an inline copy and the two
+    # drift. This asserts the gate's output IS the helper's, on the gate's own shape.
+    decoded = _decode_ascii_bracketed_number("(123)")
+    assert decoded is not None
+    assert devanagarize_ascii_digits("123") in decoded
