@@ -470,12 +470,33 @@ class TestGateCannotManufactureADecision:
 #: 🛑 Synthetic fixtures cannot reach this. 60,000 generated keystroke strings all
 #: abstained in PASS 1, so the gate never ran on any of them. That is why these are
 #: verbatim corpus spans and not constructed ones.
-DECIDED_THEN_ABSTAINED = [
-    # pass 1 picks Spins and it passes the accept gate; pass 2 promotes Preeti, which
-    # FAILS it. An unacceptable candidate is not a better one. Reachable at M=1 only:
-    # measured, M=2 and above leave pass 2 electing Spins again.
-    (1, "/sddWo] ?=%,!!,**,^&).() cfkm\"nfO{ u}/sfg'gL ¿kdf nfe k'¥ofpg] / g]kfn"),
-]
+#: 🛑 **This span no longer serves as the witness, and the test below says why rather
+#: than being deleted.** Under VOL-226's garble floor the span abstains in PASS 1, so the
+#: test's own precondition assert fires -- correctly, since a fixture that abstains before
+#: the gate runs proves nothing about the gate. Kept because the mechanism it found is
+#: real and the search that found it was expensive.
+#:
+#: ⚠️ A span is also the wrong UNIT to re-pin it with. `detect_content_legacy_fonts` joins
+#: a font's spans and calls the chooser once, so production decides per AGGREGATE, and
+#: spans are too short to clear the accept gate: measured, 32,307 candidate spans over 150
+#: documents decide **0** (`tools/span_choice_sweep.py`). At the aggregate level the
+#: invariant holds corpus-wide -- 1,389 decided (document, font) aggregates over all 6,236
+#: PDFs, **0** of which the gate turns into an abstention at any of M=1..5
+#: (`tools/aggregate_gate_witness.py`).
+HISTORICAL_DECIDED_THEN_ABSTAINED = (
+    1,
+    "/sddWo] ?=%,!!,**,^&).() cfkm\"nfO{ u}/sfg'gL ¿kdf nfe k'¥ofpg] / g]kfn",
+)
+
+#: A real corpus aggregate that pass 1 DECIDES and the gate genuinely moves at M=1
+#: (`Preeti` -> `PCS NEPALI`), so the fallback below is exercised on a span the gate can
+#: actually reach. `3850__...मोहन्याल गाउँपालिका`, font `Courier New,Bold`, 117 characters.
+#: Its `ambiguous` set is non-empty (`(` and `?`), which is what makes the identity
+#: assertion bite rather than merely checking for non-`None`.
+GATED_AGGREGATE = (
+    " uf]=ef}=g=ldlt pkef]Qmf ;ldlt ;Demf}tf /sd -?=_ k]ZsL lbg'kg]{ -?=_ k]ZsL "
+    "lbPsf] -?=_ a(L k]ZsL -?=_ cfg'kflts sL M "
+)
 
 #: 🛑 The SECOND witness, and it is reachable at **M=0 only** -- a margin the entry point
 #: now refuses (`_MIXED_MARGIN_FLOOR`, finding 91-1). Kept as a recorded mechanism rather
@@ -491,19 +512,24 @@ DECIDED_THEN_ABSTAINED = [
 DECIDED_THEN_ABSTAINED_AT_ZERO_MARGIN = "lhNnf lzIff sfof{no, 88]nw'/f"
 
 
-@pytest.mark.parametrize(("margin", "text"), DECIDED_THEN_ABSTAINED)
-def test_the_gate_never_turns_a_decided_span_into_an_abstention(
-    monkeypatch, margin: float, text: str
-) -> None:
+def test_the_gate_never_turns_a_decided_span_into_an_abstention(monkeypatch) -> None:
     """The gate's stated invariant, in the direction it was not guarded in.
 
     Its docstring always claimed the gate "can only ever move a span from one map to
     another". `abstain -> decided` was foreclosed by construction; `decided -> abstain`
-    was not, and these two spans did it. An abstaining second pass is not evidence
-    against the first pass's accepted answer, so pass 2 now falls back to it.
+    was not, and two measured spans did it, so pass 2 now falls back to pass 1's answer.
+
+    🛑 **This is now pinned by forcing pass 2 to abstain, not by a corpus fixture that
+    happens to make it abstain.** The original witness -- `HISTORICAL_DECIDED_THEN_
+    ABSTAINED` above -- stopped abstaining in pass 2 and started abstaining in pass *1*
+    when VOL-226's garble floor changed the shipped ranking, which left the test proving
+    nothing but its own precondition. A fallback branch should not depend on a ranking
+    change to stay covered: patched, this fails the moment the `else shipped` on
+    `choose_legacy_map_detailed`'s last line becomes `else <abstention>`.
     """
 
     monkeypatch.delenv(fb._MIXED_MARGIN_ENV_VAR, raising=False)
+    text = GATED_AGGREGATE
 
     shipped = fb._choose_legacy_map_ranked(
         text, fb._map_ranking_key, mixed_threshold=None
@@ -511,12 +537,36 @@ def test_the_gate_never_turns_a_decided_span_into_an_abstention(
     assert shipped.map_key is not None, (
         "fixture must be DECIDED without the gate, or this test proves nothing"
     )
+    assert shipped.ambiguous, (
+        "and it must carry a tie mask, or the identity assert is weak"
+    )
 
-    gated = fb.choose_legacy_map_detailed(text, mixed_margin=margin)
+    # The fixture really does reach pass 2 in production: the gate MOVES it. Asserted
+    # before the patch, so the patched run below cannot be exercising a path the gate
+    # never takes on this span.
+    assert (
+        fb.choose_legacy_map_detailed(text, mixed_margin=1).map_key != shipped.map_key
+    )
+
+    real = fb._choose_legacy_map_ranked
+    seen: list[float | None] = []
+
+    def abstaining_second_pass(span, key, *, mixed_threshold):
+        seen.append(mixed_threshold)
+        if mixed_threshold is None:  # pass 1, the shipped ranking -- untouched
+            return real(span, key, mixed_threshold=None)
+        return fb.LegacyMapChoice(map_key=None, validity=None)
+
+    monkeypatch.setattr(fb, "_choose_legacy_map_ranked", abstaining_second_pass)
+    gated = fb.choose_legacy_map_detailed(text, mixed_margin=1)
+
+    assert len(seen) == 2 and seen[0] is None and seen[1] is not None, (
+        "both passes must have run, or the fallback was not the thing under test"
+    )
     assert gated.map_key is not None, "the gate dropped a span that ships today"
     # Identical, not merely non-None: the fallback must carry the shipped choice's
-    # `ambiguous` set too, or the second fixture's masked code points would be decoded
-    # as though the tie had been settled.
+    # `ambiguous` set too, or masked code points would be decoded as though the tie had
+    # been settled.
     assert gated == shipped
 
 

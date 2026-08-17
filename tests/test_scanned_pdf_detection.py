@@ -36,7 +36,6 @@ from likhit.extractors.font_based import (
     _map_ranking_key,
     _nepali_validity,
     _passes_content_legacy_gate,
-    _RANKING_IKAR_NASAL_FORGIVENESS,
     _reads_as_latin_words,
     _text_quality_penalty,
     choose_legacy_map,
@@ -1633,14 +1632,38 @@ def test_one_ikar_nasal_site_does_not_outrank_the_stranded_bracket_tell() -> Non
     assert _map_ranking_key(spins) > _map_ranking_key(kantipur)
 
 
-def test_one_ikar_nasal_site_does_not_outrank_a_real_ratio_margin() -> None:
-    # The same forgiveness, reached through the axis BELOW the tell: with the tell tied
-    # as well, `ratio` decides. This is the form the fix takes on `main`, where no
-    # stranded axis exists yet, so it pins the behaviour on both sides of that change.
-    spins = _validity(hits=4, penalty=6, devanagari=592, ratio=0.9801, ikar_nasal=1)
-    kantipur = _validity(hits=4, penalty=0, devanagari=577, ratio=0.9681)
+def test_the_forgiveness_gets_3229_down_to_the_axis_that_decides_it() -> None:
+    # 🛑 This test used to assert that with the tell tied as well, `ratio` decides -- on a
+    # fixture that zeroed `stranded` and `attested` to model the pre-stranded world. Under
+    # VOL-226's floor that is deliberately false: what the floor forgives, the raw count
+    # recovers BELOW `attested`, precisely so a forgiven margin can never be handed to
+    # `ratio` (measured: a bare floor flipped 2901 on a 0.017 ratio difference with no map
+    # evidence at all -- `test_a_forgiven_margin_is_not_handed_to_the_ratio`).
+    #
+    # So it is re-pinned on the REAL numbers of the document the term exists for, read off
+    # `main` at f7b7e32 (`tools/probe_docs_on_main.py`). They make the point better than
+    # the stripped shape did: `ratio` never had to decide 3229, because `stranded`
+    # separates it 0 against 12.
+    spins = _validity(
+        hits=4,
+        penalty=6,
+        devanagari=592,
+        ratio=0.9801,
+        stranded=0,
+        attested=26,
+        ikar_nasal=1,
+    )
+    kantipur = _validity(
+        hits=4, penalty=0, devanagari=577, ratio=0.9681, stranded=12, attested=22
+    )
 
-    assert _map_ranking_key(spins)[:3] == _map_ranking_key(kantipur)[:3]
+    # Unforgiven, the 6-point margin settles it for the wrong map before anything that
+    # identifies the map is read -- that is the defect.
+    assert spins["penalty"] > kantipur["penalty"]
+    # Forgiven, the garble axis LEVELS, so the decision falls through...
+    assert _map_ranking_key(spins)[:2] == _map_ranking_key(kantipur)[:2]
+    # ...to `stranded`, which is evidence about the map, and it picks Spins.
+    assert _map_ranking_key(spins)[2] > _map_ranking_key(kantipur)[2]
     assert _map_ranking_key(spins) > _map_ranking_key(kantipur)
 
 
@@ -1685,13 +1708,16 @@ def test_the_gate_forgives_no_ikar_nasal_site_at_all() -> None:
     assert -_map_ranking_key(validity)[1] == validity["penalty"] - _IKAR_NASAL_WEIGHT
 
 
-def test_the_forgiven_amount_matches_what_the_penalty_charges_per_site() -> None:
-    # An equality test, because the weight lives in two places -- the term in
-    # `_text_quality_penalty` and the subtraction in `_map_ranking_key`. A literal that
-    # drifts in one of them is exactly how #86's doublet floor stopped applying on the
-    # ranking path while every other test stayed green.
+def test_the_floor_still_matches_what_one_ikar_nasal_site_charges() -> None:
+    # An equality test, and it now pins a SUBSUMPTION rather than a pair of literals.
+    # This term used to have a forgiveness of its own, `_RANKING_IKAR_NASAL_FORGIVENESS
+    # = 1`, which `_map_ranking_key` subtracted at exactly `_IKAR_NASAL_WEIGHT`. VOL-226
+    # replaced it with a floor on the axis itself, and the floor reproduces every one of
+    # those decisions ONLY while it equals the per-site charge. If either value drifts,
+    # the tests below that build `ikar_nasal` fixtures silently change meaning instead of
+    # failing -- which is how #86's doublet floor stopped applying on the ranking path
+    # while every other test stayed green.
     one_site = "एिं"
     assert len(_IMPOSSIBLE_IKAR_NASAL_PATTERN.findall(one_site)) == 1
     charged = _text_quality_penalty(one_site) - _text_quality_penalty("")
-    forgiven = _RANKING_IKAR_NASAL_FORGIVENESS * _IKAR_NASAL_WEIGHT
-    assert charged == forgiven == 6
+    assert charged == _IKAR_NASAL_WEIGHT == _RANKING_GARBLE_FORGIVENESS == 6

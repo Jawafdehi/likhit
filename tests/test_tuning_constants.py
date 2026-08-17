@@ -387,13 +387,15 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
     ): (8, "absolute floor, so a two-word span cannot clear the ratio on volume"),
     (
         "likhit/extractors/font_based.py",
-        "_RANKING_IKAR_NASAL_FORGIVENESS",
+        "_RANKING_GARBLE_FORGIVENESS",
     ): (
-        1,
-        "ikar+nasal sites forgiven when RANKING two decodes of one span, never by the "
-        "gate. One site can be evidence about the SOURCE, which every candidate decodes "
-        "alike (3229__...sidingwa gapa, font Spins); a systematic mis-map fires ~6 times "
-        "per affected document, so raising this to 2 would start discounting real garble",
+        6,
+        "garble points forgiven when RANKING two decodes of one span, never by the gate. "
+        "A small margin can be evidence about the SOURCE, which every candidate decodes "
+        "alike, so it must not veto `stranded` and `attested`, which are evidence about "
+        "the MAP. Replaces the site-specific _RANKING_IKAR_NASAL_FORGIVENESS and subsumes "
+        "it exactly at this value (= _IKAR_NASAL_WEIGHT); measured plateau 6/12/24/48, and "
+        "6 is the lower bound because 3843 and 5143 both carry a margin of exactly 6",
     ),
     (
         "likhit/extractors/font_based.py",
