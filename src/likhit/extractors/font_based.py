@@ -1780,25 +1780,65 @@ def _acronym_tokens(text: str) -> frozenset[str]:
 # condition keeping `QOC`, worth 2 of the 25 fires.** C1/C2/C5/C6 are kept because each
 # is an independent rule of Devanagari orthography and each recovers genuine English
 # evidence the two load-bearing ones discard -- distinct bystander tokens dropped falls
-# from 28 to 16 with them in. None of the six fires on `एन्टी`, `एण्टी` or `इन्ट`, so
+# from 23 distinct (28 token-map rows) to 16 distinct (19 rows) with them in.
+# ⚠️ Written as '28 to 16' this mixed two units -- 28 is a row count and 16 is a
+# distinct-token count -- which overstates what the four conditions buy. The
+# like-for-like comparison is 23 -> 16 distinct, or 28 -> 19 rows. Those 16 are the
+# measured recall cost of this filter and this comment is the only place a reader
+# will look for it. None of the six fires on `एन्टी`, `एण्टी` or `इन्ट`, so
 # they cannot re-admit 11129's vocabulary. Pinned by tests, per note 2's precedent.
 _DEVA_HALANT = "्"
 # Independent vowel LETTERS. Nepali writes a non-initial vowel as a matra, so one of
 # these away from the start of a word is a positive tell of a wrong byte map.
 _DEVA_INDEPENDENT_VOWEL = re.compile("[अ-औॠॡ]")
-# Vowel signs (matras), including the vocalic-L pair.
-_DEVA_VOWEL_SIGN = re.compile("[ा-ौॢॣ]")
-# Every combining mark in the block: signs, matras, halant, nukta, accents. A word
-# cannot begin with one.
-_DEVA_COMBINING = re.compile("[ऀ-ःऺ-्॑-ॗॢॣ]")
+# Vowel signs (matras), including the vocalic-L pair and the four the maps emit that an
+# `ा-ौ` range misses. Measured by inverting all seven maps over 0x00-0x2FFF: U+093A OE,
+# U+093B OOE, U+094E PRISHTHAMATRA E and U+094F AW are all reachable, so a pair involving
+# one of them was invisible to the matra-pair condition. (U+0955/0956/0957 are NOT
+# emitted by any map and are left out.)
+_DEVA_VOWEL_SIGN = re.compile("[\u093a\u093b\u093e-\u094c\u094e\u094f\u0962\u0963]")
+# Every combining mark ANY CANDIDATE MAP CAN EMIT -- measured, not "every combining mark
+# in the block", which is what this comment used to claim. A word cannot begin with one.
+#
+# ⚠️ The previous class omitted U+094E and U+094F, and both are emitted, so a decode
+# beginning with one was NOT flagged malformed. That is the costly direction: a false
+# "well-formed" disqualifies a survivor token and removes a veto (see
+# `_is_wellformed_devanagari`).
+_DEVA_COMBINING = re.compile("[\u0900-\u0903\u093a-\u094f\u0951-\u0957\u0962\u0963]")
 _DEVA_ANY = re.compile("[ऀ-ॿ]")
 
 
 def _is_wellformed_devanagari(text: str) -> bool:
     """True if ``text`` could be a Devanagari word (VOL-212).
 
-    Generous by design -- see the six conditions above. Used only to *disqualify* a
-    survivor token, so the safe error is to answer True.
+    Generous by design -- see the six conditions above.
+
+    🛑 **The safe error is to answer FALSE**, and this docstring said True. Answering True
+    means "this decodes as Nepali", which DISQUALIFIES the survivor token, shrinks the
+    vocabulary and removes a veto -- the fail-open direction, where genuine English gets
+    remapped into Devanagari that spells nothing. The block comment above these
+    conditions has it right ("a false 'well-formed' costs a genuine recovery"), as does
+    `runs/vol212/FINDING-discriminator-a3f21c8e.md` ("a false 'well-formed' costs
+    recall"). Read "generous" the same way: generous about calling a decode well-formed
+    is the COSTLY direction, not the cautious one.
+
+    ⚠️ **This predicate is not the CAUSAL discriminator, and the direction of its error
+    is disclosed rather than fixed.** It separates 11129's keystroke tokens from real
+    acronyms only because their final ASCII character happens to map to a glyph that is
+    not halant-final -- a property independent of whether the token is English. So it
+    also removes genuine English acronyms from the vocabulary: 9.3% of the real survivor
+    set, which is the fail-open direction.
+
+    The causal property is font provenance: 11129's tokens survive ONLY in spans whose
+    font is NAME-mapped to a legacy map, i.e. keystrokes the name-based path decodes and
+    the content-legacy remap never rewrites. A rule counting a survivor token only when
+    at least one surviving occurrence sits in a span whose font is not name-mapped
+    (`legacy_maps.get_converter(_span_base_font(font)) is None`) separates the same
+    labelled set at ZERO bystander cost. It is candidate 2 in
+    `runs/vol212/FINDING-discriminator-a3f21c8e.md`, recorded there as "not needed", and
+    it is worth measuring corpus-wide before this axis ships more widely. Not swapped in
+    here because the acceptance holds as shipped and the swap is its own change with its
+    own corpus sweep to run.
     """
 
     if not text:

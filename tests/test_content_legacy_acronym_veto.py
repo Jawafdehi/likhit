@@ -531,6 +531,59 @@ def test_11129_run_decodes_once_the_vocabulary_is_purified() -> None:
     assert "चोक इन टाइम" in SPINS(VOL212_RUN)
 
 
+def test_the_purity_filter_is_wired_into_the_vocabulary_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🛑 This change's ONLY production edit, and nothing exercised it.
+
+    Every other VOL-212 test calls `_is_wellformed_devanagari`,
+    `_decodes_as_legacy_devanagari` or `_content_legacy_veto_flags` directly and hands
+    the veto a survivor set built BY HAND -- including the purified-set assertion above,
+    which recomputes the filter in the test rather than reading the one that ships. So
+    the comprehension inside `detect_latin_acronym_survivors` could be deleted with the
+    whole suite green, and the new test block's own comment says the defect "is in how
+    `detect_latin_acronym_survivors` BUILDS that set".
+
+    Two spans, both survivors of the remap: a `Preeti` span carrying `PG6L` -- the
+    keystroke spelling of एन्टी, which has Latin SHAPE and is not English -- and a
+    `Times New Roman` span carrying a genuine acronym. Only the second may become
+    evidence.
+    """
+
+    from likhit.extractors import font_based as font_based_module
+
+    def fake_page_dict(_page):
+        return {
+            "blocks": [
+                {
+                    "lines": [
+                        {"spans": [{"font": "Preeti", "text": "PG6L"}]},
+                        {"spans": [{"font": "Times New Roman", "text": "MIS"}]},
+                    ]
+                }
+            ]
+        }
+
+    monkeypatch.setattr(font_based_module, "get_cid_marked_page_dict", fake_page_dict)
+
+    import fitz
+
+    doc = fitz.open()
+    try:
+        doc.new_page()
+        survivors = font_based_module.detect_latin_acronym_survivors(doc, SPINS_CHOICE)
+    finally:
+        doc.close()
+
+    # Both tokens qualify on SHAPE, so shape is not what separates them here.
+    assert _acronym_tokens("PG6L") == frozenset({"PG6L"})
+    assert _acronym_tokens("MIS") == frozenset({"MIS"})
+    # ...and only the one that does not decode as Nepali becomes evidence.
+    assert survivors == frozenset({"MIS"}), survivors
+    assert _decodes_as_legacy_devanagari("PG6L", SPINS_CHOICE)
+    assert not _decodes_as_legacy_devanagari("MIS", SPINS_CHOICE)
+
+
 def test_the_25_genuine_recoveries_survive_purification() -> None:
     """Acceptance #2, at token level: a narrowing that kills these is not a fix."""
 
