@@ -266,6 +266,19 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "clustering. Widening it pulls a neighbouring fragment into a cell, which "
         "reclassifies the row downstream -- see test_extractor_renderer_seam.py",
     ),
+    (
+        "likhit/extractors/tables.py",
+        "_OVERPRINT_TOLERANCE",
+    ): (
+        1.5,
+        "points of slack when deciding two equal glyph runs share a drawing ORIGIN, "
+        "i.e. are one overprint. Numerically equal to _EDGE_TOLERANCE and separate on "
+        "purpose: while they were one constant, tuning cell-grid snapping would have "
+        "moved glyph dedupe too. Both bounds are measured. Below it: a double-strike "
+        "bold repeats its origin to within 0.24pt (11102__m6t-Annual Report 2067). "
+        "Above it: two distinct CIAA list items sit 3.723pt apart at the same x "
+        "(2077-78 p256), and suppressing those deletes a real bullet",
+    ),
     # -- page furniture ------------------------------------------------------- #
     (
         "likhit/renderers/markdown.py",
