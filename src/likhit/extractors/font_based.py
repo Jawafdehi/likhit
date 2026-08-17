@@ -2933,6 +2933,38 @@ def detect_content_legacy_fonts(
     return content_maps
 
 
+#: Strategies :func:`classify_font` names that REWRITE the span's text. Both are decided
+#: from the font name alone, with no per-span veto, so a span of such a font is always
+#: rewritten -- which is what disqualifies it as "text the remap leaves alone".
+_TEXT_REWRITING_STRATEGIES = frozenset({"legacy_remap", "broken_cmap"})
+
+
+@lru_cache(maxsize=None)
+def _rewritten_outside_the_content_remap(font_name: str) -> bool:
+    """Is this font's text rewritten by a path OTHER than the content-legacy remap?
+
+    Three paths are, and :func:`detect_latin_acronym_survivors` must exclude all three:
+    ``legacy_remap``, ``broken_cmap``, and the symbol-PUA map. Only the first was
+    checked originally, which left `Kalimati`/`Lohit`/`Symbol` spans attesting acronym
+    tokens they had no business attesting.
+
+    `is_legacy_font` is kept alongside the strategy test rather than folded into it:
+    the two agree on every name measured, but `is_legacy_font` is the registry the
+    remap itself consults, so it is the authority for that channel and a strategy
+    string is a second opinion about it.
+
+    Cached on the name because this runs per SPAN over the whole document, while the
+    answer depends on nothing but the name.
+    """
+
+    base = _span_base_font(font_name)
+    return (
+        is_legacy_font(base)
+        or classify_font(base, "") in _TEXT_REWRITING_STRATEGIES
+        or is_symbol_pua_font(font_name)
+    )
+
+
 def detect_latin_acronym_survivors(
     doc: fitz.Document,
     content_legacy_maps: dict[str, LegacyMapChoice] | None,
@@ -2943,8 +2975,9 @@ def detect_latin_acronym_survivors(
     This is the document-scope evidence the third Latin veto needs (VOL-180 §8).
     "Text the remap does not rewrite" is three things, and all three count:
 
-    1. spans of a font that is not a content-legacy candidate **and not a legacy font
-       by name either**;
+    1. spans of a font that is not a content-legacy candidate **and that no other
+       rewrite path touches either** -- see
+       :func:`_rewritten_outside_the_content_remap`, which is all three of them;
     2. spans of a run `27d74f0` vetoes (:func:`_reads_as_latin_text`);
     3. spans `5084fb8` vetoes (:func:`_reads_as_latin_words`).
 
@@ -2976,6 +3009,15 @@ def detect_latin_acronym_survivors(
     would have shipped **91 characters of fluent Nepali** as raw keystrokes. That is
     the same self-attestation the strict tokenizer closes for `w/f}6L` -> `6L`;
     closing it there was necessary and not sufficient.
+
+    🛑 ``legacy_remap`` is **not the only** other rewrite path, and an earlier form of
+    this clause tested `is_legacy_font` alone. That closes the one channel VOL-247
+    measured and leaves two open, both verified live at the time of writing:
+    ``broken_cmap`` (`Kalimati`, `Lohit` — repaired from their embedded tables) and the
+    symbol-PUA map (`is_symbol_pua_font`). `is_legacy_font` is False for all three, so
+    their spans were still attesting. The condition is therefore expressed as "does any
+    non-content path rewrite this font", once, rather than as a list of names to
+    remember to extend.
 
     Measured over the 74 documents that can fire (`runs/vol126r/`): without this
     clause 26 fires, 25 genuine and that one false positive; with it 25 fires, 25/25
@@ -3020,10 +3062,10 @@ def detect_latin_acronym_survivors(
                     if not text.strip():
                         continue
                     font_name = str(span["font"])
-                    # The name-based remap. Checked FIRST and unconditionally: it is
-                    # decided per font name with no per-span veto, so a legacy-named
-                    # font's spans are always rewritten and can never be survivors.
-                    if is_legacy_font(_span_base_font(font_name)):
+                    # Checked FIRST and unconditionally: each of these rewrites is
+                    # decided per font NAME with no per-span veto, so such a span is
+                    # always rewritten and can never be survivor evidence.
+                    if _rewritten_outside_the_content_remap(font_name):
                         continue
                     choice = content_legacy_maps.get(font_name)
                     rewritten = (

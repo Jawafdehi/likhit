@@ -751,3 +751,75 @@ def test_a_remapped_candidate_run_does_not_attest(monkeypatch) -> None:
     keystrokes = "ljj/0fx? oyfy+ b]lvg] cj:yf 5}g . ;fy}, PG6L "
     assert _reads_as_latin_text(keystrokes, SPINS(keystrokes)) is False
     assert _survivors_for(monkeypatch, [_span("Spins", keystrokes)]) == frozenset()
+
+
+# ------------------------------------ the guard's own coverage, and the other two paths
+
+
+def test_the_name_legacy_guard_bites_on_a_token_the_purity_clause_admits(
+    monkeypatch,
+) -> None:
+    """🛑 Without this the guard above has NO coverage, and that is a REBASE artifact.
+
+    `test_a_name_legacy_font_never_attests_a_survivor` was mutation-checked when it was
+    written — on a base where VOL-212's token-purity clause was not an ancestor. The
+    rebase moved that clause five commits earlier, and `PG6L` **decodes as a Devanagari
+    word**, so the purity clause now drops it whether or not the name-legacy guard runs.
+    Measured: the whole suite passed with the guard deleted.
+
+    This fixture separates the two. `MIS` is an acronym shape the purity clause
+    **admits** — `_decodes_as_legacy_devanagari("MIS", …)` is False — so the name-legacy
+    exclusion is the only thing that can drop it. Verified by mutation: with
+    `_rewritten_outside_the_content_remap` forced to False this returns `{"MIS"}`.
+    """
+
+    preeti = "g]kfn ;/sf/ MIS 5f/]v"
+    assert _acronym_tokens(preeti) == frozenset({"MIS"})
+    assert _decodes_as_legacy_devanagari("MIS", SPINS_CHOICE) is False, (
+        "if MIS ever starts decoding as a Nepali word, this test goes vacuous the same "
+        "way the PG6L one did -- pick another admitted token, do not drop the assertion"
+    )
+    assert _survivors_for(monkeypatch, [_span("Preeti", preeti)]) == frozenset()
+
+
+def test_a_broken_cmap_font_never_attests_a_survivor(monkeypatch) -> None:
+    """`legacy_remap` is not the only other rewrite path -- `broken_cmap` is one too.
+
+    `Kalimati` and `Lohit` are repaired from their embedded tables, so their spans are
+    rewritten exactly as a name-legacy font's are. `is_legacy_font` is False for both,
+    so a guard testing only that left them attesting: measured, each of these returned
+    `{"MIS"}` before :func:`_rewritten_outside_the_content_remap` existed.
+    """
+
+    text = "g]kfn ;/sf/ MIS 5f/]v"
+    for font in ("Kalimati", "Lohit", "BCDEEE+Kalimati"):
+        assert _survivors_for(monkeypatch, [_span(font, text)]) == frozenset(), font
+
+
+def test_a_symbol_pua_font_never_attests_a_survivor(monkeypatch) -> None:
+    """The third rewrite path: a face whose glyphs land in the private-use area.
+
+    `is_symbol_pua_font` decides it, again from the name alone, and again
+    `is_legacy_font` is False for it -- so this was the second channel still open.
+    """
+
+    assert (
+        _survivors_for(monkeypatch, [_span("Symbol", "g]kfn ;/sf/ MIS 5f/]v")])
+        == frozenset()
+    )
+
+
+def test_the_exclusion_reads_the_base_name_and_still_lets_real_evidence_through() -> (
+    None
+):
+    """The two directions of :func:`_rewritten_outside_the_content_remap`, directly.
+
+    A subset prefix must not hide a rewritten face, and a genuinely untouched face must
+    not be excluded -- the axis exists to read exactly those, and over-excluding costs
+    the 25 genuine fires this veto is for.
+    """
+
+    for font in ("Preeti", "BCDEEE+Preeti", "Kalimati", "Lohit", "Symbol"):
+        assert font_based._rewritten_outside_the_content_remap(font) is True, font
+    for font in ("Helvetica", "Times New Roman", "TT339t00", "Spins"):
+        assert font_based._rewritten_outside_the_content_remap(font) is False, font
