@@ -22,6 +22,7 @@ from likhit.errors import ScannedPdfError
 from likhit.extractors.font_based import (
     FontBasedStrategy,
     _is_probably_legacy_ascii,
+    _map_ranking_key,
     _nepali_validity,
     _passes_content_legacy_gate,
     choose_legacy_map,
@@ -336,6 +337,66 @@ def test_devanagari_ratio_breaks_a_hits_and_penalty_tie() -> None:
     # wrong word, invisible to every purity axis and to a reader.
     assert get_converter_for_map("Spins")(keystrokes).endswith("संख्या")
     assert get_converter_for_map("Preeti")(keystrokes).endswith("स)ख्या")
+
+
+def test_the_ratio_axis_outranks_the_devanagari_count_and_that_order_decides() -> None:
+    """🛑 The fixture above does not isolate the axis it is named for.
+
+    On it Spins wins on `ratio` AND on `devanagari`, so either tie-break alone suffices
+    and zeroing either one leaves the full suite green -- measured, 1088 passed both ways.
+    But on the real Ghiring document the two axes DISAGREE:
+
+        Spins       key=(3, -0.0, 1.00000, 245)   <- wins on ratio
+        PCS NEPALI  key=(3, -0.0, 0.98795, 246)   <- wins on devanagari
+
+    so `devanagari` alone would reinstate exactly the VOL-77 defect this change removes.
+    The ORDER of the two tie-breaks is load-bearing on the corpus and nothing tested it.
+
+    This fixture reproduces that shape: appending `))` gives the wrong maps two more
+    Devanagari code points than the right one. The mechanism is worth naming, because it
+    is why a Devanagari COUNT is the weaker axis -- a wrong map can manufacture more
+    Devanagari than the right one. `))` is `००` under Spins (2 code points) and `ण्ण्`
+    under PCS NEPALI (4), so PCS NEPALI scores a HIGHER count out of pure garbage while
+    still leaving the `)` residue that costs it the ratio.
+    """
+
+    keystrokes = f"{_TIE_PREFIX} ;_Vof ))"
+    per_map = {
+        candidate: _nepali_validity(get_converter_for_map(candidate)(keystrokes))
+        for candidate in ALL_MAP_KEYS
+    }
+    spins, pcs = per_map["Spins"], per_map["PCS NEPALI"]
+
+    # The primary axes still tie, so the tie-breaks are what decide.
+    assert spins["hits"] == pcs["hits"]
+    assert spins["penalty_per_deva"] == pcs["penalty_per_deva"] == 0.0
+    # ...and the two tie-breaks point in OPPOSITE directions. This is the whole point.
+    assert spins["ratio"] > pcs["ratio"]
+    assert spins["devanagari"] < pcs["devanagari"]
+
+    # ratio is ranked first, so the right map wins.
+    assert choose_legacy_map(keystrokes)[0] == "Spins"
+
+    # Stated as text: Spins reads the word, the count-winner does not.
+    assert get_converter_for_map("Spins")(keystrokes) == ("नेपाल सरकार अदालत संख्या ००")
+    assert get_converter_for_map("PCS NEPALI")(keystrokes) == (
+        "नेपाल सरकार अदालत स)ख्या ण्ण्"
+    )
+
+    # And the order is asserted structurally, so a reordering of the tuple is caught even
+    # if no corpus-shaped fixture happens to cover the pair that reorders.
+    #
+    # 🛑 Deliberately NOT by reconstructing the whole tuple: later changes in this stack
+    # ADD axes to `_map_ranking_key`, so pinning its arity here makes this test fail
+    # upstack for a reason that has nothing to do with what it is testing. Compare two
+    # validities that differ ONLY in these two axes instead -- that states "ratio
+    # outranks devanagari" and stays true however many axes sit above them.
+    worse_ratio_higher_count = {
+        **spins,
+        "ratio": spins["ratio"] - 0.01,
+        "devanagari": spins["devanagari"] + 10,
+    }
+    assert _map_ranking_key(spins) > _map_ranking_key(worse_ratio_higher_count)
 
 
 def test_choose_legacy_map_abstains_when_every_axis_ties() -> None:

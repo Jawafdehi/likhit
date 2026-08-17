@@ -759,10 +759,41 @@ def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
     decided real documents — a 303-character face in one OAG municipality report
     tied all six maps at ``hits=3, penalty=0.0`` and was decoded as Preeti purely
     because Preeti is index 0, rendering ``;_Vof`` as ``स)ख्या`` where the correct
-    Spins read gives ``संख्या`` (VOL-77). Position in a tuple is not evidence, so
-    a tie that survives every axis abstains instead: leaving the keystrokes
-    visibly undecoded is recoverable, while well-formed Devanagari spelling the
-    wrong word is not detectable by any purity axis or by a reader.
+    Spins read gives ``संख्या`` (VOL-77).
+
+    ⚠️ **That document is fixed by the two added AXES, not by abstention, and the
+    two remedies must not be run together in one story.** Measured: it decodes as
+    ``Spins``, resolved by ``ratio``; the abstention branch never executes on it.
+    Someone debugging it from this docstring would read the wrong branch. The axes
+    fixed VOL-77; abstention handles the residue that no axis separates.
+
+    Abstention is the second remedy: position in a tuple is not evidence, so a tie
+    that survives every axis declines to choose. Well-formed Devanagari spelling the
+    wrong word is not detectable by any purity axis or by a reader, while undecoded
+    keystrokes are at least visible.
+
+    🛑 **Abstaining is not free, and on this corpus it is a net regression until
+    #84 lands.** "Recoverable" describes the failure mode, not the cost. Measured
+    over all 6,236 OAG documents plus all 35 CIAA reports: 481 winner changes (the
+    win — 470 of them ``Preeti``→``Spins``, repairing systematically lost repha),
+    but also **46 fonts in 46 documents lose a gate-passing decode, 44,108
+    Devanagari characters that a build without abstention produces**. #84 measures
+    the same shape at 50 documents / 59,867 characters and fixes it by narrowing the
+    scope, and its diagnosis — right reasoning applied at the wrong scope — is
+    correct.
+
+    The ties are structural, not unlucky. ``Preeti`` and ``Sagarmatha`` differ on
+    **0** printable-ASCII keys; ``Preeti`` and ``Kantipur`` on **2** (``F`` is
+    ``ँ``/``ा``, ``X`` is ``ह्``/``हृ``); ``PCS NEPALI`` and
+    ``FONTASY_HIMALI_TT`` on **5**. Such pairs tie on every axis by construction —
+    both readings are pure Devanagari of the same length, and no dictionary word
+    contains ``ँ`` or ``ह्`` — so one poison keystroke anywhere abstains the whole
+    font. And because this is called **once per font on the document aggregate**,
+    a longer aggregate is *more* likely to abstain, not less: ``F`` is the
+    candrabindu in ``गाउँपालिका``, which titles most of these reports.
+
+    **So this must not land alone.** Either land it with #84 or accept 46-50
+    documents temporarily worse than the parent.
 
     Maps that produce *identical* text are not an ambiguity and do not abstain.
     Preeti, Kantipur and Sagarmatha decode much ordinary text the same way, and
