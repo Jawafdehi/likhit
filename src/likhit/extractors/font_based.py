@@ -2713,6 +2713,13 @@ _MARGIN_FROM_ENV: Any = object()
 #: caller passing `mixed_margin=0` went straight through. See
 #: :func:`choose_legacy_map_detailed`.
 _MIXED_MARGIN_FLOOR = 1
+#: Where the ELIGIBLE indicator is spliced into :func:`_map_ranking_key`'s tuple: below
+#: the stranded-bracket tell (index 2) and above `attested` (which becomes index 4). It
+#: is a named index rather than a literal because
+#: :func:`_map_ranking_key_margin_gated` derives its whole key from the ungated one --
+#: see the note there for the divergence that made copying the axes untenable -- and a
+#: bare `3` in a slice is the sort of thing a later axis insertion moves silently.
+_MIXED_ELIGIBLE_INDEX = 3
 
 # Composed forms only. A Devanagari class written as a range over *composed*
 # characters decomposes if it is ever pasted through a shell, which compiles and
@@ -2800,15 +2807,18 @@ def _map_ranking_key_margin_gated(threshold: float):
 
     def key(validity: dict[str, float]) -> tuple[float, ...]:
         eligible = 1.0 if validity.get("mixed", 0.0) <= threshold else 0.0
-        return (
-            validity["hits"],
-            -validity["penalty"],
-            -max(validity["stranded"] - _RANKING_STRANDED_FORGIVENESS, 0),
-            eligible,
-            validity["attested"],
-            validity["ratio"],
-            validity["devanagari"],
-        )
+        # 🛑 SPLICED into :func:`_map_ranking_key`'s tuple, never restated. This function
+        # used to hand-copy those axes, and the copy drifted the moment one of them
+        # gained a term: `-validity["penalty"]` here stayed RAW while the ungated key
+        # started forgiving one ikar+nasal site, so the gate ranked on a different garble
+        # measure than the pass it is supposed to refine. Measured on
+        # `3229__...sidingwa gapa.pdf`, font `Spins`: ungated `-penalty` 0 (level with
+        # `Kantipur`, so the stranded tell decides it correctly), gated **-6** (Kantipur
+        # wins outright and the whole font unit is mis-decoded). Latent only because the
+        # gate ships OFF -- and the gate exists precisely so it can be turned ON, which
+        # is what makes a silent divergence here worse than a visible one.
+        base = _map_ranking_key(validity)
+        return base[:_MIXED_ELIGIBLE_INDEX] + (eligible,) + base[_MIXED_ELIGIBLE_INDEX:]
 
     return key
 

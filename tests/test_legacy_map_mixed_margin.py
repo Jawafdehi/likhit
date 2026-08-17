@@ -193,15 +193,18 @@ class TestRankingKeyIsAnIndicator:
     """The inserted term promotes the eligible SET; it does not order within it."""
 
     @staticmethod
-    def _validity(mixed, attested):
+    def _validity(mixed, attested, penalty=0.0, ikar_nasal=0.0):
         return {
             "hits": 3.0,
-            "penalty": 0.0,
+            "penalty": float(penalty),
             "stranded": 0.0,
             "attested": float(attested),
             "ratio": 0.99,
             "devanagari": 100.0,
             "mixed": float(mixed),
+            # Required, not optional: the gated key derives from `_map_ranking_key`,
+            # which reads this strictly. A dict built without it is a bug.
+            "ikar_nasal": float(ikar_nasal),
         }
 
     def test_eligibility_is_a_step_not_a_gradient(self):
@@ -231,6 +234,57 @@ class TestRankingKeyIsAnIndicator:
         assert got[2] == 0.0  # -max(stranded - forgiveness, 0)
         assert got[3] == 1.0  # the eligibility indicator
         assert got[4] == 7.0  # attested, demoted one position
+
+    def test_the_gated_key_is_the_ungated_key_with_one_term_spliced_in(self):
+        """🛑 The anti-drift pin, and it is not hypothetical.
+
+        This function used to RESTATE `_map_ranking_key`'s axes instead of deriving from
+        them, and the copy diverged the moment one of them gained a term: the ungated key
+        began forgiving a single ikar+nasal site and the gated copy kept charging it, so
+        the gate ranked on a *different garble measure* than the pass it refines.
+
+        Removing the ELIGIBLE term must leave exactly the ungated key -- for every shape,
+        including ones where the forgiven term actually bites, which is what the copy got
+        wrong.
+        """
+
+        key = fb._map_ranking_key_margin_gated(threshold=8.0)
+        i = fb._MIXED_ELIGIBLE_INDEX
+        for mixed, attested, penalty, nasal in [
+            (0, 5, 0, 0),
+            (9, 5, 0, 0),
+            (2, 20, 6, 1),  # the forgiveness bites: 6 charged, 6 forgiven
+            (2, 20, 12, 2),  # bounded: only one site is forgiven
+            (99, 1, 30, 5),
+        ]:
+            validity = self._validity(
+                mixed=mixed, attested=attested, penalty=penalty, ikar_nasal=nasal
+            )
+            gated = key(validity)
+            ungated = fb._map_ranking_key(validity)
+            assert gated[:i] + gated[i + 1 :] == ungated, (
+                f"gated key diverged from the ungated one at "
+                f"penalty={penalty} ikar_nasal={nasal}"
+            )
+            assert len(gated) == len(ungated) + 1
+
+    def test_the_gate_inherits_the_ikar_nasal_forgiveness(self):
+        """The specific divergence, stated as its own case.
+
+        `3229__1613898700sidingwa gapa.pdf`, font `Spins`: one structurally impossible
+        ikar+nasal site, in a region malformed under every candidate map. Forgiven, Spins
+        is level with `Kantipur` on the garble axis and the stranded tell decides it
+        correctly. Charged -- which is what the hand-copied gated key did -- Spins sits at
+        -6 and Kantipur wins outright, mis-decoding the whole font unit.
+        """
+
+        key = fb._map_ranking_key_margin_gated(threshold=8.0)
+        spins = self._validity(mixed=0, attested=5, penalty=6, ikar_nasal=1)
+        kantipur = self._validity(mixed=0, attested=5, penalty=0, ikar_nasal=0)
+
+        assert key(spins)[1] == key(kantipur)[1] == 0.0
+        # ...and the raw penalty really did differ, so this is not a vacuous comparison.
+        assert spins["penalty"] != kantipur["penalty"]
 
 
 class TestGateOffIsShipped:

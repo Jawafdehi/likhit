@@ -279,6 +279,18 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "the only effect is to break pass-1 ties, which drops the VOL-156 ambiguity "
         "mask. Registered in the same commit as the constant, per finding 86-5",
     ),
+    (
+        "likhit/extractors/font_based.py",
+        "_MIXED_ELIGIBLE_INDEX",
+    ): (
+        3,
+        "where the ELIGIBLE indicator is spliced into _map_ranking_key's tuple: below "
+        "the stranded tell, above attested. NOT a tuning value -- it is a structural "
+        "index, and it is named because the gated key DERIVES from the ungated one "
+        "instead of restating its axes. The restated copy diverged once already (it "
+        "kept charging an ikar+nasal site the ungated key forgives), so a bare 3 in "
+        "that slice is what a later axis insertion would move silently",
+    ),
     # -- ranking forgiveness ---------------------------------------------------- #
     #
     # Each term forgives ONE occurrence before the tell counts, because each fires at a
