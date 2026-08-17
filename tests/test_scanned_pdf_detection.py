@@ -32,10 +32,10 @@ from likhit.extractors.font_based import (
     _IMPOSSIBLE_IKAR_NASAL_PATTERN,
     _is_probably_legacy_ascii,
     _legacy_map_garble,
+    _RANKING_GARBLE_FORGIVENESS,
     _map_ranking_key,
     _nepali_validity,
     _passes_content_legacy_gate,
-    _RANKING_IKAR_NASAL_FORGIVENESS,
     _reads_as_latin_words,
     _text_quality_penalty,
     choose_legacy_map,
@@ -903,15 +903,125 @@ def test_a_real_difference_in_garble_still_outranks_the_ratio() -> None:
     # against PCS NEPALI's zero, and it leaves a stranded ")" inside दनवा)टोल.
     # A ratio-first key would pick Spins here, then lose the span entirely when it
     # failed the gate.
-    pcs = _validity(hits=2, penalty=0, devanagari=658, ratio=0.679752)
-    spins = _validity(hits=2, penalty=48, devanagari=655, ratio=0.688025)
+    #
+    # `stranded=1` is the measured value, re-derived at `cd1734f` (VOL-226), not the
+    # helper's default -- so this also shows the two tells AGREEING here, which is why
+    # the comment below about the hypothetical disagreement is a separate test.
+    pcs = _validity(hits=2, penalty=0, devanagari=658, ratio=0.679752, stranded=0)
+    spins = _validity(hits=2, penalty=48, devanagari=655, ratio=0.688025, stranded=1)
     assert spins["ratio"] > pcs["ratio"]
+    assert spins["stranded"] > pcs["stranded"]
 
     assert _map_ranking_key(pcs) > _map_ranking_key(spins)
     # And Spins could not have been used anyway: normalised, its garble is over
     # the gate's ceiling. The ranking and the gate are separate judgements.
     assert not _passes_content_legacy_gate(spins)
     assert _passes_content_legacy_gate(pcs)
+
+
+# --- VOL-226: a small garble margin must not veto the axes that identify the map ---
+#
+# `stranded` and `attested` say WHICH MAP read a span. `penalty` says whether the
+# output is well-formed Devanagari -- which a wrong legacy map also is, because it
+# spells the wrong word out of valid characters. So a small garble margin is not
+# evidence about the map while being more than enough to veto the two axes that are,
+# and `_RANKING_GARBLE_FORGIVENESS` levels it so they are reached.
+#
+# The axis is NOT reordered. Promoting `stranded` above `penalty` was swept over all
+# 6,236 corpus PDFs and moves 7 font decisions: it repairs the one below and breaks
+# six, costing `निर्माण` 87 occurrences and abstaining on three documents outright.
+# Measured at the v14 tip `cd1734f`; instruments in `oag-corpus/runs/vol226/`.
+
+
+def test_a_small_garble_margin_does_not_veto_the_wrong_map_tell() -> None:
+    # `3843__...Godawari finale`, font "Spins", 1,340 characters. Preeti was chosen and
+    # rendered `संख्या`->`स)ख्या` x3, `कर्मचारी`->`कमंचारी`, `सि.नं.`->`सि(न)(`, and left
+    # `X` raw as `Xयुम` x3 through the residual tie. Both axes that identify the map
+    # pointed at Spins, and a 6-point margin on the axis above them overruled both.
+    preeti = _validity(
+        hits=3, penalty=0, devanagari=826, ratio=0.976359, stranded=4, attested=40
+    )
+    spins = _validity(
+        hits=3, penalty=6, devanagari=843, ratio=0.984813, stranded=0, attested=44
+    )
+    # The fault is real: the raw garble count prefers the map that misreads the span.
+    assert spins["penalty"] > preeti["penalty"]
+    assert spins["stranded"] < preeti["stranded"]
+    assert spins["attested"] > preeti["attested"]
+
+    assert _map_ranking_key(spins) > _map_ranking_key(preeti)
+    # Forgiven, the garble axis LEVELS -- it does not flip. The decision is made one
+    # axis lower, by `stranded`, which is the axis that can see the defect.
+    assert _map_ranking_key(spins)[:2] == _map_ranking_key(preeti)[:2]
+    assert _map_ranking_key(spins)[2] > _map_ranking_key(preeti)[2]
+    # And the wrong reading was never gate-refused -- the ranking is the only thing
+    # standing between this span and the wrong map.
+    assert _passes_content_legacy_gate(preeti)
+    assert _passes_content_legacy_gate(spins)
+
+
+def test_the_forgiveness_floor_is_bounded_and_a_real_garble_gap_still_decides() -> None:
+    # The bound is what separates the case above from the six the sweep says must not
+    # move. The smallest of those six is `3172__...विराटनगर महानगरपालिका`, font
+    # "ShangrilaNumeric": the wrong candidate carries 71 garble points to the right
+    # one's 20, and it has FEWER stranded brackets (6 against 7), so if the floor
+    # levelled this margin too the span would flip and lose `निर्माण` 20 times.
+    right = _validity(
+        hits=2, penalty=20, devanagari=2501, ratio=0.946990, stranded=7, attested=12
+    )
+    wrong = _validity(
+        hits=2, penalty=71, devanagari=3077, ratio=0.956779, stranded=6, attested=11
+    )
+    assert wrong["stranded"] < right["stranded"]  # the tell points the wrong way here
+    assert _map_ranking_key(right) > _map_ranking_key(wrong)
+    # Decided ON the garble axis, not below it: the floor must not have levelled these.
+    assert _map_ranking_key(right)[1] > _map_ranking_key(wrong)[1]
+
+    # And the floor forgives at most one artifact of any kind, so a candidate whose
+    # only garble is a single heaviest-pattern hit is levelled, never advantaged.
+    one_artifact = _validity(
+        hits=2, penalty=_RANKING_GARBLE_FORGIVENESS, devanagari=100, ratio=0.99
+    )
+    clean = _validity(hits=2, penalty=0, devanagari=100, ratio=0.99)
+    assert _map_ranking_key(one_artifact)[1] == _map_ranking_key(clean)[1]
+    over_by_one = _validity(
+        hits=2, penalty=_RANKING_GARBLE_FORGIVENESS + 1, devanagari=100, ratio=0.99
+    )
+    assert _map_ranking_key(clean)[1] > _map_ranking_key(over_by_one)[1]
+
+
+def test_a_forgiven_margin_is_not_handed_to_the_ratio() -> None:
+    # What the floor forgives, the raw count recovers below `attested`. Without that,
+    # forgiving a margin does not hand the decision to the axes that are evidence --
+    # it hands it to whichever axis is next, and when `stranded` and `attested` are
+    # level too, that is `ratio`, which this file establishes is a mirage here.
+    #
+    # `2901__...Janaknandani gaupalika`, font "CIDFont+F14", 1,277 characters: a bare
+    # floor of 6 flipped it from PCS NEPALI to Preeti on a 0.017 ratio difference with
+    # `attested` flat at 39 and `stranded` flat at 0 -- no evidence about the map at
+    # all. Nothing that identifies the map separates these two, so the reading with
+    # less garble must keep the span.
+    pcs = _validity(
+        hits=3, penalty=0, devanagari=1067, ratio=0.978900, stranded=0, attested=39
+    )
+    preeti = _validity(
+        hits=3, penalty=6, devanagari=1235, ratio=0.995970, stranded=0, attested=39
+    )
+    assert preeti["ratio"] > pcs["ratio"]  # the only axis that separates them
+    assert preeti["stranded"] == pcs["stranded"]
+    assert preeti["attested"] == pcs["attested"]
+    # The margin IS inside the floor, so the top axis genuinely levels them...
+    assert _map_ranking_key(pcs)[1] == _map_ranking_key(preeti)[1]
+    # ...and the raw count still decides, above `ratio`.
+    assert _map_ranking_key(pcs) > _map_ranking_key(preeti)
+
+    # The contrast that makes this a rescue and not a blanket refusal: give the
+    # forgiven candidate one more attested word and it wins, because now something
+    # that identifies the map does separate them. This is `3843`'s shape.
+    preeti_but_worse_nepali = _validity(
+        hits=3, penalty=6, devanagari=1235, ratio=0.995970, stranded=0, attested=40
+    )
+    assert _map_ranking_key(preeti_but_worse_nepali) > _map_ranking_key(pcs)
 
 
 def test_nepali_validity_reports_both_forms_of_the_garble_measure() -> None:
@@ -1522,14 +1632,38 @@ def test_one_ikar_nasal_site_does_not_outrank_the_stranded_bracket_tell() -> Non
     assert _map_ranking_key(spins) > _map_ranking_key(kantipur)
 
 
-def test_one_ikar_nasal_site_does_not_outrank_a_real_ratio_margin() -> None:
-    # The same forgiveness, reached through the axis BELOW the tell: with the tell tied
-    # as well, `ratio` decides. This is the form the fix takes on `main`, where no
-    # stranded axis exists yet, so it pins the behaviour on both sides of that change.
-    spins = _validity(hits=4, penalty=6, devanagari=592, ratio=0.9801, ikar_nasal=1)
-    kantipur = _validity(hits=4, penalty=0, devanagari=577, ratio=0.9681)
+def test_the_forgiveness_gets_3229_down_to_the_axis_that_decides_it() -> None:
+    # 🛑 This test used to assert that with the tell tied as well, `ratio` decides -- on a
+    # fixture that zeroed `stranded` and `attested` to model the pre-stranded world. Under
+    # VOL-226's floor that is deliberately false: what the floor forgives, the raw count
+    # recovers BELOW `attested`, precisely so a forgiven margin can never be handed to
+    # `ratio` (measured: a bare floor flipped 2901 on a 0.017 ratio difference with no map
+    # evidence at all -- `test_a_forgiven_margin_is_not_handed_to_the_ratio`).
+    #
+    # So it is re-pinned on the REAL numbers of the document the term exists for, read off
+    # `main` at f7b7e32 (`tools/probe_docs_on_main.py`). They make the point better than
+    # the stripped shape did: `ratio` never had to decide 3229, because `stranded`
+    # separates it 0 against 12.
+    spins = _validity(
+        hits=4,
+        penalty=6,
+        devanagari=592,
+        ratio=0.9801,
+        stranded=0,
+        attested=26,
+        ikar_nasal=1,
+    )
+    kantipur = _validity(
+        hits=4, penalty=0, devanagari=577, ratio=0.9681, stranded=12, attested=22
+    )
 
-    assert _map_ranking_key(spins)[:3] == _map_ranking_key(kantipur)[:3]
+    # Unforgiven, the 6-point margin settles it for the wrong map before anything that
+    # identifies the map is read -- that is the defect.
+    assert spins["penalty"] > kantipur["penalty"]
+    # Forgiven, the garble axis LEVELS, so the decision falls through...
+    assert _map_ranking_key(spins)[:2] == _map_ranking_key(kantipur)[:2]
+    # ...to `stranded`, which is evidence about the map, and it picks Spins.
+    assert _map_ranking_key(spins)[2] > _map_ranking_key(kantipur)[2]
     assert _map_ranking_key(spins) > _map_ranking_key(kantipur)
 
 
@@ -1574,13 +1708,16 @@ def test_the_gate_forgives_no_ikar_nasal_site_at_all() -> None:
     assert -_map_ranking_key(validity)[1] == validity["penalty"] - _IKAR_NASAL_WEIGHT
 
 
-def test_the_forgiven_amount_matches_what_the_penalty_charges_per_site() -> None:
-    # An equality test, because the weight lives in two places -- the term in
-    # `_text_quality_penalty` and the subtraction in `_map_ranking_key`. A literal that
-    # drifts in one of them is exactly how #86's doublet floor stopped applying on the
-    # ranking path while every other test stayed green.
+def test_the_floor_still_matches_what_one_ikar_nasal_site_charges() -> None:
+    # An equality test, and it now pins a SUBSUMPTION rather than a pair of literals.
+    # This term used to have a forgiveness of its own, `_RANKING_IKAR_NASAL_FORGIVENESS
+    # = 1`, which `_map_ranking_key` subtracted at exactly `_IKAR_NASAL_WEIGHT`. VOL-226
+    # replaced it with a floor on the axis itself, and the floor reproduces every one of
+    # those decisions ONLY while it equals the per-site charge. If either value drifts,
+    # the tests below that build `ikar_nasal` fixtures silently change meaning instead of
+    # failing -- which is how #86's doublet floor stopped applying on the ranking path
+    # while every other test stayed green.
     one_site = "एिं"
     assert len(_IMPOSSIBLE_IKAR_NASAL_PATTERN.findall(one_site)) == 1
     charged = _text_quality_penalty(one_site) - _text_quality_penalty("")
-    forgiven = _RANKING_IKAR_NASAL_FORGIVENESS * _IKAR_NASAL_WEIGHT
-    assert charged == forgiven == 6
+    assert charged == _IKAR_NASAL_WEIGHT == _RANKING_GARBLE_FORGIVENESS == 6

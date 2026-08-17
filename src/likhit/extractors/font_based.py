@@ -117,51 +117,6 @@ _IMPOSSIBLE_IKAR_NASAL_PATTERN = re.compile(
     # (?<! consonant | nukta | virama ) ikar (?= candrabindu | anusvara | visarga )
     "(?<![\u0915-\u0939\u093c\u094d])\u093f(?=[\u0901\u0902\u0903])"
 )
-#: How many sites of the term above are forgiven when RANKING two decodes of one span.
-#:
-#: The term is a gate signal first: 1,451 of its 1,550 sites sit in words whose whole
-#: penalty is otherwise 0, and without it `_passes_content_legacy_gate` accepts garble
-#: (see the block above). But `_map_ranking_key` reuses the same raw `penalty` to CHOOSE
-#: between candidate maps, and there a single site is not evidence about the map at all:
-#: it can be evidence about the SOURCE, which every candidate decodes alike.
-#:
-#: `3229__1613898700sidingwa gapa.pdf`, font `Spins`, 687 raw / 592 Devanagari characters,
-#: is the measured instance. One source region decodes as `\u092e\u094d\u0926\u093e\u093f\u0901` under Spins and Preeti
-#: and as `\u092e\u094d\u0926\u093e\u093e\u093f` under Kantipur, PCS NEPALI and FONTASY_HIMALI_TT -- malformed either
-#: way (two vowel signs in sequence), so it says nothing about which map is right, but
-#: only the first ordering matches this pattern. That single site costs 6 penalty points,
-#: and `penalty` ranks ABOVE the stranded-bracket tell, so it decides the span before any
-#: axis that actually separates the maps is consulted:
-#:
-#:     map           hits  penalty  stranded   ratio   deva
-#:     Spins            4        6         0  0.9801    592   <- correct
-#:     Kantipur         4        0        12  0.9681    577
-#:
-#: Spins is right and not marginally so: it reads `\u0915\u093e\u0932\u0940\u0916\u094b\u0932\u093e`, `\u092d\u091e\u094d\u091c\u094d\u092f\u093e\u0901`, `\u0924\u093f\u092e\u094d\u092c\u0941\u0901\u092a\u094b\u0916\u0930\u0940`,
-#: `\u0938\u093f\u0926\u094d\u0927\u0947\u0936\u0935\u0930\u0940 \u092e\u093e.\u0935\u093f.`, `\u091c\u0928\u0924\u093e \u092a\u094d\u0930\u093e.\u0935\u093f.` where Kantipur strands `)` mid-word twelve times
-#: and PCS NEPALI injects digits (`\u092e\u096c\u093f\u096c\u093e\u0930` for `\u092e\u091f\u093f\u091f\u093e\u0930`). Charged, the whole font unit is
-#: lost: `main` elects a wrong map that then FAILS the gate, so 592 Devanagari characters
-#: go undecoded -- the drop-rather-than-remap hazard `_map_ranking_key` names.
-#:
-#: One, not two, and only on the ranking axis:
-#:   * the gate keeps every site, because that is where the fails-open evidence is;
-#:   * a systematic mis-map fires far more than once -- the block above measures the
-#:     recovered mass at 1,550 sites in 240 documents, ~6 per document, and the two
-#:     windows it measured for the gate carry 3 and 4 in 100 and 160 characters;
-#:   * corpus-wide this forgiveness changes exactly ONE (document, font) pair out of
-#:     6,236 source PDFs swept, the one above.
-#:
-#: \u26a0\ufe0f Widening the lookbehind instead was measured and is WORSE than the defect: excluding
-#: a preceding vowel sign gives up **300 of 1,523 sites across 65 documents** (19.7%),
-#: because `\u093e`/`\u0941`/`\u0942` before the ikar is the second-commonest shape the term catches --
-#: after SPACE (629) and `\u090f` (479) it is `\u0941` (126) and `\u093e` (83). This forgiveness gives up
-#: one site in one document.
-#:
-#: \u26a0\ufe0f **1,550/240 and 1,523/227 are the same term on different generations, not a
-#: correction.** The block above counted v11 (`markdown-quality-v11`, 6,223 documents);
-#: the 1,523 here and the 300 given up are v16 (`markdown-quality-v16`, 6,235). Re-derive
-#: against the generation you mean and say which one, rather than reconciling them.
-_RANKING_IKAR_NASAL_FORGIVENESS = 1
 #: The weight the term carries in `_text_quality_penalty`. Named because
 #: `_map_ranking_key` has to subtract exactly it to forgive a site, and a literal in both
 #: places is a two-site edit that only an equality test would catch -- the failure mode
@@ -202,6 +157,110 @@ _RANKING_DOUBLET_FORGIVENESS = 1
 # `5023__नौकुण्ड`/`LiberationSerif` is a face this programme tracks separately. **None of
 # those five has been adjudicated**, and that is stated here rather than left implied.
 _RANKING_STRANDED_FORGIVENESS = 1
+# The FIRST measured instance of this floor, and the one that named it: a single
+# ikar+nasal site (`_IMPOSSIBLE_IKAR_NASAL_PATTERN`, `_IKAR_NASAL_WEIGHT` = 6 points).
+# It was a forgiveness of its own -- `_RANKING_IKAR_NASAL_FORGIVENESS = 1` -- until
+# VOL-226 showed the same argument holds for any small margin, whatever pattern raised
+# it, and the floor below subsumed it exactly (see `_map_ranking_key`).
+#
+# The term is a gate signal first: 1,451 of its 1,550 sites sit in words whose whole
+# penalty is otherwise 0, and without it `_passes_content_legacy_gate` accepts garble
+# (see `_IMPOSSIBLE_IKAR_NASAL_PATTERN`). But `_map_ranking_key` reuses the same raw
+# `penalty` to CHOOSE
+# between candidate maps, and there a single site is not evidence about the map at all:
+# it can be evidence about the SOURCE, which every candidate decodes alike.
+#
+# `3229__1613898700sidingwa gapa.pdf`, font `Spins`, 687 raw / 592 Devanagari characters,
+# is the measured instance. One source region decodes as `\u092e\u094d\u0926\u093e\u093f\u0901` under Spins and Preeti
+# and as `\u092e\u094d\u0926\u093e\u093e\u093f` under Kantipur, PCS NEPALI and FONTASY_HIMALI_TT -- malformed either
+# way (two vowel signs in sequence), so it says nothing about which map is right, but
+# only the first ordering matches this pattern. That single site costs 6 penalty points,
+# and `penalty` ranks ABOVE the stranded-bracket tell, so it decides the span before any
+# axis that actually separates the maps is consulted:
+#
+#     map           hits  penalty  stranded   ratio   deva
+#     Spins            4        6         0  0.9801    592   <- correct
+#     Kantipur         4        0        12  0.9681    577
+#
+# Spins is right and not marginally so: it reads `\u0915\u093e\u0932\u0940\u0916\u094b\u0932\u093e`, `\u092d\u091e\u094d\u091c\u094d\u092f\u093e\u0901`, `\u0924\u093f\u092e\u094d\u092c\u0941\u0901\u092a\u094b\u0916\u0930\u0940`,
+# `\u0938\u093f\u0926\u094d\u0927\u0947\u0936\u0935\u0930\u0940 \u092e\u093e.\u0935\u093f.`, `\u091c\u0928\u0924\u093e \u092a\u094d\u0930\u093e.\u0935\u093f.` where Kantipur strands `)` mid-word twelve times
+# and PCS NEPALI injects digits (`\u092e\u096c\u093f\u096c\u093e\u0930` for `\u092e\u091f\u093f\u091f\u093e\u0930`). Charged, the whole font unit is
+# lost: `main` elects a wrong map that then FAILS the gate, so 592 Devanagari characters
+# go undecoded -- the drop-rather-than-remap hazard `_map_ranking_key` names.
+#
+# One, not two, and only on the ranking axis:
+#   * the gate keeps every site, because that is where the fails-open evidence is;
+#   * a systematic mis-map fires far more than once -- `_IMPOSSIBLE_IKAR_NASAL_PATTERN`
+#     measures the recovered mass at 1,550 sites in 240 documents, ~6 per document, and
+#     the two windows it measured for the gate carry 3 and 4 in 100 and 160 characters;
+#   * corpus-wide the site-specific forgiveness this replaced changed exactly ONE
+#     (document, font) pair of the 6,236 swept, the one above. The floor that replaced
+#     it changes TWO -- that one plus `3843`/`5143`; see the calibration below.
+#
+# \u26a0\ufe0f Widening the lookbehind instead was measured and is WORSE than the defect: excluding
+# a preceding vowel sign gives up **300 of 1,523 sites across 65 documents** (19.7%),
+# because `\u093e`/`\u0941`/`\u0942` before the ikar is the second-commonest shape the term catches --
+# after SPACE (629) and `\u090f` (479) it is `\u0941` (126) and `\u093e` (83). This forgiveness gives up
+# one site in one document.
+#
+# \u26a0\ufe0f **1,550/240 and 1,523/227 are the same term on different generations, not a
+# correction.** `_IMPOSSIBLE_IKAR_NASAL_PATTERN`'s own block counted v11
+# (`markdown-quality-v11`, 6,223 documents);
+# the 1,523 here and the 300 given up are v16 (`markdown-quality-v16`, 6,235). Re-derive
+# against the generation you mean and say which one, rather than reconciling them.
+#
+# The third floor, on the garble axis itself, for the third time the same reason
+# applies (VOL-226). `_text_quality_penalty` measures WELL-FORMEDNESS, and a wrong
+# legacy map does not emit malformed Devanagari -- it emits well-formed Devanagari
+# spelling the wrong word. So a small garble margin between two candidate maps is not
+# evidence about which of them read the span, while it is large enough to veto the two
+# axes that are (`stranded`, `attested`).
+#
+# 12 is one hit of the heaviest single pattern in `_text_quality_penalty` -- a
+# replacement char or a PUA code point at 12 points each -- so the floor forgives at
+# most ONE artifact of ANY kind and no more.
+#
+# Swept over all 6,236 corpus PDFs at 3/6/12/24/48/70/71
+# (`oag-corpus/runs/vol226/floor-sweep-88a30e76.txt`). The floor alone has NO plateau
+# -- the changed-decision set grows monotonically with it, 0 decisions at 3 and 11 at
+# 71 -- which is why the raw count is restored below `attested` in
+# `_map_ranking_key`. With that restoration only decisions an evidence axis actually
+# separates can move, and the value stops carrying the weight: re-swept at 6/12/24/48
+# (`key-sweep-88a30e76.txt`), all four produce the IDENTICAL corpus outcome -- the same
+# 2 font decisions of 37,901, 0 abstentions, 0 byte differences anywhere else. That
+# plateau is the calibration.
+#
+# **6, and the value is FORCED rather than chosen.** It is the floor's lower bound -- both
+# spans this is for carry a margin of exactly 6 -- and it is what makes this floor subsume
+# the ikar+nasal forgiveness it replaced *exactly*: that term subtracted
+# `_IKAR_NASAL_WEIGHT` = 6 wherever it fired, so at 6 every case it decided still decides
+# the same way, and the landed tests that pin it still hold. At 12 they do not:
+# `test_a_second_ikar_nasal_site_still_decides` builds `penalty` 12 across two sites and
+# expects 6 forgiven, which a floor of 12 forgives entirely. The plateau means 6 costs
+# nothing to prefer, so the tie-breaker is behaviour already shipped.
+#
+# **Re-measured on `main` rather than inherited from v14**, because the axes below this one
+# moved since (`attested` VOL-185, the stranded forgiveness, the ikar split). Two trees
+# swept over all 6,236 corpus PDFs, `tools/dump_map_choices.py` -- the arms differ by TREE,
+# not by a constant, because this change alters the tuple's SHAPE and no constant expresses
+# the other arm:
+#
+#     changed decisions       2 of 1,389 decided (document, font) aggregates
+#     3843__...Godawari       Preeti            -> Spins
+#     5143__...हलेसी तुवाचुङ    FONTASY_HIMALI_TT -> Preeti
+#     abstentions gained      0
+#
+# Both were vetoed by a 6-point margin while every axis below it favoured the map that
+# wins here; on both, `ikar_nasal` is **0**, which is why the retired term did not reach
+# them. `3229` is unchanged -- its margin is forgiven either way.
+#
+# ⚠️ **The unit matters, and a SPAN is not the unit.** `detect_content_legacy_fonts` joins
+# a font's spans and calls the chooser once, so the aggregate is what production decides.
+# Measured at span level, 32,307 candidate spans over 150 documents decide **0** -- spans
+# are too short to clear the accept gate -- so a span-level fixture can abstain here while
+# the corpus outcome is clean. One landed test's fixture does exactly that; see
+# `tests/test_legacy_map_mixed_margin.py`.
+_RANKING_GARBLE_FORGIVENESS = 6
 # Two identical adjacent consonants are a real garble signal, but adjacency ALONE
 # is mostly wrong: in Nepali a stem ending in a consonant plus a suffix beginning
 # with the same one is ordinary morphology. Measured over all 6,223 documents of
@@ -2496,7 +2555,7 @@ def _passes_content_legacy_gate(validity: dict[str, float]) -> bool:
 
 def _map_ranking_key(
     validity: dict[str, float],
-) -> tuple[float, float, float, float, float, float]:
+) -> tuple[float, float, float, float, float, float, float]:
     """Evidence axes for a candidate map, most decisive first, higher is better.
 
     ``hits`` and ``penalty`` are the primary axes. ⚠️ ``penalty`` is deliberately NOT
@@ -2587,6 +2646,65 @@ def _map_ranking_key(
     calibrated absolute meaning goes first — and the sweep that would settle it is still
     owed. Anything reordering these two must run it rather than cite 4487.
 
+    **The garble axis forgives a bounded margin, and that is what lets the two axes
+    below it be reached (VOL-226).** ``penalty`` measures *well-formedness*, and a
+    wrong legacy map does not emit malformed Devanagari — it emits well-formed
+    Devanagari spelling the wrong word. So a *small* garble margin between two
+    candidates is not evidence about which of them read the span, while it is more
+    than enough to veto ``stranded`` and ``attested``, which are that evidence.
+    :data:`_RANKING_GARBLE_FORGIVENESS` levels those margins so the decision falls
+    through, exactly as the other two floors do for their own weak tells.
+
+    **The forgiven margin is restored below ``attested``, and that restoration is
+    load-bearing.** A bare floor does not hand the decision to the axes that are
+    evidence -- it hands it to whichever axis is next, and when ``stranded`` and
+    ``attested`` are level too, that is ``ratio``, which this docstring already
+    establishes is a mirage on exactly these spans. Measured over all 6,236 corpus
+    PDFs, a bare floor of 6 flipped ``2901__...Janaknandani gaupalika`` from
+    ``PCS NEPALI`` to ``Preeti`` on nothing but a 0.017 ratio difference, with
+    ``attested`` flat at 39 and ``stranded`` flat at 0; a floor of 12 added
+    ``2384__...पनौती नगरपालिका`` on the same shape, and 24 added two more
+    (``3741``, ``11319__...Nepalese Journal of Government Auditing``, the latter
+    losing `निर्माण` and `ऋण` x3). With the raw count restored as the last evidence
+    axis, all four of those hold their original map, because nothing that is evidence
+    about map identity separates them -- while ``3843`` still flips, because
+    ``stranded`` does separate it (0 against 4).
+
+    On ``3843__…Godawari finale`` (font ``Spins``, 1,340 characters) the better
+    ``Spins`` reading scores ``penalty`` **6** against ``Preeti``'s **0**, while
+    carrying ``stranded`` **0** against ``Preeti``'s **4** and ``attested`` **44**
+    against **40**. Both axes that identify the map pointed at ``Spins`` and both were
+    vetoed by a 6-point margin, so the span was read with the ``Preeti`` map —
+    mis-reading the rotated codes of :data:`_SPINS_TO_PREETI_KEYS`
+    (``संख्या``->``स)ख्या`` ×3, ``कर्मचारी``->``कमंचारी``, ``सि.नं.``->``सि(न)(``) and
+    leaving ``X`` raw through the residual tie (``ह्युम``->``Xयुम`` ×3). Forgiven, the
+    two candidates level at the garble axis, ``stranded`` decides 0 against 4, and the
+    span repairs 7 corrupt forms while losing no correct word.
+
+    **Those 6 points are a TRUE positive, and the distinction is why this is a floor
+    and not a reordering.** They are one ``_INVALID_IKAR_PATTERN`` hit on one genuinely
+    malformed token, because the span **mixes both keyboard layouts**: ``l;=g+=`` is
+    typed in the Preeti layout and reads ``सि.नं.`` under ``Preeti`` against a
+    malformed ``सिृर्नृ`` under ``Spins``, while ``;_Vof`` is typed in the Spins layout
+    and reads ``संख्या`` under ``Spins`` against ``स)ख्या`` under ``Preeti``. Neither
+    map is right for the whole aggregate, so the choice is a majority judgement, and
+    ``penalty`` cannot make it — one malformed token dominates an absolute damage count
+    while seven wrong-but-well-formed words cost it nothing.
+
+    **Promoting ``stranded`` above ``penalty`` was the obvious alternative and is
+    measurably wrong.** Swept over all 6,236 corpus PDFs (``runs/vol226/``), it moves 7
+    font decisions: it repairs ``3843`` and it breaks the other six, costing
+    ``निर्माण`` **87 occurrences** and driving **three** documents — 31,338 characters
+    of legacy text — to abstain outright, because the candidate it promotes then fails
+    :func:`_passes_content_legacy_gate`. ``attested`` separates all seven cases (it
+    rises only on ``3843``); a gate-aware axis separates only the three abstentions.
+    The margin separates them too and needs no new instrument: the one decision that
+    should move carries **6**, the nearest that must not carries **51**, and the rest
+    carry 117 to 966. Hence a bounded floor, with the axis left where VOL-89 and
+    VOL-131 put it. ``_text_quality_penalty``'s patterns are likewise untouched —
+    VOL-135 measured 2 of its 8 firing on correct Nepali, but this hit is not one of
+    those, and every other consumer of the penalty would move with a change to them.
+
     **``attested`` sits between ``stranded`` and ``ratio`` (VOL-185).** It counts how
     many distinct high-frequency Nepali word-forms a reading actually produces, and it
     is placed exactly where the axes stop being evidence: everything above it ties on
@@ -2621,23 +2739,33 @@ def _map_ranking_key(
 
     return (
         validity["hits"],
-        # The raw count, minus a bounded forgiveness for the ikar+nasal term only. That
-        # term is a GATE signal (its sites are otherwise invisible and the miss
-        # fails-open), but between two decodes of ONE span a single site can be evidence
-        # about the source rather than about the map: the same region decodes malformed
-        # under every candidate and only some orderings match the pattern. Six points is
-        # then enough to settle a span before the stranded-bracket tell below -- let
-        # alone `ratio` -- is consulted. See `_RANKING_IKAR_NASAL_FORGIVENESS` for the
-        # measured instance and why one is the right bound.
-        -(
-            validity["penalty"]
-            - min(validity["ikar_nasal"], _RANKING_IKAR_NASAL_FORGIVENESS)
-            * _IKAR_NASAL_WEIGHT
-        ),
+        # The raw count, minus a bounded forgiveness -- the one-artifact floor.
+        # `penalty` measures WELL-FORMEDNESS, and a wrong legacy map does not emit
+        # malformed Devanagari; it emits well-formed Devanagari spelling the wrong word.
+        # So a small garble margin between two decodes of ONE span is not evidence about
+        # which map read it, while it is more than enough to veto `stranded` and
+        # `attested`, which are that evidence. See `_RANKING_GARBLE_FORGIVENESS`, and the
+        # restoration of the raw count below `attested` that bounds it.
+        #
+        # 🛑 **This GENERALISES the ikar+nasal forgiveness it replaces, and the
+        # generalisation is exact where that term fired.** The old form subtracted
+        # `_IKAR_NASAL_WEIGHT` when `_IMPOSSIBLE_IKAR_NASAL_PATTERN` matched at all;
+        # since that pattern contributes exactly that weight per site, `penalty` is
+        # always >= it when the term fired, so the floor below subtracts the same 6 in
+        # every one of those cases. What it adds is the margins the pattern does NOT
+        # explain -- `3843` and `5143` both carry 6 points of `_INVALID_IKAR_PATTERN`
+        # with `ikar_nasal` at 0, so the old term left them vetoed. `ikar_nasal` is still
+        # reported: it is the measured instance that motivated the floor, and the gate
+        # statistic `penalty_per_deva` still charges it in full.
+        -max(validity["penalty"] - _RANKING_GARBLE_FORGIVENESS, 0),
         # VOL-185: a single stranded bracket is forgiven for the same reason a single
         # doublet is -- see `_RANKING_STRANDED_FORGIVENESS`.
         -max(validity["stranded"] - _RANKING_STRANDED_FORGIVENESS, 0),
         validity["attested"],
+        # VOL-226: the raw count, restored as the LAST evidence axis. What the floor
+        # above forgives, this recovers -- so a forgiven margin can only ever be
+        # overruled by `stranded` or `attested`, never by `ratio`, which is a mirage.
+        -validity["penalty"],
         validity["ratio"],
         validity["devanagari"],
     )
