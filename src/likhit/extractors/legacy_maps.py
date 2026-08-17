@@ -117,8 +117,19 @@ _SPINS_TO_PREETI_KEYS = str.maketrans(
 )
 
 # Every legacy map content-based (name-agnostic) detection tries against a span.
-# Order matters only for exact ties, which the first entry wins -- Spins is last
-# so it has to beat Preeti outright to be chosen.
+# Order is NOT a tie-break. It was once, implicitly -- `choose_legacy_map` kept the
+# first strict maximum, so two maps level on every axis were separated by their
+# position here, and Spins being last meant it lost every exact tie to Preeti. That
+# decided real documents wrongly on small spans (VOL-77).
+#
+# ⚠️ Two separate remedies replaced it and this comment used to run them together: the
+# two added ranking AXES (`ratio`, then `devanagari`) resolve the VOL-77 document itself
+# -- measured, it decodes as Spins and the abstention branch never runs on it -- and
+# abstention handles only the residue no axis separates. See `choose_legacy_map`, which
+# also records what abstention costs on this corpus.
+#
+# These tuples only fix the order candidates are walked and reported in; nothing
+# behavioural depends on it.
 #: The maps npttf2utf actually ships, i.e. the ones with an upstream table in its
 #: vendored ``map.json``. Kept separate from :data:`ALL_MAP_KEYS` because
 #: :data:`SPINS_MAP_KEY` has no upstream: a test that asks "does our compiled pipeline
