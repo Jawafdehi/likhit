@@ -114,6 +114,56 @@ _IMPOSSIBLE_IKAR_NASAL_PATTERN = re.compile(
     # (?<! consonant | nukta | virama ) ikar (?= candrabindu | anusvara | visarga )
     "(?<![\u0915-\u0939\u093c\u094d])\u093f(?=[\u0901\u0902\u0903])"
 )
+#: How many sites of the term above are forgiven when RANKING two decodes of one span.
+#:
+#: The term is a gate signal first: 1,451 of its 1,550 sites sit in words whose whole
+#: penalty is otherwise 0, and without it `_passes_content_legacy_gate` accepts garble
+#: (see the block above). But `_map_ranking_key` reuses the same raw `penalty` to CHOOSE
+#: between candidate maps, and there a single site is not evidence about the map at all:
+#: it can be evidence about the SOURCE, which every candidate decodes alike.
+#:
+#: `3229__1613898700sidingwa gapa.pdf`, font `Spins`, 687 raw / 592 Devanagari characters,
+#: is the measured instance. One source region decodes as `\u092e\u094d\u0926\u093e\u093f\u0901` under Spins and Preeti
+#: and as `\u092e\u094d\u0926\u093e\u093e\u093f` under Kantipur, PCS NEPALI and FONTASY_HIMALI_TT -- malformed either
+#: way (two vowel signs in sequence), so it says nothing about which map is right, but
+#: only the first ordering matches this pattern. That single site costs 6 penalty points,
+#: and `penalty` ranks ABOVE the stranded-bracket tell, so it decides the span before any
+#: axis that actually separates the maps is consulted:
+#:
+#:     map           hits  penalty  stranded   ratio   deva
+#:     Spins            4        6         0  0.9801    592   <- correct
+#:     Kantipur         4        0        12  0.9681    577
+#:
+#: Spins is right and not marginally so: it reads `\u0915\u093e\u0932\u0940\u0916\u094b\u0932\u093e`, `\u092d\u091e\u094d\u091c\u094d\u092f\u093e\u0901`, `\u0924\u093f\u092e\u094d\u092c\u0941\u0901\u092a\u094b\u0916\u0930\u0940`,
+#: `\u0938\u093f\u0926\u094d\u0927\u0947\u0936\u0935\u0930\u0940 \u092e\u093e.\u0935\u093f.`, `\u091c\u0928\u0924\u093e \u092a\u094d\u0930\u093e.\u0935\u093f.` where Kantipur strands `)` mid-word twelve times
+#: and PCS NEPALI injects digits (`\u092e\u096c\u093f\u096c\u093e\u0930` for `\u092e\u091f\u093f\u091f\u093e\u0930`). Charged, the whole font unit is
+#: lost: `main` elects a wrong map that then FAILS the gate, so 592 Devanagari characters
+#: go undecoded -- the drop-rather-than-remap hazard `_map_ranking_key` names.
+#:
+#: One, not two, and only on the ranking axis:
+#:   * the gate keeps every site, because that is where the fails-open evidence is;
+#:   * a systematic mis-map fires far more than once -- the block above measures the
+#:     recovered mass at 1,550 sites in 240 documents, ~6 per document, and the two
+#:     windows it measured for the gate carry 3 and 4 in 100 and 160 characters;
+#:   * corpus-wide this forgiveness changes exactly ONE (document, font) pair out of
+#:     6,236 source PDFs swept, the one above.
+#:
+#: \u26a0\ufe0f Widening the lookbehind instead was measured and is WORSE than the defect: excluding
+#: a preceding vowel sign gives up **300 of 1,523 sites across 65 documents** (19.7%),
+#: because `\u093e`/`\u0941`/`\u0942` before the ikar is the second-commonest shape the term catches --
+#: after SPACE (629) and `\u090f` (479) it is `\u0941` (126) and `\u093e` (83). This forgiveness gives up
+#: one site in one document.
+#:
+#: \u26a0\ufe0f **1,550/240 and 1,523/227 are the same term on different generations, not a
+#: correction.** The block above counted v11 (`markdown-quality-v11`, 6,223 documents);
+#: the 1,523 here and the 300 given up are v16 (`markdown-quality-v16`, 6,235). Re-derive
+#: against the generation you mean and say which one, rather than reconciling them.
+_RANKING_IKAR_NASAL_FORGIVENESS = 1
+#: The weight the term carries in `_text_quality_penalty`. Named because
+#: `_map_ranking_key` has to subtract exactly it to forgive a site, and a literal in both
+#: places is a two-site edit that only an equality test would catch -- the failure mode
+#: `_RANKING_DOUBLET_FORGIVENESS`'s sibling term already produced once in this stack.
+_IKAR_NASAL_WEIGHT = 6
 _HALANT_IKAR_PATTERN = re.compile(r"्ि")
 _DUPLICATE_CONSONANT_PATTERN = re.compile(r"([क-ह])\1")
 # Two identical adjacent consonants are a real garble signal, but adjacency ALONE
@@ -576,7 +626,7 @@ def _text_quality_penalty(text: str) -> int:
         + len(_INVALID_SIGN_PATTERN.findall(text)) * 8
         + len(_PREFIX_IKAR_PATTERN.findall(text)) * 6
         + len(_INVALID_IKAR_PATTERN.findall(text)) * 6
-        + len(_IMPOSSIBLE_IKAR_NASAL_PATTERN.findall(text)) * 6
+        + len(_IMPOSSIBLE_IKAR_NASAL_PATTERN.findall(text)) * _IKAR_NASAL_WEIGHT
         + len(_HALANT_IKAR_PATTERN.findall(text)) * 4
         + _duplicate_consonant_count(text) * 3
         + len(_SUSPICIOUS_ARTIFACT_PATTERN.findall(text)) * 8
@@ -857,6 +907,11 @@ def _nepali_validity(text: str) -> dict[str, float]:
         # normalised form to rank candidates is a bug.
         "penalty": penalty,
         "penalty_per_deva": penalty / devanagari if devanagari else float("inf"),
+        # Reported separately so `_map_ranking_key` can forgive a bounded number of
+        # these sites WITHOUT the gate forgiving any -- see
+        # `_RANKING_IKAR_NASAL_FORGIVENESS`. It is a component of `penalty`, not an
+        # extra axis, so it must not be read as evidence on its own.
+        "ikar_nasal": len(_IMPOSSIBLE_IKAR_NASAL_PATTERN.findall(text)),
         "hits": hits,
         # Not part of `penalty`: see `_STRANDED_BRACKET_PATTERN`. Ranking only.
         "stranded": len(_STRANDED_BRACKET_PATTERN.findall(text)),
@@ -965,7 +1020,19 @@ def _map_ranking_key(
 
     return (
         validity["hits"],
-        -validity["penalty"],
+        # The raw count, minus a bounded forgiveness for the ikar+nasal term only. That
+        # term is a GATE signal (its sites are otherwise invisible and the miss
+        # fails-open), but between two decodes of ONE span a single site can be evidence
+        # about the source rather than about the map: the same region decodes malformed
+        # under every candidate and only some orderings match the pattern. Six points is
+        # then enough to settle a span before the stranded-bracket tell below -- let
+        # alone `ratio` -- is consulted. See `_RANKING_IKAR_NASAL_FORGIVENESS` for the
+        # measured instance and why one is the right bound.
+        -(
+            validity["penalty"]
+            - min(validity["ikar_nasal"], _RANKING_IKAR_NASAL_FORGIVENESS)
+            * _IKAR_NASAL_WEIGHT
+        ),
         -validity["stranded"],
         validity["ratio"],
         validity["devanagari"],
