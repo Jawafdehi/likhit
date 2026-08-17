@@ -39,9 +39,15 @@ import pytest
 from likhit.extractors.legacy_maps import (
     DECODABLE_MAP_KEYS,
     SHIPPED_MAP_KEYS,
+    SIDDHI_MAP_KEY,
+    SPINS_MAP_KEY,
     SYNTHESISED_MAP_KEYS,
     _get_compiled_map,
     _RA_KEYSTROKE_MAPS,
+    _SIDDHI_BASE_MAP_KEY,
+    _SIDDHI_TO_HIMALI_KEYS,
+    _SPINS_BASE_MAP_KEY,
+    _SPINS_TO_PREETI_KEYS,
     get_converter_for_map,
 )
 
@@ -325,37 +331,121 @@ def test_no_map_emits_an_undocumented_question_mark(map_key: str) -> None:
     )
 
 
-def test_no_map_emits_a_question_mark_among_other_characters() -> None:
+@pytest.mark.parametrize("map_key", sorted(DECODABLE_MAP_KEYS))
+def test_no_map_emits_a_question_mark_among_other_characters(map_key: str) -> None:
     """A `?` inside a longer decode is invisible to the single-character sweeps.
 
     Those ask "which code point decodes to exactly `?`". A rule could instead emit one as
     part of a cluster -- undocumented either way, and not covered by that question.
+
+    ⚠️ Parametrized, not a loop with one assertion at the end. As a loop the FIRST
+    offending map aborts the sweep and the rest are never examined. Measured, with two
+    independent source mutations applied together -- `_RA_KEYSTROKE_MAPS` emptied
+    (offends `FONTASY_HIMALI_TT`, 4th of the seven) and a `'~' -> '<'` entry added to
+    `_SPINS_TO_PREETI_KEYS` (offends `Spins`, 6th): parametrized reports **both**, the
+    loop reports **only FONTASY_HIMALI_TT** and masks Spins entirely.
     """
 
-    for map_key in DECODABLE_MAP_KEYS:
-        convert = get_converter_for_map(map_key)
-        offenders = [
-            hex(cp)
-            for cp in range(0x00, 0x3000)
-            if "?" in convert(chr(cp)) and FAITHFUL_QUESTION_MARKS.get(map_key) != cp
-        ]
-        assert offenders == [], f"{map_key}: {offenders}"
+    convert = get_converter_for_map(map_key)
+    offenders = [
+        hex(cp)
+        for cp in range(0x00, 0x3000)
+        if "?" in convert(chr(cp)) and FAITHFUL_QUESTION_MARKS.get(map_key) != cp
+    ]
+
+    assert offenders == [], f"{map_key}: {offenders}"
+
+
+#: Each synthesised map's (base map, key translation), for the RAW-side sweep below.
+#: Read off `legacy_maps` rather than restated, so a base or table swap reaches the test.
+_SYNTHESISED_ARMS: dict[str, tuple[str, dict[int, str]]] = {
+    SPINS_MAP_KEY: (_SPINS_BASE_MAP_KEY, _SPINS_TO_PREETI_KEYS),
+    SIDDHI_MAP_KEY: (_SIDDHI_BASE_MAP_KEY, _SIDDHI_TO_HIMALI_KEYS),
+}
+
+
+@pytest.mark.parametrize("map_key", sorted(_SYNTHESISED_ARMS))
+def test_a_synthesised_map_cannot_reach_its_base_tables_question_mark(
+    map_key: str,
+) -> None:
+    """🛑 States the invariant on the RAW side, where `Siddhi`'s half of it is REDUNDANT
+    today and therefore invisible to every other test in the repo.
+
+    The sweeps above run the PUBLIC converter, which for a synthesised map composes the
+    key translation with the base map's own public converter. For `Spins` that base is
+    `Preeti`, whose converter really does emit `?` at 0x3c, so the public sweeps already
+    cover Spins with teeth -- dropping its `'<' -> '/'` entry fails 7 tests here.
+
+    `Siddhi` is the opposite case and the reason this test exists. Its base is
+    `FONTASY_HIMALI_TT`, which is itself in `_RA_KEYSTROKE_MAPS` and has already
+    translated 0x3c away, so Siddhi's `?`-freedom rests on TWO independent
+    mechanisms and the public path is satisfied by either alone. Measured on this head:
+
+        drop Siddhi's own `'<' -> '/'`        1 failed at SUITE scope -- this test
+        empty `_RA_KEYSTROKE_MAPS`            Siddhi's arms stay GREEN
+        do both                              Siddhi's public arms fail, and 21 of
+                                             tests/test_siddhi_layout.py fail
+
+    So each single edit is invisible in Siddhi's public behaviour and the pair is
+    catastrophic. This is the assertion that makes the first one fail on its own.
+
+    It works by translating the keystrokes and then decoding with the base map's RAW
+    npttf2utf table, skipping the base's public repair. Both bases have exactly one `?`
+    slot (0x3c, asserted above), so it fires two ways: drop or reverse the
+    `'<' -> '/'` entry and 0x3c reaches the raw table unchanged; add an entry whose
+    VALUE is `'<'` and some other key starts decoding as `?`.
+
+    (Single characters only, so `Siddhi`'s literal `-` separator split does not arise --
+    it is covered by `tests/test_siddhi_layout.py`.)
+    """
+
+    base_map_key, translation = _SYNTHESISED_ARMS[map_key]
+    raw_base = _get_compiled_map(base_map_key).convert
+    assert RAW_TABLE_QUESTION_MARK_SLOTS[base_map_key] == ord(FACE_DEPENDENT_KEYSTROKE)
+
+    reachable = [
+        hex(cp)
+        for cp in range(0x00, 0x3000)
+        if raw_base(chr(cp).translate(translation)) == "?"
+    ]
+
+    assert reachable == [], (
+        f"{map_key} routes {reachable} onto {base_map_key}'s raw `?` slot; a "
+        f"synthesised map has no page evidence for a question mark of its own"
+    )
 
 
 def test_the_raw_arm_actually_rotates_the_spins_keys() -> None:
-    """Exists because a mutation survived without it.
+    """Pins the rotation's DIRECTION, not merely its presence.
 
-    Spins delegates to Preeti after a key translation. Drop the translation and Spins
-    simply *is* Preeti -- and every other Spins assertion still passes, because they are
-    about 0x3c rather than the rotation. So assert the rotation itself.
+    ⚠️ **This test's original justification was wrong and is corrected here.** It said
+    dropping the translation "fails 1 test, because every other Spins assertion is about
+    0x3c rather than the rotation". Re-measured at suite scope on this head: dropping it
+    fails **8** -- this one plus **seven that already exist on the parent branch**
+    (`test_spins_reads_the_anusvara_where_preeti_reads_a_paren`,
+    `test_spins_decodes_the_real_corpus_span`,
+    `test_spins_and_preeti_differ_on_exactly_the_rotated_keys`,
+    `test_the_synthesised_maps_are_outside_these_sweeps`, and three
+    `test_compiled_map_matches_upstream_on_real_spans` arms). The original "1" was
+    FILE-scoped while the bite table's other rows were suite-scoped, so the two were not
+    comparable. Against the mutation it names, this test's incremental power is zero.
+
+    What it does add, and what nothing else covered, is the DIRECTION. A rotation that is
+    present but permuted (`-` -> `[` instead of `-` -> `=`) leaves `differing` exactly
+    `['+', '-', '<', '=', '[', '_', '{']` and every membership assertion below true.
+    So the six rotated keys are pinned as LITERAL decodes -- the page evidence already
+    recorded in `_SPINS_TO_PREETI_KEYS`' comment: repha, anusvara, the vocalic ृ,
+    a decimal point and balanced parens.
+
+    🛑 Do NOT rewrite these as `spins(src) == preeti(_SPINS_TO_PREETI_KEYS[src])`. That
+    form derives its expectation from the very table under test, so it passes under a
+    reversed table too -- measured.
 
     ⚠️ SEVEN keys differ, not the six the rotation contributes: the seventh is 0x3c, which
     the rework added to the same translation table because Spins_EXT draws
     र there while Preeti draws a question mark. The count and the table are
     asserted together so the two reasons a key can appear here stay distinguishable.
     """
-
-    from likhit.extractors.legacy_maps import _SPINS_TO_PREETI_KEYS
 
     spins = get_converter_for_map("Spins")
     preeti = get_converter_for_map("Preeti")
@@ -369,3 +459,12 @@ def test_the_raw_arm_actually_rotates_the_spins_keys() -> None:
     # and the disagreement is exactly on keys the translation table moves
     for char in differing:
         assert ord(char) in _SPINS_TO_PREETI_KEYS, char
+
+    # The direction, as literals. Six rotated keys, plus 0x3c which is not a rotation.
+    assert spins("-") == "."
+    assert spins("=") == "ृ"
+    assert spins("[") == "("
+    assert spins("+") == "र्"
+    assert spins("_") == "ं"
+    assert spins("{") == ")"
+    assert spins(FACE_DEPENDENT_KEYSTROKE) == "र"
