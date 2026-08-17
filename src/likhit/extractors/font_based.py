@@ -206,12 +206,43 @@ _DEVANAGARI_LETTER_RANGE = "\u0900-\u0963\u0970-\u097f"
 # `runs/vol89/adjudicate_font.py`, which counts this tell with the digits included.
 #
 # This count is DELIBERATELY NOT a term in `_text_quality_penalty`. On the 6,223
-# published v11 transcripts it fires 33,204 times in 4,878 of them, and most of those
+# published v11 transcripts it fires 33,256 times in 4,878 of them, and most of those
 # are Nepali alphabetic list labels -- `क)वित्तीय`, `ख)राजस्व`, `ग)सशर्त` -- which is how
 # Nepali writes `a)`, `b)`, `c)`, plus ordinary parentheticals like `फिर्ता(साँवा)`. As an
 # absolute quantity it is therefore not a damage measure, and the penalty feeds an
-# absolute accept ceiling. Between two decodes OF THE SAME span it is decisive,
-# because a shared label is shared by both; comparison is the only use here.
+# absolute accept ceiling. Comparison between two decodes of the same span is the only
+# use here.
+#
+# ⚠️ 33,256 is the LOOKAHEAD form's count, the one shipped below. The consuming form this
+# commit replaced fires 33,204 on the same corpus -- a 52-hit difference, and the reason
+# the two figures both appear in this lineage's records. The 4,878 is right for both.
+#
+# 🛑 **"A shared label is shared by both" is not true of these maps, and the axis is
+# narrower than it looks.** Measured by inverting every map over 0x00-0x2FFF: an output
+# `)` comes from source `_` (0x5f) under Preeti / Kantipur / PCS NEPALI /
+# FONTASY_HIMALI_TT / Sagarmatha, and from source `{` (0x7b) under Spins; an output `(`
+# comes from `-` (0x2d, plus 0xad on three of them) under the five and from `[` (0x5b)
+# under Spins. So a label is shared only WITHIN a map family, the one boundary this axis
+# can ever act on is {Spins} vs {the other five}, and its sign is set by ground truth: on
+# a genuine Spins face a `_` is an anusvara and the tell correctly charges the five, but
+# on a genuine Preeti-family face a `_` is a real `)` and the tell charges the CORRECT map
+# while sparing Spins. A single ordinary list label (`क)वित्तीय`, 1,506 corpus
+# occurrences) is enough to hand Spins a 1-0 advantage on an axis that outranks `ratio`.
+#
+# That direction is real but it cannot ship on its own: `_RANKING_STRANDED_FORGIVENESS`
+# (VOL-185, later in this same chain) forgives the first bracket, which is exactly the
+# `>= 2` floor the exposure needs -- both spans this axis was calibrated on clear it at
+# 3-vs-0 and 6-vs-0. A 400-document sample found no accepted-map change either way.
+#
+# ⚠️ The gap in the OTHER direction, recorded as a decision rather than fixed: the
+# pattern requires EXACTLY ONE bracket between the two letters, so a run -- `क))ख`,
+# `क)(ख`, `क()ख`, `क[]ख` -- counts 0. Measured on the same corpus: 148 occurrences in 76
+# documents, and the top contexts are `न)(म` (25), `ख)(ग` (18), `ग)(घ` (8), `क)(ख` (6),
+# i.e. overwhelmingly two adjacent legitimate parenthesised list labels rather than
+# residue. Reading 0 there is fail-OPEN (both candidates read 0, so the axis is silenced,
+# not inverted) and on this evidence it is the safer half of the trade. Widening to
+# `[)(\]\[}{]+` would need those 148 adjudicated first.
+#
 # The trailing letter is matched by LOOKAHEAD, not consumed. `findall` scans
 # non-overlapping, so consuming it made consecutive tells invisible: `क)ख)ग` -- which is
 # exactly how a wrong map renders two adjacent Nepali list labels -- counted 1 instead of
@@ -915,12 +946,21 @@ def _map_ranking_key(
     buys those two spans by abstaining on 25 to 44 others, several of them
     independently verified correct, and an abstention loses the span outright.
 
-    It sits *below* ``penalty`` for the same reason ``ratio`` does — on
-    ``4487__…बसबरिया गाउँपालिका`` the wrong map carries one stranded bracket and 48
-    penalty points, so the penalty axis must still decide it first — and it is
-    deliberately absent from ``_text_quality_penalty``, because as an absolute
-    quantity it is not a damage measure at all. See
-    :data:`_STRANDED_BRACKET_PATTERN`.
+    It sits *below* ``penalty`` by choice, and it is deliberately absent from
+    ``_text_quality_penalty`` because as an absolute quantity it is not a damage
+    measure at all. See :data:`_STRANDED_BRACKET_PATTERN`.
+
+    🛑 **The corpus record does not settle penalty-vs-stranded, and an earlier form of
+    this docstring claimed it did.** It cited ``4487__…बसबरिया गाउँपालिका`` as showing
+    that ``penalty`` must decide first. Re-measured on the real 4487 ``Spins`` aggregate
+    (3,357 characters) at this head, the wrong map carries MORE of both — ``stranded`` 1
+    and ``penalty`` 48 against PCS NEPALI's 0 and 0 — so the two axes agree, all three
+    candidate orderings (this one, its parent's without ``stranded``, and
+    stranded-above-penalty) return PCS NEPALI, and Spins fails the accept gate there
+    anyway (48/655 = 0.0733 over the 0.05 ceiling). 4487 is a consistency check, not a
+    discriminator. The ordering below is the conservative default — the axis with a
+    calibrated absolute meaning goes first — and the sweep that would settle it is still
+    owed. Anything reordering these two must run it rather than cite 4487.
     """
 
     return (
@@ -996,9 +1036,11 @@ def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
     tie-break, which is the thing this function stopped doing.
     """
 
-    scored: list[
-        tuple[tuple[float, float, float, float], str, dict[str, float], str]
-    ] = []
+    # `tuple[float, ...]`, not a fixed arity: this used to spell out four floats and was
+    # left at four when `_map_ranking_key` grew a fifth, so the declared arity became a
+    # second, disagreeing record of how many axes there are. Later commits in this chain
+    # add more. One place to change is `_map_ranking_key`'s own annotation.
+    scored: list[tuple[tuple[float, ...], str, dict[str, float], str]] = []
     for map_key in ALL_MAP_KEYS:
         try:
             converted = get_converter_for_map(map_key)(text)

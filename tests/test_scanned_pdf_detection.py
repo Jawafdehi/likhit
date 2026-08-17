@@ -706,11 +706,20 @@ def test_a_false_positive_no_longer_decides_a_real_legacy_span() -> None:
 
 
 def test_a_stranded_bracket_decides_before_the_ratio_does() -> None:
-    # `2573__...चामुण्डा विन्द्रासैनि`, font "Spins", 446 characters. Every map scores
-    # hits=3 and (after VOL-131) penalty 0, so the garble axis ties and the decision
-    # falls through. `ratio` separates Kantipur from Spins by 0.000016 -- 0.992974
-    # against 0.990719 -- and gets it wrong. The wrong-map tell is not close: the
-    # rivals leave three `स)ख्या` behind and Spins leaves none.
+    # `2573__...चामुण्डा विन्द्रासैनि`, font "Spins", 446 characters. The two candidates
+    # modelled here score hits=3 and (after VOL-131) penalty 0, so the garble axis ties
+    # and the decision falls through to `ratio`, which gets it wrong.
+    #
+    # ⚠️ The margin, corrected: `ratio` puts Kantipur over the correct Spins by
+    # **0.002255** (0.992974 - 0.990719, the two numbers in this fixture). The
+    # oft-quoted **0.000016** is a different margin -- Kantipur over PREETI, i.e. the
+    # top-two gap between two maps that are BOTH wrong (`runs/vol89`). An earlier form of
+    # this comment attached 0.000016 to the Kantipur/Spins pair, which makes the correct
+    # map look 141x closer to the wrong one than it is; anyone calibrating a `ratio`
+    # resolution floor off that figure would set it 141x too low to catch this span.
+    #
+    # The wrong-map tell is not close either way: the rivals leave three `स)ख्या`
+    # behind and Spins leaves none.
     kantipur = _validity(hits=3, penalty=0, devanagari=424, ratio=0.992974, stranded=3)
     spins = _validity(hits=3, penalty=0, devanagari=427, ratio=0.990719, stranded=0)
     assert kantipur["ratio"] > spins["ratio"]  # ratio prefers the wrong map
