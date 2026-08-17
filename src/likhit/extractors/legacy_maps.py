@@ -89,6 +89,26 @@ _REGISTRY: dict[str, str] = {
     #      13 reports spell that way 3,449 times, against PCS NEPALI's दुरूपयोग
     #      at 30. Every other load-bearing token is identical under both.
     "arap": "FONTASY_HIMALI_TT",
+    # Siddhi is its own layout, NOT a name for one of the five npttf2utf maps.
+    # It matches both spellings the corpus carries -- 'Siddhi' and 'SiddhiNormal'
+    # -- because _match_font is a substring test. See SIDDHI_MAP_KEY below for the
+    # table and how it was derived.
+    #
+    # Routed by NAME on purpose. `classify_font` returns "legacy_remap" for
+    # anything in this registry and `detect_content_legacy_fonts` skips every font
+    # that is not "correct", so a registry entry takes these faces OUT of the
+    # content-based candidate ranking entirely. That is what keeps the blast
+    # radius to the 79 documents that carry the name: adding the key to
+    # ALL_MAP_KEYS instead would put a seventh candidate in front of every
+    # gate-passing aggregate in the corpus.
+    #
+    # The `fontasyhimali` trap above does not apply here. That one was a
+    # numeral-only face destroyed by moving it to a map with the number rows
+    # exchanged; Siddhi's number rows are the NORMAL ones, so its numeral-only
+    # aggregates -- and several of the 79 are almost pure figures, e.g.
+    # '158.25 67235.67 0 0' in 3120__इलाम नगरपालिका -- decode to Devanagari
+    # digits with a real decimal point, which is what the page draws.
+    "siddhi": "Siddhi",
 }
 
 #: Map key for the Spins layout, which npttf2utf does not ship. It is not an
@@ -112,9 +132,64 @@ _SPINS_BASE_MAP_KEY = "Preeti"
 # garble penalty per Devanagari falls 0.030 -> 0.012. Independent of any word
 # list: parentheses go from 1,978 "(" against 368 ")" to a balanced 102/102, which
 # is what a rotation that had put the real "." on the "(" key would produce.
+#
+# ``"<": "/"`` is a seventh entry and belongs to a different measurement: on
+# ``Spins_EXT`` the ``0x3c`` slot draws र, page-verified on OAG ``3861`` p5
+# (``gu< k|x<L xjnbf<`` drawing नगर प्रहरी हवलदार).
+# It is spelled out here rather than inherited from Preeti because Preeti's own
+# ``0x3c`` draws a question mark and decodes faithfully as one -- see
+# :data:`_RA_KEYSTROKE_MAPS`. `str.translate` is simultaneous, so this cannot chain
+# with the rotation above, and nothing in the rotation maps TO ``"<"``.
 _SPINS_TO_PREETI_KEYS = str.maketrans(
-    {"-": "=", "=": "[", "[": "-", "_": "+", "+": "{", "{": "_"}
+    {"-": "=", "=": "[", "[": "-", "_": "+", "+": "{", "{": "_", "<": "/"}
 )
+
+#: Map key for the Siddhi layout, which npttf2utf does not ship either. Like
+#: :data:`SPINS_MAP_KEY` it is not an npttf2utf key, so it must go through
+#: :func:`get_converter_for_map`.
+SIDDHI_MAP_KEY = "Siddhi"
+
+#: The npttf2utf map the Siddhi layout is a permutation of. NOT Preeti: Siddhi's
+#: number rows are Himali's, which is what picks the base.
+_SIDDHI_BASE_MAP_KEY = "FONTASY_HIMALI_TT"
+
+# Siddhi reads as FONTASY_HIMALI_TT except on six codes. Five of them are a key
+# translation; the sixth cannot be one and is handled below.
+#
+# Derived by measurement (VOL-471, run d0121829), from rendered page pixels and
+# from per-glyph crops of the embedded faces -- not from a font specification, and
+# not by inference from a sibling map. Record:
+# oag-corpus/runs/vol471-d0121829/{DERIVE-d0121829.json,CHECKPOINT-2-layout.md}.
+#
+#   code        page draws   base gives   translated to   evidence
+#   '-' 0x2d    '-'          '('          (see below)     ट- सडक वोर्ड, ङ- संघीय
+#   '.' 0x2e    '.'          '।'          '=' 0x3d        २. राजश्व, ३१०७९३३३.१०
+#   '/' 0x2f    '/'          'र'          '÷' 0xf7        अमर/मजदुर जे.भि सुर्खेत
+#   '<' 0x3c    'र'          '?'          '/' 0x2f        रकम, राजश्व, गरिवसंग
+#   '_' 0x5f    'ं'          ')'          '+' 0x2b        पुंजिगत, संघ, ५ नं
+#   'Š' 0x160   'ड'          'Š' (passes) '*' 0x2a        सडक, वाडफाट, बांडफांड
+#
+# The base is Himali and not Preeti because Siddhi's number rows are the normal
+# ones: '235187839' draws २३५१८७८३९ on page 4 of 2688 (Preeti gives द्दघछज्ञडठडघढ),
+# and the sub-item markers on page 4 of 2835 run क ख ग घ ङ च छ ... ट as
+# 's- v- u- #- ª- r- %- ^-', which is Devanagari alphabetical order only under the
+# Himali shifted row. That argument uses no word list.
+#
+# 0x2e is a Siddhi fact and not a table artefact: the SAME document's Preeti face
+# draws a danda at 0x2e (a tall vertical bar) where the Siddhi face draws a square
+# baseline dot. Both crops are in the record.
+_SIDDHI_TO_HIMALI_KEYS = str.maketrans(
+    {".": "=", "/": "÷", "<": "/", "_": "+", "Š": "*"}
+)
+
+# 0x2d is the exception, and it is not an oversight. Siddhi draws a HYPHEN there
+# (glyph crop: a horizontal bar at mid height, 46 occurrences in 2835 alone) and
+# **no map in the family emits "-" at any codepoint in 0x00-0x2FFF** -- swept, all
+# six maps, zero hits -- so there is no code to translate 0x2d to. It is therefore
+# handled as a separator: split the source on it, map each part, rejoin with the
+# literal. That is exact because "-" never participates in a Devanagari cluster,
+# and it is the only shape available without inventing a sentinel codepoint.
+_SIDDHI_LITERAL_SEPARATOR = "-"
 
 # Every legacy map content-based (name-agnostic) detection tries against a span.
 # Order is NOT a tie-break. It was once, implicitly -- `choose_legacy_map` kept the
@@ -144,10 +219,78 @@ SHIPPED_MAP_KEYS: tuple[str, ...] = (
     "Sagarmatha",
 )
 
-#: Every map the scorer may choose, shipped or synthesised. DERIVED from
-#: SHIPPED_MAP_KEYS rather than listed again, so adding an upstream map cannot leave
-#: the two disagreeing.
+#: ``0x3c`` is a KEY, and which key it is depends on the FACE. That is the whole of this
+#: block, and an earlier form of it got the direction wrong for the larger population.
+#:
+#: Every map in the family has exactly one source code point whose decode is a bare
+#: ``?`` -- measured over 0x00-0x2FFF, not just the byte range. For five of the six it is
+#: ``0x3c`` (Preeti, Kantipur, FONTASY_HIMALI_TT, Sagarmatha, and Spins through Preeti's
+#: table); for ``PCS NEPALI`` it is ``0xa9``.
+#:
+#: \ud83d\uded1 **A bare ``?`` in the output is NOT always damage.** On the faces that dominate
+#: both downstream corpora ``0x3c`` draws a real question mark, so npttf2utf's table is
+#: right and ``?`` is the faithful read. The embedded ``BOFDOE+Preeti`` was extracted and
+#: its slots rendered at 200 dpi: ``0x2f`` draws ``\u0930``, ``0x3f`` draws
+#: ``\u0930\u0941``, and ``0x3c`` is a genuine two-contour question mark. Page-verified
+#: ``?`` on ``Preeti``, ``Preeti,Bold`` and ``Kantipur`` across three corpora --
+#: **914 occurrences under a formerly-repaired map key, 541 of them isolated, over 101
+#: doc-font pairs** in all 6,236 OAG documents and all 35 CIAA reports. The decisive one
+#: is OAG ``11115`` p296, where the sentence holding the mark reads
+#: ``\u092d\u0928\u094d\u0928\u0947 \u092a\u094d\u0930\u0936\u094d\u0928\u092e\u093e``
+#: ("in the question") -- so the ``?`` is not an inference from glyph shape at all.
+#:
+#: The converse population is equally real, which is why this is a per-face table and not
+#: a deletion: ``0x3c`` is page-verified ``\u0930`` on ``FONTASY_ HIMALI_ TT`` (OAG
+#: ``2335`` p21) and on ``Spins_EXT`` (OAG ``3861`` p5, ``gu< k|x<L xjnbf<`` drawing
+#: \u0928\u0917\u0930 \u092a\u094d\u0930\u0939\u0930\u0940 \u0939\u0935\u0932\u0926\u093e\u0930).
+#: 24 of the 101 doc-font pairs carry a word-internal ``0x3c``, 412 occurrences.
+#:
+#: \u26a0\ufe0f Position is NOT a proxy for what the face draws -- word-internal ``0x3c`` that the
+#: page renders as ``?`` exists (OAG ``2933``, ``3699``), and isolated ``0x3c`` that the
+#: page renders as ``\u0930`` exists. Only a per-face read decides, so do not reach for
+#: the isolated/in-word split as a discriminator.
+#:
+#: ``Sagarmatha`` is deliberately absent: there is no page read for its ``0x3c`` either
+#: way, and it has zero occurrences in both corpora. Repairing on a sibling inference is
+#: the exact reasoning that made the original report of this defect wrong about which map
+#: was the outlier -- the same reason ``PCS NEPALI`` (gap at ``0xa9``) stays out.
+_RA_KEYSTROKE_MAPS: frozenset[str] = frozenset({"FONTASY_HIMALI_TT"})
+
+#: ``0x3c`` -> ``0x2f``, applied to the keystrokes BEFORE the table decode.
+#:
+#: This is the shape ``Siddhi`` already uses for the identical case -- see
+#: :data:`_SIDDHI_TO_HIMALI_KEYS`, whose ``'<' -> '/'`` entry is exactly this -- and it is
+#: better than substituting on the output for two reasons. It cannot touch a ``?`` that
+#: any other source produced, and it lets npttf2utf reorder the cluster from the right
+#: consonant rather than around a hole. The reordering worry that motivated the output
+#: form does not apply: it was about SPLITTING the span at ``0x3c`` and converting the
+#: pieces, which strands a prefix matra. Translating one key does not split anything --
+#: measured, ``ul<`` gives ``\u0917\u0930\u093f`` either way.
+_RA_KEYSTROKE_TRANSLATION = str.maketrans({"<": "/"})
+
+#: Maps this library MODELS rather than gets from npttf2utf: a layout upstream does not
+#: ship, expressed as a key translation onto a shipped map. There are two, and they work
+#: the same way -- translate the keystrokes, then decode with the base map -- so they get
+#: a name instead of being spelled out as exceptions wherever the distinction matters.
+#:
+#: The distinction is load-bearing for tests: anything asking "does this agree with
+#: upstream" or "does this use the compiled translate fast path" has nothing to compare
+#: against for these two, and `_get_compiled_map` raises for them.
+SYNTHESISED_MAP_KEYS: tuple[str, ...] = (SPINS_MAP_KEY, SIDDHI_MAP_KEY)
+
+#: Every map CONTENT-BASED detection may choose. Note what is missing: Siddhi is
+#: decodable but is NOT a candidate here, deliberately. Adding it would put a seventh
+#: candidate in front of every gate-passing aggregate in the corpus -- a corpus-wide
+#: false-positive surface for a population the font NAME already identifies. That
+#: decision is pinned in tests/test_siddhi_layout.py and is the thing to argue with if a
+#: later run measures the surface and disagrees.
 ALL_MAP_KEYS: tuple[str, ...] = SHIPPED_MAP_KEYS + (SPINS_MAP_KEY,)
+
+#: Every key :func:`get_converter_for_map` accepts. This is a SUPERSET of
+#: :data:`ALL_MAP_KEYS`, and the difference is the point: a font can be routed to a map
+#: by NAME without that map being a content-detection candidate. The two sets coincided
+#: until Siddhi, which is why code that conflated them was correct up to that point.
+DECODABLE_MAP_KEYS: tuple[str, ...] = SHIPPED_MAP_KEYS + SYNTHESISED_MAP_KEYS
 
 # No legacy keyboard layout in _REGISTRY puts its own bracket glyph on the
 # literal ASCII '(' / ')' keys -- confirmed for FONTASY_HIMALI_TT (whose '('
@@ -450,6 +593,20 @@ def get_converter_for_map(map_key: str) -> Callable[[str], str]:
     # layout, so its keystrokes are translated onto Preeti's and decoded with Preeti's
     # map. Placed in the RAW converter deliberately -- this is the scoring primitive,
     # and choose_legacy_map has to be able to score Spins against the shipped maps.
+    if map_key == SIDDHI_MAP_KEY:
+        base_convert = get_converter_for_map(_SIDDHI_BASE_MAP_KEY)
+
+        def _convert_siddhi(text: str) -> str:
+            # str.translate is simultaneous, so '<' -> '/' and '/' -> '÷' do not
+            # chain; a sequential two-pass replace would send '<' all the way to
+            # '÷' and lose every र.
+            return _SIDDHI_LITERAL_SEPARATOR.join(
+                base_convert(part.translate(_SIDDHI_TO_HIMALI_KEYS))
+                for part in text.split(_SIDDHI_LITERAL_SEPARATOR)
+            )
+
+        return _convert_siddhi
+
     if map_key == SPINS_MAP_KEY:
         base_convert = get_converter_for_map(_SPINS_BASE_MAP_KEY)
 
@@ -457,6 +614,18 @@ def get_converter_for_map(map_key: str) -> Callable[[str], str]:
             return base_convert(text.translate(_SPINS_TO_PREETI_KEYS))
 
         return _convert_spins
+
+    if map_key in _RA_KEYSTROKE_MAPS:
+        base = _get_compiled_map(map_key).convert
+
+        def _convert_ra_keystroke(text: str) -> str:
+            # See _RA_KEYSTROKE_MAPS: on THIS face 0x3c draws र, so it is
+            # translated to the key that decodes to र before the table runs.
+            # Faces where 0x3c draws a question mark are absent from that set and
+            # decode faithfully.
+            return base(text.translate(_RA_KEYSTROKE_TRANSLATION))
+
+        return _convert_ra_keystroke
 
     return _get_compiled_map(map_key).convert
 

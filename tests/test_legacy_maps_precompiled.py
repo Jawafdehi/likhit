@@ -77,7 +77,11 @@ def _sample_spans(file_name: str, limit: int | None = None) -> list[str]:
 @pytest.mark.parametrize("map_key", SHIPPED_MAP_KEYS)
 def test_compiled_map_matches_upstream_on_edge_cases(map_key: str) -> None:
     mapper = _get_mapper()
-    convert = get_converter_for_map(map_key)
+    # The RAW compiled pipeline, not get_converter_for_map: these sweeps assert the
+    # optimisation is FAITHFUL to upstream. The public converter deliberately
+    # diverges at the 0x3c coverage-gap repair -- see the test below, and
+    # tests/test_legacy_map_coverage_gap.py for why.
+    convert = _get_compiled_map(map_key).convert
 
     for text in EDGE_CASES:
         assert convert(text) == mapper.map_to_unicode(text, from_font=map_key), (
@@ -95,7 +99,11 @@ def test_compiled_map_matches_upstream_on_real_spans(map_key: str) -> None:
         pytest.skip("sample missing: kanunpatrika.pdf")
 
     mapper = _get_mapper()
-    convert = get_converter_for_map(map_key)
+    # The RAW compiled pipeline, not get_converter_for_map: these sweeps assert the
+    # optimisation is FAITHFUL to upstream. The public converter deliberately
+    # diverges at the 0x3c coverage-gap repair -- see the test below, and
+    # tests/test_legacy_map_coverage_gap.py for why.
+    convert = _get_compiled_map(map_key).convert
     differing = [
         text
         for text in spans
@@ -217,7 +225,7 @@ def test_word_splitting_is_lossless() -> None:
         assert "".join(_WORD_SPLIT.findall(text)) == text
 
 
-def test_spins_is_synthesised_and_therefore_outside_these_sweeps() -> None:
+def test_the_synthesised_maps_are_outside_these_sweeps() -> None:
     """Why the sweeps above use SHIPPED_MAP_KEYS rather than ALL_MAP_KEYS.
 
     Every property in this file is stated against npttf2utf's own table: "our compiled
@@ -241,14 +249,22 @@ def test_spins_is_synthesised_and_therefore_outside_these_sweeps() -> None:
         get_converter_for_map,
     )
 
-    # It is in ALL_MAP_KEYS -- the scorer may choose it -- but not in the shipped set.
-    assert SPINS_MAP_KEY in ALL_MAP_KEYS
-    assert SPINS_MAP_KEY not in SHIPPED_MAP_KEYS
-    assert set(ALL_MAP_KEYS) - set(SHIPPED_MAP_KEYS) == {SPINS_MAP_KEY}
+    # They are in ALL_MAP_KEYS -- the scorer may choose them -- but not shipped.
+    from likhit.extractors.legacy_maps import SYNTHESISED_MAP_KEYS
 
-    # No upstream table, which is the whole reason for the split.
-    with pytest.raises(NoMapForOriginException):
-        _get_compiled_map(SPINS_MAP_KEY)
+    from likhit.extractors.legacy_maps import DECODABLE_MAP_KEYS
+
+    # Stated against DECODABLE, not ALL: only ONE of the two synthesised maps is a
+    # content candidate. Siddhi is decodable and name-routed but deliberately not a
+    # candidate, so ALL_MAP_KEYS - SHIPPED_MAP_KEYS is {Spins} alone.
+    assert set(DECODABLE_MAP_KEYS) - set(SHIPPED_MAP_KEYS) == set(SYNTHESISED_MAP_KEYS)
+    assert set(SHIPPED_MAP_KEYS) & set(SYNTHESISED_MAP_KEYS) == set()
+    assert set(ALL_MAP_KEYS) - set(SHIPPED_MAP_KEYS) == {"Spins"}
+
+    # No upstream table for either, which is the whole reason for the split.
+    for key in SYNTHESISED_MAP_KEYS:
+        with pytest.raises(NoMapForOriginException):
+            _get_compiled_map(key)
 
     # And it really is the delegation it claims to be: for any keystroke text, Spins
     # equals translate-then-Preeti.
@@ -256,3 +272,44 @@ def test_spins_is_synthesised_and_therefore_outside_these_sweeps() -> None:
     preeti = get_converter_for_map(_SPINS_BASE_MAP_KEY)
     for probe in ("kl/R5]b", ";'\\][", "0123456789", "cAdM", ""):
         assert spins(probe) == preeti(probe.translate(_SPINS_TO_PREETI_KEYS)), probe
+
+
+def test_the_public_converter_diverges_from_upstream_only_at_the_0x3c_translation() -> (
+    None
+):
+    """The other half of the sweeps above, and the reason they use the raw pipeline.
+
+    Those assert the compiled pipeline is FAITHFUL to npttf2utf. The public converter is
+    deliberately not, on the faces where a rendered page shows source 0x3c drawing
+    `र` -- there it translates the key before the decode. Both claims
+    matter, so both are asserted, and the divergence is bounded to that one key rather
+    than left open.
+
+    🛑 The divergence is modelled as the SAME translation the converter applies, not as
+    an output substitution. Those are not interchangeable in general: an output
+    substitution would also rewrite a `?` that some other source produced, which is
+    exactly the defect that made this test's earlier form pass while the shipped
+    behaviour destroyed 914 interrogatives on the faces that are now excluded.
+    """
+
+    from likhit.extractors.legacy_maps import (
+        _RA_KEYSTROKE_MAPS,
+        _RA_KEYSTROKE_TRANSLATION,
+        get_converter_for_map,
+    )
+
+    mapper = _get_mapper()
+    spans = _sample_spans("kanunpatrika.pdf", limit=600)
+    if not spans:
+        pytest.skip("sample missing: kanunpatrika.pdf")
+
+    for map_key in SHIPPED_MAP_KEYS:
+        public = get_converter_for_map(map_key)
+        for text in spans:
+            source = (
+                text.translate(_RA_KEYSTROKE_TRANSLATION)
+                if map_key in _RA_KEYSTROKE_MAPS
+                else text
+            )
+            expected = mapper.map_to_unicode(source, from_font=map_key)
+            assert public(text) == expected, f"{map_key} on {text!r}"

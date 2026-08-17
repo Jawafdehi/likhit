@@ -5,6 +5,7 @@ import pytest
 from likhit.extractors.font_based import FontBasedStrategy
 from likhit.extractors.legacy_maps import (
     ALL_MAP_KEYS,
+    DECODABLE_MAP_KEYS,
     _decode_ascii_bracketed_number,
     _map_reads_ascii_digits_as_digits,
     _match_font,
@@ -158,16 +159,24 @@ _DIGIT_ROW_DECODES = {
     # does not. This keeps the consonant-row family at 4 and the digit-row family
     # at 2.
     "Spins": "ण्ज्ञद्दघद्धछटठडढ",
+    # Siddhi is synthesised too, but onto FONTASY_HIMALI_TT rather than Preeti, so it
+    # lands in the OTHER family: it reads the ASCII digit row as digits. Measured, and
+    # the consequence is real -- Siddhi therefore gets the bracketed-marker gate applied
+    # while Spins does not. Two synthesised maps, opposite classifications; the base map
+    # decides, not the fact of being synthesised.
+    "Siddhi": "०१२३४५६७८९",
 }
-_READS_DIGITS_AS_DIGITS = frozenset({"PCS NEPALI", "FONTASY_HIMALI_TT"})
+_READS_DIGITS_AS_DIGITS = frozenset({"PCS NEPALI", "FONTASY_HIMALI_TT", "Siddhi"})
 
 
 def test_every_map_in_all_map_keys_is_classified():
     # Adding a map to ALL_MAP_KEYS without deciding which family it is in would
     # otherwise leave it silently untested by everything below.
-    assert set(ALL_MAP_KEYS) == set(_DIGIT_ROW_DECODES), (
-        "a map was added to or removed from ALL_MAP_KEYS -- measure its ASCII digit "
-        "row and record it in _DIGIT_ROW_DECODES / _READS_DIGITS_AS_DIGITS"
+    assert set(DECODABLE_MAP_KEYS) == set(_DIGIT_ROW_DECODES), (
+        "a map was added to or removed from DECODABLE_MAP_KEYS -- measure its ASCII "
+        "digit row and record it in _DIGIT_ROW_DECODES / _READS_DIGITS_AS_DIGITS. "
+        "Note this covers every DECODABLE map, not just the content candidates: the "
+        "bracketed-marker gate applies wherever a map produces output."
     )
 
 
@@ -547,7 +556,23 @@ def test_no_registry_key_is_a_substring_of_another_with_a_different_map():
 
 
 def test_every_registry_target_is_a_real_map():
-    """A typo'd map key would raise only when a document happens to use that font."""
+    """A typo'd map key would raise only when a document happens to use that font.
+
+    Asserted against ``DECODABLE_MAP_KEYS``, not ``ALL_MAP_KEYS``. Those two used to be
+    the same set and are not any more: ``_REGISTRY`` routes a font NAME to a map, while
+    ``ALL_MAP_KEYS`` is the set content-based detection may CHOOSE from. Siddhi is
+    decodable and name-routed but deliberately not a content candidate, so requiring
+    registry targets to be candidates would force a decision this test has no business
+    making. Both properties are still checked -- see the two assertions below.
+    """
 
     for key, map_key in _REGISTRY.items():
-        assert map_key in ALL_MAP_KEYS, f"{key!r} -> {map_key!r} is not a known map"
+        assert map_key in DECODABLE_MAP_KEYS, (
+            f"{key!r} -> {map_key!r} is not a decodable map"
+        )
+        # and it really does decode, rather than merely being spelled correctly
+        assert callable(get_converter_for_map(map_key))
+
+    # The distinction this test now rests on, asserted rather than assumed: a map can be
+    # name-routed and decodable without being a content-detection candidate.
+    assert set(DECODABLE_MAP_KEYS) - set(ALL_MAP_KEYS) == {"Siddhi"}
