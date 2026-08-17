@@ -20,10 +20,13 @@ import pytest
 
 from likhit.errors import ScannedPdfError
 from likhit.extractors.font_based import (
+    _DUPLICATE_CONSONANT_PATTERN,
     _LATIN_VETO_WORDS,
     FontBasedStrategy,
     _attested_word_count,
     _choose_fragment_text,
+    _choose_token_text,
+    _duplicate_consonant_count,
     _has_severe_noise,
     _IKAR_NASAL_WEIGHT,
     _IMPOSSIBLE_IKAR_NASAL_PATTERN,
@@ -1186,6 +1189,14 @@ def test_the_token_chooser_keeps_the_full_penalty() -> None:
     # gone from the general measure both score 0 and the garble wins the tie.
     assert _text_quality_penalty("ववशेष") > _text_quality_penalty("विशेष")
 
+    # 🛑 ...and through the CHOOSERS, which is the mutation this test exists to
+    # prevent and never reached: the assertion above only sees the term leaving
+    # `_text_quality_penalty` outright. Switching either chooser to the new
+    # doublet-free `_legacy_map_garble` passed the whole suite, in both
+    # `_choose_token_text` and `_choose_fragment_text`.
+    assert _choose_token_text("विशेष", "ववशेष") == "विशेष"
+    assert _choose_fragment_text("विशेष", "ववशेष") == "विशेष"
+
 
 def test_attested_words_decide_when_garble_and_stranding_tie() -> None:
     # `2424__...Ramechhap Nagarpalika`, font `Spins`, 283 characters -- the span this
@@ -1234,6 +1245,69 @@ def test_attested_word_count_is_distinct_tokens_not_substrings() -> None:
     # A repeated form counts once, so a garble that happens to repeat cannot outvote
     # a reading that produces several different real words.
     assert _attested_word_count("आर्थिक आर्थिक आर्थिक") == _attested_word_count("आर्थिक")
+
+    # 🛑 The three assertions above ALL hold under the substring implementation this
+    # test's name forbids -- including the repetition one, since a substring count is
+    # idempotent under repetition too. So they pinned nothing about tokens vs
+    # substrings. These two do: an entry embedded in a longer token must not count.
+    assert _attested_word_count("xxकार्यालयxx") == 0  # substring form gives 1
+    assert _attested_word_count("कार्यालयको") == 1  # substring form gives 3
+
+
+def test_the_ranking_penalty_subtracts_the_NARROWED_doublet_count() -> None:
+    """🛑 The hazard `_legacy_map_garble`'s docstring calls out by name, untested.
+
+    It says the counter subtracted "must be the SAME one `_text_quality_penalty` adds --
+    the narrowed `_duplicate_consonant_count`, not `_DUPLICATE_CONSONANT_PATTERN.
+    findall`", because the raw count is >= the narrowed one on every input and
+    subtracting it would drive the measure below the true penalty, silently. Making
+    exactly that substitution passed the full suite.
+
+    `महालेखापरीक्षकको` is the discriminator: raw count 1, narrowed count 0. Under the
+    raw form the ranking penalty goes NEGATIVE, which inverts the axis's sign.
+    """
+
+    assert _legacy_map_garble("महालेखापरीक्षकको") == 0
+    assert len(_DUPLICATE_CONSONANT_PATTERN.findall("महालेखापरीक्षकको")) == 1
+    assert _duplicate_consonant_count("महालेखापरीक्षकको") == 0
+
+    # The property, so a future third counter cannot slip in either.
+    for text in (
+        "महालेखापरीक्षकको",
+        "अध्ययन",
+        "खररद",
+        "ववरण",
+        "आन्तररक",
+        "नेपाल सरकार अदालत",
+        "",
+    ):
+        assert 0 <= _legacy_map_garble(text) <= _text_quality_penalty(text), text
+
+
+def test_the_inlined_ranking_penalty_still_equals_the_named_helper() -> None:
+    """`_nepali_validity` inlines the subtraction to avoid recomputing the penalty and
+    the doublet count (44.0% of the call on a 7,680-character span). The helper stays as
+    the thing the docstrings reason about, so the two must not drift apart.
+    """
+
+    for source in ("g]kfn ;/sf/ cbfnt", "खररद ववरण", "", "abc", "!@#$"):
+        text = get_converter_for_map("Preeti")(source)
+        assert _nepali_validity(text)["penalty"] == _legacy_map_garble(text), text
+
+
+def test_the_attested_counter_is_wired_into_the_real_validity_path() -> None:
+    """🛑 The whole attested axis could be switched OFF and the suite stayed green.
+
+    Replacing `"attested": _attested_word_count(text)` with `"attested": 0` in
+    `_nepali_validity` left 1,150 tests passing, because every attested test either
+    hand-builds the validity dict via `_validity(..., attested=N)` or calls the counter
+    directly. Nothing pinned the wiring on the production path.
+
+    One assertion covers it, and it also pins that the runtime tokeniser agrees with the
+    vocabulary rather than merely that both exist.
+    """
+
+    assert _nepali_validity("आर्थिक वर्ष")["attested"] == 2
 
 
 def test_stranded_count_excludes_devanagari_digits() -> None:

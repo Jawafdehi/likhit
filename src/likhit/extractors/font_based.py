@@ -42,7 +42,6 @@ from likhit.extractors.pua_maps import (
 from likhit.extractors.tables import detect_page_tables, merge_continuation_tables
 from likhit.models import Table
 
-
 PAGE_RANGE_PATTERN = re.compile(r"^\d+(?:-\d+)?$")
 SPAN_GAP_THRESHOLD = 0.75
 # Zeroed ToUnicode maps otherwise collapse every unknown glyph to the same
@@ -664,8 +663,21 @@ def _legacy_map_garble(text: str) -> int:
     about `_STRANDED_BRACKET_PATTERN`: adjacency alone does not distinguish Nepali
     morphology from garble, so it charges readings that are correct. Where it moves a
     map decision it can move it the wrong way, because the charge lands on whichever
-    reading happens to spell a doublet -- and a *correct* reading of Nepali spells more
-    of them than a garbled one does.
+    reading happens to spell a doublet.
+
+    ⚠️ **Not because "a correct reading of Nepali spells more doublets than a garbled
+    one".** That general claim was here and it is false in this population -- and the
+    comment at the top of this file already contradicts it (>= 209,998 occurrences of
+    genuine doublet damage, 91.6% of it kept by the narrowing). Measured on the narrowed
+    count, which is what is actually subtracted: **0 of 536** attested correct forms
+    carry an unexplained doublet, and over **1,867** (correct-map, wrong-map) pairs that
+    read differently the correct reading carries more in **0** cases while the wrong
+    reading carries more in **53**. So the term is usually right and the direction of
+    its error is not systematic.
+
+    The real ground is narrower and is the paragraph below: on the eight spans VOL-185
+    regressed, the charge landed on the CORRECT reading as a false positive of the
+    narrowed count, and it was decisive there.
 
     That is the whole of VOL-185's regression on eight of its eleven documents. Measured
     on each of their `Spins` font aggregates: the correct `Spins` reading carries exactly
@@ -947,10 +959,16 @@ _CONTENT_LEGACY_DICTIONARY: frozenset[str] = frozenset(
 # Instruments: `oag-corpus/runs/vol185/derive_attested_5f0833fc.py` and
 # `emit_attested_block_5f0833fc.py`.
 #
-# Garble cannot satisfy this. The forms VOL-185's wrong map produces sit three orders
-# of magnitude below the floor -- `आथिंक` df 108, `कायंविधि` df 128, `गनुंपनें` df 276,
-# `कमंचारी` df 291, and `खचं`/`वषं` df **0** -- and the derivation asserts that, fatally,
-# rather than assuming it. A systematically garbled form is still rare across
+# Garble cannot satisfy this. The forms VOL-185's wrong map produces sit far below the
+# floor -- `आथिंक` df 108, `कायंविधि` df 128, `गनुंपनें` df 276, `कमंचारी` df 291, and
+# `खचं`/`वषं` df **0** -- and the derivation asserts that, fatally, rather than assuming
+# it. ⚠️ This used to say "three orders of magnitude", which the figures beside it
+# contradict: against a floor of 5,000 those four are factors of 46x, 39x, 18x and 17x,
+# i.e. one to two orders. Stated as the data does instead: at most df 291 against a
+# floor of 5,000. `emit_attested_block_5f0833fc.py` generates this sentence, so the
+# template is wrong there too and must be corrected with it.
+#
+# A systematically garbled form is still rare across
 # documents, which is exactly what `gate_attested_nepali.py`'s df >= 20 bar is too low
 # to see (VOL-175).
 _ATTESTED_NEPALI_WORDS: frozenset[str] = frozenset(
@@ -1806,7 +1824,17 @@ def _nepali_validity(text: str) -> dict[str, float]:
     # `_text_quality_penalty` is what the ABSOLUTE gate ceiling was calibrated
     # against and feeds `penalty_per_deva`. `ecc5338` moved both at once and
     # loosened the gate; see :func:`_legacy_map_garble`.
+    # Computed ONCE each and shared. `_legacy_map_garble(text)` is
+    # `_text_quality_penalty(text) - _duplicate_consonant_count(text) * weight`, so
+    # calling it here recomputed the penalty a second time and the doublet count a
+    # third: measured on a 7,680-character span that redundant half is 1.86 ms of
+    # 4.22 ms, 44.0%, and this runs for six candidate maps on every font of every
+    # document (31,174 font decisions corpus-wide). `_legacy_map_garble` stays as the
+    # named helper -- it is what the tests and the docstring reason about -- and
+    # `test_the_inlined_ranking_penalty_still_equals_the_named_helper` pins the two
+    # forms equal so this cannot silently drift into a third definition.
     penalty = _text_quality_penalty(text)
+    duplicates = _duplicate_consonant_count(text)
     hits = sum(1 for word in _CONTENT_LEGACY_DICTIONARY if word in text)
     return {
         "devanagari": devanagari,
@@ -1823,7 +1851,7 @@ def _nepali_validity(text: str) -> dict[str, float]:
         # compared; ``penalty_per_deva`` keeps it because that is the measure the
         # gate's 0.05 ceiling was calibrated against. See
         # :func:`_legacy_map_garble` for what happens when one substitution moves both.
-        "penalty": _legacy_map_garble(text),
+        "penalty": penalty - duplicates * _DUPLICATE_CONSONANT_WEIGHT,
         "penalty_per_deva": penalty / devanagari if devanagari else float("inf"),
         # Reported separately so `_map_ranking_key` can forgive a bounded number of
         # these sites WITHOUT the gate forgiving any -- see
@@ -1852,7 +1880,10 @@ def _map_ranking_key(
 ) -> tuple[float, float, float, float, float, float]:
     """Evidence axes for a candidate map, most decisive first, higher is better.
 
-    ``hits`` and ``penalty`` are the calibrated primary axes. ``ratio`` and
+    ``hits`` and ``penalty`` are the primary axes. ⚠️ ``penalty`` is deliberately NOT
+    the calibrated quantity -- the calibration is the 0.05 ceiling on
+    ``penalty_per_deva`` (:data:`_CONTENT_LEGACY_MAX_PENALTY_PER_DEVA`), which the gate
+    uses and this axis keeps its hands off, which is the whole point of VOL-185's split. ``ratio`` and
     ``devanagari`` are tie-breaks only: a map that fits the face maps every
     keystroke onto Devanagari, so the residue a *wrong* map leaves behind shows up
     as non-Devanagari characters. That is what separates Spins from Preeti on a
