@@ -15,7 +15,7 @@ one table:
     B  the same data, over the UNION of both key sets
     C  the CONVERTER, over printable-ASCII singletons
 
-Instrument A says 30 differ; B says 60; C says 24. All three are right. A figure from
+Instrument A says 30 differ; B says 60; C says 25. All three are right. A figure from
 this family is meaningless without its instrument named, which is why every test below
 names one.
 
@@ -150,7 +150,12 @@ def test_instrument_a_the_ten_differences_outside_the_digit_rows(
     """Named individually, because this is the set both existing write-ups got wrong.
 
     Four are ASCII and six are high-byte, which is why a probe over printable ASCII
-    alone reports 4 (see instrument C) and a probe over the data reports 10.
+    reports fewer than a probe over the data's 10.
+
+    ⚠️ Instrument C's outside-the-digit-row count is **5**, not these 4: it also sees
+    `<`, where the two TABLES agree (both `?`) but the two FACES do not, so only the
+    converter has an opinion. The two instruments are not off by a rounding error; they
+    are answering different questions, which is this file's subject.
     """
 
     shared = set(preeti_chars) & set(himali_chars)
@@ -280,11 +285,22 @@ def test_instrument_b_reconciles_the_figures_the_records_disagreed_about(
 
 
 def test_instrument_c_converter_level_difference_over_printable_ascii():
-    """The instrument closest to production, and it gives a third answer: 24 of 95.
+    """The instrument closest to production, and it gives a third answer: 25 of 95.
 
     Lower than instrument A's 30 because six of the ten outside-row differences are on
     high-byte keys, which are not printable ASCII. A document made only of ASCII
-    keystrokes therefore sees 24 disagreements, not 30 and not 60.
+    keystrokes therefore sees 25 disagreements, not 30 and not 60.
+
+    🛑 This was **24** while the 0x3c repair was applied map-wide, and the move to 25 is
+    a fact about the CONVERTER, not about npttf2utf's data. Both tables map `<` to a
+    literal `?` -- they agree there, which is why instruments A and B do not move. What
+    differs is the FACE: a rendered page shows Preeti drawing a question mark at 0x3c and
+    Himali drawing `र`, so the converter translates the key for Himali only.
+    Repairing both to `र` made them agree at the one printable-ASCII key
+    where the two faces genuinely part company.
+
+    That is the instrument discipline this whole file is about: A and B read the data, C
+    reads the converter, and only C can see a difference the library itself introduces.
     """
 
     preeti = get_converter_for_map("Preeti")
@@ -294,17 +310,31 @@ def test_instrument_c_converter_level_difference_over_printable_ascii():
     differing = [ch for ch in singletons if preeti(ch) != himali(ch)]
 
     assert len(singletons) == 95
-    assert len(differing) == 24
+    assert len(differing) == 25
     assert len([ch for ch in differing if ch in DIGIT_ROW_KEYS]) == 20
-    assert [ch for ch in differing if ch not in DIGIT_ROW_KEYS] == ["F", "X", "`", "~"]
+    assert [ch for ch in differing if ch not in DIGIT_ROW_KEYS] == [
+        "<",
+        "F",
+        "X",
+        "`",
+        "~",
+    ]
+    # The new entry, spelled out so it cannot be read as a count drifting on its own.
+    assert (preeti("<"), himali("<")) == ("?", "र")
 
 
 def test_the_three_instruments_do_not_agree_and_that_is_the_point():
     """Guards against someone "fixing" the apparent inconsistency by unifying them.
 
-    30, 60 and 24 are three correct answers to three different questions. This asserts
+    30, 60 and 25 are three correct answers to three different questions. This asserts
     they are genuinely different numbers so a future reader cannot conclude that two of
     them are stale.
+
+    ⚠️ `c` was 24 until the 0x3c repair stopped being applied map-wide. A and B read the
+    map TABLES, which AGREE at `<` (both say `?`), so neither ever counted it and neither
+    moves. Only `c` goes through the converter, which is where this library's per-face
+    knowledge lives -- so A and B holding at 30 and 60 while `c` moves is the evidence
+    that the rework changed the converter and not the data.
     """
 
     preeti_chars = _character_map("Preeti")
@@ -316,7 +346,7 @@ def test_the_three_instruments_do_not_agree_and_that_is_the_point():
     himali = get_converter_for_map("FONTASY_HIMALI_TT")
     c = len([chr(x) for x in range(0x20, 0x7F) if preeti(chr(x)) != himali(chr(x))])
 
-    assert (a, b, c) == (30, 60, 24)
+    assert (a, b, c) == (30, 60, 25)
     assert len({a, b, c}) == 3
 
 

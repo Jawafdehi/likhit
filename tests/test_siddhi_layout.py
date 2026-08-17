@@ -214,11 +214,15 @@ def test_the_other_maps_are_untouched() -> None:
     """The change must be additive. A shared-base regression would show here."""
     assert get_converter_for_map("Preeti")("kl/R5]b") == "परिच्छेद"
     assert get_converter_for_map("FONTASY_HIMALI_TT")("100") == "१००"
-    # Was pinned as "द्द। ?ाजश्व", with the literal `?` -- i.e. the DESTROYED reading.
-    # Source 0x3c is a plain र, so the `?` was a deleted letter, and the corrected
-    # reading is corroborated by the very page this layout was derived from: it prints
-    # "२. राजश्व" as an OAG budget line. See tests/test_legacy_map_coverage_gap.py.
-    assert get_converter_for_map("Preeti")("2. <fhZj") == "द्द। राजश्व"
+    # 🛑 This line is `Preeti` reading a `Siddhi` source string, and the `?` is CORRECT.
+    # An earlier revision changed it to "द्द। राजश्व" on the grounds that the page this
+    # layout was derived from prints "२. राजश्व" -- but that page is set in SIDDHI, and
+    # source 0x3c is a different letter on the two faces: Siddhi draws र there,
+    # Preeti draws a question mark (page-verified, three corpora). Reading one face's
+    # evidence onto another is what made the 0x3c repair destroy 914 interrogatives.
+    # Siddhi's own reading of this exact string is asserted above; see
+    # tests/test_legacy_map_coverage_gap.py for the per-face split.
+    assert get_converter_for_map("Preeti")("2. <fhZj") == "द्द। ?ाजश्व"
     assert get_converter_for_map("Spins")("k'_lhut") == "पुंजिगत"
     assert _match_font("Preeti") == "Preeti"
     assert _match_font("Himalb") == "Preeti"

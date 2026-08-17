@@ -274,18 +274,27 @@ def test_the_synthesised_maps_are_outside_these_sweeps() -> None:
         assert spins(probe) == preeti(probe.translate(_SPINS_TO_PREETI_KEYS)), probe
 
 
-def test_the_public_converter_diverges_from_upstream_only_at_the_gap_repair() -> None:
+def test_the_public_converter_diverges_from_upstream_only_at_the_0x3c_translation() -> (
+    None
+):
     """The other half of the sweeps above, and the reason they use the raw pipeline.
 
     Those assert the compiled pipeline is FAITHFUL to npttf2utf. The public converter is
-    deliberately not: it repairs source 0x3c, which upstream decodes to a literal `?`
-    that deletes the letter. Both claims matter, so both are asserted -- and the
-    divergence is bounded to that one substitution rather than left open.
+    deliberately not, on the faces where a rendered page shows source 0x3c drawing
+    `र` -- there it translates the key before the decode. Both claims
+    matter, so both are asserted, and the divergence is bounded to that one key rather
+    than left open.
+
+    🛑 The divergence is modelled as the SAME translation the converter applies, not as
+    an output substitution. Those are not interchangeable in general: an output
+    substitution would also rewrite a `?` that some other source produced, which is
+    exactly the defect that made this test's earlier form pass while the shipped
+    behaviour destroyed 914 interrogatives on the faces that are now excluded.
     """
 
     from likhit.extractors.legacy_maps import (
-        _REPLACEMENT_CHAR_MAPS,
-        _REPLACEMENT_TARGET,
+        _RA_KEYSTROKE_MAPS,
+        _RA_KEYSTROKE_TRANSLATION,
         get_converter_for_map,
     )
 
@@ -297,10 +306,10 @@ def test_the_public_converter_diverges_from_upstream_only_at_the_gap_repair() ->
     for map_key in SHIPPED_MAP_KEYS:
         public = get_converter_for_map(map_key)
         for text in spans:
-            upstream = mapper.map_to_unicode(text, from_font=map_key)
-            expected = (
-                upstream.replace("?", _REPLACEMENT_TARGET)
-                if map_key in _REPLACEMENT_CHAR_MAPS
-                else upstream
+            source = (
+                text.translate(_RA_KEYSTROKE_TRANSLATION)
+                if map_key in _RA_KEYSTROKE_MAPS
+                else text
             )
+            expected = mapper.map_to_unicode(source, from_font=map_key)
             assert public(text) == expected, f"{map_key} on {text!r}"

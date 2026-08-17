@@ -132,8 +132,16 @@ _SPINS_BASE_MAP_KEY = "Preeti"
 # garble penalty per Devanagari falls 0.030 -> 0.012. Independent of any word
 # list: parentheses go from 1,978 "(" against 368 ")" to a balanced 102/102, which
 # is what a rotation that had put the real "." on the "(" key would produce.
+#
+# ``"<": "/"`` is a seventh entry and belongs to a different measurement: on
+# ``Spins_EXT`` the ``0x3c`` slot draws र, page-verified on OAG ``3861`` p5
+# (``gu< k|x<L xjnbf<`` drawing नगर प्रहरी हवलदार).
+# It is spelled out here rather than inherited from Preeti because Preeti's own
+# ``0x3c`` draws a question mark and decodes faithfully as one -- see
+# :data:`_RA_KEYSTROKE_MAPS`. `str.translate` is simultaneous, so this cannot chain
+# with the rotation above, and nothing in the rotation maps TO ``"<"``.
 _SPINS_TO_PREETI_KEYS = str.maketrans(
-    {"-": "=", "=": "[", "[": "-", "_": "+", "+": "{", "{": "_"}
+    {"-": "=", "=": "[", "[": "-", "_": "+", "+": "{", "{": "_", "<": "/"}
 )
 
 #: Map key for the Siddhi layout, which npttf2utf does not ship either. Like
@@ -211,38 +219,54 @@ SHIPPED_MAP_KEYS: tuple[str, ...] = (
     "Sagarmatha",
 )
 
-#: Target for the coverage-gap repair below: DEVANAGARI LETTER RA.
-_REPLACEMENT_TARGET = "\u0930"
+#: ``0x3c`` is a KEY, and which key it is depends on the FACE. That is the whole of this
+#: block, and an earlier form of it got the direction wrong for the larger population.
+#:
+#: Every map in the family has exactly one source code point whose decode is a bare
+#: ``?`` -- measured over 0x00-0x2FFF, not just the byte range. For five of the six it is
+#: ``0x3c`` (Preeti, Kantipur, FONTASY_HIMALI_TT, Sagarmatha, and Spins through Preeti's
+#: table); for ``PCS NEPALI`` it is ``0xa9``.
+#:
+#: \ud83d\uded1 **A bare ``?`` in the output is NOT always damage.** On the faces that dominate
+#: both downstream corpora ``0x3c`` draws a real question mark, so npttf2utf's table is
+#: right and ``?`` is the faithful read. The embedded ``BOFDOE+Preeti`` was extracted and
+#: its slots rendered at 200 dpi: ``0x2f`` draws ``\u0930``, ``0x3f`` draws
+#: ``\u0930\u0941``, and ``0x3c`` is a genuine two-contour question mark. Page-verified
+#: ``?`` on ``Preeti``, ``Preeti,Bold`` and ``Kantipur`` across three corpora --
+#: **914 occurrences under a formerly-repaired map key, 541 of them isolated, over 101
+#: doc-font pairs** in all 6,236 OAG documents and all 35 CIAA reports. The decisive one
+#: is OAG ``11115`` p296, where the sentence holding the mark reads
+#: ``\u092d\u0928\u094d\u0928\u0947 \u092a\u094d\u0930\u0936\u094d\u0928\u092e\u093e``
+#: ("in the question") -- so the ``?`` is not an inference from glyph shape at all.
+#:
+#: The converse population is equally real, which is why this is a per-face table and not
+#: a deletion: ``0x3c`` is page-verified ``\u0930`` on ``FONTASY_ HIMALI_ TT`` (OAG
+#: ``2335`` p21) and on ``Spins_EXT`` (OAG ``3861`` p5, ``gu< k|x<L xjnbf<`` drawing
+#: \u0928\u0917\u0930 \u092a\u094d\u0930\u0939\u0930\u0940 \u0939\u0935\u0932\u0926\u093e\u0930).
+#: 24 of the 101 doc-font pairs carry a word-internal ``0x3c``, 412 occurrences.
+#:
+#: \u26a0\ufe0f Position is NOT a proxy for what the face draws -- word-internal ``0x3c`` that the
+#: page renders as ``?`` exists (OAG ``2933``, ``3699``), and isolated ``0x3c`` that the
+#: page renders as ``\u0930`` exists. Only a per-face read decides, so do not reach for
+#: the isolated/in-word split as a discriminator.
+#:
+#: ``Sagarmatha`` is deliberately absent: there is no page read for its ``0x3c`` either
+#: way, and it has zero occurrences in both corpora. Repairing on a sibling inference is
+#: the exact reasoning that made the original report of this defect wrong about which map
+#: was the outlier -- the same reason ``PCS NEPALI`` (gap at ``0xa9``) stays out.
+_RA_KEYSTROKE_MAPS: frozenset[str] = frozenset({"FONTASY_HIMALI_TT"})
 
-#: Maps whose table replaces one source code point with a literal ``?``, and for which
-#: that code point is page-verified to be a plain ``\u0930``.
+#: ``0x3c`` -> ``0x2f``, applied to the keystrokes BEFORE the table decode.
 #:
-#: Every map in the family has EXACTLY ONE source code point whose decode is a bare
-#: ``?`` -- measured over 0x00-0x2FFF, not just the byte range. For these five it is
-#: ``0x3c``; for ``PCS NEPALI`` it is ``0xa9``, which is why that key is absent here.
-#: Because the mapping is one-to-one, replacing ``?`` in the OUTPUT is exactly
-#: equivalent to fixing ``0x3c`` in the input -- and it is the only place that works:
-#: npttf2utf has already reordered the surrounding matras treating the ``?`` slot as
-#: the consonant it should have emitted, so the substitution lands inside the cluster.
-#: Splitting the span at ``0x3c`` and converting the pieces strands the prefix matra
-#: on the wrong side (``ul<`` is ``\u0917\u0930\u093f``, not ``\u0917\u093f\u0930``).
-#:
-#: A ``?`` in the output is never a passthrough of a ``?`` in the input: source ``0x3f``
-#: decodes to ``\u0930\u0941``/``\u0930\u0942`` under every map. So every output ``?``
-#: is a destroyed character and there is nothing legitimate to preserve.
-#:
-#: ``PCS NEPALI`` is deliberately NOT repaired. Its gap is at ``0xa9``, where Preeti,
-#: Kantipur and Spins all emit ``\u0930`` -- but that is a sibling inference with no
-#: page read behind it, which is the exact reasoning that made the original report of
-#: this defect wrong about which map was the outlier.
-#:
-#: The two SYNTHESISED maps are absent on purpose and are still covered: each reaches
-#: ``?`` through its base map's table, so it inherits the repair from Preeti (Spins) or
-#: FONTASY_HIMALI_TT (Siddhi). Listing them would double-apply a substitution that is
-#: idempotent anyway, and would imply they have tables of their own.
-_REPLACEMENT_CHAR_MAPS: frozenset[str] = frozenset(
-    {"Preeti", "Kantipur", "FONTASY_HIMALI_TT", "Sagarmatha"}
-)
+#: This is the shape ``Siddhi`` already uses for the identical case -- see
+#: :data:`_SIDDHI_TO_HIMALI_KEYS`, whose ``'<' -> '/'`` entry is exactly this -- and it is
+#: better than substituting on the output for two reasons. It cannot touch a ``?`` that
+#: any other source produced, and it lets npttf2utf reorder the cluster from the right
+#: consonant rather than around a hole. The reordering worry that motivated the output
+#: form does not apply: it was about SPLITTING the span at ``0x3c`` and converting the
+#: pieces, which strands a prefix matra. Translating one key does not split anything --
+#: measured, ``ul<`` gives ``\u0917\u0930\u093f`` either way.
+_RA_KEYSTROKE_TRANSLATION = str.maketrans({"<": "/"})
 
 #: Maps this library MODELS rather than gets from npttf2utf: a layout upstream does not
 #: ship, expressed as a key translation onto a shipped map. There are two, and they work
@@ -591,15 +615,17 @@ def get_converter_for_map(map_key: str) -> Callable[[str], str]:
 
         return _convert_spins
 
-    if map_key in _REPLACEMENT_CHAR_MAPS:
+    if map_key in _RA_KEYSTROKE_MAPS:
         base = _get_compiled_map(map_key).convert
 
-        def _convert_repaired(text: str) -> str:
-            # See _REPLACEMENT_CHAR_MAPS: one-to-one with source 0x3c, so this is the
-            # source fix expressed where the reordering has already happened.
-            return base(text).replace("?", _REPLACEMENT_TARGET)
+        def _convert_ra_keystroke(text: str) -> str:
+            # See _RA_KEYSTROKE_MAPS: on THIS face 0x3c draws र, so it is
+            # translated to the key that decodes to र before the table runs.
+            # Faces where 0x3c draws a question mark are absent from that set and
+            # decode faithfully.
+            return base(text.translate(_RA_KEYSTROKE_TRANSLATION))
 
-        return _convert_repaired
+        return _convert_ra_keystroke
 
     return _get_compiled_map(map_key).convert
 
