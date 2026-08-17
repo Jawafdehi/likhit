@@ -753,7 +753,33 @@ def _merge_continuation_rows(
 #: A line that is nothing but a figure -- `verify_table_integrity.py`'s own
 #: definition, so "is this line a bare figure" means the same in the renderer as
 #: in the instrument that measures the renderer.
-_BARE_FIGURE = re.compile(r"^[\s0-9०-९,.।-]+$")
+#:
+#: `|` is in the class, which that instrument's copy does not need. The instrument
+#: reads a *rendered* line and splits it on `|` first, so a stray pipe in the cell
+#: text has already become a column separator by the time it classifies the value.
+#: Here the raw cell text is all there is, so without `|` the two sides disagree
+#: about the same value: `८५०००|` reads as prose to the renderer and as a bare
+#: figure to everything downstream.
+#:
+#: ⚠️ That is the argument, and it stands on the two definitions agreeing -- it needs no
+#: corpus case. An earlier version of this comment cited
+#: `local-level-report/3876__NoRKt...भानु नगरपालीका, २०७८` as the document where a
+#: swallowed sub-table was joined into a narrative cell "because" of `८५०००|`. Re-derived
+#: on this head: that document DOES change, but on its fiscal-year labels -- the wrapped
+#: pair `२०७५|०७६-` and `०७६|७७`, which the parent joined and this rule leaves split. The
+#: `८५०००|` case does **not** flip (`old_rejoin=True, new_rejoin=True`): that cell is a
+#: seven-line narrative whose last two lines are the sub-table's header and its single
+#: row, and that row carries letters, so it is not a bare figure under either class. The
+#: sub-table is still mashed into the narrative cell here, identically to `main` --
+#: `_TRAILING_FIGURE` below explains why, and the citation predates it.
+#:
+#: 🛑 The class also widened in a second way, and the widening is what makes `_ANY_DIGIT`
+#: at the use site load-bearing: `|`, `| |` and `||` match this pattern and did not match
+#: the parent's. A stray pipe "where a rule crossed the text" is exactly what can leave a
+#: line that is nothing but a pipe, so the digit conjunct is the only thing keeping a
+#: content-free line from counting as a figure. It is pinned in
+#: `test_table_rendering.py`; do not drop it as redundant.
+_BARE_FIGURE = re.compile(r"^[\s0-9०-९,.।|-]+$")
 _ANY_DIGIT = re.compile(r"[0-9०-९]")
 #: A line whose last token is a figure. This is the tell that separates a REGISTER ROW
 #: from a wrapped sentence, and it is needed because the bare-figure test below cannot
@@ -786,9 +812,10 @@ def _wrapped_lines_are_one_row(cell_lines: list[list[str]]) -> bool:
     could, and `_extract_cell_text` has discarded them by this point. When two or
     more columns wrap, a real pairing may exist and collapsing would destroy it.
 
-    **None of that column's lines is a bare figure.** A line that is only a number
-    is not a sentence continuation, and joining it would corrupt one of two things
-    this corpus is full of:
+    **None of that column's lines is a bare figure**, where a stray `|` in the text
+    counts as a separator rather than as content -- see `_BARE_FIGURE`. A line that
+    is only a number is not a sentence continuation, and joining it would corrupt
+    one of two things this corpus is full of:
 
     - a figure split across visual lines (`185929593.` + `20` is one amount). A
       space join yields `185929593. 20`; a bare concatenation builds the >=15-digit
@@ -819,6 +846,19 @@ def _looks_like_register_rows(parts: list[str]) -> bool:
     and at least one carrying a letter -- the letter requirement keeps this from
     duplicating the bare-figure test, so the two clauses stay independently meaningful
     and a mutation of either is visible.
+
+    The blank-line filter below is BELT AND BRACES, not evidence being discarded, and
+    that distinction was raised in review. `_render_raw_table_lines` builds `cell_lines`
+    with `if _clean_text(part)`, so a blank never reaches this function through the
+    render path -- verified by instrumenting the predicate and rendering a cell whose
+    text contains one: it arrives as two entries, not three.
+
+    🛑 And the suggested repair pointed the wrong way. "A blank line means these are not
+    register rows" makes this return False, and False is what lets the caller JOIN the
+    lines. Joining is the corrupting act here, not splitting -- see the caller's
+    docstring: it splits a figure across visual lines and mashes a swallowed sub-table
+    into one string. Returning True on ambiguous input leaves the rows alone, which is
+    why the conservative direction is the one already taken.
     """
 
     lines = [part for part in parts if part.strip()]
