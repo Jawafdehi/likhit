@@ -9,6 +9,7 @@ import hashlib
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 import fitz
 
@@ -2662,6 +2663,19 @@ def _map_ranking_key(
 # word. Ordinals like `१०औं` do, which is why this is a comparative measure between
 # candidate readings of the SAME span and never an absolute quality score.
 #
+# 🛑 **Being comparative does NOT neutralise the second artifact, and this comment used
+# to present it as though it did.** Span concatenation manufactures mixed tokens, and it
+# does so ASYMMETRICALLY between the two map families: `PCS NEPALI` and
+# `FONTASY_HIMALI_TT` read ASCII digits as digits, so an amount span abutting a word span
+# produces a digit-next-to-letter token in their reading, while `Preeti`, `Kantipur` and
+# `Sagarmatha` read those same digits as consonants and produce nothing. The production
+# decision unit is exactly such a concatenation -- the per-font aggregate -- so the
+# artifact does not cancel; it favours one family systematically.
+#
+# That asymmetry is the reason this gate ships OFF, and the reason it must be measured
+# per generation rather than reasoned about. It was disclosed in the PR body and nobody
+# re-reads a merged PR body before turning a flag on, so it lives here.
+#
 # **Why a margin, and not simply another ranking axis.** The bare term was priced
 # corpus-wide first (`runs/vol218/FINDING-17-...-d2362b10.md`): placed below
 # `attested` (P1) it costs 0 attested forms but leaves `4834...खार्पुनाथ` damaged;
@@ -2688,7 +2702,17 @@ _MIXED_MARGIN_ENV_VAR = "LIKHIT_LEGACY_MAP_MIXED_MARGIN"
 # passed None", which means off. A plain ``None`` default cannot express both, and a
 # test that means to force the gate OFF must not be silently overridden by an env var
 # some other test or a build driver left set.
-_MARGIN_FROM_ENV = object()
+# ⚠️ Annotated `Any` deliberately. Unannotated, this is `object`, and `ty` then reports
+# error[invalid-parameter-default] on `mixed_margin: int | None = _MARGIN_FROM_ENV` --
+# taking likhit's `ty` baseline from the 8 AGENTS.md pins for `main` to 9, which is
+# exactly the phantom-regression trap that file warns about. The sentinel's identity is
+# what matters, never its type: the only thing done with it is `is _MARGIN_FROM_ENV`.
+_MARGIN_FROM_ENV: Any = object()
+#: Smallest legal margin, for BOTH the env route and the keyword. Named because the two
+#: used to enforce it in only one place: `_mixed_margin_setting` refused < 1 while a
+#: caller passing `mixed_margin=0` went straight through. See
+#: :func:`choose_legacy_map_detailed`.
+_MIXED_MARGIN_FLOOR = 1
 
 # Composed forms only. A Devanagari class written as a range over *composed*
 # characters decomposes if it is ever pasted through a shell, which compiles and
@@ -2750,9 +2774,10 @@ def _mixed_margin_setting() -> int | None:
         raise ExtractionError(
             f"{_MIXED_MARGIN_ENV_VAR}={raw!r} is not an integer"
         ) from exc
-    if margin < 1:
+    if margin < _MIXED_MARGIN_FLOOR:
         raise ExtractionError(
-            f"{_MIXED_MARGIN_ENV_VAR}={raw!r} must be >= 1; unset it to disable the gate"
+            f"{_MIXED_MARGIN_ENV_VAR}={raw!r} must be >= {_MIXED_MARGIN_FLOOR}; "
+            f"unset it to disable the gate"
         )
     return margin
 
@@ -2761,8 +2786,16 @@ def _map_ranking_key_margin_gated(threshold: float):
     """:func:`_map_ranking_key` plus an ELIGIBLE indicator at P2's position.
 
     ``threshold`` is ``mixed(shipped winner) - margin``. A candidate is eligible iff
-    its own mixed count is at or below it, so the gate can only ever promote a
-    candidate that beats the shipped winner by more than the margin.
+    its own mixed count is at or below it, so the gate promotes a candidate that beats
+    the shipped winner by **at least** the margin.
+
+    ⚠️ "By MORE THAN the margin" is what three records said, and it is off by one: the
+    comparison is `mixed <= threshold` with `threshold = mixed(winner) - margin`, so an
+    advantage of exactly `margin` fires. The measured M=5 figures were taken against
+    this code, so the code is the thing to keep and the wording is the thing to fix.
+    A consequence worth carrying: "any advantage at all" is M=**1** (threshold =
+    winner - 1), which `_mixed_margin_setting` ACCEPTS. M=0 is a different arm again --
+    "not worse than the winner" -- and it is the one the floor refuses.
     """
 
     def key(validity: dict[str, float]) -> tuple[float, ...]:
@@ -2924,21 +2957,47 @@ def choose_legacy_map_detailed(
     ``mixed_margin`` is set -- by the argument, or by
     :data:`_MIXED_MARGIN_ENV_VAR` -- this runs in two passes: pass 1 is the shipped
     ranking above, and pass 2 re-ranks with an eligibility indicator for candidates
-    whose mixed letter+digit count beats the pass-1 winner's by more than the margin.
-    Both passes are *this* function's ranking core, so the tie mask, the localisation
-    check and the accept gate are the shipped ones in both.
+    whose mixed letter+digit count beats the pass-1 winner's by **at least** the margin
+    (⚠️ not "by more than": the comparison is `mixed <= mixed(winner) - margin`, so an
+    advantage of exactly `margin` fires -- see
+    :func:`_map_ranking_key_margin_gated`). Both passes are *this* function's ranking
+    core, so the tie mask, the localisation check and the accept gate are the shipped
+    ones in both.
 
     Where pass 1 abstains there is no winner to measure a margin against, so the gate
     stays silent and the shipped result is returned unchanged. That forecloses
-    ``abstain -> decided`` **by construction**: the gate can only ever move a span
-    from one map to another, never bring a rejected span into the transcript.
+    ``abstain -> decided`` **by construction**: the gate can never bring a rejected span
+    into the transcript.
+
+    🛑 **But "can only ever move a span from one map to another" is NOT the whole
+    invariant, and it was stated as though it were. There is a THIRD outcome: the gate
+    also changes which code points are emitted RAW.** Pass 2 re-derives the tie state
+    under a different key, and the gated key can only shrink a tie set, never grow it, so
+    it can add or drop the VOL-156 ambiguity mask. Measured on this PR's own headline
+    case, `3719`/`Felix Titling` at M=5: promoting `PCS NEPALI` creates an exact tie with
+    `FONTASY_HIMALI_TT` on ``?``, so `ambiguous` goes from ``{}`` to ``{'?'}`` and the
+    emitted text gains **7 raw `?`** where the shipped `Preeti` reading emitted 7 ``रु``.
+    The reject side of that same mechanism is the `decided -> abstain` case below; the
+    accept side is this.
 
     🛑 ``decided -> abstain`` needed a guard, and did NOT have one. Raised in review and
     measured on real spans: across the first 3 CIAA reports, 21,376 distinct spans, 2,015
     of which pass 1 decides, the gate changes the winner on 275 and turned **2** into
-    abstentions -- i.e. it dropped text that ships today. Synthetic strings cannot find
-    this: 60,000 of them abstained in pass 1, so they never reach the region where the
-    gate does anything.
+    abstentions. Synthetic strings cannot find this: 60,000 of them abstained in pass 1,
+    so they never reach the region where the gate does anything.
+
+    ⚠️ **"It dropped text that ships today" overstated it, and the correction matters for
+    how the fixtures are read.** Both witnesses are single SPANS whose font is literally
+    `Preeti`, and `classify_font` routes that name to ``legacy_remap`` -- so
+    `detect_content_legacy_fonts` skips the font and this function is never asked about
+    those spans on the production path, which passes only per-font AGGREGATES of fonts the
+    name classifier calls "correct". On that unit no instance was found at all: 3,148
+    aggregates from 515 PDFs, 104 decided by pass 1, **0** pass-2 abstentions at every
+    margin in {1, 2, 3, 5, 8, 13, 99}. So the invariant was violated at the FUNCTION
+    level on real span text, and the fixtures are function-level regression tests rather
+    than corpus witnesses. The fallback is still right -- an abstaining second pass is not
+    evidence against the first pass's accepted answer -- it is the claimed footprint that
+    was wrong.
 
     Both were the ACCEPT-GATE path, and neither abstention was a finding about the span:
 
@@ -2959,6 +3018,19 @@ def choose_legacy_map_detailed(
     margin = (
         _mixed_margin_setting() if mixed_margin is _MARGIN_FROM_ENV else mixed_margin
     )
+    # 🛑 The KEYWORD route must clear the same floor as the env route. `_mixed_margin_
+    # setting` refuses anything below 1 ("unset it to disable the gate"), but the guard
+    # below is `margin is None`, so a caller passing `mixed_margin=0` -- or a negative
+    # int -- went straight through to a value a build is forbidden to use. At M=0 the
+    # pass-1 winner is itself eligible, so the indicator promotes nobody and the gate's
+    # ONLY effect is to break pass-1 ties: that drops the VOL-156 ambiguity mask and
+    # decodes those code points as if the tie had been settled, which is the one thing
+    # the mask exists to prevent.
+    if margin is not None and margin < _MIXED_MARGIN_FLOOR:
+        raise ValidationError(
+            f"mixed_margin={margin!r} must be >= {_MIXED_MARGIN_FLOOR}; "
+            f"pass None to disable the gate"
+        )
     shipped = _choose_legacy_map_ranked(text, _map_ranking_key, mixed_threshold=None)
     if margin is None or shipped.map_key is None:
         return shipped

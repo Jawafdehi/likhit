@@ -16,10 +16,12 @@ column) while 23 shifted-row keystrokes became digits (``uf]&L`` -> ``go-7-i`` f
 ``FINDING-16``/``FINDING-19``.
 
 **Why nothing else catches it.** A wrong-family reading scores ``penalty 0`` and a
-high ``ratio``, because every keystroke still lands on Devanagari. On this face all
-six maps tie on ``hits``, ``penalty``, ``stranded`` AND ``attested``, so the decision
-fell through to ``ratio``, where ``Preeti`` won by **0.000391** -- inside the band the
-ranking's own docstring calls unusable. The document-level attested screen saw only
+high ``ratio``, because every keystroke still lands on Devanagari. On this face **five
+of the six** maps tie on ``hits``, ``penalty``, ``stranded`` AND ``attested``
+(3 / 0 / 0 / 14 each) -- ⚠️ not all six, as this said: ``Spins`` scores ``stranded`` 8
+and ``attested`` 12, so it is separated well above ``ratio``. Among the five the decision
+fell through to ``ratio``, where ``Preeti`` won by **0.000391** (re-derived:
+0.000391715) -- inside the band the ranking's own docstring calls unusable. The document-level attested screen saw only
 ``net_attested_delta -2``, because seven gained ``ru`` nearly cancelled the loss.
 
 **Why a MARGIN and not just another axis.** The bare term was priced corpus-wide
@@ -35,9 +37,11 @@ decision. The first test below is the one that matters most: with the gate off t
 chooser must be indistinguishable from the shipped one.
 """
 
+import re
+
 import pytest
 
-from likhit.errors import ExtractionError
+from likhit.errors import ExtractionError, ValidationError
 from likhit.extractors import font_based as fb
 
 
@@ -126,6 +130,35 @@ class TestMixedLetterDigitCount:
         """A decomposed class literal compiles and silently reclassifies marks."""
 
         fb._assert_mixed_classes_hold()
+
+    def test_the_gate_path_actually_calls_the_class_assertion(self, monkeypatch):
+        """🛑 Nothing pinned that `choose_legacy_map_detailed` calls the guard.
+
+        The test above calls `_assert_mixed_classes_hold()` directly, so deleting the
+        CALL from the gate path left 388 tests passing -- and it is not a no-op mutant:
+        with a class broken the `ExtractionError` really does fire from the gate path, so
+        removing the call converts a loud refusal into silent ranking on wrong classes.
+        """
+
+        monkeypatch.setattr(fb, "_DEVA_HAS_DIGIT", re.compile("(?!x)x"))
+
+        with pytest.raises(ExtractionError):
+            fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=5)
+
+        # ...and the ungated call must NOT raise: the guard belongs to the gate path.
+        assert fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=None)
+
+    def test_the_env_var_name_is_the_literal_a_build_driver_exports(self, monkeypatch):
+        """Every other test reads `fb._MIXED_MARGIN_ENV_VAR`, so renaming the constant
+        renamed the variable everywhere at once and the suite stayed green. The literal
+        string is what a PR body tells an operator to set and what a build driver
+        exports, so it is pinned as a literal exactly once.
+        """
+
+        assert fb._MIXED_MARGIN_ENV_VAR == "LIKHIT_LEGACY_MAP_MIXED_MARGIN"
+        monkeypatch.setenv("LIKHIT_LEGACY_MAP_MIXED_MARGIN", "5")
+        assert fb._mixed_margin_setting() == 5
+        assert fb.choose_legacy_map_detailed(AGGREGATE_3719).map_key == "PCS NEPALI"
 
 
 class TestMarginSetting:
@@ -220,9 +253,27 @@ class TestGateOffIsShipped:
         assert choice.map_key == "Preeti"
 
     def test_off_computes_no_mixed_term_at_all(self, monkeypatch):
+        """⚠️ This assertion holds with the gate ON too, and that is now stated.
+
+        On this fixture the gated pass wins through the TIE path, and that path rebuilds
+        `best = _nepali_validity(readings.pop())` from the masked reading, which drops
+        the "mixed" key -- so `"mixed" not in validity` is true at M=5 and at M=1 as
+        well. Confirmed by the mutation that defaults the gate ON at 5: three tests
+        failed and this was not among them.
+
+        Kept because the OFF path is worth asserting somewhere, and paired with the
+        assertion below that does distinguish the two states.
+        """
+
         monkeypatch.delenv(fb._MIXED_MARGIN_ENV_VAR, raising=False)
         choice = fb.choose_legacy_map_detailed(AGGREGATE_3719)
         assert "mixed" not in (choice.validity or {})
+        # The state-distinguishing assertion: OFF leaves the shipped winner in place.
+        assert choice.map_key == "Preeti"
+        assert (
+            fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=5).map_key
+            == "PCS NEPALI"
+        )
 
 
 class TestGateOnRepairs3719:
@@ -367,13 +418,23 @@ class TestGateCannotManufactureADecision:
 #: verbatim corpus spans and not constructed ones.
 DECIDED_THEN_ABSTAINED = [
     # pass 1 picks Spins and it passes the accept gate; pass 2 promotes Preeti, which
-    # FAILS it. An unacceptable candidate is not a better one.
+    # FAILS it. An unacceptable candidate is not a better one. Reachable at M=1 only:
+    # measured, M=2 and above leave pass 2 electing Spins again.
     (1, "/sddWo] ?=%,!!,**,^&).() cfkm\"nfO{ u}/sfg'gL ¿kdf nfe k'¥ofpg] / g]kfn"),
-    # Subtler, and not what the review described: the SAME map wins both passes. Pass 1
-    # reaches it through the tie path, so it gates the MASKED reading and accepts; pass 2
-    # finds no tie under the gated key, so it gates the UNMASKED reading and rejects.
-    (0, "lhNnf lzIff sfof{no, 88]nw'/f"),
 ]
+
+#: 🛑 The SECOND witness, and it is reachable at **M=0 only** -- a margin the entry point
+#: now refuses (`_MIXED_MARGIN_FLOOR`, finding 91-1). Kept as a recorded mechanism rather
+#: than as a live regression test, because at every legal margin the threshold goes
+#: negative, every candidate is ineligible, pass 2 orders exactly as shipped and the
+#: pathology does not arise. Re-measured at M=1..11: pass 2 elects `Preeti` with
+#: `ambiguous == {'8'}` every time, i.e. identical to pass 1.
+#:
+#: The mechanism itself is real and subtler than the review described: the SAME map wins
+#: both passes: pass 1 reaches it through the tie path, so it gates the MASKED reading
+#: and accepts; pass 2 finds no tie under the gated key, so it gates the UNMASKED reading
+#: and rejects.
+DECIDED_THEN_ABSTAINED_AT_ZERO_MARGIN = "lhNnf lzIff sfof{no, 88]nw'/f"
 
 
 @pytest.mark.parametrize(("margin", "text"), DECIDED_THEN_ABSTAINED)
@@ -403,6 +464,39 @@ def test_the_gate_never_turns_a_decided_span_into_an_abstention(
     # `ambiguous` set too, or the second fixture's masked code points would be decoded
     # as though the tie had been settled.
     assert gated == shipped
+
+
+def test_the_keyword_route_enforces_the_same_floor_as_the_env_route(
+    monkeypatch,
+) -> None:
+    """🛑 `mixed_margin=0` used to go straight through, and M=0 is not a gate.
+
+    `_mixed_margin_setting` refuses anything below 1 for the env var ("unset it to
+    disable the gate"), but the guard at the entry point was `margin is None`, so a
+    CALLER could pass a value a build is forbidden to use. At M=0 the pass-1 winner is
+    itself eligible, so the indicator promotes nobody and the gate's only effect is to
+    break pass-1 ties -- which drops the VOL-156 ambiguity mask and decodes those code
+    points as if the tie had been settled.
+
+    ⚠️ This is also the only margin at which the second `decided -> abstain` witness was
+    reachable; see `DECIDED_THEN_ABSTAINED_AT_ZERO_MARGIN`. Re-measured at M=1..11, pass
+    2 elects the same map with the same `ambiguous` set as pass 1, so the pathology has
+    no legal-margin instance.
+    """
+
+    monkeypatch.delenv(fb._MIXED_MARGIN_ENV_VAR, raising=False)
+    text = DECIDED_THEN_ABSTAINED_AT_ZERO_MARGIN
+
+    for illegal in (0, -1, -5):
+        with pytest.raises(ValidationError):
+            fb.choose_legacy_map_detailed(text, mixed_margin=illegal)
+
+    # The floor itself is legal, and the gate runs.
+    assert fb.choose_legacy_map_detailed(text, mixed_margin=1).map_key is not None
+    # ...and `None` still means "disabled", not "zero".
+    assert fb.choose_legacy_map_detailed(
+        text, mixed_margin=None
+    ) == fb._choose_legacy_map_ranked(text, fb._map_ranking_key, mixed_threshold=None)
 
 
 def test_the_fallback_does_not_suppress_a_legitimate_winner_change(monkeypatch) -> None:

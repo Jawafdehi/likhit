@@ -268,6 +268,17 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "at least two of the run's characters must be upper-case, so a capitalised "
         "ordinary word does not qualify",
     ),
+    (
+        "likhit/extractors/font_based.py",
+        "_MIXED_MARGIN_FLOOR",
+    ): (
+        1,
+        "smallest legal mixed-margin, for the ENV var and the keyword alike. Not a "
+        "calibrated threshold: it is the boundary below which the gate stops being a "
+        "gate -- at 0 the pass-1 winner is itself eligible, so nothing is promoted and "
+        "the only effect is to break pass-1 ties, which drops the VOL-156 ambiguity "
+        "mask. Registered in the same commit as the constant, per finding 86-5",
+    ),
     # -- ranking forgiveness ---------------------------------------------------- #
     #
     # Each term forgives ONE occurrence before the tell counts, because each fires at a
