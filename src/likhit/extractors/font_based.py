@@ -62,7 +62,58 @@ _CID_MARK_BASE = 0xF0000
 _MAX_MARKABLE_CID = 0xFFFD
 _MARKED_CID_PATTERN = re.compile(r"[\U000F0000-\U000FFFFD]")
 _PREFIX_IKAR_PATTERN = re.compile(r"(?:(?<=^)|(?<=[\s(]))ि(?=[\u0915-\u0939])")
-_INVALID_IKAR_PATTERN = re.compile(r"ि(?=[ािीुूृॄेैोौंःँ])")
+# The lookahead is the eleven vowel *matras* only. It deliberately excludes the three
+# nasal/visarga marks that used to be in this class -- anusvara U+0902, visarga
+# U+0903, candrabindu U+0901 -- because an ikar followed by one of those is
+# USUALLY ordinary Nepali rather than a mis-map: on the 6,223 published v11
+# transcripts those three account for 95,153 matches, every sampled one of them
+# correct (सिंह, सिंचाई, दिँदा, हिंसा, लिंक, निःशुल्क, मितिः), against 101,628
+# matches for the matras, every sampled one of them garble (सिालन, आथििक, वििरण).
+# Two vowel signs in a row cannot be typed; a vowel sign then a nasal mark is
+# spelling. VOL-131: this false positive is what charged the correct `Spins` decode
+# of `2366__…Dolakha Tamakoshi` 12 points for the word नदेखिंदा, losing it the span.
+#
+# ⚠️ "Usually", not "always" -- 98.3%, and the residue is recovered separately below.
+_INVALID_IKAR_PATTERN = re.compile(r"ि(?=[ािीुूृॄेैोौ])")
+# The 1.7% the class above gives up, charged back. A Devanagari vowel sign is only
+# well formed after a CONSONANT or a virama-terminated cluster, so an ikar that sits
+# after an independent vowel, after another matra, or at the start of a cluster and is
+# then followed by a nasal/visarga is not spelling under any orthography -- it is the
+# same mis-map, wearing a lookahead the narrowed class no longer covers.
+#
+# Measured over the same 6,223 v11 transcripts: the narrowed class fires 101,628
+# times, the pre-narrowing class 196,781, and this term recovers **1,550 sites in 240
+# documents** -- every one of the 95,153 correct nasal sequences still excused. The
+# recovered mass is dominated by `िःथ` (196, a mis-map of स्थ), `एिं` (467 across its
+# spacing variants, a mis-map of एवं "and") and `पुिःत` (88, पुस्त).
+#
+# 🛑 Why it is worth a second pattern rather than a wider class: 1,451 of the 1,550
+# (93.6%) sit in words whose WHOLE `_text_quality_penalty` is otherwise 0, so no axis
+# saw them at all, and the direction of that miss is fails-open. On a 100-character
+# window of `5772__…एकडारा गाउँपालिका` the aggregate's `penalty_per_deva` goes
+# 0.10588 -> 0.03529 without this term, which flips `_passes_content_legacy_gate` from
+# False to True and ACCEPTS the garbled decode instead of abstaining and leaving the
+# keystrokes visible; a 160-character window of `5939__…गोसाइकुण्ड गाउँपालिका` flips
+# the same way, 0.08823 -> 0.04411.
+#
+# 🛑 **The precomposed nukta letters U+0958-095F are deliberately NOT in the lookbehind,
+# and writing them with `\uXXXX` escapes does not help.** They are Unicode composition
+# EXCLUSIONS, so NFC rewrites each of them to base+U+093C -- which means a pattern whose
+# source contains one is not a normalization fixed point, and
+# `tests/test_regex_normalization_stability.py` fails on it however it is spelled in this
+# file (escapes are resolved by Python before `re` ever sees them). That guard exists
+# because this class of edit has taken the whole module's import down before.
+#
+# U+093C, the combining nukta, is in the class instead, and it is the form that occurs:
+# NFC never produces U+0958-095F, so `क़ि` is क + ़ + ि and the lookbehind sees the nukta.
+# The precomposed spelling IS reachable -- 829 occurrences in 311 v11 documents, and every
+# map passes 0x958-0x95f through unchanged -- but precomposed-then-ikar-then-nasal has
+# ZERO occurrences in all 6,223, measured: the nukta-only class recovers exactly the same
+# 1,550 sites as one carrying the full range.
+_IMPOSSIBLE_IKAR_NASAL_PATTERN = re.compile(
+    # (?<! consonant | nukta | virama ) ikar (?= candrabindu | anusvara | visarga )
+    "(?<![\u0915-\u0939\u093c\u094d])\u093f(?=[\u0901\u0902\u0903])"
+)
 _HALANT_IKAR_PATTERN = re.compile(r"्ि")
 _DUPLICATE_CONSONANT_PATTERN = re.compile(r"([क-ह])\1")
 # Two identical adjacent consonants are a real garble signal, but adjacency ALONE
@@ -457,6 +508,7 @@ def _text_quality_penalty(text: str) -> int:
         + len(_INVALID_SIGN_PATTERN.findall(text)) * 8
         + len(_PREFIX_IKAR_PATTERN.findall(text)) * 6
         + len(_INVALID_IKAR_PATTERN.findall(text)) * 6
+        + len(_IMPOSSIBLE_IKAR_NASAL_PATTERN.findall(text)) * 6
         + len(_HALANT_IKAR_PATTERN.findall(text)) * 4
         + _duplicate_consonant_count(text) * 3
         + len(_SUSPICIOUS_ARTIFACT_PATTERN.findall(text)) * 8
@@ -492,6 +544,28 @@ def _is_garbled_orphan(text: str) -> bool:
 
 
 def _has_severe_noise(text: str) -> bool:
+    """Whether a fragment is noisy enough to be worth a token-wise variant merge.
+
+    \ud83d\uded1 **This is the SECOND consumer of the ikar patterns, and it is not a ranking
+    function.** It gates the token-wise merge in :func:`_choose_fragment_text`, which
+    runs on the shipped extraction path (:func:`_merge_fragment_variants`) over the
+    raw-vs-cmap-repaired document pair. So narrowing any pattern above prices two
+    things at once: what the garble measure charges, and whether a repair is attempted
+    at all. A narrowing that is right for ranking can silently drop a repair here.
+
+    That is why the impossible ikar+nasal term is read here too rather than only in
+    :func:`_text_quality_penalty`. Without it, two variants of one line each carrying a
+    single impossible ikar+anusvara in a DIFFERENT token -- original `\u090f\u093f\u0902 \u092c\u0948\u0902\u0915`,
+    repaired `\u090f\u0935\u0902 \u092c\u0948\u093f\u0902\u0915`, truth `\u090f\u0935\u0902 \u092c\u0948\u0902\u0915` -- both report no severe noise, the merge is
+    skipped, and the fragment ships as `\u090f\u0935\u0902 \u092c\u0948\u093f\u0902\u0915` with the garble intact. With it,
+    both sides are noisy, the merge runs, and each token is taken from the side that
+    scores lower.
+
+    For a line whose sole marker is a genuinely CORRECT ikar+nasal (`\u0938\u093f\u0902\u0939`, `\u0928\u093f\u0903\u0936\u0941\u0932\u094d\u0915`),
+    skipping the merge remains the new and intended behaviour -- that is the 98.3% the
+    narrowed class deliberately excuses.
+    """
+
     return any(
         (
             "\ufffd" in text,
@@ -499,6 +573,7 @@ def _has_severe_noise(text: str) -> bool:
             bool(_INVALID_SIGN_PATTERN.search(text)),
             bool(_PREFIX_IKAR_PATTERN.search(text)),
             bool(_INVALID_IKAR_PATTERN.search(text)),
+            bool(_IMPOSSIBLE_IKAR_NASAL_PATTERN.search(text)),
             bool(_HALANT_IKAR_PATTERN.search(text)),
         )
     )
@@ -706,6 +781,13 @@ def _nepali_validity(text: str) -> dict[str, float]:
     return {
         "devanagari": devanagari,
         "ratio": devanagari / non_space,
+        # Both forms of the garble measure, because they answer different
+        # questions and are not interchangeable. ``penalty`` is the raw weighted
+        # artifact count, comparable between two decodes OF THE SAME span;
+        # ``penalty_per_deva`` normalises it so one span can be compared against
+        # an absolute ceiling. See :func:`_map_ranking_key` for why using the
+        # normalised form to rank candidates is a bug.
+        "penalty": penalty,
         "penalty_per_deva": penalty / devanagari if devanagari else float("inf"),
         "hits": hits,
     }
@@ -723,23 +805,66 @@ def _passes_content_legacy_gate(validity: dict[str, float]) -> bool:
 def _map_ranking_key(validity: dict[str, float]) -> tuple[float, float, float, float]:
     """Evidence axes for a candidate map, most decisive first, higher is better.
 
-    ``hits`` and ``penalty_per_deva`` are the calibrated primary axes.
-    ``ratio`` and ``devanagari`` are tie-breaks only: a map that fits the face
-    maps every keystroke onto Devanagari, so the residue a *wrong* map leaves
-    behind shows up as non-Devanagari characters. That is what separates Spins
-    from Preeti on a small span — Preeti reads Spins' ``_`` as a literal ``)``
-    where Spins produces the anusvara ``ं``.
+    ``hits`` and ``penalty`` are the calibrated primary axes. ``ratio`` and
+    ``devanagari`` are tie-breaks only: a map that fits the face maps every
+    keystroke onto Devanagari, so the residue a *wrong* map leaves behind shows up
+    as non-Devanagari characters. That is what separates Spins from Preeti on a
+    small span — Preeti reads Spins' ``_`` as a literal ``)`` where Spins produces
+    the anusvara ``ं``.
 
     They sit strictly below ``penalty`` because a high Devanagari ratio on its
     own is a mirage (``test_nepali_validity_flags_garble_low``): converting ASCII
     digits into Devanagari digits also raises it, which is exactly what the
     ``Spins_EXT`` companion faces do under the map that is wrong for them. Those
-    are excluded by ``hits``, not by this key.
+    are excluded by ``hits``, not by this key. One OAG municipality report
+    (``4487__…बसबरिया गाउँपालिका``, font ``Spins``, 2,156 characters) is a live
+    instance: ``Spins`` there reads 0.69 Devanagari against ``PCS NEPALI``'s 0.68
+    and is nonetheless the wrong map, carrying 48 penalty points to PCS NEPALI's
+    zero. So ``ratio`` must not be promoted above the garble axis (VOL-89).
+
+    **The garble axis is the raw count, not the per-Devanagari rate (VOL-89).**
+    Every candidate here decodes *the same input span*, so the counts are already
+    on a common scale and normalising them adds nothing — worse, it injects the
+    denominator as a phantom signal. With the numerator held equal,
+    ``penalty_per_deva`` is a monotone function of the Devanagari *count*, so it
+    silently becomes the ``devanagari`` axis while ranking above both ``ratio``
+    and ``devanagari``. That is not hypothetical: on
+    ``3222__…faktalung ga.pa`` (font ``Spins``, 757 characters) all six maps score
+    an identical raw penalty of **18**, and ``PCS NEPALI`` won only because
+    18/576 < 18/562 — a denominator difference, not a garble difference — which
+    rendered ``;_Vof`` as ``स)ख्या`` where the correct Spins read is ``संख्या``.
+
+    Ranking on the raw count makes equal evidence an exact tie, so ``ratio``
+    decides those spans, and it needs no epsilon or threshold to do it.
+    ``penalty_per_deva`` remains the right statistic for
+    :func:`_passes_content_legacy_gate`, which compares one span against an
+    absolute ceiling and therefore does need cross-span comparability.
+
+    ⚠️ **A consequence worth naming, because splitting the two statistics is what
+    creates it.** :func:`choose_legacy_map` elects a winner on this key and only
+    then applies the gate, to that winner alone. While the garble axis WAS the
+    gate's statistic, the winner among equal-``hits`` candidates was by
+    construction the lowest-rate one, so it was the likeliest of them to clear the
+    ceiling. Now the two differ, and inside the tie band ``ratio`` favours the
+    candidate with the *smaller* Devanagari count — the gate's denominator. So an
+    elected candidate can sit over the ceiling while a candidate ranked below it
+    sits under, and the whole font unit is dropped rather than remapped.
+
+    Measured rather than asserted: over 60,000 synthetic aggregates the two keys
+    lose 49 and 50 units respectively, i.e. the mechanism is **not** a regression
+    — it exists at the same rate on either side of this change, and on the corpus
+    sample it fires zero times. It is recorded here and not fixed because the fix
+    is a behavioural change of its own (re-rank among gate-passing candidates, the
+    shape the mixed-margin gate uses for its second pass) and because a descendant
+    that tightens the gate or widens ``ALL_MAP_KEYS`` will make it commoner. The
+    control test :func:`test_a_real_difference_in_garble_still_outranks_the_ratio`
+    names the same hazard for a ratio-*first* key; this is that hazard reached
+    through the tie band instead.
     """
 
     return (
         validity["hits"],
-        -validity["penalty_per_deva"],
+        -validity["penalty"],
         validity["ratio"],
         validity["devanagari"],
     )
