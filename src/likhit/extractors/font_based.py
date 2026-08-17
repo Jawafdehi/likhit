@@ -183,6 +183,20 @@ _RANKING_DOUBLET_FORGIVENESS = 1
 # (df 4,397), `ऋण` (4,549), `संघिय` (3,558) and `पोषण` (2,650) while gaining only `द्ध`
 # (df 52). With the bracket forgiven the two level and `attested` decides, 23 to 22, the
 # right way. `oag-corpus/runs/vol185/calibrate_two_floors_5f0833fc.py` sweeps the pair.
+#
+# 🛑 **The corpus figure for the two floors together, which no record carried.** Measured
+# against the parent over all 6,236 OAG PDFs: the emitted text changes on **24 (doc,font)
+# pairs in 24 documents** -- 20 from the doublet floor, 4 from this one -- against the
+# **2** documents the derivations name (`2992`/`2993`, the same report filed twice). Net
+# +35,754 characters, 47 documents moved, 12 worsened, worst -5.
+#
+# The two bracket-floor pairs no derivation mentions are `2989__Kaudana gaupalika`/`Arial`
+# and `4834__खार्पुनाथ`/`LiberationSerif-Bold`; `2989` also sits OUTSIDE the 77-document
+# set the sweep was run over, so it was never adjudicated by it. Five spans the parent's
+# gate REJECTED are now decoded, four of them `LiberationSerif` faces -- `4817`'s new
+# `PCS NEPALI` reading carries 19 doublets in 1,734 Devanagari characters, and
+# `5023__नौकुण्ड`/`LiberationSerif` is a face this programme tracks separately. **None of
+# those five has been adjudicated**, and that is stated here rather than left implied.
 _RANKING_STRANDED_FORGIVENESS = 1
 # Two identical adjacent consonants are a real garble signal, but adjacency ALONE
 # is mostly wrong: in Nepali a stem ending in a consonant plus a suffix beginning
@@ -706,10 +720,21 @@ def _legacy_map_garble(text: str) -> int:
     **Forgiving a bounded number, not the whole term.** Dropping the term outright also
     repairs those eight, and it destroys `2649__…घोराही उपमहानगरपालिका`: on its `Hisab`
     aggregate `Preeti`/`Kantipur`/`Sagarmatha` carry **323** doublets to
-    `FONTASY_HIMALI_TT`'s **3**, a 969-point margin that is exactly the damage VOL-135
-    measured (>=209,998 occurrences of legacy i-matra loss resurfacing as a doublet).
-    Levelling that to a tie makes five maps identical, the tie fails to localise, the
-    span abstains, and 865 attested occurrences are lost outright.
+    `FONTASY_HIMALI_TT`'s **3** -- **960 points** of margin (969 points of charge on the
+    wrong maps against 9 on the right one), which is exactly the damage VOL-135 measured
+    (>=209,998 occurrences of legacy i-matra loss resurfacing as a doublet). 865 attested
+    occurrences are lost outright.
+
+    🛑 **By the ACCEPT GATE, not by a failed tie.** This paragraph used to say "the tie
+    fails to localise, the span abstains", and that is the wrong mechanism. Measured on
+    the forgive-all arm (which is exactly the parent's code): 2649/`Hisab`'s tie group is
+    {`Preeti`(best), `Kantipur`, `Sagarmatha`}, masking DOES localise it, and the span is
+    lost because the masked reading fails the absolute ceiling --
+    `penalty_per_deva` **0.05146748** against 0.05. Corpus-wide the parent produces **0**
+    tie-abstentions in 37,888 candidate pairs, so "the span abstains" cannot be what
+    happens. The distinction is load-bearing in the obvious way: a maintainer told the
+    tie failed to localise would go and read `_ambiguous_code_points`, where nothing is
+    wrong.
 
     So the floor is what separates the two cases, and it is calibrated rather than
     chosen (`oag-corpus/runs/vol185/calibrate_forgive_5f0833fc.py`, swept over
@@ -719,10 +744,37 @@ def _legacy_map_garble(text: str) -> int:
     * the correct map on the eleven carries **0 or 1** doublets, never more;
     * 2649's wrong maps carry **323-325** against the right map's 3;
     * every N from 1 to 25 gives 11/11 repaired and **0** abstentions; N=0 repairs only
-      the 3 that `attested` decides, and N=inf repairs all 11 and abstains on 2649.
+      the 3 that `attested` decides, and N=inf repairs all 11 and LOSES 2649 -- to the
+      gate, as above, not to an abstention.
 
     **1** is therefore the smallest value that works, and the two populations sit two
     orders of magnitude apart, so nothing here depends on the exact figure.
+
+    🛑 **What the floor deliberately does NOT cover: a one-doublet MARGIN between two
+    candidates.** `min(count, N)` forgives the first doublet of EACH candidate; it does
+    not neutralise a difference of one between them. So wherever both candidates carry
+    doublets and the margin is exactly one, the term still decides -- which is a
+    large-document shape, not a corner case. Seven (doc,font) pairs do exactly that
+    through the real `detect_content_legacy_fonts`, all `Preeti` -> `Sagarmatha`, with
+    `attested`, `ratio` and `devanagari` all moving DOWN in every one:
+
+        2871 · 2880 · 2998 · 3005 · 3008 · 11128/TT3CFt00 · 11334/Nagarik
+
+    On 11334 the deciding doublet is inside the personal name `वेगेन्द्रराज शर्मा`, which
+    is correct Nepali, and on 11128 inside a span-concatenation garbage token -- i.e. the
+    charge that decides the map lands on non-evidence both times.
+
+    **Accepted as a priced trade rather than fixed, and the price is small against the
+    merge target.** Five of the seven (2871, 2880, 2998, 3005, 3008) are **byte-identical
+    to `main`** after this change, and the OAG generation tree `8b317ac` already carries
+    `N=1` and this exact body, so relative to the published corpus the flip is not a
+    change at all. 11334 is the one that moves the wrong way against `main`, which picks
+    a third map there (`Kantipur`, alien 84 / 10 letters against this branch's 125 / 28).
+
+    The two fixes that suggest themselves were both rejected on measurement rather than
+    taste: a comparative MARGIN BAND ("treat a difference of <= N as a tie") is
+    **intransitive**, so it cannot be a sort key -- A ties B, B ties C, A beats C -- and a
+    coarse-grained per-block term merely moves the boundary to a different margin.
 
     Note `ecc5338`'s version of this docstring cited `3544__…Thasang Ga. Pa.` charging
     all six candidates 3 points for `अध्ययन` ("study"). That is no longer true and must

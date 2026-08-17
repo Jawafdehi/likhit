@@ -1184,8 +1184,12 @@ def test_the_doublet_split_does_not_loosen_the_accept_gate() -> None:
 def test_many_doublets_still_decide_the_map_ranking() -> None:
     # The bound on the forgiveness, and the reason it is a bound rather than dropping
     # the term. `2649__...घोराही उपमहानगरपालिका`, font `Hisab`: the wrong maps carry 323
-    # doublets to the right map's 3. Forgiving the whole term levels all five, the tie
-    # fails to localise, the span abstains, and 865 attested occurrences are lost.
+    # doublets to the right map's 3. Forgiving the whole term levels all five and the
+    # span is lost -- to the ACCEPT GATE, not to an abstention: measured on
+    # the forgive-all arm the tie DOES localise and the masked reading fails the
+    # absolute ceiling at penalty_per_deva 0.05146748 against 0.05. 865 attested
+    # occurrences go with it. The parent produces 0 tie-abstentions in 37,888
+    # candidate pairs corpus-wide, so "the span abstains" was never the mechanism.
     many = "खररद " * 40
     few = "खरिद " * 40
     assert _duplicate_consonant_count(many) == 40
