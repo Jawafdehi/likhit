@@ -21,6 +21,8 @@ import pytest
 from likhit.errors import ScannedPdfError
 from likhit.extractors.font_based import (
     FontBasedStrategy,
+    _choose_fragment_text,
+    _has_severe_noise,
     _is_probably_legacy_ascii,
     _map_ranking_key,
     _nepali_validity,
@@ -572,9 +574,15 @@ def test_ordinary_nepali_morphology_is_not_charged_as_garble() -> None:
     # followed by a suffix beginning with the same one -- not a mis-map artifact.
     # The most frequent instance in this corpus is the name of the body that
     # published it. `अध्ययन` is the word that charged all six candidate maps 3
-    # points on `3544__...Thasang Ga. Pa.`, and `वडडा`/`द्दद्दण्` (which are garble)
-    # are indistinguishable from these by adjacency, so the pattern is removed
-    # rather than narrowed.
+    # points on `3544__...Thasang Ga. Pa.`.
+    #
+    # ⚠️ The doublet pattern is NARROWED, not removed -- an earlier form of this
+    # comment said the opposite, arguing that garble like `वडडा`/`द्दद्दण्` is
+    # indistinguishable from these by adjacency. It is not, under the shipped rule:
+    # measured, the narrowed rule charges वडडा and द्दद्दण् 1 each while excusing
+    # महालेखापरीक्षकको, अध्ययन and क्रममा, so the morpheme lists separate them by
+    # more than adjacency. `_DUPLICATE_CONSONANT_PATTERN` is still defined and still
+    # fires, inside `_duplicate_consonant_count`.
     for word in (
         "महालेखापरीक्षकको",  # "of the Office of the Auditor General"
         "कार्यालय",
@@ -608,6 +616,73 @@ def test_the_narrowed_ikar_still_charges_two_vowel_signs_in_a_row() -> None:
     # must survive it. Each of these is one ikar followed by another vowel sign.
     for word in ("वििरण", "आथििक", "सिालन", "पििकरण"):
         assert _text_quality_penalty(word) == 6, word
+
+
+def test_an_ikar_nasal_that_is_structurally_impossible_is_still_charged() -> None:
+    """🛑 The 1.7% the nasal exemption gives up, and why it needs its own term.
+
+    A Devanagari vowel sign is only well formed after a consonant or a
+    virama-terminated cluster. In these words the ikar sits after an INDEPENDENT
+    VOWEL or after another matra and is then followed by a nasal or visarga -- not
+    spelling under any orthography, and the same mis-map the narrowed class was
+    written for. Measured over the 6,223 v11 transcripts: 1,550 sites in 240
+    documents, against the 95,153 correct nasal sequences the exemption keeps.
+
+    The pair below is the discriminator. `सिं` and `एिं` differ only in what precedes
+    the ikar, so any rule that charges the second must read the LOOKBEHIND -- widening
+    the narrowed class's lookahead cannot separate them, which is why this is a second
+    pattern and not an edit to the first.
+    """
+
+    # Impossible: ikar after an independent vowel or after another matra.
+    assert _text_quality_penalty("एिं") == 6  # एवं "and", 467 corpus occurrences
+    assert _text_quality_penalty("पुिःत") == 6  # पुस्त, 88
+    assert _text_quality_penalty("बैिंक") == 6  # बैंक "bank"
+    # Correct: same nasal, but the ikar sits on a consonant.
+    assert _text_quality_penalty("सिंह") == 0
+    assert _text_quality_penalty("निःशुल्क") == 0
+    # ...and on a virama-terminated cluster, the other well-formed position.
+    assert _text_quality_penalty("क्रिं") == 0
+
+    # 🛑 The nukta, which is why the lookbehind carries U+093C and not the precomposed
+    # U+0958-095F range. Those eight letters are Unicode composition EXCLUSIONS, so NFC
+    # rewrites them to base+U+093C and a pattern containing one fails
+    # `test_every_non_ascii_regex_source_is_normalization_stable` however it is spelled.
+    # The decomposed form is the one NFC produces and it must be excused:
+    assert _text_quality_penalty("\u0915\u093c\u093f\u0902") == 0
+    # The precomposed spelling IS reachable (829 occurrences in 311 v11 documents, and
+    # every map passes 0x958-0x95f through unchanged) but precomposed-then-ikar-then-nasal
+    # has zero occurrences in all 6,223, so this residue is a priced, recorded miss --
+    # charged, not excused -- rather than a range that breaks the module's import.
+    assert _text_quality_penalty("\u0958\u093f\u0902") == 6
+
+
+def test_the_impossible_ikar_nasal_reaches_the_variant_merge_not_only_the_ranking() -> (
+    None
+):
+    """The ikar patterns have a SECOND consumer, and it is on the shipped path.
+
+    `_has_severe_noise` gates the token-wise merge in `_choose_fragment_text`, which
+    runs from `_merge_fragment_variants` over the raw-vs-cmap-repaired pair. A pattern
+    narrowing therefore prices two things: what the garble measure charges, and whether
+    a repair is attempted at all.
+
+    Both variants here carry one impossible ikar+anusvara, in a DIFFERENT token, and no
+    other garble signal. Measured with the term absent: neither side reports severe
+    noise, the merge is skipped, and the fragment ships as `एवं बैिंक` with the garble
+    intact. With it, both are noisy and each token comes from the side that scores lower.
+    """
+
+    original = "एिं बैंक"
+    repaired = "एवं बैिंक"
+
+    assert _has_severe_noise(original)
+    assert _has_severe_noise(repaired)
+    assert _choose_fragment_text(original, repaired) == "एवं बैंक"
+
+    # The other direction, which stays as the narrowing intended: a line whose only
+    # marker is a CORRECT ikar+nasal is not noisy, so no merge is attempted.
+    assert not _has_severe_noise("सिंह निःशुल्क")
 
 
 def test_a_false_positive_no_longer_decides_a_real_legacy_span() -> None:

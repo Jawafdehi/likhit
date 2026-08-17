@@ -65,14 +65,55 @@ _PREFIX_IKAR_PATTERN = re.compile(r"(?:(?<=^)|(?<=[\s(]))ि(?=[\u0915-\u0939])"
 # The lookahead is the eleven vowel *matras* only. It deliberately excludes the three
 # nasal/visarga marks that used to be in this class -- anusvara U+0902, visarga
 # U+0903, candrabindu U+0901 -- because an ikar followed by one of those is
-# ordinary Nepali, not a mis-map: on the 6,223 published v11 transcripts those
-# three account for 95,153 matches, every sampled one of them correct
-# (सिंह, सिंचाई, दिँदा, हिंसा, लिंक, निःशुल्क, मितिः), against 101,628 matches for
-# the matras, every sampled one of them garble (सिालन, आथििक, वििरण). Two vowel
-# signs in a row cannot be typed; a vowel sign then a nasal mark is spelling.
-# VOL-131: this false positive is what charged the correct `Spins` decode of
-# `2366__…Dolakha Tamakoshi` 12 points for the word नदेखिंदा, losing it the span.
+# USUALLY ordinary Nepali rather than a mis-map: on the 6,223 published v11
+# transcripts those three account for 95,153 matches, every sampled one of them
+# correct (सिंह, सिंचाई, दिँदा, हिंसा, लिंक, निःशुल्क, मितिः), against 101,628
+# matches for the matras, every sampled one of them garble (सिालन, आथििक, वििरण).
+# Two vowel signs in a row cannot be typed; a vowel sign then a nasal mark is
+# spelling. VOL-131: this false positive is what charged the correct `Spins` decode
+# of `2366__…Dolakha Tamakoshi` 12 points for the word नदेखिंदा, losing it the span.
+#
+# ⚠️ "Usually", not "always" -- 98.3%, and the residue is recovered separately below.
 _INVALID_IKAR_PATTERN = re.compile(r"ि(?=[ािीुूृॄेैोौ])")
+# The 1.7% the class above gives up, charged back. A Devanagari vowel sign is only
+# well formed after a CONSONANT or a virama-terminated cluster, so an ikar that sits
+# after an independent vowel, after another matra, or at the start of a cluster and is
+# then followed by a nasal/visarga is not spelling under any orthography -- it is the
+# same mis-map, wearing a lookahead the narrowed class no longer covers.
+#
+# Measured over the same 6,223 v11 transcripts: the narrowed class fires 101,628
+# times, the pre-narrowing class 196,781, and this term recovers **1,550 sites in 240
+# documents** -- every one of the 95,153 correct nasal sequences still excused. The
+# recovered mass is dominated by `िःथ` (196, a mis-map of स्थ), `एिं` (467 across its
+# spacing variants, a mis-map of एवं "and") and `पुिःत` (88, पुस्त).
+#
+# 🛑 Why it is worth a second pattern rather than a wider class: 1,451 of the 1,550
+# (93.6%) sit in words whose WHOLE `_text_quality_penalty` is otherwise 0, so no axis
+# saw them at all, and the direction of that miss is fails-open. On a 100-character
+# window of `5772__…एकडारा गाउँपालिका` the aggregate's `penalty_per_deva` goes
+# 0.10588 -> 0.03529 without this term, which flips `_passes_content_legacy_gate` from
+# False to True and ACCEPTS the garbled decode instead of abstaining and leaving the
+# keystrokes visible; a 160-character window of `5939__…गोसाइकुण्ड गाउँपालिका` flips
+# the same way, 0.08823 -> 0.04411.
+#
+# 🛑 **The precomposed nukta letters U+0958-095F are deliberately NOT in the lookbehind,
+# and writing them with `\uXXXX` escapes does not help.** They are Unicode composition
+# EXCLUSIONS, so NFC rewrites each of them to base+U+093C -- which means a pattern whose
+# source contains one is not a normalization fixed point, and
+# `tests/test_regex_normalization_stability.py` fails on it however it is spelled in this
+# file (escapes are resolved by Python before `re` ever sees them). That guard exists
+# because this class of edit has taken the whole module's import down before.
+#
+# U+093C, the combining nukta, is in the class instead, and it is the form that occurs:
+# NFC never produces U+0958-095F, so `क़ि` is क + ़ + ि and the lookbehind sees the nukta.
+# The precomposed spelling IS reachable -- 829 occurrences in 311 v11 documents, and every
+# map passes 0x958-0x95f through unchanged -- but precomposed-then-ikar-then-nasal has
+# ZERO occurrences in all 6,223, measured: the nukta-only class recovers exactly the same
+# 1,550 sites as one carrying the full range.
+_IMPOSSIBLE_IKAR_NASAL_PATTERN = re.compile(
+    # (?<! consonant | nukta | virama ) ikar (?= candrabindu | anusvara | visarga )
+    "(?<![\u0915-\u0939\u093c\u094d])\u093f(?=[\u0901\u0902\u0903])"
+)
 _HALANT_IKAR_PATTERN = re.compile(r"्ि")
 _DUPLICATE_CONSONANT_PATTERN = re.compile(r"([क-ह])\1")
 # Two identical adjacent consonants are a real garble signal, but adjacency ALONE
@@ -467,6 +508,7 @@ def _text_quality_penalty(text: str) -> int:
         + len(_INVALID_SIGN_PATTERN.findall(text)) * 8
         + len(_PREFIX_IKAR_PATTERN.findall(text)) * 6
         + len(_INVALID_IKAR_PATTERN.findall(text)) * 6
+        + len(_IMPOSSIBLE_IKAR_NASAL_PATTERN.findall(text)) * 6
         + len(_HALANT_IKAR_PATTERN.findall(text)) * 4
         + _duplicate_consonant_count(text) * 3
         + len(_SUSPICIOUS_ARTIFACT_PATTERN.findall(text)) * 8
@@ -502,6 +544,28 @@ def _is_garbled_orphan(text: str) -> bool:
 
 
 def _has_severe_noise(text: str) -> bool:
+    """Whether a fragment is noisy enough to be worth a token-wise variant merge.
+
+    \ud83d\uded1 **This is the SECOND consumer of the ikar patterns, and it is not a ranking
+    function.** It gates the token-wise merge in :func:`_choose_fragment_text`, which
+    runs on the shipped extraction path (:func:`_merge_fragment_variants`) over the
+    raw-vs-cmap-repaired document pair. So narrowing any pattern above prices two
+    things at once: what the garble measure charges, and whether a repair is attempted
+    at all. A narrowing that is right for ranking can silently drop a repair here.
+
+    That is why the impossible ikar+nasal term is read here too rather than only in
+    :func:`_text_quality_penalty`. Without it, two variants of one line each carrying a
+    single impossible ikar+anusvara in a DIFFERENT token -- original `\u090f\u093f\u0902 \u092c\u0948\u0902\u0915`,
+    repaired `\u090f\u0935\u0902 \u092c\u0948\u093f\u0902\u0915`, truth `\u090f\u0935\u0902 \u092c\u0948\u0902\u0915` -- both report no severe noise, the merge is
+    skipped, and the fragment ships as `\u090f\u0935\u0902 \u092c\u0948\u093f\u0902\u0915` with the garble intact. With it,
+    both sides are noisy, the merge runs, and each token is taken from the side that
+    scores lower.
+
+    For a line whose sole marker is a genuinely CORRECT ikar+nasal (`\u0938\u093f\u0902\u0939`, `\u0928\u093f\u0903\u0936\u0941\u0932\u094d\u0915`),
+    skipping the merge remains the new and intended behaviour -- that is the 98.3% the
+    narrowed class deliberately excuses.
+    """
+
     return any(
         (
             "\ufffd" in text,
@@ -509,6 +573,7 @@ def _has_severe_noise(text: str) -> bool:
             bool(_INVALID_SIGN_PATTERN.search(text)),
             bool(_PREFIX_IKAR_PATTERN.search(text)),
             bool(_INVALID_IKAR_PATTERN.search(text)),
+            bool(_IMPOSSIBLE_IKAR_NASAL_PATTERN.search(text)),
             bool(_HALANT_IKAR_PATTERN.search(text)),
         )
     )
