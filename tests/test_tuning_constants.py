@@ -544,10 +544,14 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
     ): (
         25,
         "Hamming distance, of 256 cells, below which two signatures are the same shape. "
-        "Read off a measured GAP rather than chosen: over 966 distinct faces from 60 "
-        "corpus PDFs, faces matching the family reference sit at median 0 / p90 15, and "
-        "faces that do not at median 80 / p90 133. 25 is inside that gap with room on "
-        "both sides -- the gap, not the number, is the evidence",
+        "Read off a measured separation rather than chosen: over 968 distinct faces from "
+        "60 corpus PDFs (TPFP-51d3f79c20e2107f.json), the 22 faces that draw Devanagari "
+        "digits sit at median 0 / p90 15 and the 946 that do not at median 80 / p90 133. "
+        "The separation, not the number, is the evidence -- but NOT 'with room on both "
+        "sides', which this entry claimed until review: that spread is dominated by "
+        "genuine Latin faces, while 27 unrouted partially-matching faces carry glyph "
+        "distances of 0 and 3, and the one corpus near-miss sits at 28. Thin on the near "
+        "side; re-measure before widening",
     ),
     (
         "likhit/extractors/digit_companion.py",
@@ -555,9 +559,13 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
     ): (
         7,
         "how many of the ten plain-row glyphs must match, and also the minimum readable "
-        "for a verdict at all. Ten is too strict: real subsets omit glyphs, and readable "
-        "companion faces in the acceptance sweep carry 7-10 of the row. Below this the "
-        "instrument returns None (abstains) rather than False",
+        "for a verdict at all; below this the instrument returns None (abstains) rather "
+        "than False. A DEFENSIVE margin for subsets that omit glyphs, with zero measured "
+        "effect: this entry used to say readable companion faces carry 7-10 of the row, "
+        "but re-derived from the artifacts the only faces that would fire at 7-9 are "
+        "three Fontasy Himali faces, all routed_by_name and so excluded by condition 1 -- "
+        "while all 14 firing companions in the acceptance sweep, and all 131 firing over "
+        "the full corpus, sit at 10 of 10. Raising it back to 10 changes nothing measured",
     ),
     (
         "likhit/extractors/digit_companion.py",

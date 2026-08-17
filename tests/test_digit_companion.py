@@ -251,6 +251,121 @@ def test_detection_returns_nothing_at_all_when_disabled(
         doc.close()
 
 
+# --- the DETECTOR's use of its own two safety conditions ---------------------- #
+#
+# 🛑 Added after review: both conditions were unguarded, and mutating either left the
+# whole suite green (1485 passed). `test_a_name_routed_face_is_never_a_companion_so_
+# cannot_double_convert` looks like it covers the first, but it asserts a property of
+# `_matched_registry_key`, never of the detector's USE of it -- and the two
+# conversion-path tests reach `_convert_span_text` with a hand-built frozenset, so they
+# never exercise how that set is built.
+#
+# The glyph verdict is monkeypatched rather than supplied by a real font, deliberately:
+# what is under test is the detector's CONTROL FLOW, and a test that needs a font file
+# is skipped when the font is absent -- a skipped test proves nothing. Each test carries
+# its own positive control in the same body, so it cannot pass by the document simply
+# failing an earlier condition.
+
+
+def _digit_dominant_doc(font_name: str) -> fitz.Document:
+    """A one-page document whose only face is digit-dominant and named `font_name`.
+
+    Renaming a core font is how this suite builds a face with an arbitrary name without
+    shipping a font binary -- see `tests/synthetic_pdfs.py::_rename_base_fonts`.
+    """
+
+    from tests.synthetic_pdfs import _rename_base_fonts
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text(
+        (60.0, 80.0), "1,234,567.00 2,345,678.00 3,456,789.00", fontsize=11
+    )
+    page.insert_text(
+        (60.0, 100.0), "4,567,890.00 5,678,901.00 6,789,012.00", fontsize=11
+    )
+    out = fitz.open("pdf", doc.tobytes())
+    doc.close()
+    _rename_base_fonts(out, font_name)
+    return fitz.open("pdf", out.tobytes())
+
+
+def _detect_with_verdict(
+    monkeypatch: pytest.MonkeyPatch, font_name: str, verdict: bool | None
+) -> frozenset[str]:
+    """Run the real detector over `_digit_dominant_doc`, with condition 3 stubbed."""
+
+    from likhit.extractors import digit_companion as module
+
+    monkeypatch.delenv(DIGIT_COMPANION_ENV, raising=False)
+    doc = _digit_dominant_doc(font_name)
+    try:
+        names = {
+            span["font"]
+            for page in doc
+            for block in page.get_text("dict")["blocks"]
+            for line in block.get("lines", ())
+            for span in line.get("spans", ())
+        }
+        assert names, "fixture produced no spans"
+        monkeypatch.setattr(
+            module, "_font_buffers", lambda _doc: dict.fromkeys(names, b"stub")
+        )
+        monkeypatch.setattr(
+            module, "glyphs_draw_devanagari_digits", lambda _buf: verdict
+        )
+        return module.detect_digit_companion_fonts(doc)
+    finally:
+        doc.close()
+
+
+def test_the_detector_excludes_a_registry_named_face_even_when_its_glyphs_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Condition 1, at the detector rather than at the helper.
+
+    A face the registry routes must never become a companion, because the conversion
+    branch returns BEFORE the legacy remap: a face that got both would be transliterated
+    instead of decoded. Dropping this condition leaves the whole suite green, and it is
+    not a no-op -- 8 name-routed faces in VOL-323's own sweep pass condition 3.
+    """
+
+    routed = _detect_with_verdict(monkeypatch, "FONTASY_HIMALI_TT", verdict=True)
+    assert routed == frozenset(), (
+        "a registry-routed face was admitted as a digit companion"
+    )
+
+    # Positive control, same fixture and same stubbed verdict: only the NAME differs, so
+    # this test cannot pass because the document failed condition 2.
+    unrouted = _detect_with_verdict(monkeypatch, "SomeUnroutedNumerals", verdict=True)
+    assert unrouted, (
+        "the control face must be admitted, or the assertion above is vacuous"
+    )
+
+
+def test_the_detector_leaves_an_abstaining_face_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Condition 3, and that `None` is not coerced to a decision.
+
+    `None` means the subset carries no Unicode-addressable evidence either way. Treating
+    it as True is the false positive the module docstring warns about three times; it
+    flips 2,781 abstaining corpus candidates into firing. Coercing it -- `is True` to
+    `is not False` -- also leaves the whole suite green.
+    """
+
+    abstained = _detect_with_verdict(monkeypatch, "SomeUnroutedNumerals", verdict=None)
+    assert abstained == frozenset(), "an abstaining face was transliterated"
+
+    denied = _detect_with_verdict(monkeypatch, "SomeUnroutedNumerals", verdict=False)
+    assert denied == frozenset(), "a denied face was transliterated"
+
+    # Positive control: the same face fires when the verdict is True, so the two
+    # assertions above are about the VERDICT and not about the fixture.
+    fired = _detect_with_verdict(monkeypatch, "SomeUnroutedNumerals", verdict=True)
+    assert fired, "the control face must fire, or the assertions above are vacuous"
+
+
 # --- font-dependent, skipped when the faces are absent ------------------------ #
 
 

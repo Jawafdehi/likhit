@@ -120,10 +120,31 @@ that wants to widen it has to argue with a test rather than discover the behavio
 A subset font whose cmap is not Unicode-addressable cannot be read by this instrument at
 all: `font.has_glyph(0x30)` is false and there is no shape to compare. Such a face
 **abstains** and its digits are left exactly as they are today. That is a coverage limit,
-not a misreading, and the failure direction is safe -- 4 of 17 companion faces in the
-acceptance sweep abstain this way. VOL-317 makes the same point about `11102`'s two faces
+not a misreading, and the failure direction is safe -- **5 of the 19** faces the acceptance
+sweep classifies `companion (Spins family)` abstain this way (14 fire, 0 deny;
+`ACCEPTANCE-VOL323-51d3f79c20e2107f.json`). An earlier revision of this line said "4 of 17":
+the 4 is `TPFP-...json`'s `false_negative`, a different instrument with a different
+denominator, and no artifact reports 17. VOL-317 makes the same point about `11102`'s two faces
 (0/95 cmap-addressable glyphs): reporting them as "no Devanagari coverage" would be a
 false negative, because they carry no evidence either way.
+
+🛑 **Abstention is not the ONLY way this under-fires, and an earlier revision of this
+section implied it was.** A face can render cleanly, be compared, and still be denied by a
+margin. Measured on the full corpus at `main` `2f7e377`: of the 10 faces that come back
+`False`, nine draw genuine Latin digits and are correctly rejected, but `CIDFont+F10` in
+`2963__...Kanchan rup Nagarpalika.pdf` draws `०१२३४५६७८९`. Its distances are
+`[11, 13, 14, 14, 14, 19, 28, 32, 35, 69]`, so it matches **6** of the `_ROW_MATCH_MIN` 7
+it needs, with the seventh at **28** against `_FAMILY_MATCH_MAX` 25 -- three cells short.
+Its spans are the money column this exists to repair (`2,427,435.00`, `1,785,718.00`,
+`1,835,301.00`, `488,245.00`), and they still ship as raw ASCII.
+
+It is a false NEGATIVE, so the failure direction is still the safe one -- the face is left
+exactly as it is today -- but the honest statement of coverage is "2,781 abstentions **and
+at least one near-miss denial**", not "the abstentions". Corroborated against both
+references rather than asserted: summed over the row, that face sits **249** from the
+Devanagari family and **1,105** from the external Latin one, the same direction as the
+confirmed companion `CIDFont+F1` in `2908` (101 against 1,065), while the two
+genuine-Latin `False` verdicts point the other way (1,162/280 and 1,089/289).
 """
 
 from __future__ import annotations
@@ -156,14 +177,43 @@ _SIG_SIZE = 16
 _SIG_CELLS = _SIG_SIZE * _SIG_SIZE
 
 #: Hamming distance below which two signatures are the SAME shape, for the
-#: within-family comparison only. Measured separation: companion faces match the family
-#: reference at a median of 0 and a 90th percentile of 15, while non-companion faces sit
-#: at a median of 80 and a 90th percentile of 133. 25 of 256 cells is inside that gap
-#: with room on both sides, and the gap -- not the value -- is the evidence.
+#: within-family comparison only. Measured separation, re-derived from
+#: `TPFP-51d3f79c20e2107f.json` (60 PDFs, **968** distinct faces): the 22 faces that draw
+#: Devanagari digits match the family reference at a median of 0 / p90 15 over 213 glyph
+#: distances, and the 946 that do not sit at a median of 80 / p90 133 over 580. 25 of 256
+#: cells is inside that separation.
+#:
+#: 🛑 **"Room on both sides" is what an earlier revision of this line claimed, and the
+#: artifacts do not show it.** The wide separation above is dominated by genuine Latin
+#: faces. The NEAR side is crowded: **27** unrouted, partially-matching faces (25
+#: `kalimati`, 2 `spins_ext`) carry individual glyph distances as low as **0 and 3**,
+#: i.e. inside this threshold, while the face as a whole does not reach
+#: `_ROW_MATCH_MIN`; and the one corpus near-miss (`2963`/`CIDFont+F10`, see the module
+#: docstring) sits at **28**, three cells above. So this value is one step from moving
+#: faces in both directions. It still looks like the right defensive choice -- a face
+#: that matches only 6 of 10 is not evidence -- but the margin is thin on the near side,
+#: and a later run deciding whether it is safe to widen must re-measure rather than lean
+#: on the word "room".
 _FAMILY_MATCH_MAX = 25
 
-#: How many of the ten plain-row glyphs must match. Ten is too strict: real subsets omit
-#: glyphs, and 3 of the readable companion faces carry 7-9 of the row.
+#: How many of the ten plain-row glyphs must match, and the minimum readable for a verdict
+#: at all. Below this the instrument returns `None` (abstains) rather than `False`.
+#:
+#: 🛑 **The loosening from 10 to 7 has ZERO measured effect on which faces are
+#: transliterated, and an earlier revision of this line justified it with faces that
+#: condition 1 already excludes.** It said "3 of the readable companion faces carry 7-9 of
+#: the row". Re-derived from `TPFP-51d3f79c20e2107f.json`: exactly three faces would fire
+#: with a matched count in 7..9 -- `ABCDEE+Fontasy Himali` (9), `ABCDEE+Fontasy Himali`
+#: (7), `BCEGEE+FontasyHimali` (7) -- and **all three are `routed_by_name: true`**, so
+#: `detect_digit_companion_fonts`' first condition removes them before they can be
+#: companions. Meanwhile every one of the 14 firing companions in
+#: `ACCEPTANCE-VOL323-51d3f79c20e2107f.json` sits at 10 of 10, and so do all **131**
+#: faces that fire over the full corpus at `main` `2f7e377` (matched 10 / comparable 10).
+#:
+#: So 7 is a **defensive margin for subsets that omit glyphs**, held on the argument that
+#: a real subset can be incomplete -- not a threshold any observed companion needed.
+#: Raising it back to 10 would change nothing measured today. It is one of the two margins
+#: that deny `2963`/`CIDFont+F10` (matched 6), so it is not free either.
 _ROW_MATCH_MIN = 7
 
 # --------------------------------------------------------------------------------- #
@@ -481,8 +531,21 @@ def detect_digit_companion_fonts(
     The three conditions are applied CHEAPEST FIRST, and that ordering is the reason
     this is affordable in a generation build: condition 1 is a dict lookup and condition
     2 is a character count, so a face only reaches the glyph rendering in condition 3 if
-    it is already an unrouted digit-dominant face. On the acceptance sample that was 60
-    of 966 distinct faces.
+    it is already an unrouted digit-dominant face.
+
+    ⚠️ An earlier revision quantified that as "60 of 966 distinct faces on the acceptance
+    sample". Neither number is in the artifacts: `ACCEPTANCE-VOL323-51d3f79c20e2107f.json`
+    reports `distinct_faces: 981` and `TPFP-...json` 968, and the 60 is `sample_pdfs`, the
+    PDF count. Measured properly, over all 6,236 corpus PDFs at `main` `2f7e377` and
+    counted as (document, face) pairs rather than distinct faces:
+
+        all faces                84,230
+        unrouted (condition 1)   75,102
+        digit-dominant (cond 2)   2,922   <- only these reach the renderer
+        fire (condition 3)          131
+
+    So the renderer runs on 3.5% of the pairs, which is what makes this affordable in a
+    generation build.
     """
 
     if not digit_companion_enabled():
