@@ -10,16 +10,17 @@ real ones are covered in ``tests/integration/test_cib_pdfs.py`` when present.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import fitz
 import pytest
 
 from likhit.errors import ScannedPdfError
 from likhit.extractors.font_based import (
+    _LATIN_VETO_WORDS,
     FontBasedStrategy,
     _choose_fragment_text,
     _has_severe_noise,
@@ -290,6 +291,15 @@ def test_reads_as_latin_words_is_immune_to_two_letter_digraph_collisions() -> No
         "r'/] If]qsf] ;_/If0f",
     ):
         assert not _reads_as_latin_words(keystrokes), keystrokes
+
+    # 🛑 The CLASS, not the two instances. The docstring above names four Preeti
+    # digraph collisions -- `if`, `of`, `on`, `to` -- and the fixtures cover only the
+    # first two, so adding `to` to the frozenset left all 1,248 tests green while
+    # flipping `To:tf]` (त्यस्तो, ubiquitous in audit prose) to "reads as Latin".
+    # One assertion closes the whole class instead of enumerating members of it.
+    assert min(len(word) for word in _LATIN_VETO_WORDS) >= 3, sorted(
+        word for word in _LATIN_VETO_WORDS if len(word) < 3
+    )
 
 
 def test_reads_as_latin_words_requires_english_casing() -> None:

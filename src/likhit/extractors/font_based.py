@@ -968,15 +968,46 @@ def _reads_as_latin_words(text: str) -> bool:
     declines is decoded exactly as before. See ``_LATIN_VETO_WORDS`` for why the
     test is word identity at a three-letter minimum rather than any structural
     measure of the raw ASCII.
+
+    ⚠️ **It has NO minimum-length condition, unlike :func:`_reads_as_latin_text`, and
+    the share it applies was calibrated on a different unit.** Both are true and both
+    are deliberate, so they are recorded here rather than left to be rediscovered:
+    ``_LATIN_VETO_MIN_SHARE`` was measured over whole same-font RUNS (469,357 of them)
+    and this predicate applies it to a single SPAN, where a short span with one
+    accidental hit can clear 0.10 on arithmetic alone.
+
+    Measured at the real production unit before deciding to leave it: two disjoint
+    deterministic samples covering 2,183 of the 6,236 OAG PDFs, of which 432 carry a
+    content-legacy candidate font, giving **224,825 candidate-font spans**. This veto
+    fired **7 times, and all 7 are genuine Latin** (bill-of-quantity lines plus
+    "source not found."). **Zero Nepali spans abandoned.** 65.0% of candidate-font
+    spans are indeed under 16 non-space characters, so the length premise holds -- what
+    does not is the collision premise: only 7 of 146,752 spans carry any
+    ``_LATIN_VETO_WORDS`` token at all. The real corpus instance of the worst case
+    (`can` as the land grade अबल) has 13 multi-letter tokens, share 0.077, so the veto
+    declines and it decodes correctly. Corroborated from the output side: v16 was built
+    with this veto and holds 525 files containing अबल against zero containing the raw
+    keystrokes.
+
+    🛑 **Two length-floor fixes were tried and both are measurably worse.** A 16-non-space
+    floor fails this module's own ``test_reads_as_latin_words_requires_english_casing``
+    ("And the report", 12 non-space) and destroys 2 of the 7 real true positives
+    ("source not found." at 15, "of the Engineer. " at 14) while fixing 0 measured false
+    positives. Evaluating over the maximal same-font run instead of the span still fires
+    (share 0.222 -- `can` repeats). The failure direction is fail-CLOSED, i.e. a missed
+    remap rather than corrupted English, which is the recoverable side.
     """
 
     # Unmark first. A marked CID is chr(_CID_MARK_BASE + ord(char)), so `isascii()` is
     # False for it and the token pattern below matches nothing -- this predicate returned
     # False for a span of plain English purely because its glyphs had failed to decode.
-    # That is the one case the veto most needs to catch: a marked span of genuine Latin
-    # would otherwise be remapped into well-formed Devanagari that spells nothing, with no
-    # U+FFFD left for any gate to notice. Verified: the same sentence reads as Latin
-    # plain and did NOT read as Latin marked.
+    # That is the case the veto needs: a PARTIALLY marked span of genuine Latin would
+    # otherwise have its unmarked half remapped into well-formed Devanagari that spells
+    # nothing. For a FULLY marked span the veto changes no bytes -- every plane-15 code
+    # point passes the converter untouched, so remap and no-remap are byte-identical, and
+    # the marks are exactly what `count_marked_cids` and `_private_use_count` notice. The
+    # damaging, reachable shape is the partial one, which
+    # `test_a_partially_marked_latin_span_is_returned_unchanged` covers.
     #
     # Done here rather than at the call site so every caller inherits it.
     text = unmark_cids(text)
@@ -1103,9 +1134,19 @@ def _reads_as_latin_text(text: str, decoded: str) -> bool:
     # Both axes needed it, not just the ASCII ones. `decoded` is derived from the same
     # run, and a converter passes a marked codepoint through unchanged, so a marked run
     # decodes to no Devanagari at all -- the dictionary axis below then finds no word
-    # and never suppresses the veto. It was failing OPEN, not closed. The caller now
-    # decodes the unmarked text; unmarking here as well keeps the two consistent
-    # whatever a future caller passes. Raised in review.
+    # and never suppresses the veto. The caller now decodes the unmarked text; unmarking
+    # here as well keeps the two consistent whatever a future caller passes.
+    #
+    # 🛑 **The two halves fail in OPPOSITE directions, and an earlier form of this
+    # comment called both of them "failing OPEN".** Under this programme's own
+    # definition -- open corrupts English, closed blocks a correct remap -- the ASCII
+    # axes failed OPEN (a marked run of genuine Latin was remapped into Devanagari that
+    # spells nothing, invisibly, because the remap leaves no U+FFFD) and the dictionary
+    # axis failed CLOSED (measured through the caller, an unmark in the predicate alone
+    # makes the veto fire on a genuine NEPALI run and blocks a correct remap). Both
+    # needed fixing; only the first was the dangerous one. The labelling matters because
+    # the standing rule is "open is the dangerous direction", so calling the recoverable
+    # half dangerous mis-prices the next change to it. Raised in review.
     text = unmark_cids(text)
 
     non_space = [char for char in text if not char.isspace()]

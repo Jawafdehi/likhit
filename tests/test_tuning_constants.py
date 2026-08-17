@@ -235,8 +235,16 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "_LATIN_VETO_MIN_SHARE",
     ): (
         0.1,
-        "share of the FONT's runs that must read as Latin before the veto applies to "
-        "that font at all -- run-level evidence, aggregated per font per document",
+        # 🛑 This derivation used to read "share of the FONT's runs that must read as "
+        # "Latin before the veto applies to that font at all -- run-level evidence, "
+        # "aggregated per font per document". There is no per-font aggregation anywhere:
+        # a single Latin-reading span vetoes on its own evidence, so a maintainer who
+        # believed in that safety net would be changing something else entirely.
+        "share of ONE span's multi-letter tokens that must be _LATIN_VETO_WORDS "
+        "function words -- a share rather than a count so accidental collisions in a "
+        "long keystroke run dilute; calibrated over 469,357 same-font runs but applied "
+        "per span, and the exposure of that unit mismatch is measured in "
+        "_reads_as_latin_words' docstring",
     ),
     # -- content-based legacy detection --------------------------------------- #
     (

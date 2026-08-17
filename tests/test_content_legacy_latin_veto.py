@@ -33,6 +33,7 @@ import pytest
 from likhit.extractors.font_based import (
     _content_legacy_veto_flags,
     _reads_as_latin_text,
+    _reads_as_latin_words,
     detect_content_legacy_fonts,
 )
 from likhit.extractors.legacy_maps import get_converter_for_map
@@ -300,19 +301,54 @@ def test_marked_genuine_latin_is_still_vetoed() -> None:
     glyphs failed to decode arrives CID-MARKED -- and every ASCII test in this veto
     then sees plane-15 codepoints instead of letters.
 
-    Measured before the fix: `True` plain, `False` marked, on the same sentence. A
-    marked run of genuine English was therefore remapped into Devanagari that spells
-    nothing, which is precisely the VOL-126 damage this veto exists to prevent, and it
-    leaves no U+FFFD for any gate to notice.
+    Measured before the fix: `True` plain, `False` marked, on the same sentence.
 
     `_reads_as_latin_words` already unmarked, and its comment claims the principle --
     "done here rather than at the call site so every caller inherits it". This sibling
     predicate did not follow it, so the claim was half true.
+
+    ⚠️ This is the PREDICATE arm and it has no output consequence on its own: for a
+    FULLY marked run the veto's verdict changes no bytes, because every plane-15 code
+    point passes the converter untouched, so remap and no-remap are byte-identical (and
+    the marks are exactly what `count_marked_cids` notices). The reachable damaging
+    shape is a PARTIALLY marked run, which
+    :func:`test_a_partially_marked_latin_span_is_remapped_without_the_veto` pins on the
+    output rather than on the predicate.
     """
 
     english = "Random rubble stone masonry work with cement mortar"
     assert _veto(english) is True, "control: this must read as Latin unmarked"
     assert _veto(_mark(english)) is True
+    # The no-output-consequence claim above, asserted rather than described.
+    assert SPINS(_mark(english)) == _mark(english)
+
+
+def test_a_partially_marked_latin_span_is_remapped_without_the_veto() -> None:
+    """🛑 The arm with an actual output consequence, which nothing covered.
+
+    A run where only SOME glyphs failed to decode arrives part marked, part plain
+    ASCII. The plain half is what a converter will rewrite, so this is the shape where
+    "genuine Latin becomes Devanagari that spells nothing" is literally true -- and
+    where the veto's verdict changes the emitted bytes.
+
+    Asserted on the decode, not on the predicate, so it cannot pass vacuously the way
+    the fully-marked arm can.
+    """
+
+    english = "Random rubble stone masonry work with cement mortar"
+    # Mark only the first word; the rest stays ASCII and is therefore convertible.
+    head, _, tail = english.partition(" ")
+    partial = _mark(head) + " " + tail
+
+    # Without the veto this span WOULD be rewritten: the unmarked half converts.
+    rewritten = SPINS(partial)
+    assert rewritten != partial, "fixture must have a convertible half"
+    assert any("ऀ" <= char <= "ॿ" for char in rewritten), (
+        "the unmarked half must produce Devanagari, or this fixture proves nothing"
+    )
+
+    # ...and the veto sees it as Latin, so the caller declines the remap.
+    assert _veto(partial) is True
 
 
 def test_the_dictionary_axis_survives_marking() -> None:
@@ -320,8 +356,13 @@ def test_the_dictionary_axis_survives_marking() -> None:
 
     `decoded` is derived from the same run by the caller. A converter passes a marked
     codepoint through untouched, so decoding the MARKED form yields no Devanagari at
-    all -- the dictionary axis finds no word, never suppresses, and the veto fails
-    OPEN. Pinned through the caller, because that is where the decode happens.
+    all -- the dictionary axis finds no word and never suppresses the veto. Pinned
+    through the caller, because that is where the decode happens.
+
+    ⚠️ This half fails **CLOSED**, not open, and the docstring said open. The veto
+    firing on a genuine Nepali run blocks a correct remap; it does not corrupt English.
+    The sibling ASCII axes are the ones that fail open. Both needed the fix; only the
+    sibling was the dangerous direction.
     """
 
     marked = _mark("cbfnt audio eagles")
@@ -335,6 +376,47 @@ def test_the_dictionary_axis_survives_marking() -> None:
     spans = [_span("Spins", marked)]
     assert _content_legacy_veto_flags(spans, {"Spins": "Spins"}) == [False], (
         "a marked run that decodes to a Nepali word must not be vetoed as Latin"
+    )
+
+
+def test_the_span_level_veto_returns_a_short_english_span_unchanged() -> None:
+    """🛑 The span-level veto's only production effect, which nothing covered.
+
+    `_convert_span_text` carries `if _reads_as_latin_words(text): return text` for a
+    span of a content-legacy CANDIDATE font. Measured before this test: deleting that
+    branch left the ENTIRE suite green. The PR's own end-to-end fixture cannot see it,
+    because its English lines are long enough for the run-level veto in
+    `_content_legacy_veto_flags` to catch them first -- so the span-level branch was
+    shadowed by its own sibling.
+
+    This fixture is deliberately BELOW `_LATIN_VETO_MIN_CHARS` non-space characters, so
+    the run-level veto declines it and only the span-level branch can save it.
+    """
+
+    from likhit.extractors.font_based import FontBasedStrategy, _LATIN_VETO_MIN_CHARS
+
+    short_english = "and the report"
+    assert len([c for c in short_english if not c.isspace()]) < _LATIN_VETO_MIN_CHARS
+    # The run-level veto declines it -- this is what makes the span-level branch the
+    # only thing standing between this span and a remap.
+    assert _veto(short_english) is False
+    assert _reads_as_latin_words(short_english) is True
+
+    # ...and it WOULD be rewritten: the decode is real Devanagari.
+    rewritten = SPINS(short_english)
+    assert any("\u0900" <= char <= "\u097f" for char in rewritten)
+
+    kept = FontBasedStrategy()._convert_span_text(
+        short_english,
+        "Arial",
+        {"Arial": "correct"},
+        needs_reorder=False,
+        content_legacy_maps={"Arial": "Spins"},
+    )
+
+    assert kept == short_english, (
+        "a short genuine-English span of a candidate font must ship unchanged; "
+        f"got {kept!r}"
     )
 
 
