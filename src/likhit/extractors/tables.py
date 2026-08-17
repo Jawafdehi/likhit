@@ -9,7 +9,16 @@ import re
 from likhit.extractors.base import TextFragment
 from likhit.models import Table, TableCell, TableRegion
 
+#: Slack when clustering a table's cell-grid edges and testing bbox containment.
 _EDGE_TOLERANCE = 1.5
+
+#: Slack when deciding two glyph runs share a drawing ORIGIN, i.e. are one overprint.
+#:
+#: Numerically equal to :data:`_EDGE_TOLERANCE` and deliberately a separate name: the two
+#: answer unrelated questions, and while they were one constant, tuning cell-grid snapping
+#: would silently have moved overprint suppression. It is the smaller responsibility that
+#: gets its own name, so a grid change cannot reach glyph dedupe by accident.
+_OVERPRINT_TOLERANCE = 1.5
 
 
 def detect_page_tables(
@@ -245,8 +254,32 @@ def _join_visual_line(fragments: list[TextFragment]) -> str:
     Overprinted text -- the same string drawn twice at the same place -- was
     suppressed by the caller's line-level dedupe while one fragment meant one
     line. It has to be suppressed here too, but only where the two fragments
-    overlap horizontally: a figure legitimately repeats across columns of a
-    register, and `7980 7980` in two different columns is data, not overprint.
+    occupy the *same* place, which is what overprint means. Merely overlapping is
+    not enough: adjacent columns of a register overlap by a point or two, and on
+    `3172__1613896170विराटनगर महानगरपालिका` an overlap test deleted a genuine
+    repeat of `- डिल्लि धिमाल`.
+
+    Same place means same x *and* same y. Testing x alone was sufficient while a
+    group held one printed line, because sharing a horizontal position then
+    implied sharing a position outright. `_group_into_visual_lines` broke that
+    implication: a tall fragment can overlap several shorter ones, so a group can
+    span *stacked* register rows, and one column of three consecutive rows shares
+    x while differing in y. Suppressing on x alone therefore deleted a genuine
+    repeated figure -- 15 tokens across 5 documents, worst
+    `2446__16126986953_Ghyanglekh RM_Sindhuli`, where three rows carrying `10000`
+    each emitted it once and the document's count fell 8 -> 6.
+
+    🛑 "Same place" is the drawing ORIGIN -- `x0` and `y0` -- and not the extent.
+    An earlier form of this compared all four edges, and the two extent clauses
+    carried 83% of its corpus effect while nothing tested them: measured over all
+    6,236 OAG documents plus all 35 CIAA reports, 1,573 pairs changed verdict and
+    **1,308 of them were kept by the `x1` clause alone**. Those are double-strike
+    bold -- the same string at the same origin on the same baseline, ~5 pt narrower
+    -- i.e. precisely the overprint this dedupe exists for. On
+    `11102__m6t-Annual Report 2067` that duplicated 185 lines of table headers and
+    totals (`| जम्मा जम्मा | ... | ४,४५७ ४,४५७ |`); comparing origins only takes it
+    to 7 lines. A run's extent is a consequence of its font, so two equal strings
+    at one origin with different widths are one drawing at two weights.
     """
 
     parts: list[str] = []
@@ -255,15 +288,25 @@ def _join_visual_line(fragments: list[TextFragment]) -> str:
         text = _normalize_cell_text(fragment.text)
         if not text:
             continue
-        if kept and parts[-1] == text and _overlaps_horizontally(kept[-1], fragment):
+        if kept and parts[-1] == text and _same_printed_position(kept[-1], fragment):
             continue
         parts.append(text)
         kept.append(fragment)
     return " ".join(parts)
 
 
-def _overlaps_horizontally(left: TextFragment, right: TextFragment) -> bool:
-    return min(left.x1, right.x1) - max(left.x0, right.x0) > 0
+def _same_printed_position(left: TextFragment, right: TextFragment) -> bool:
+    """Are both fragments drawn at the same spot -- overprint rather than a repeat?
+
+    Both origin coordinates, and only those. See :func:`_join_visual_line` for why the
+    extent is deliberately not compared, and `test_table_extraction.py`'s per-edge block
+    for the fixtures that pin each of these two clauses on its own.
+    """
+
+    return (
+        abs(left.x0 - right.x0) <= _OVERPRINT_TOLERANCE
+        and abs(left.y0 - right.y0) <= _OVERPRINT_TOLERANCE
+    )
 
 
 def _normalize_cell_text(text: str) -> str:
