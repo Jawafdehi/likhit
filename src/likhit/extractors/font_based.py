@@ -1673,6 +1673,15 @@ _MEDIAL_CAPS = re.compile(r"[a-z][A-Z]")
 #      loosely, `6L` attests itself from undecoded keystrokes elsewhere in the
 #      document (`w/f}6L` = धरौटी split at `}`), and survival is only evidence of
 #      Latin if the surviving occurrence is itself Latin-shaped.
+#   4. ⚠️ The audit of section 8's conditions is COMPLETE only with this: alongside
+#      `_ACRONYM_FORBIDDEN`, the LOWER half of the length check is also inert.
+#      `_ACRONYM_MIN_LEN <= len(token)` can never reject a token
+#      `_ACRONYM_MIN_UPPER` accepts, because a token shorter than 2 characters cannot
+#      hold 2 uppercase letters. Ablation over 111,151 enumerated inputs: dropping the
+#      lower bound to 1, or to 0, changes **0** outcomes. It is kept as the spec's own
+#      wording, not as an exclusion it performs -- so a derivation reading "a single
+#      upper-case letter is an initial or a list label, not an acronym" is describing
+#      what MIN_UPPER does.
 _ACRONYM_EDGE = ',.;:()“”‘’"?!'  # punctuation English puts against a word
 _ACRONYM_FORBIDDEN = frozenset("][{}|~^@+_=\\/'&*<>%$#«»")
 _ACRONYM_MIN_LEN = 2
@@ -1681,6 +1690,21 @@ _ACRONYM_MIN_UPPER = 2
 # Note 2, made executable: if these ever intersect, stripping an edge could remove
 # a forbidden character and let a keystroke fragment qualify.
 assert not (_ACRONYM_FORBIDDEN & frozenset(_ACRONYM_EDGE))
+
+
+def _acronym_shaped(char: str) -> bool:
+    """One character of a qualifying acronym token: ASCII uppercase or an ASCII digit.
+
+    Named rather than inlined so the claim that `_ACRONYM_FORBIDDEN` is SUBSUMED by the
+    shape test can be asserted against the production predicate instead of a copy of it.
+    A test restating `("A" <= c <= "Z") or ("0" <= c <= "9")` as a literal is a property
+    of two constants and stays green when this relaxes -- and asserting it through
+    `_acronym_tokens` does not work either, because the forbidden-set check runs FIRST
+    and would swallow the relaxation. See
+    `test_the_forbidden_set_is_subsumed_by_the_shape_test`.
+    """
+
+    return ("A" <= char <= "Z") or ("0" <= char <= "9")
 
 
 def _acronym_tokens(text: str) -> frozenset[str]:
@@ -1710,7 +1734,7 @@ def _acronym_tokens(text: str) -> frozenset[str]:
             continue
         if any(char in _ACRONYM_FORBIDDEN for char in token):
             continue
-        if not all(("A" <= char <= "Z") or ("0" <= char <= "9") for char in token):
+        if not all(_acronym_shaped(char) for char in token):
             continue
         if sum(1 for char in token if "A" <= char <= "Z") < _ACRONYM_MIN_UPPER:
             continue
@@ -2562,7 +2586,28 @@ def detect_latin_acronym_survivors(
                         and not flags[index]
                         and not _reads_as_latin_words(text)
                     )
-                    if not rewritten:
+                    # 🛑 A CID-MARKED span contributes NOTHING to the vocabulary, and
+                    # this is the asymmetry the run side must not copy.
+                    # `get_cid_marked_page_dict` marks the raw CID of every glyph that
+                    # failed to decode, and `_acronym_tokens` unmarks, recovering
+                    # `chr(cid)`. For a legacy 8-bit face the CID *is* the keystroke byte
+                    # and that recovery is exactly right -- which is why the run side
+                    # keeps it. For a subset font the CIDs are arbitrary glyph indices
+                    # and are not text at all, so any 2-5 consecutive unmapped glyphs
+                    # whose indices happen to fall in {48..57, 65..90} would yield a
+                    # qualifying token and enter the vocabulary as evidence.
+                    #
+                    # Survival is only evidence of Latin if the surviving occurrence is
+                    # itself Latin, and a glyph index is not. Before the unmark was added
+                    # marked input contributed nothing at all, so this restores that
+                    # property on the side where it was load-bearing while keeping the
+                    # unmark on the side where it fixed a real defect.
+                    #
+                    # ⚠️ Mechanism confirmed at the function level; corpus reachability is
+                    # NOT measured (a marked-CID PDF cannot be built from PyMuPDF's core
+                    # fonts), so this is a guard against a proven mechanism with an
+                    # unmeasured footprint, not a repair of a counted defect.
+                    if not rewritten and count_marked_cids(text) == 0:
                         survivors |= _acronym_tokens(text)
     return frozenset(survivors)
 
@@ -2639,9 +2684,15 @@ def _content_legacy_veto_flags(
                 elif acronym_survivors and (
                     _acronym_tokens(run_text) & acronym_survivors
                 ):
-                    # VOL-180's third axis, and it is deliberately in the `elif`:
-                    # §8 requires it to be a SECOND pass, decided only on runs the
-                    # structural veto has already declined. Same run unit, so a
+                    # VOL-180's third axis. ⚠️ The `elif` is a SHORT-CIRCUIT, not the
+                    # second-pass rule: both branches set the same flags, so
+                    # `if A: flag elif B: flag` is `if A or B: flag` and replacing the
+                    # `elif` with an independent `if` leaves the whole suite green. All
+                    # it buys is skipping one `_acronym_tokens` call when axis 1 already
+                    # fired. §8's second-pass requirement is implemented in
+                    # `detect_latin_acronym_survivors`, which calls this function with
+                    # the DEFAULT survivor-free set -- that is where the ordering claim
+                    # is true and it is documented there. Same run unit either way, so a
                     # vetoed acronym run is kept whole like any other.
                     for index in range(start, end):
                         flags[index] = True

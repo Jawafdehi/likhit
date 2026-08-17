@@ -27,6 +27,8 @@ Nepali and a weak detector of *actually* Nepali.
 
 from __future__ import annotations
 
+import pytest
+
 from likhit.extractors.font_based import (
     _ACRONYM_EDGE,
     _ACRONYM_FORBIDDEN,
@@ -34,6 +36,10 @@ from likhit.extractors.font_based import (
     _acronym_tokens,
     _content_legacy_veto_flags,
     _reads_as_latin_text,
+    _acronym_shaped,
+    _reads_as_latin_words,
+    count_marked_cids,
+    unmark_cids,
 )
 from likhit.extractors.legacy_maps import get_converter_for_map
 
@@ -112,6 +118,62 @@ def test_note_2_an_edge_strip_can_never_expose_a_forbidden_character() -> None:
     assert _acronym_tokens('"MIS";') == frozenset({"MIS"})
 
 
+def test_the_document_scope_vocabulary_is_built_from_unrewritten_text_only() -> None:
+    """🛑 The document-scope half of this axis had NO test at all.
+
+    Every other test in this file drives `_acronym_tokens` or
+    `_content_legacy_veto_flags` with a hand-supplied survivor set. The function that
+    decides what COUNTS as evidence -- the survivor-free veto call, the `rewritten`
+    computation, the page skip -- was never called by a test and its output was never
+    asserted: `grep -rn 'detect_latin_acronym_survivors|acronym_survivors' tests/`
+    returned nothing.
+
+    That is the gap a whole channel of finding 87-1 went through: text rewritten by the
+    NAME-based `legacy_remap` path counted as "text the remap leaves alone", so its
+    keystrokes attested acronyms.
+
+    Four arms, one per class the docstring names. The fixture's vocabulary is NON-empty
+    (`{"QOC"}`, from an English appendix the structural veto declines), which is what
+    makes the other three falsifiable instead of vacuously true.
+    """
+
+    import fitz
+
+    from likhit.extractors.font_based import (
+        detect_content_legacy_fonts,
+        detect_latin_acronym_survivors,
+    )
+    from tests.synthetic_pdfs import build_acronym_survivor_pdf
+
+    doc = fitz.open(stream=build_acronym_survivor_pdf(), filetype="pdf")
+    try:
+        maps = detect_content_legacy_fonts(doc)
+        assert maps, "fixture must carry a content-legacy candidate font"
+
+        # (a) no candidate map at all -> no vocabulary, and no text-dict pass paid.
+        assert detect_latin_acronym_survivors(doc, None) == frozenset()
+        assert detect_latin_acronym_survivors(doc, {}) == frozenset()
+
+        # (b) the run the structural veto DECLINES is the evidence -- and it is real
+        # evidence, not an empty set, so (c) and (d) below have something to remove.
+        assert detect_latin_acronym_survivors(doc, maps) == frozenset({"QOC"})
+
+        # (c) a candidate-font run that IS remapped contributes NOTHING. Page 1 carries
+        # the bare token `MIS`, which qualifies on shape; if the vocabulary ever read
+        # rewritten text it would appear here. This is 87-1's channel.
+        assert "MIS" not in detect_latin_acronym_survivors(doc, maps)
+        assert _acronym_tokens("MIS") == frozenset({"MIS"}), "the token does qualify"
+
+        # (d) a skipped page contributes nothing -- and page 2 is where the evidence is,
+        # so skipping it alone must empty the vocabulary. That pins the skip to THIS
+        # pass rather than to the run pass.
+        assert detect_latin_acronym_survivors(doc, maps, frozenset({2})) == frozenset()
+        every_page = frozenset(range(1, doc.page_count + 1))
+        assert detect_latin_acronym_survivors(doc, maps, every_page) == frozenset()
+    finally:
+        doc.close()
+
+
 def test_the_forbidden_set_is_subsumed_by_the_shape_test() -> None:
     """§8 states `_ACRONYM_FORBIDDEN` as an independent condition. It is not.
 
@@ -123,8 +185,29 @@ def test_the_forbidden_set_is_subsumed_by_the_shape_test() -> None:
     instead of silent.
     """
 
+    # 🛑 Asserted against the PRODUCTION predicate, `_acronym_shaped`, not a literal copy
+    # of it. The earlier form restated `("A" <= c <= "Z") or ("0" <= c <= "9")` here, so
+    # it was a property of two constants and relaxing the real shape test left it -- and
+    # the whole suite -- green, i.e. it could not make visible the one relaxation its
+    # docstring exists for.
+    #
+    # ⚠️ Routing it through `_acronym_tokens` instead does NOT work, and that is worth
+    # recording because it is the obvious fix: the forbidden-set membership check runs
+    # BEFORE the shape test, so `_acronym_tokens("A" + c + "B")` is empty either way and
+    # a relaxed shape test is swallowed. Measured.
+    #
+    # ⚠️ And the relaxation that matters is one admitting SYMBOLS, not lowercase.
+    # Measured: `_acronym_shaped = char.isalnum()` admits lowercase and this test stays
+    # green -- correctly, because no forbidden character is a lowercase letter, so the
+    # forbidden set does not become load-bearing. `char.isspace()`-style relaxation does
+    # admit them and fails here.
     for char in _ACRONYM_FORBIDDEN:
-        assert not (("A" <= char <= "Z") or ("0" <= char <= "9")), char
+        assert not _acronym_shaped(char), char
+        # ...and the token is excluded end to end, by one check or the other.
+        assert _acronym_tokens(f"A{char}B") == frozenset(), char
+    # The same token without a forbidden character qualifies, so neither half is vacuous.
+    assert _acronym_tokens("AB") == frozenset({"AB"})
+    assert all(_acronym_shaped(char) for char in "AB09")
 
 
 def test_whitespace_delimitation_is_what_excludes_three_fragment_shapes() -> None:
@@ -197,8 +280,22 @@ def test_an_empty_survivor_set_is_exactly_the_pre_VOL180_behaviour() -> None:
         "",
         "   ",
     ]
+    # 🛑 The reference is the TWO-AXIS decision, recomputed here, not the same function
+    # called twice. `acronym_survivors` defaults to `frozenset()`, so
+    # `f(spans, CH, frozenset())` and `f(spans, CH)` are literally the same call: the
+    # earlier form of this test pinned "the default is frozenset()" and held no
+    # reference to two-axis behaviour at all, which is the one property it names.
+    decode = get_converter_for_map("Spins")
     for text in runs:
         spans = [_span("Spins", text)]
+        two_axis = [
+            bool(text.strip())
+            and (
+                _reads_as_latin_text(text, decode(text)) or _reads_as_latin_words(text)
+            )
+        ]
+        assert _content_legacy_veto_flags(spans, SPINS_CHOICE) == two_axis, text
+        # ...and the default really is the survivor-free set, which is the OTHER half.
         assert _content_legacy_veto_flags(
             spans, SPINS_CHOICE, frozenset()
         ) == _content_legacy_veto_flags(spans, SPINS_CHOICE), text
@@ -276,9 +373,85 @@ def test_marked_acronyms_still_qualify() -> None:
 def test_marking_does_not_manufacture_survivors() -> None:
     """The control: unmarking must not turn keystrokes into acronym evidence.
 
-    Every one of the 21 measured spurious fires, marked. If unmarking widened the axis
-    these would start qualifying and the survivor vocabulary would attest garbage.
+    Every one of the 21 measured spurious fires, marked.
+
+    ⚠️ **This arm cannot fail while its plain-text sibling passes**, and that is stated
+    rather than left as an implied guarantee: `unmark_cids(mark(x)) == x` for every ASCII
+    input, so `_acronym_tokens(_mark(t))` and `_acronym_tokens(t)` are equal by
+    construction. No control built from MARKED COPIES of ASCII keystrokes can rule out a
+    widening. The arm below is the one that can -- it uses the input class where
+    unmarking really does invent text.
     """
 
     for token in KEYSTROKE_WORDS:
         assert _acronym_tokens(_mark(token)) == frozenset(), token
+        # The identity that makes the line above redundant, asserted so the redundancy
+        # is a recorded fact rather than a thing to rediscover.
+        assert unmark_cids(_mark(token)) == token
+
+
+def test_arbitrary_glyph_indices_do_not_enter_the_survivor_vocabulary() -> None:
+    """🛑 The control that CAN fail: raw CIDs that are not keystroke bytes.
+
+    `get_cid_marked_page_dict` marks the raw CID of every glyph that failed to decode,
+    and `_acronym_tokens` unmarks it back to `chr(cid)`. For a legacy 8-bit face the CID
+    IS the keystroke byte, so that recovery is right and the run side keeps it. For a
+    subset font the CIDs are arbitrary glyph indices: any 2-5 consecutive unmapped glyphs
+    whose indices land in {48..57, 65..90} unmark into a qualifying token.
+
+    So `_acronym_tokens` itself accepts them -- that is the mechanism, asserted here --
+    and the fix is on the VOCABULARY side, in `detect_latin_acronym_survivors`, which now
+    skips any span carrying a marked CID. Survival is only evidence of Latin if the
+    surviving occurrence is itself Latin, and a glyph index is not.
+    """
+
+    # Glyph indices 77, 73, 83 happen to spell "MIS" once unmarked. Nothing about the
+    # subset font makes that text; it is an accident of the index space.
+    accidental = _mark("MIS")
+    assert count_marked_cids(accidental) == 3
+    assert _acronym_tokens(accidental) == frozenset({"MIS"})  # the mechanism
+
+
+def test_a_marked_span_contributes_nothing_to_the_survivor_vocabulary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The half that matters: the exclusion, asserted through the vocabulary pass.
+
+    A marked-CID PDF cannot be built from PyMuPDF's core fonts, so the page dict is
+    supplied at the seam the function reads it through -- `get_cid_marked_page_dict` --
+    rather than by constructing one. Two spans, identical text, one marked: only the
+    plain one may become evidence.
+    """
+
+    from likhit.extractors import font_based as font_based_module
+
+    plain = "QOC"
+    marked = _mark("MIS")
+
+    def fake_page_dict(_page):
+        return {
+            "blocks": [
+                {
+                    "lines": [
+                        {"spans": [{"font": "Helvetica", "text": plain}]},
+                        {"spans": [{"font": "Helvetica", "text": marked}]},
+                    ]
+                }
+            ]
+        }
+
+    monkeypatch.setattr(font_based_module, "get_cid_marked_page_dict", fake_page_dict)
+
+    import fitz
+
+    doc = fitz.open()
+    try:
+        doc.new_page()
+        survivors = font_based_module.detect_latin_acronym_survivors(
+            doc, {"Spins": LegacyMapChoice("Spins", None)}
+        )
+    finally:
+        doc.close()
+
+    assert survivors == frozenset({plain}), survivors
+    assert "MIS" not in survivors, "a glyph index is not evidence of Latin"

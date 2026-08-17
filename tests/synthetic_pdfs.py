@@ -267,6 +267,39 @@ def build_mixed_preeti_and_english_pdf() -> bytes:
         doc.close()
 
 
+def build_acronym_survivor_pdf() -> bytes:
+    """A candidate legacy font whose document carries an acronym in UNREWRITTEN text.
+
+    Built for the document-scope half of VOL-180 §8, which had no fixture: page 1 is
+    Preeti keystrokes that the remap DOES rewrite, and page 2 is an English appendix the
+    structural veto declines, carrying the acronym ``QOC``. So the survivor vocabulary
+    must come out as exactly ``{"QOC"}`` -- non-empty, which is what makes the
+    page-skip and rewritten-text arms of that test falsifiable rather than vacuous.
+
+    Page 1 also carries the bare token ``MIS``, deliberately. It qualifies on shape, so
+    if the vocabulary ever started reading rewritten text it would appear alongside
+    ``QOC`` -- which is the shape of the channel finding 87-1 named.
+    """
+
+    doc = fitz.open()
+    try:
+        page = doc.new_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        _write_lines(page, (*_PREETI_LINES, "MIS"), start_y=100.0)
+        appendix = doc.new_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        _write_lines(
+            appendix,
+            (
+                "improving patient safety should lead the implementation process.",
+                "the Quality Of Care team, QOC, reviewed the briefing and debriefing.",
+            ),
+            start_y=100.0,
+        )
+        _rename_base_fonts(doc, _SUBSET_STYLE_FONT_NAME)
+        return doc.tobytes()
+    finally:
+        doc.close()
+
+
 def build_subset_named_english_pdf() -> bytes:
     """Ordinary English under the same subset-style font name.
 
