@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from likhit.extractors.font_based import FontBasedStrategy
+from likhit.extractors.font_based import FontBasedStrategy, LegacyMapChoice
 from likhit.extractors.legacy_maps import (
     ALL_MAP_KEYS,
     DECODABLE_MAP_KEYS,
@@ -300,7 +300,14 @@ def test_content_based_span_conversion_is_gated_too():
     strategy = FontBasedStrategy()
     # A mislabeled font: the name classifier calls it "correct", content
     # detection is what identifies it as legacy.
-    content_maps = {"ABCDE+Helvetica": "FONTASY_HIMALI_TT"}
+    # A LegacyMapChoice, not a bare string: this mapping's value type widened when
+    # tie-scoping landed, so the choice now carries the validity scores and the set of
+    # code points a surviving tie left in dispute. The gate this test is about is
+    # unaffected by that -- which is the point of updating the shape rather than the
+    # assertion.
+    content_maps = {
+        "ABCDE+Helvetica": LegacyMapChoice(map_key="FONTASY_HIMALI_TT", validity=None)
+    }
     converted = strategy._convert_span_text(
         "(1)",
         "ABCDE+Helvetica",
@@ -317,7 +324,9 @@ def test_content_based_span_conversion_is_gated_too():
             "ABCDE+Times",
             {"Times": "correct"},
             needs_reorder=False,
-            content_legacy_maps={"ABCDE+Times": "Preeti"},
+            content_legacy_maps={
+                "ABCDE+Times": LegacyMapChoice(map_key="Preeti", validity=None)
+            },
         )
         == "परिच्छेद"
     )

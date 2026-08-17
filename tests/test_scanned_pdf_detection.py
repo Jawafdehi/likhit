@@ -10,28 +10,37 @@ real ones are covered in ``tests/integration/test_cib_pdfs.py`` when present.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import fitz
 import pytest
 
 from likhit.errors import ScannedPdfError
 from likhit.extractors.font_based import (
+    _DUPLICATE_CONSONANT_PATTERN,
+    _LATIN_VETO_WORDS,
     FontBasedStrategy,
+    _attested_word_count,
     _choose_fragment_text,
+    _choose_token_text,
+    _duplicate_consonant_count,
     _has_severe_noise,
     _IKAR_NASAL_WEIGHT,
     _IMPOSSIBLE_IKAR_NASAL_PATTERN,
     _is_probably_legacy_ascii,
+    _legacy_map_garble,
     _map_ranking_key,
     _nepali_validity,
     _passes_content_legacy_gate,
     _RANKING_IKAR_NASAL_FORGIVENESS,
+    _reads_as_latin_words,
     _text_quality_penalty,
     choose_legacy_map,
+    choose_legacy_map_detailed,
+    decode_with_legacy_map,
     detect_content_legacy_fonts,
 )
 from likhit.extractors.font_classifier import (
@@ -46,6 +55,7 @@ from likhit.extractors.legacy_maps import ALL_MAP_KEYS, get_converter_for_map
 from tests.synthetic_pdfs import (
     build_legacy_then_english_pdf,
     build_mislabeled_preeti_pdf,
+    build_mixed_preeti_and_english_pdf,
     build_mixed_scan_and_text_pdf,
     build_pure_scan_pdf,
     build_scanned_decoy_pdf,
@@ -178,6 +188,25 @@ def test_scan_ocr_pages_empty_for_born_digital_sample() -> None:
 # --- Part B: content-based legacy-font detection ------------------------------
 
 
+def _chosen_maps(detected: dict) -> dict[str, str]:
+    """`{font: map_key}` from `detect_content_legacy_fonts`, dropping the mask.
+
+    The mask matters wherever a tie survived (VOL-156); these cases assert which
+    map was chosen, and each one carries an empty mask.
+
+    ⚠️ That empty-mask property IS covered, but not by the helper an earlier form of
+    this docstring pointed at: `_no_font_carries_a_mask` is defined nowhere in this
+    repo on any branch -- the reference was its only occurrence. What actually catches a
+    spurious mask is the end-to-end extraction assertions, which compare emitted TEXT:
+    a mask leaves raw keystrokes in the output, so `test_mislabeled_preeti_is_decoded`,
+    `test_subset_named_font_is_decoded`, `test_content_legacy_detection_is_scoped_to_
+    requested_pages` and `test_content_based_span_conversion_is_gated_too` all fail if
+    one appears.
+    """
+
+    return {font: choice.map_key for font, choice in detected.items()}
+
+
 def test_choose_legacy_map_accepts_real_preeti() -> None:
     # Real Preeti keystrokes decoding to several dictionary words.
     keystrokes = "g]kfn ;/sf/ cbfnt cg';Gwfg k|ltjfbL e|i6frf/"
@@ -212,7 +241,7 @@ def test_is_probably_legacy_ascii() -> None:
 def test_detect_content_legacy_fonts_on_mislabeled_preeti() -> None:
     doc = fitz.open(stream=build_mislabeled_preeti_pdf(), filetype="pdf")
     try:
-        assert detect_content_legacy_fonts(doc) == {"Helvetica": "Preeti"}
+        assert _chosen_maps(detect_content_legacy_fonts(doc)) == {"Helvetica": "Preeti"}
     finally:
         doc.close()
 
@@ -224,7 +253,7 @@ def test_detect_content_legacy_fonts_on_subset_named_font() -> None:
     doc = fitz.open(stream=build_subset_named_preeti_pdf(), filetype="pdf")
     try:
         assert not is_core_font_name("TT339t00")
-        assert detect_content_legacy_fonts(doc) == {"TT339t00": "Preeti"}
+        assert _chosen_maps(detect_content_legacy_fonts(doc)) == {"TT339t00": "Preeti"}
     finally:
         doc.close()
 
@@ -259,6 +288,98 @@ def test_subset_named_english_pdf_survives_extraction(tmp_path: Path) -> None:
     assert not _has_devanagari(result.raw_text)
 
 
+def test_reads_as_latin_words_accepts_english_prose() -> None:
+    assert _reads_as_latin_words(
+        "improving patient safety should lead the implementation process."
+    )
+    assert _reads_as_latin_words("and instruction of the Engineer.")
+    assert _reads_as_latin_words("students are a very valuable resource and can help")
+
+
+def test_reads_as_latin_words_declines_real_keystrokes() -> None:
+    assert not _reads_as_latin_words("g]kfn ;/sf/ cbfnt cg';Gwfg k|ltjfbL")
+    assert not _reads_as_latin_words("cy+ dGqfnosf] sfof+nodf /x]sf] /sd")
+    assert not _reads_as_latin_words("")
+    assert not _reads_as_latin_words("!@#$%")
+
+
+def test_reads_as_latin_words_is_immune_to_two_letter_digraph_collisions() -> None:
+    # The reason the word list starts at three letters. `If]q` (क्षेत्र) tokenises
+    # to `If` -> "if" and `of]` (यो/या) to "of"; over the 33,112 OAG runs that
+    # provably decode to Nepali, `of` occurs in 12.4% and `if` in 6.2%. With
+    # two-letter function words in the list these all score as English and the
+    # veto destroys correct Nepali instead of saving English (VOL-138 §4).
+    for keystrokes in (
+        "If]q 3f]if0ff",
+        ";_/If0f sf]if",
+        "u|fld0f If]q ljsf; s]Gb|",
+        "of] jif+ ;_j}wflgs",
+        "r'/] If]qsf] ;_/If0f",
+    ):
+        assert not _reads_as_latin_words(keystrokes), keystrokes
+
+    # 🛑 The CLASS, not the two instances. The docstring above names four Preeti
+    # digraph collisions -- `if`, `of`, `on`, `to` -- and the fixtures cover only the
+    # first two, so adding `to` to the frozenset left all 1,248 tests green while
+    # flipping `To:tf]` (त्यस्तो, ubiquitous in audit prose) to "reads as Latin".
+    # One assertion closes the whole class instead of enumerating members of it.
+    assert min(len(word) for word in _LATIN_VETO_WORDS) >= 3, sorted(
+        word for word in _LATIN_VETO_WORDS if len(word) < 3
+    )
+
+
+def test_reads_as_latin_words_requires_english_casing() -> None:
+    # A legacy layout puts shifted glyphs mid-word, so `aNd` is a keystroke
+    # sequence rather than the word "and". This was the single false positive left
+    # over the whole corpus once the three-letter minimum was in place.
+    assert not _reads_as_latin_words("aNd ^f]n jftfj<)f ;'wf< ;ldlt clUgzfn")
+    assert _reads_as_latin_words("And the report")
+    assert _reads_as_latin_words("AND THE REPORT")
+
+
+def test_reads_as_latin_words_dilutes_accidental_collisions_in_long_runs() -> None:
+    # A share, not a count: one accidental hit in a long keystroke run must not
+    # fire. `/l;but` contains "but" and `can` occurs as a bare token.
+    assert not _reads_as_latin_words(
+        "cfGtl/s cfosf] /l;but clen]v g/fv]s]f, Pj b}lgs cfDbfgL vftf, "
+        "a}Fs bflvnf vftf nufotsf"
+    )
+    assert not _reads_as_latin_words(
+        "jf b:t'/ lng] Joj:yf x'g'kb+5 . hUufsf] juL+s/0f can, bf]od, l;d, "
+        "rfx/sf] ?kdf eO/x]sf]df"
+    )
+
+
+def test_mixed_document_decodes_keystrokes_and_spares_the_english_appendix(
+    tmp_path: Path,
+) -> None:
+    # VOL-126's defect end to end. Candidacy is decided per font over the whole
+    # document, so the appendix -- same face, same producer -- used to be remapped
+    # into well-formed Devanagari spelling nothing.
+    raw = build_mixed_preeti_and_english_pdf()
+
+    # The precondition has to hold or this test proves nothing: the font must
+    # still be a content-legacy candidate even with the English mixed in.
+    doc = fitz.open(stream=raw, filetype="pdf")
+    try:
+        assert _chosen_maps(detect_content_legacy_fonts(doc)) == {"TT339t00": "Preeti"}
+    finally:
+        doc.close()
+
+    result = FontBasedStrategy().extract_text(_write_pdf(tmp_path, raw))
+
+    # The keystrokes still decode.
+    assert "नेपाल सरकार" in result.raw_text
+    assert "g]kfn" not in result.raw_text
+    # And the English is untouched, not remapped into Devanagari.
+    assert "improving patient safety should lead the implementation process." in (
+        result.raw_text
+    )
+    assert "students are a very valuable resource and can help support the" in (
+        result.raw_text
+    )
+
+
 def test_detect_content_legacy_fonts_picks_spins_over_preeti() -> None:
     # Detecting "this is legacy" is only half the job: the 2067-2072 annual
     # reports are the Spins layout, and the Preeti map reads their bytes as
@@ -266,7 +387,7 @@ def test_detect_content_legacy_fonts_picks_spins_over_preeti() -> None:
     # the detection.
     doc = fitz.open(stream=build_subset_named_spins_pdf(), filetype="pdf")
     try:
-        assert detect_content_legacy_fonts(doc) == {"TT339t00": "Spins"}
+        assert _chosen_maps(detect_content_legacy_fonts(doc)) == {"TT339t00": "Spins"}
     finally:
         doc.close()
 
@@ -293,7 +414,7 @@ def test_spins_does_not_steal_genuine_preeti() -> None:
     # regression on every document the name registry already handled.
     doc = fitz.open(stream=build_mislabeled_preeti_pdf(), filetype="pdf")
     try:
-        assert detect_content_legacy_fonts(doc) == {"Helvetica": "Preeti"}
+        assert _chosen_maps(detect_content_legacy_fonts(doc)) == {"Helvetica": "Preeti"}
     finally:
         doc.close()
 
@@ -405,23 +526,245 @@ def test_the_ratio_axis_outranks_the_devanagari_count_and_that_order_decides() -
     assert _map_ranking_key(spins) > _map_ranking_key(worse_ratio_higher_count)
 
 
-def test_choose_legacy_map_abstains_when_every_axis_ties() -> None:
+def test_surviving_tie_masks_only_the_ambiguous_code_points() -> None:
     # "X" is ह् under Preeti and हृ under Kantipur: both pure Devanagari, both two
     # code points, so hits, penalty, ratio and Devanagari count are all identical
     # and the two readings still differ. Nothing but tuple position could pick a
-    # winner, so there is no winner to pick.
+    # winner between them, so nothing does.
+    #
+    # VOL-156: the remedy applies to "X" and to nothing else. The candidates agree
+    # about every other code point in the span, so decoding those commits to
+    # nothing -- there is no choice being made there. Discarding them too is what
+    # cost the OAG corpus 59,867 Devanagari characters across 50 documents.
     keystrokes = f"{_TIE_PREFIX} X"
     readings = {
         get_converter_for_map(candidate)(keystrokes) for candidate in ALL_MAP_KEYS
     }
     assert len(readings) > 1
 
-    map_key, best = choose_legacy_map(keystrokes)
-    assert map_key is None
-    # Abstention is NOT the gate declining: the best candidate clears it. The
-    # keystrokes stay visibly undecoded, which is recoverable; a confident wrong
-    # word is not.
-    assert best is not None and _passes_content_legacy_gate(best)
+    choice = choose_legacy_map_detailed(keystrokes)
+    assert choice.map_key is not None
+    assert choice.ambiguous == frozenset({"X"})
+    # The ambiguous keystroke survives as itself -- recoverable, and visibly not a
+    # reading. Everything the candidates agree on is decoded.
+    assert decode_with_legacy_map(keystrokes, choice) == "नेपाल सरकार अदालत X"
+    # Masking is not the gate declining: the reading clears it.
+    assert choice.validity is not None and _passes_content_legacy_gate(choice.validity)
+
+
+def test_a_disagreement_that_masking_cannot_localise_still_abstains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The safety valve, with the fault injected so the check is shown to bite.
+    # These maps reorder, so "the candidates differ only at code point c" is a
+    # per-character *hypothesis*; masking is only allowed to rescue a span when
+    # masking actually removes the disagreement. Here two candidates read every
+    # single code point identically in isolation and still disagree in context, so
+    # the mask comes out empty and there is nothing to decode on.
+    from likhit.extractors import font_based as font_based_module
+
+    real = get_converter_for_map("Preeti")
+    # "kp" decodes to कप, two Devanagari characters outside any dictionary word, so
+    # transposing them holds hits, penalty, ratio and the Devanagari count exactly
+    # level -- (3, 0, 1.0, 17) either way. A tie no axis can break.
+    keystrokes = f"{_TIE_PREFIX} sk"
+
+    def contextual(text: str) -> str:
+        # Byte-identical to Preeti on every code point READ ALONE, and different in
+        # context. That is the case a per-code-point comparison cannot see, and the
+        # reason the localisation is verified on the whole span instead of trusted.
+        out = real(text)
+        if len(text) <= 1 or len(out) < 2:
+            return out
+        return out[:-2] + out[-1] + out[-2]
+
+    def fake_get_converter_for_map(map_key: str):
+        return contextual if map_key == "Kantipur" else real
+
+    monkeypatch.setattr(
+        font_based_module, "get_converter_for_map", fake_get_converter_for_map
+    )
+    monkeypatch.setattr(font_based_module, "ALL_MAP_KEYS", ("Preeti", "Kantipur"))
+
+    # The fault is real: the two candidates tie on every axis and disagree.
+    assert _map_ranking_key(_nepali_validity(real(keystrokes))) == _map_ranking_key(
+        _nepali_validity(contextual(keystrokes))
+    )
+    assert real(keystrokes) != contextual(keystrokes)
+
+    choice = font_based_module.choose_legacy_map_detailed(keystrokes)
+    # No code point differs in isolation, so there is nothing to mask -- and
+    # masking nothing would decode the disagreement as if it were settled.
+    assert choice.ambiguous == frozenset()
+    assert choice.map_key is None
+    # And it abstained over a real ambiguity, not a gate refusal.
+    assert choice.validity is not None and _passes_content_legacy_gate(choice.validity)
+
+
+def test_a_non_empty_mask_that_still_disagrees_abstains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🛑 The `len(readings) != 1` half of the verification, which nothing reached.
+
+    Its sibling `test_a_disagreement_that_masking_cannot_localise_still_abstains`
+    injects a fault that produces an EMPTY mask, so the abstention there comes from
+    the `not masked` clause. Measured before this test: deleting `len(readings) != 1`
+    left the whole suite green, and it is not a no-op.
+
+    The fault here differs from Preeti on ONE code point in isolation -- so the mask
+    comes out non-empty, `{'k'}` -- and ALSO transposes the last two output characters,
+    so masking that code point does not remove the disagreement. That is the shape the
+    whole-span verification exists for, and the only shape that can reach it.
+    """
+
+    from likhit.extractors import font_based as font_based_module
+
+    real = get_converter_for_map("Preeti")
+    # `wx` decodes to धह, two Devanagari letters outside any dictionary word and not
+    # present in the prefix, so substituting one of them and transposing the pair holds
+    # every axis exactly level -- (3, 0, 0, 1.0, 17) either way. `w` is the only code
+    # point that differs in isolation, so the mask is exactly {"w"}.
+    keystrokes = f"{_TIE_PREFIX} wx"
+
+    def localised_and_contextual(text: str) -> str:
+        # Differs on `w` read alone, so `_ambiguous_code_points` finds it...
+        out = real(text).replace("ध", "घ")
+        # ...and also transposes, so masking `w` still leaves the readings different.
+        if len(text) <= 1 or len(out) < 2:
+            return out
+        return out[:-2] + out[-1] + out[-2]
+
+    def fake_get_converter_for_map(map_key: str):
+        return localised_and_contextual if map_key == "Kantipur" else real
+
+    monkeypatch.setattr(
+        font_based_module, "get_converter_for_map", fake_get_converter_for_map
+    )
+    monkeypatch.setattr(font_based_module, "ALL_MAP_KEYS", ("Preeti", "Kantipur"))
+
+    # The fault is real: the two candidates tie on every axis and disagree.
+    assert _map_ranking_key(_nepali_validity(real(keystrokes))) == _map_ranking_key(
+        _nepali_validity(localised_and_contextual(keystrokes))
+    )
+    assert real(keystrokes) != localised_and_contextual(keystrokes)
+
+    # ⚠️ The two clauses cannot be told apart from the RETURNED choice: both abstention
+    # paths build `LegacyMapChoice(None, best)`, whose `ambiguous` defaults to empty. So
+    # the mask and the post-mask readings are computed directly here, and it is those
+    # that establish which clause is doing the work.
+    mask = font_based_module._ambiguous_code_points(
+        keystrokes, real, [localised_and_contextual]
+    )
+    assert mask == frozenset({"w"}), mask  # non-empty -> `not masked` cannot decide
+    readings = {
+        font_based_module._decode_masking(keystrokes, convert, mask)
+        for convert in (real, localised_and_contextual)
+    }
+    assert len(readings) == 2, readings  # ...and masking does not settle it
+
+    choice = font_based_module.choose_legacy_map_detailed(keystrokes)
+
+    # So only `len(readings) != 1` can abandon this span, and it must.
+    assert choice.map_key is None
+
+
+def test_the_gate_reads_the_masked_reading_not_the_unmasked_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🛑 `best = _nepali_validity(readings.pop())` -- deleting it left the suite green.
+
+    It is the only thing stopping a span whose MASKED reading is mostly raw keystrokes
+    from being accepted on the strength of the reading it does not emit. That is the
+    fail-open direction: the text that ships is the masked one.
+
+    The fixture masks a long enough run that the emitted reading's Devanagari ratio
+    falls under `_CONTENT_LEGACY_MIN_DEVA_RATIO` while the unmasked reading clears the
+    gate comfortably.
+    """
+
+    from likhit.extractors import font_based as font_based_module
+
+    real = get_converter_for_map("Preeti")
+    # 40 `wx` pairs, so masking `w` leaves 40 raw keystrokes against 55 Devanagari
+    # characters: ratio 0.5789, under the 0.6 floor. Unmasked it is 1.0. The pair
+    # alternates deliberately -- a repeated `w` would decode to धध and pick up a
+    # duplicate-consonant penalty, which fails the gate on BOTH readings and would make
+    # this test pass for the wrong reason.
+    keystrokes = _TIE_PREFIX + " " + "wx" * 40
+
+    def disagrees_on_w(text: str) -> str:
+        return real(text).replace("ध", "घ")
+
+    def fake_get_converter_for_map(map_key: str):
+        return disagrees_on_w if map_key == "Kantipur" else real
+
+    monkeypatch.setattr(
+        font_based_module, "get_converter_for_map", fake_get_converter_for_map
+    )
+    monkeypatch.setattr(font_based_module, "ALL_MAP_KEYS", ("Preeti", "Kantipur"))
+
+    # The mask localises cleanly, so this is NOT an abstention over ambiguity: both
+    # readings agree once `w` is masked, and the verification is satisfied.
+    mask = font_based_module._ambiguous_code_points(keystrokes, real, [disagrees_on_w])
+    assert mask == frozenset({"w"}), mask
+    emitted = font_based_module._decode_masking(keystrokes, real, mask)
+    assert emitted == font_based_module._decode_masking(
+        keystrokes, disagrees_on_w, mask
+    )
+
+    # The UNMASKED reading would sail through the gate...
+    assert _passes_content_legacy_gate(_nepali_validity(real(keystrokes)))
+    # ...and the text that would actually be EMITTED must not.
+    assert not _passes_content_legacy_gate(_nepali_validity(emitted))
+    assert _nepali_validity(emitted)["ratio"] < 0.6
+
+    choice = font_based_module.choose_legacy_map_detailed(keystrokes)
+
+    # So the only thing that can decline this span is gating the masked reading.
+    assert choice.map_key is None
+    assert choice.validity is not None
+    assert not _passes_content_legacy_gate(choice.validity)
+
+
+def test_a_lifted_span_is_un_lifted_before_the_mask_is_applied() -> None:
+    """🛑 Two findings in one fixture: the un-lift is reachable, and its ORDER matters.
+
+    `decode_with_legacy_map` un-lifts because a symbol-style cmap delivers glyphs at
+    `0xF000 + code`. Deleting the un-lift left all tests green, and the comment
+    justifying it named `ARAP 11` -- a face that classifies `legacy_remap`, so
+    `detect_content_legacy_fonts` skips it and it can never reach this path. `Symbol`,
+    `SymbolMT` and `Wingdings` can: all three classify `correct` AND are
+    `is_symbol_pua_font`.
+
+    The order is the second half. With the mask applied to the still-lifted span, a
+    masked code point arriving as `chr(0xF000 + ord(c))` is not recognised as masked --
+    it lands inside a run, is un-lifted there, and is decoded with the winner's map,
+    which is the exact commitment the mask exists to avoid.
+    """
+
+    from likhit.extractors.font_based import (
+        LegacyMapChoice,
+        decode_with_legacy_map,
+    )
+    from likhit.extractors.font_classifier import classify_font
+    from likhit.extractors.pua_maps import is_symbol_pua_font
+
+    # The reachability half, stated as an assertion rather than as prose.
+    for name in ("Symbol", "SymbolMT", "Wingdings"):
+        assert classify_font(name, "") == "correct"
+        assert is_symbol_pua_font(name)
+
+    lifted = "".join(chr(0xF000 + ord(char)) for char in "g]kfn")
+    plain = LegacyMapChoice("Preeti", None)
+    assert decode_with_legacy_map(lifted, plain) == "नेपाल"
+
+    # ...and with `n` masked, the lifted `n` must be LEFT RAW rather than decoded.
+    masked = LegacyMapChoice("Preeti", None, frozenset({"n"}))
+    out = decode_with_legacy_map(lifted, masked)
+    assert "n" in out, f"the masked code point was decoded anyway: {out!r}"
+    assert out == "नेपाn", out
+    # And nothing lifted survives into the output either way.
+    assert not any(0xF000 <= ord(char) <= 0xF0FF for char in out)
 
 
 def test_identical_readings_are_not_an_ambiguity() -> None:
@@ -454,15 +797,19 @@ def test_all_map_keys_order_does_not_decide_the_text(
     # or force an arbitrary tie-break back into the chooser.
     from likhit.extractors import font_based as font_based_module
 
+    # Through the production decode path, because the mask is part of the decision:
+    # converting with the bare map key would read the ambiguous code point after
+    # all, and the invariant would fail -- correctly. VOL-156's mask is what keeps
+    # the text order-independent on a surviving tie.
     def decode(keystrokes: str) -> str | None:
-        map_key, _validity = choose_legacy_map(keystrokes)
-        return get_converter_for_map(map_key)(keystrokes) if map_key else None
+        choice = choose_legacy_map_detailed(keystrokes)
+        return decode_with_legacy_map(keystrokes, choice) if choice.map_key else None
 
     cases = [f"{_TIE_PREFIX} ;_Vof", f"{_TIE_PREFIX} X", _TIE_PREFIX]
     before_text = [decode(case) for case in cases]
     assert before_text == [
         "नेपाल सरकार अदालत संख्या",  # ratio decided it
-        None,  # abstained
+        "नेपाल सरकार अदालत X",  # tie survived: agreed text decoded, "X" left raw
         "नेपाल सरकार अदालत",  # every map agrees
     ]
 
@@ -472,10 +819,10 @@ def test_all_map_keys_order_does_not_decide_the_text(
 
     monkeypatch.setattr(font_based_module, "ALL_MAP_KEYS", reversed_keys)
     assert [decode(case) for case in cases] == before_text
-    # The evidence-decided cases pin the key too: only the identical-text one is
-    # allowed to relabel.
+    # The evidence-decided case pins the key too. The other two may relabel: their
+    # tied candidates read the span identically once the ambiguity is masked, which
+    # is exactly why the text above cannot move.
     assert choose_legacy_map(cases[0])[0] == "Spins"
-    assert choose_legacy_map(cases[1])[0] is None
 
 
 # --- Part B, VOL-89: which form of the garble measure may decide ---------------
@@ -498,6 +845,7 @@ def _validity(
     ratio: float,
     stranded: int = 0,
     ikar_nasal: int = 0,
+    attested: int = 0,
 ) -> dict[str, float]:
     """A validity dict as `_nepali_validity` would return it, for ranking tests.
 
@@ -506,6 +854,9 @@ def _validity(
     penalties. It is spelled out rather than omitted so `_map_ranking_key` can read
     the key strictly: a validity dict built without it is a bug, not a dict to be
     tolerated with `.get`.
+
+    `attested` defaults to 0 for the same reason: the tests below are about the axes
+    above it, so they must tie on it and reach the axis they actually assert (VOL-185).
     """
 
     return {
@@ -516,6 +867,7 @@ def _validity(
         "devanagari": devanagari,
         "ratio": ratio,
         "stranded": stranded,
+        "attested": attested,
     }
 
 
@@ -563,14 +915,48 @@ def test_a_real_difference_in_garble_still_outranks_the_ratio() -> None:
 
 
 def test_nepali_validity_reports_both_forms_of_the_garble_measure() -> None:
-    # The ranking compares candidates on one span, so it uses the raw count; the
-    # gate compares one span against an absolute ceiling, so it needs the rate.
-    # Both must be present, and the rate must remain the quotient of the count.
-    garble = "���" + "नेपाल"
-    validity = _nepali_validity(garble)
-    assert validity["penalty"] == pytest.approx(
-        validity["penalty_per_deva"] * validity["devanagari"]
+    """Both forms are present, and they are NOT the same numerator.
+
+    This test used to assert `penalty == penalty_per_deva * devanagari`, i.e. that the
+    rate stays the quotient of the count. True when written; false by design now.
+    `penalty` comes from `_legacy_map_garble`, which DROPS the doubled-consonant term
+    because it charges correct readings when maps are compared, while `penalty_per_deva`
+    divides `_text_quality_penalty`, which KEEPS it because that is the measure the gate's
+    ceiling was calibrated against.
+
+    The old assertion survived only because its fixture contained no doublet, so the two
+    numerators coincided:
+
+        no doublet   penalty=36  per_deva=7.20 x deva=5 -> 36   quotient holds
+        a doublet    penalty=36  per_deva=9.75 x deva=4 -> 39   quotient FAILS
+
+    So the SEPARATION is pinned now rather than the coincidence, and a doublet-bearing
+    fixture is used deliberately -- on the old one this test could not tell the two
+    designs apart.
+    """
+
+    from likhit.extractors.font_based import _legacy_map_garble, _text_quality_penalty
+
+    replacement = "\ufffd" * 3
+
+    # No doublet: the two numerators agree, which is why the old assertion passed.
+    plain = replacement + "\u0928\u0947\u092a\u093e\u0932"
+    plain_validity = _nepali_validity(plain)
+    assert plain_validity["penalty"] == pytest.approx(
+        plain_validity["penalty_per_deva"] * plain_validity["devanagari"]
     )
+
+    # WITH a doublet: they must diverge, and each must equal its own source.
+    doubled = replacement + "\u0916\u0930\u0930\u0926"
+    validity = _nepali_validity(doubled)
+    assert validity["penalty"] == _legacy_map_garble(doubled)
+    assert validity["penalty_per_deva"] == pytest.approx(
+        _text_quality_penalty(doubled) / validity["devanagari"]
+    )
+    assert validity["penalty"] != pytest.approx(
+        validity["penalty_per_deva"] * validity["devanagari"]
+    ), "the two measures have collapsed back into one numerator"
+
     assert isinstance(validity["penalty"], int)
 
 
@@ -758,6 +1144,224 @@ def test_a_real_garble_difference_still_outranks_the_stranded_count() -> None:
     spins = _validity(hits=2, penalty=48, devanagari=655, ratio=0.688025, stranded=0)
     assert spins["stranded"] < pcs["stranded"]
     assert _map_ranking_key(pcs) > _map_ranking_key(spins)
+
+
+# --- VOL-185: the repha->anusvara regression -------------------------------------
+
+
+def test_doublet_is_charged_to_the_gate_but_not_to_the_map_ranking() -> None:
+    # The split that repairs 8 of VOL-185's 11 documents. `खररद` is a doubled-र garble
+    # of `खरिद` ("purchase") and `_duplicate_consonant_count` charges it 3 points --
+    # NOT `अध्ययन`, which `bad7fe2` exempted as a lexeme and which therefore proves
+    # nothing here. Between two candidate MAPS the charge is noise, but the accept
+    # gate's 0.05 ceiling was calibrated against the full measure, so only the ranking
+    # axis may drop it.
+    word = "खररद"
+    assert _text_quality_penalty(word) == 3, "the doublet must still be charged"
+    assert _legacy_map_garble(word) == 0, "and must not reach the ranking axis"
+
+    validity = _nepali_validity(word)
+    assert validity["penalty"] == 0, "ranking axis: doublet-free"
+    # The gate keeps the full measure, so `penalty_per_deva` still sees the 3 points.
+    assert validity["penalty_per_deva"] == 3 / validity["devanagari"]
+
+
+def test_the_doublet_split_does_not_loosen_the_accept_gate() -> None:
+    # `ecc5338` made a version of this subtraction and fed it to BOTH the ranking axis
+    # and `penalty_per_deva`, which lowered the gate's numerator, admitted spans that
+    # were correctly rejected, and cost `3219__...रामधुनी नगरपालिका` 1,723 attested
+    # occurrences -- which is why VOL-163 reverted it. A span whose ONLY penalty is
+    # doublets must still be measured against the ceiling with ALL of them counted.
+    doublets = "खररद " * 40
+    validity = _nepali_validity(doublets)
+    assert validity["penalty_per_deva"] > 0, "the gate must still see the doublets"
+    assert (
+        validity["penalty_per_deva"]
+        == _text_quality_penalty(doublets) / (validity["devanagari"])
+    )
+
+
+def test_many_doublets_still_decide_the_map_ranking() -> None:
+    # The bound on the forgiveness, and the reason it is a bound rather than dropping
+    # the term. `2649__...घोराही उपमहानगरपालिका`, font `Hisab`: the wrong maps carry 323
+    # doublets to the right map's 3. Forgiving the whole term levels all five and the
+    # span is lost -- to the ACCEPT GATE, not to an abstention: measured on
+    # the forgive-all arm the tie DOES localise and the masked reading fails the
+    # absolute ceiling at penalty_per_deva 0.05146748 against 0.05. 865 attested
+    # occurrences go with it. The parent produces 0 tie-abstentions in 37,888
+    # candidate pairs corpus-wide, so "the span abstains" was never the mechanism.
+    many = "खररद " * 40
+    few = "खरिद " * 40
+    assert _duplicate_consonant_count(many) == 40
+    assert _duplicate_consonant_count(few) == 0
+    # Only one hit is forgiven, so 39 of them still separate the two readings.
+    assert _legacy_map_garble(many) == (40 - 1) * 3
+    assert _legacy_map_garble(few) == 0
+
+
+def test_a_single_stranded_bracket_does_not_decide_the_map_ranking() -> None:
+    # `2992`/`2993 parsa gaupalika`, font `Arial`: `Preeti` carries 0 stranded brackets to
+    # `FONTASY_HIMALI_TT`'s 1 and is the WRONG map -- it loses `समानीकरण` (df 4,397), `ऋण`
+    # (4,549), `संघिय` (3,558), `पोषण` (2,650) and gains only `द्ध` (df 52). One bracket
+    # must not outrank that, so it is forgiven and `attested` decides, 23 to 22.
+    right = _validity(
+        hits=3, penalty=0, devanagari=826, ratio=0.959350, stranded=1, attested=23
+    )
+    wrong = _validity(
+        hits=3, penalty=0, devanagari=851, ratio=0.960497, stranded=0, attested=22
+    )
+    assert wrong["stranded"] < right["stranded"], "stranded alone favours the wrong map"
+    assert wrong["ratio"] > right["ratio"], "so does ratio"
+    assert _map_ranking_key(right) > _map_ranking_key(wrong), "attested must decide"
+
+
+def test_several_stranded_brackets_still_decide_the_map_ranking() -> None:
+    # The bound. VOL-131 calibrated this axis on counts of 3 and 6 against 0, and those
+    # must still decide -- a candidate with many brackets loses even holding more
+    # attested words.
+    stranded = _validity(
+        hits=2, penalty=0, devanagari=600, ratio=0.95, stranded=6, attested=30
+    )
+    clean = _validity(
+        hits=2, penalty=0, devanagari=600, ratio=0.90, stranded=0, attested=2
+    )
+    assert _map_ranking_key(clean) > _map_ranking_key(stranded)
+
+
+def test_a_single_doublet_does_not_decide_the_map_ranking() -> None:
+    # The margin that lost VOL-185's eleven documents their correct map: the correct
+    # `Spins` reading carries exactly one doublet and the map that misreads the span
+    # carries none, so a lone hit must not be the whole of the evidence.
+    assert _duplicate_consonant_count("खररद") == 1
+    assert _legacy_map_garble("खररद") == _legacy_map_garble("खरिद") == 0
+
+
+def test_the_token_chooser_keeps_the_full_penalty() -> None:
+    # The other half of `ecc5338`'s reasoning, and the half that was right: two
+    # readings of the SAME token are separated by a doublet, so `_choose_token_text`
+    # must keep charging it. `ववशेष` is a doubled-व garble of `विशेष`; with the term
+    # gone from the general measure both score 0 and the garble wins the tie.
+    assert _text_quality_penalty("ववशेष") > _text_quality_penalty("विशेष")
+
+    # 🛑 ...and through the CHOOSERS, which is the mutation this test exists to
+    # prevent and never reached: the assertion above only sees the term leaving
+    # `_text_quality_penalty` outright. Switching either chooser to the new
+    # doublet-free `_legacy_map_garble` passed the whole suite, in both
+    # `_choose_token_text` and `_choose_fragment_text`.
+    assert _choose_token_text("विशेष", "ववशेष") == "विशेष"
+    assert _choose_fragment_text("विशेष", "ववशेष") == "विशेष"
+
+
+def test_attested_words_decide_when_garble_and_stranding_tie() -> None:
+    # `2424__...Ramechhap Nagarpalika`, font `Spins`, 283 characters -- the span this
+    # issue was filed on. `PCS NEPALI` beat `Spins` on `ratio` by 0.000249, inside the
+    # band the docstring records as always wrong, and rendered twelve repha as a
+    # misplaced anusvara. `Spins` produces 12 attested Nepali forms there to 7.
+    pcs = _validity(
+        hits=3, penalty=0, devanagari=217, ratio=0.981900, stranded=0, attested=7
+    )
+    spins = _validity(
+        hits=3, penalty=0, devanagari=214, ratio=0.981651, stranded=0, attested=12
+    )
+    assert pcs["ratio"] > spins["ratio"], "ratio alone still favours the wrong map"
+    assert _map_ranking_key(spins)[:3] == _map_ranking_key(pcs)[:3], "tied above"
+    assert _map_ranking_key(spins) > _map_ranking_key(pcs), "attested must decide"
+
+
+def test_attested_words_do_not_outrank_garble_or_stranding() -> None:
+    # `attested` sits BELOW `penalty` and `stranded` so it cannot disturb either
+    # calibration. A candidate with more attested words must still lose to one with
+    # less garble, and to one with less stranding.
+    garbled = _validity(
+        hits=2, penalty=48, devanagari=655, ratio=0.688, stranded=0, attested=30
+    )
+    clean = _validity(
+        hits=2, penalty=0, devanagari=658, ratio=0.679, stranded=0, attested=2
+    )
+    assert _map_ranking_key(clean) > _map_ranking_key(garbled), "penalty outranks it"
+
+    stranded = _validity(
+        hits=2, penalty=0, devanagari=600, ratio=0.90, stranded=6, attested=30
+    )
+    unstranded = _validity(
+        hits=2, penalty=0, devanagari=600, ratio=0.90, stranded=0, attested=2
+    )
+    assert _map_ranking_key(unstranded) > _map_ranking_key(stranded), "stranded too"
+
+
+def test_attested_word_count_is_distinct_tokens_not_substrings() -> None:
+    # Counting by set intersection, not substring: a substring test lets one long
+    # garbled token satisfy several short entries. `आर्थिक` is in the list; the garble
+    # `आथिंक` that VOL-185's wrong map produces is not, and cannot be -- its document
+    # frequency is 108 against a floor of 5,000.
+    assert _attested_word_count("आर्थिक वर्ष") >= 1
+    assert _attested_word_count("आथिंक वषं") == 0
+    # A repeated form counts once, so a garble that happens to repeat cannot outvote
+    # a reading that produces several different real words.
+    assert _attested_word_count("आर्थिक आर्थिक आर्थिक") == _attested_word_count("आर्थिक")
+
+    # 🛑 The three assertions above ALL hold under the substring implementation this
+    # test's name forbids -- including the repetition one, since a substring count is
+    # idempotent under repetition too. So they pinned nothing about tokens vs
+    # substrings. These two do: an entry embedded in a longer token must not count.
+    assert _attested_word_count("xxकार्यालयxx") == 0  # substring form gives 1
+    assert _attested_word_count("कार्यालयको") == 1  # substring form gives 3
+
+
+def test_the_ranking_penalty_subtracts_the_NARROWED_doublet_count() -> None:
+    """🛑 The hazard `_legacy_map_garble`'s docstring calls out by name, untested.
+
+    It says the counter subtracted "must be the SAME one `_text_quality_penalty` adds --
+    the narrowed `_duplicate_consonant_count`, not `_DUPLICATE_CONSONANT_PATTERN.
+    findall`", because the raw count is >= the narrowed one on every input and
+    subtracting it would drive the measure below the true penalty, silently. Making
+    exactly that substitution passed the full suite.
+
+    `महालेखापरीक्षकको` is the discriminator: raw count 1, narrowed count 0. Under the
+    raw form the ranking penalty goes NEGATIVE, which inverts the axis's sign.
+    """
+
+    assert _legacy_map_garble("महालेखापरीक्षकको") == 0
+    assert len(_DUPLICATE_CONSONANT_PATTERN.findall("महालेखापरीक्षकको")) == 1
+    assert _duplicate_consonant_count("महालेखापरीक्षकको") == 0
+
+    # The property, so a future third counter cannot slip in either.
+    for text in (
+        "महालेखापरीक्षकको",
+        "अध्ययन",
+        "खररद",
+        "ववरण",
+        "आन्तररक",
+        "नेपाल सरकार अदालत",
+        "",
+    ):
+        assert 0 <= _legacy_map_garble(text) <= _text_quality_penalty(text), text
+
+
+def test_the_inlined_ranking_penalty_still_equals_the_named_helper() -> None:
+    """`_nepali_validity` inlines the subtraction to avoid recomputing the penalty and
+    the doublet count (44.0% of the call on a 7,680-character span). The helper stays as
+    the thing the docstrings reason about, so the two must not drift apart.
+    """
+
+    for source in ("g]kfn ;/sf/ cbfnt", "खररद ववरण", "", "abc", "!@#$"):
+        text = get_converter_for_map("Preeti")(source)
+        assert _nepali_validity(text)["penalty"] == _legacy_map_garble(text), text
+
+
+def test_the_attested_counter_is_wired_into_the_real_validity_path() -> None:
+    """🛑 The whole attested axis could be switched OFF and the suite stayed green.
+
+    Replacing `"attested": _attested_word_count(text)` with `"attested": 0` in
+    `_nepali_validity` left 1,150 tests passing, because every attested test either
+    hand-builds the validity dict via `_validity(..., attested=N)` or calls the counter
+    directly. Nothing pinned the wiring on the production path.
+
+    One assertion covers it, and it also pins that the runtime tokeniser agrees with the
+    vocabulary rather than merely that both exist.
+    """
+
+    assert _nepali_validity("आर्थिक वर्ष")["attested"] == 2
 
 
 def test_stranded_count_excludes_devanagari_digits() -> None:

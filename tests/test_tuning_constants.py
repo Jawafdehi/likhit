@@ -199,6 +199,175 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "largest CID that fits: _CID_MARK_BASE + this is 0xFFFFD, the top of the "
         "range _MARKED_CID_PATTERN matches. See the invariant test below",
     ),
+    (
+        "likhit/extractors/font_based.py",
+        "_DUPLICATE_CONSONANT_WEIGHT",
+    ): (
+        3,
+        "per unexplained doubled consonant in _text_quality_penalty. The lightest term "
+        "there, which is deliberate: even narrowed by morphology the signal keeps ~1 in "
+        "5 false positives, so it is priced below the ikar and invalid-sign terms it sits "
+        "beside. Naming it is the same move as the converter's candidate-score weights -- "
+        "an inline weight is invisible to this registry",
+    ),
+    # -- Latin cid uniform-offset recovery -------------------------------------- #
+    #
+    # A Latin subset whose glyph ids sit a uniform offset from ASCII can be read back
+    # exactly. These three decide when the offset is believed, and the transform FAILS
+    # CLOSED -- with no lexicon available it recovers nothing rather than guessing, which
+    # is why an absent dictionary makes the feature inert instead of wrong.
+    (
+        "likhit/extractors/font_based.py",
+        "_CID_RECOVERY_MIN_TOKEN",
+    ): (
+        3,
+        "shortest token that counts as evidence of an offset; two letters match the "
+        "lexicon too readily to distinguish a real offset from a coincidence",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_CID_RECOVERY_MIN_HITS",
+    ): (
+        2,
+        "one lexicon hit under a candidate offset is a coincidence, as with the "
+        "content-legacy dictionary's own floor",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_CID_RECOVERY_MIN_COV_ONE_HIT",
+    ): (
+        0.5,
+        "coverage required when there is only a single hit: half the run's tokens must "
+        "resolve, so a lone long word cannot carry the offset on its own",
+    ),
+    # -- the document-scope acronym veto ---------------------------------------- #
+    #
+    # The third Latin-side axis: an all-upper run repeated across a document is an
+    # acronym, not keystrokes. These three bound what counts as one.
+    (
+        "likhit/extractors/font_based.py",
+        "_ACRONYM_MIN_LEN",
+    ): (
+        2,
+        "a single upper-case letter is an initial or a list label, not an acronym",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_ACRONYM_MAX_LEN",
+    ): (
+        5,
+        "above this an all-upper run is more likely a keystroke sequence than an "
+        "abbreviation; the acronyms this corpus carries are 2-5 letters. Written as 6 "
+        "from memory first and caught by this pin -- which is what the file is for",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_ACRONYM_MIN_UPPER",
+    ): (
+        2,
+        "at least two of the run's characters must be upper-case, so a capitalised "
+        "ordinary word does not qualify",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_MIXED_MARGIN_FLOOR",
+    ): (
+        1,
+        "smallest legal mixed-margin, for the ENV var and the keyword alike. Not a "
+        "calibrated threshold: it is the boundary below which the gate stops being a "
+        "gate -- at 0 the pass-1 winner is itself eligible, so nothing is promoted and "
+        "the only effect is to break pass-1 ties, which drops the VOL-156 ambiguity "
+        "mask. Registered in the same commit as the constant, per finding 86-5",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_MIXED_ELIGIBLE_INDEX",
+    ): (
+        3,
+        "where the ELIGIBLE indicator is spliced into _map_ranking_key's tuple: below "
+        "the stranded tell, above attested. NOT a tuning value -- it is a structural "
+        "index, and it is named because the gated key DERIVES from the ungated one "
+        "instead of restating its axes. The restated copy diverged once already (it "
+        "kept charging an ikar+nasal site the ungated key forgives), so a bare 3 in "
+        "that slice is what a later axis insertion would move silently",
+    ),
+    # -- ranking forgiveness ---------------------------------------------------- #
+    #
+    # Each term forgives ONE occurrence before the tell counts, because each fires at a
+    # low rate on correct text. Registered in the SAME commit as the constant it pins:
+    # `test_every_module_level_numeric_constant_is_pinned` compares an AST scan of src/
+    # against this dict, so an unregistered constant is both an assertion failure and a
+    # KeyError in a parametrized sibling -- i.e. a commit that adds the constant without
+    # its entry is red on its own, and a bisect landing there sees failures unrelated to
+    # what it is bisecting. Measured: 2 failures for the doublet commit and 3 for the
+    # bracket commit when both entries arrived in a later third commit.
+    (
+        "likhit/extractors/font_based.py",
+        "_RANKING_DOUBLET_FORGIVENESS",
+    ): (
+        1,
+        "one unexplained doublet is inside the residual false-positive rate the "
+        "morphology narrowing leaves behind; two is evidence",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_RANKING_STRANDED_FORGIVENESS",
+    ): (
+        1,
+        "one stranded bracket can be an ordinary parenthetical. NOTE the tell now counts "
+        "overlapping occurrences, so two adjacent Nepali list labels score 2 rather than "
+        "1 -- which is exactly the case this forgiveness must not swallow, and the reason "
+        "the count was fixed before this value was pinned. It was previously pinned only "
+        "to an INTERVAL, admitting both 1 and 2; a registry entry pins exactly, which is "
+        "the point of this file",
+    ),
+    # -- the Latin veto on the content-legacy remap ---------------------------- #
+    #
+    # These four gate whether a span that merely SHARES a legacy face is left as English
+    # instead of being remapped into well-formed Devanagari that spells nothing. Getting
+    # them wrong is silent in both directions: too loose and real Nepali survives
+    # undecoded, too tight and English becomes plausible-looking gibberish with no U+FFFD
+    # for any gate to notice.
+    (
+        "likhit/extractors/font_based.py",
+        "_LATIN_VETO_MIN_CHARS",
+    ): (
+        16,
+        "absolute floor on the run, so a two-word fragment cannot veto a document's "
+        "decode on volume alone",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_LATIN_VETO_MIN_ALPHA_RATIO",
+    ): (
+        0.88,
+        "share of the run that must be alphabetic before it reads as prose rather than "
+        "as keystrokes with punctuation in them",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_LATIN_VETO_MIN_VOWEL_RATIO",
+    ): (
+        0.3,
+        "vowel share: legacy keystroke text is consonant-heavy because the layout puts "
+        "consonants on the home row, so a genuine English run has far more vowels",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_LATIN_VETO_MIN_SHARE",
+    ): (
+        0.1,
+        # 🛑 This derivation used to read "share of the FONT's runs that must read as "
+        # "Latin before the veto applies to that font at all -- run-level evidence, "
+        # "aggregated per font per document". There is no per-font aggregation anywhere:
+        # a single Latin-reading span vetoes on its own evidence, so a maintainer who
+        # believed in that safety net would be changing something else entirely.
+        "share of ONE span's multi-letter tokens that must be _LATIN_VETO_WORDS "
+        "function words -- a share rather than a count so accidental collisions in a "
+        "long keystroke run dilute; calibrated over 469,357 same-font runs but applied "
+        "per span, and the exposure of that unit mismatch is measured in "
+        "_reads_as_latin_words' docstring",
+    ),
     # -- content-based legacy detection --------------------------------------- #
     (
         "likhit/extractors/font_based.py",

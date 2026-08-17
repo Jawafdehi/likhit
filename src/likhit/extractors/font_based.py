@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from functools import lru_cache
 import hashlib
+import os
 import re
 from pathlib import Path
+from typing import Any
 
 import fitz
 
@@ -28,6 +31,7 @@ from likhit.extractors.legacy_maps import (
     get_converter,
     get_converter_for_map,
     get_output_converter_for_map,
+    is_legacy_font,
 )
 from likhit.extractors.numeric_boundaries import (
     apply_line_numeric_boundary_repairs,
@@ -41,7 +45,6 @@ from likhit.extractors.pua_maps import (
 )
 from likhit.extractors.tables import detect_page_tables, merge_continuation_tables
 from likhit.models import Table
-
 
 PAGE_RANGE_PATTERN = re.compile(r"^\d+(?:-\d+)?$")
 SPAN_GAP_THRESHOLD = 0.75
@@ -166,6 +169,39 @@ _RANKING_IKAR_NASAL_FORGIVENESS = 1
 _IKAR_NASAL_WEIGHT = 6
 _HALANT_IKAR_PATTERN = re.compile(r"्ि")
 _DUPLICATE_CONSONANT_PATTERN = re.compile(r"([क-ह])\1")
+# Named because `_legacy_map_garble` subtracts this exact term back out for map
+# ranking. If the penalty ever adds the narrowed count at one weight while the
+# subtraction removes it at another, the ranking measure runs low or negative.
+_DUPLICATE_CONSONANT_WEIGHT = 3
+# How many doublet hits `_legacy_map_garble` forgives when RANKING candidate maps.
+# Calibrated, not chosen: see that function. One hit is inside the residual false
+# positive rate the narrowing above admits, and is the margin that lost VOL-185's
+# eleven documents their correct map; hundreds of hits are real damage and must still
+# decide, which is what forgiving a bounded number rather than the whole term preserves.
+_RANKING_DOUBLET_FORGIVENESS = 1
+# The same floor on the other weak positive tell, for the same reason and calibrated in
+# the same sweep (VOL-185). VOL-131 calibrated `stranded` on counts of 3 and 6 against 0,
+# so a floor of 1 is inside what that calibration never rested on -- and a lone bracket
+# was deciding a map wrongly: on `2992`/`2993 parsa gaupalika`, font `Arial`, `Preeti`
+# carries 0 stranded to `FONTASY_HIMALI_TT`'s 1 and is the wrong map, losing `समानीकरण`
+# (df 4,397), `ऋण` (4,549), `संघिय` (3,558) and `पोषण` (2,650) while gaining only `द्ध`
+# (df 52). With the bracket forgiven the two level and `attested` decides, 23 to 22, the
+# right way. `oag-corpus/runs/vol185/calibrate_two_floors_5f0833fc.py` sweeps the pair.
+#
+# 🛑 **The corpus figure for the two floors together, which no record carried.** Measured
+# against the parent over all 6,236 OAG PDFs: the emitted text changes on **24 (doc,font)
+# pairs in 24 documents** -- 20 from the doublet floor, 4 from this one -- against the
+# **2** documents the derivations name (`2992`/`2993`, the same report filed twice). Net
+# +35,754 characters, 47 documents moved, 12 worsened, worst -5.
+#
+# The two bracket-floor pairs no derivation mentions are `2989__Kaudana gaupalika`/`Arial`
+# and `4834__खार्पुनाथ`/`LiberationSerif-Bold`; `2989` also sits OUTSIDE the 77-document
+# set the sweep was run over, so it was never adjudicated by it. Five spans the parent's
+# gate REJECTED are now decoded, four of them `LiberationSerif` faces -- `4817`'s new
+# `PCS NEPALI` reading carries 19 doublets in 1,734 Devanagari characters, and
+# `5023__नौकुण्ड`/`LiberationSerif` is a face this programme tracks separately. **None of
+# those five has been adjudicated**, and that is stated here rather than left implied.
+_RANKING_STRANDED_FORGIVENESS = 1
 # Two identical adjacent consonants are a real garble signal, but adjacency ALONE
 # is mostly wrong: in Nepali a stem ending in a consonant plus a suffix beginning
 # with the same one is ordinary morphology. Measured over all 6,223 documents of
@@ -393,6 +429,234 @@ def mark_unmappable_cids(text: str) -> str:
     )
 
 
+def unmark_cids(text: str) -> str:
+    """Undo :func:`mark_unmappable_cids`, restoring each character it offset.
+
+    Distinct from :func:`strip_marked_cids`, which replaces a mark with a visible
+    U+FFFD for reporting. This recovers the ORIGINAL character, which is what any
+    predicate reading a span's content needs -- a marked glyph still carries its
+    identity, it is just offset.
+    """
+
+    return "".join(
+        chr(ord(char) - _CID_MARK_BASE)
+        if _CID_MARK_BASE <= ord(char) <= _CID_MARK_BASE + _MAX_MARKABLE_CID
+        else char
+        for char in text
+    )
+
+
+# Latin subsets whose glyph ids sit a uniform offset from ASCII decode losslessly
+# once that offset is known, so text a missing /ToUnicode would otherwise throw
+# away can be read back exactly. Recovery is deliberately hemmed in on four
+# independent sides, because the failure mode is not "recovers less" -- it is
+# "invents English that was never on the page".
+#
+# 1. The font name must say Latin. This is a POSITIVE requirement, not merely the
+#    absence of a legacy name, because the corpus also carries fonts whose script
+#    is undetermined (`CIDFont+F1..F5`, `TT3CBt00`, `SymbolMT`); their glyph order
+#    is unknown, so reading them as ASCII would fabricate text.
+# 2. The font must not be one the legacy-map registry recognises. Devanagari
+#    keystroke fonts hold real ASCII bytes -- Preeti read as raw CIDs *is* ASCII,
+#    and ASCII of Nepali Preeti accidentally contains English words, which is the
+#    same trap as the Preeti digraphs `of]`/`If]q` reading as "of"/"if". Measured:
+#    without this gate the rule accepts `n]fk/LIf0fsf]k|tj]gdf pNn]vt Joxf]fsf `
+#    as English on two audit bulletins.
+#
+#    ⚠️ **It closes that class only for fonts NAMED after a legacy layout, and this
+#    comment used to read as though the class were closed outright.** `is_legacy_font`
+#    matches on the NAME, so mislabeled Preeti -- this repo's own
+#    `build_mislabeled_preeti_pdf`, "a born-digital page whose bare Helvetica font
+#    carries Preeti keystrokes", and the `ABCDE+Helvetica` shape
+#    `detect_content_legacy_fonts` names -- passes gate 2 and is caught only by gate 1
+#    (`Helvetica` IS in the Latin family list, so it is not caught there either) and
+#    gate 4.
+#
+#    What bounds it is that gate 2 is never the OPERATIVE exclusion in practice:
+#    measured over 1,631 distinct corpus font names, **0** are both Latin-family-named
+#    and legacy-registered, so the two name tests never disagree on a real font. The
+#    demonstration case above is the identity map at k=0, where the "recovered" text is
+#    the keystrokes themselves. A content-side exclusion -- declining any font the same
+#    document's content-legacy pass has made a candidate -- is the right shape if this
+#    is ever widened; it is not added here because gate 2 currently excludes nothing
+#    that gate 1 does not.
+# 3. Only two offsets are tried. A wide search is what lets a repeated boilerplate
+#    span reach 99.7% per-font offset coherence and still decode to
+#    `RQPONMPLKJIPOHGFEKEDEK...`; coherence across repeated content is not
+#    evidence of a correct decode.
+# 4. The decode must read as English against an EXTERNAL lexicon. A vocabulary
+#    derived from the corpus would be scored against text produced by the same
+#    extractor whose failures are being repaired.
+_LATIN_CID_FONT_FAMILIES = re.compile(
+    r"times|arial|calibri|garamond|cambria|courier|helvetica|book|acumin|dejavu|"
+    r"verdana|tahoma|georgia|palatino|century|candara|consolas|corbel|segoe|roboto|"
+    r"franklin|gill|futura|myriad|minion",
+    re.I,
+)
+# 🛑 The family list is an unanchored SUBSTRING match, and `book` admits
+# `Bookshelf Symbol 7` -- a pictorial family whose glyph order is not ASCII+k at all.
+# Combined with the measured 1.5-2.1% false-recovery rate on arbitrary glyph ids, that
+# is a font whose dingbats could be rewritten as English. Gate 1 is described as a
+# POSITIVE Latin requirement that excludes fonts of undetermined script, and a
+# pictorial family is exactly such a font, so the exclusion belongs here rather than in
+# a wider word-boundary rule (`Bookman Old Style` and `Bookerly` are real Latin text
+# faces and a boundary would keep them out).
+#
+# Same kind of evidence as the family list itself: a name list.
+_SYMBOL_FONT_NAMES = re.compile(r"symbol|dingbat|wingding|webding|ornament", re.I)
+# k=0 is the identity mapping and the modal case: the CID already *is* the ASCII
+# code and the only defect is the missing /ToUnicode. k=29 is the standard
+# glyph-order subset where glyph 3 is the space. Nothing else is tried.
+_CID_RECOVERY_OFFSETS = (0, 29)
+_CID_RECOVERY_WORD = re.compile(r"[A-Za-z]+")
+# Tokens shorter than 3 characters are the commonest accidental dictionary hit.
+_CID_RECOVERY_MIN_TOKEN = 3
+# Two dictionary words settle it alone. The one-word leg needs the word to
+# dominate the span, and BOTH legs are load-bearing: coverage alone rejects
+# `(based on INTOSAI SAI-PMF Pilot Version, 2013)` at cov=0.425, because
+# acronyms, digits and punctuation are not dictionary characters -- so a
+# coverage-only rule cannot see one of this defect's founding examples.
+_CID_RECOVERY_MIN_HITS = 2
+_CID_RECOVERY_MIN_COV_ONE_HIT = 0.5
+# Hunspell ships these; `/usr/share/dict/words` is absent on this host, which is
+# what the note in the corpus' gate_latin_loss.py is actually describing.
+# Override with a colon-separated LIKHIT_LATIN_LEXICON. No lexicon means no
+# recovery: the transform fails closed rather than guessing.
+_CID_RECOVERY_LEXICON_ENV = "LIKHIT_LATIN_LEXICON"
+_CID_RECOVERY_LEXICON_PATHS = (
+    "/usr/share/hunspell/en_US.dic",
+    "/usr/share/hunspell/en_GB.dic",
+)
+
+
+@lru_cache(maxsize=1)
+def _latin_cid_lexicon() -> frozenset[str]:
+    """Load the external English word list once per process."""
+
+    override = os.environ.get(_CID_RECOVERY_LEXICON_ENV)
+    paths = override.split(":") if override else _CID_RECOVERY_LEXICON_PATHS
+    words: set[str] = set()
+    for name in paths:
+        path = Path(name)
+        if not path.is_file():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        # ⚠️ Two filters that used to be in this loop are DEAD, and each carried a
+        # comment asserting it did work. A hunspell header skip
+        # (`index == 0 and line.strip().isdigit()`) is unreachable because a numeric
+        # header already fails `word.isalpha()`; a `len(word) >= 2` floor is unreachable
+        # because `_CID_RECOVERY_MIN_TOKEN` is 3, so a two-letter entry is never looked
+        # up. Removed rather than annotated -- a dead filter with a confident comment is
+        # what made the audit of these gates read as more complete than it was.
+        for line in lines:
+            word = line.split("/", 1)[0].strip()
+            if word.isalpha():
+                words.add(word.lower())
+    return frozenset(words)
+
+
+def _latin_cid_score(text: str) -> tuple[int, float]:
+    """(dictionary hits among long-enough alpha tokens, dictionary char coverage)."""
+
+    lexicon = _latin_cid_lexicon()
+    tokens = [
+        token
+        for token in _CID_RECOVERY_WORD.findall(text)
+        if len(token) >= _CID_RECOVERY_MIN_TOKEN
+    ]
+    hits = [token for token in tokens if token.lower() in lexicon]
+    nonspace = sum(1 for char in text if not char.isspace())
+    coverage = sum(len(token) for token in hits) / nonspace if nonspace else 0.0
+    return len(hits), coverage
+
+
+def is_latin_cid_font(font_name: str) -> bool:
+    """True if this font's undecodable glyphs may be read as offset ASCII."""
+
+    if not font_name or is_legacy_font(font_name):
+        return False
+    base = font_name.split("+", 1)[-1] if "+" in font_name else font_name
+    if _SYMBOL_FONT_NAMES.search(base):
+        return False
+    return bool(_LATIN_CID_FONT_FAMILIES.search(base))
+
+
+def recover_latin_cid_text(cids: list[int], font_name: str) -> str | None:
+    """Read a run of undecodable Latin glyph ids back as text, or decline.
+
+    Returns text only when a uniform offset lands the whole run in printable
+    ASCII *and* the result reads as English. Declining is the common case and is
+    not a failure: the caller then marks the run as an unmappable CID exactly as
+    before, so a document this cannot read is left byte-identical.
+
+    🛑 **A recovered run is NOT only new output; it is new INPUT to two decisions
+    upstream of it, and no record said so.** The recovered ASCII enters that font's
+    per-document aggregate, and neither `_is_probably_legacy_ascii` nor
+    `choose_legacy_map_detailed` unmarks, so the aggregate they score after this change
+    is not the aggregate they scored before. Two consequences, both real:
+
+    * **content-legacy CANDIDACY** can flip -- a font that was mostly undecodable marks
+      now presents ASCII keystroke-shaped text; and
+    * **every map-ranking scalar** moves, because the aggregate is longer and carries
+      Latin letters.
+
+    So this change moves corpus output on the MAP-CHOICE axis too, not only on the runs
+    it recovers. The docstring's "byte-identical" promise holds only for a DECLINED run.
+
+    ⚠️ And a recovered run then becomes eligible for the content-legacy remap itself, so
+    a short recovered Latin word inside a candidate font can be rewritten into Devanagari
+    that spells nothing -- all three Latin vetoes are blind to a short run by
+    construction (axis 1 needs >=16 non-space characters). Measured: **0 of 331** real
+    recoveries land in a candidate font, and the harm predates this change (an
+    undecodable run already shipped as a visible U+FFFD gap), so it is disclosed rather
+    than fixed. The fix shape, if the footprint ever grows, is to record recovery
+    provenance on the span and treat a recovered run as veto-flagged unconditionally --
+    not to lower a Latin veto's floor, which costs Nepali faster than it saves English.
+    """
+
+    if not cids or not is_latin_cid_font(font_name):
+        return None
+    if not _latin_cid_lexicon():
+        return None
+
+    low, high = min(cids), max(cids)
+    accepted: list[str] = []
+    for offset in _CID_RECOVERY_OFFSETS:
+        # The whole run must land in printable ASCII. This range test is what
+        # keeps the transform away from Devanagari glyph ids, which sit far above
+        # the band at both offsets.
+        if low + offset < 0x20 or high + offset > 0x7E:
+            continue
+        text = "".join(chr(cid + offset) for cid in cids)
+        hits, coverage = _latin_cid_score(text)
+        if hits >= _CID_RECOVERY_MIN_HITS or (
+            hits >= 1 and coverage >= _CID_RECOVERY_MIN_COV_ONE_HIT
+        ):
+            accepted.append(text)
+
+    # 🛑 **Every admissible offset is scored against the acceptance rule, and TWO
+    # acceptances is a decline.** This used to keep the arg-max on `(hits, coverage)`
+    # with a strict `>`, i.e. FIRST-WINS on a tie -- and `_CID_RECOVERY_OFFSETS` is
+    # ordered `(0, 29)`, so k=0 won. For a run short enough that both offsets are
+    # admissible the two routinely score identically at (1, 1.0), and where the true
+    # encoding is k=29 -- the standard glyph-order subset this feature exists to read --
+    # first-wins emits a different, confidently-wrong word. An ambiguous decode is not
+    # evidence of anything, and declining costs nothing: the caller marks the run
+    # exactly as before, which is the same outcome the run had without this feature.
+    #
+    # ⚠️ Structurally rare rather than common, and that is why it went unnoticed: k=29's
+    # space glyph is cid 3, which fails k=0's `low + 0 >= 0x20` test, so any run
+    # containing a space is admissible at one offset only. Measured over 331 real
+    # recoveries: **0** had more than one accepted offset, so this changes no recovery in
+    # the corpus and removes a wrong-decode path.
+    if len(accepted) != 1:
+        return None
+    return accepted[0]
+
+
 def strip_marked_cids(text: str, replacement: str = "�") -> str:
     """Render marked CIDs back to a visible replacement character."""
 
@@ -432,6 +696,11 @@ def get_cid_marked_page_dict(page: fitz.Page) -> dict:
     A position that decodes to real text somewhere on the page and to U+FFFD
     somewhere else cannot be attributed to either, so it keeps its raw CID rather
     than being guessed at.
+
+    A run of unmappable glyphs in a Latin font is offered to
+    `recover_latin_cid_text` first: for those subsets the glyph ids are a uniform
+    offset from ASCII, so the text is present and merely unmapped. Only a run that
+    decodes to English is taken; everything else is marked exactly as before.
     """
 
     # Bit 128 is dropped here on purpose: this pass detects unmappable glyphs BY
@@ -445,10 +714,54 @@ def get_cid_marked_page_dict(page: fitz.Page) -> dict:
     unmappable = replacement - decoded
     cid_dict = page.get_text("rawdict", flags=_TEXT_DICT_FLAGS)
     for span in _iter_dict_spans(cid_dict):
-        for char in span.get("chars", ()):
-            if _char_position(char) in unmappable:
-                char["c"] = mark_unmappable_cids(char["c"])
+        _recover_or_mark_unmappable_span(span, unmappable)
     return _to_dict_shape(cid_dict)
+
+
+def _unmappable_runs(
+    span: dict, unmappable: set[tuple[float, ...]]
+) -> list[list[dict]]:
+    """Group a span's unmappable characters into maximal consecutive runs.
+
+    Runs, not individual glyphs, because a uniform-offset decode can only be
+    judged as English over a stretch of text. A decoded glyph interrupting the
+    stretch ends the run: the surviving text is real, so the two sides were set
+    with different mappings and must be scored apart.
+    """
+
+    runs: list[list[dict]] = []
+    current: list[dict] = []
+    for char in span.get("chars", ()):
+        if _char_position(char) in unmappable:
+            current.append(char)
+        elif current:
+            runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+    return runs
+
+
+def _recover_or_mark_unmappable_span(
+    span: dict, unmappable: set[tuple[float, ...]]
+) -> None:
+    """Recover each unmappable run as offset ASCII where possible, else mark it."""
+
+    font_name = span.get("font") or ""
+    for run in _unmappable_runs(span, unmappable):
+        recovered: str | None = None
+        # One code point per glyph is the shape the offset arithmetic assumes; a
+        # multi-character glyph is left to the marking path rather than guessed at.
+        if all(len(char["c"]) == 1 for char in run):
+            recovered = recover_latin_cid_text(
+                [ord(char["c"]) for char in run], font_name
+            )
+        if recovered is not None and len(recovered) == len(run):
+            for char, decoded_char in zip(run, recovered):
+                char["c"] = decoded_char
+        else:
+            for char in run:
+                char["c"] = mark_unmappable_cids(char["c"])
 
 
 def normalize_press_release_paragraph(text: str) -> str:
@@ -628,9 +941,129 @@ def _text_quality_penalty(text: str) -> int:
         + len(_INVALID_IKAR_PATTERN.findall(text)) * 6
         + len(_IMPOSSIBLE_IKAR_NASAL_PATTERN.findall(text)) * _IKAR_NASAL_WEIGHT
         + len(_HALANT_IKAR_PATTERN.findall(text)) * 4
-        + _duplicate_consonant_count(text) * 3
+        + _duplicate_consonant_count(text) * _DUPLICATE_CONSONANT_WEIGHT
         + len(_SUSPICIOUS_ARTIFACT_PATTERN.findall(text)) * 8
     )
+
+
+def _legacy_map_garble(text: str) -> int:
+    """Garble measure for RANKING candidate legacy maps -- comparative, not absolute.
+
+    :func:`_text_quality_penalty` with at most
+    :data:`_RANKING_DOUBLET_FORGIVENESS` doubled-consonant hits forgiven (VOL-185).
+
+    A doublet is real evidence when two readings of the **same token** are compared, and
+    at low counts it is noise when candidate **maps** are compared, for the reason the
+    file already gives about `_STRANDED_BRACKET_PATTERN`: adjacency alone does not
+    distinguish Nepali morphology from garble, so it charges readings that are correct.
+    Where one or two hits move a map decision they can move it the wrong way, because
+    the charge lands on whichever reading happens to spell a doublet.
+
+    ⚠️ **Not because "a correct reading of Nepali spells more doublets than a garbled
+    one".** That general claim was here and it is false in this population -- and the
+    comment at the top of this file already contradicts it (>= 209,998 occurrences of
+    genuine doublet damage, 91.6% of it kept by the narrowing). Measured on the narrowed
+    count, which is what is actually subtracted: **0 of 536** attested correct forms
+    carry an unexplained doublet, and over **1,867** (correct-map, wrong-map) pairs that
+    read differently the correct reading carries more in **0** cases while the wrong
+    reading carries more in **53**. So the term is usually right and the direction of
+    its error is not systematic -- which is exactly why a bounded FORGIVENESS is the
+    right shape and dropping the term is not.
+
+    The real ground is narrower and is the paragraph below: on the eight spans VOL-185
+    regressed, the charge landed on the CORRECT reading as a false positive of the
+    narrowed count, and it was decisive there.
+
+    That is the whole of VOL-185's regression on eight of its eleven documents. Measured
+    on each of their `Spins` font aggregates: the correct `Spins` reading carries exactly
+    **one** narrowed doublet hit, 3 points, and the map that misreads the span carries
+    **0** -- so with `a5cfd4a` having removed the `_INVALID_IKAR_PATTERN` counterweight
+    the wrong map wins the `penalty` axis by that margin, and `र्` is emitted as a
+    misplaced `ं` (`वर्ष`->`वषं`, `आर्थिक`->`आथिंक`).
+
+    **Forgiving a bounded number, not the whole term.** Dropping the term outright also
+    repairs those eight, and it destroys `2649__…घोराही उपमहानगरपालिका`: on its `Hisab`
+    aggregate `Preeti`/`Kantipur`/`Sagarmatha` carry **323** doublets to
+    `FONTASY_HIMALI_TT`'s **3** -- **960 points** of margin (969 points of charge on the
+    wrong maps against 9 on the right one), which is exactly the damage VOL-135 measured
+    (>=209,998 occurrences of legacy i-matra loss resurfacing as a doublet). 865 attested
+    occurrences are lost outright.
+
+    🛑 **By the ACCEPT GATE, not by a failed tie.** This paragraph used to say "the tie
+    fails to localise, the span abstains", and that is the wrong mechanism. Measured on
+    the forgive-all arm (which is exactly the parent's code): 2649/`Hisab`'s tie group is
+    {`Preeti`(best), `Kantipur`, `Sagarmatha`}, masking DOES localise it, and the span is
+    lost because the masked reading fails the absolute ceiling --
+    `penalty_per_deva` **0.05146748** against 0.05. Corpus-wide the parent produces **0**
+    tie-abstentions in 37,888 candidate pairs, so "the span abstains" cannot be what
+    happens. The distinction is load-bearing in the obvious way: a maintainer told the
+    tie failed to localise would go and read `_ambiguous_code_points`, where nothing is
+    wrong.
+
+    So the floor is what separates the two cases, and it is calibrated rather than
+    chosen (`oag-corpus/runs/vol185/calibrate_forgive_5f0833fc.py`, swept over
+    N = 0, 1, 2, 3, 5, 10, 25, inf on all 77 documents whose map choice this change can
+    move):
+
+    * the correct map on the eleven carries **0 or 1** doublets, never more;
+    * 2649's wrong maps carry **323-325** against the right map's 3;
+    * every N from 1 to 25 gives 11/11 repaired and **0** abstentions; N=0 repairs only
+      the 3 that `attested` decides, and N=inf repairs all 11 and LOSES 2649 -- to the
+      gate, as above, not to an abstention.
+
+    **1** is therefore the smallest value that works, and the two populations sit two
+    orders of magnitude apart, so nothing here depends on the exact figure.
+
+    🛑 **What the floor deliberately does NOT cover: a one-doublet MARGIN between two
+    candidates.** `min(count, N)` forgives the first doublet of EACH candidate; it does
+    not neutralise a difference of one between them. So wherever both candidates carry
+    doublets and the margin is exactly one, the term still decides -- which is a
+    large-document shape, not a corner case. Seven (doc,font) pairs do exactly that
+    through the real `detect_content_legacy_fonts`, all `Preeti` -> `Sagarmatha`, with
+    `attested`, `ratio` and `devanagari` all moving DOWN in every one:
+
+        2871 · 2880 · 2998 · 3005 · 3008 · 11128/TT3CFt00 · 11334/Nagarik
+
+    On 11334 the deciding doublet is inside the personal name `वेगेन्द्रराज शर्मा`, which
+    is correct Nepali, and on 11128 inside a span-concatenation garbage token -- i.e. the
+    charge that decides the map lands on non-evidence both times.
+
+    **Accepted as a priced trade rather than fixed, and the price is small against the
+    merge target.** Five of the seven (2871, 2880, 2998, 3005, 3008) are **byte-identical
+    to `main`** after this change, and the OAG generation tree `8b317ac` already carries
+    `N=1` and this exact body, so relative to the published corpus the flip is not a
+    change at all. 11334 is the one that moves the wrong way against `main`, which picks
+    a third map there (`Kantipur`, alien 84 / 10 letters against this branch's 125 / 28).
+
+    The two fixes that suggest themselves were both rejected on measurement rather than
+    taste: a comparative MARGIN BAND ("treat a difference of <= N as a tie") is
+    **intransitive**, so it cannot be a sort key -- A ties B, B ties C, A beats C -- and a
+    coarse-grained per-block term merely moves the boundary to a different margin.
+
+    Note `ecc5338`'s version of this docstring cited `3544__…Thasang Ga. Pa.` charging
+    all six candidates 3 points for `अध्ययन` ("study"). That is no longer true and must
+    not be re-copied: `bad7fe2` (VOL-135) added `अध्ययन` to
+    :data:`_DOUBLED_CONSONANT_LEXEMES`, so `_duplicate_consonant_count` scores it 0.
+    The live examples are damage forms the narrowing keeps -- `खररद`, `ववरण`,
+    `आन्तररक` -- each still charged 3.
+
+    **This is used for the ranking axis ONLY, never for the accept gate.**
+    `ecc5338` made a version of this subtraction and fed it to both, because
+    :func:`_nepali_validity` derived `penalty` and `penalty_per_deva` from one number.
+    `_passes_content_legacy_gate` compares one span against an *absolute* ceiling of
+    0.05, so lowering that numerator loosens the gate, admits spans that were correctly
+    rejected, and cost `3219__…रामधुनी नगरपालिका` 1,723 attested occurrences -- which is
+    why VOL-163 reverted it in `677fa95`. The comparative half was never the problem;
+    only the substitution's reach was.
+
+    The counter must be the SAME one `_text_quality_penalty` adds -- the narrowed
+    `_duplicate_consonant_count`, not `_DUPLICATE_CONSONANT_PATTERN.findall`. The raw
+    count is >= the narrowed count on every input, so subtracting it would remove more
+    than was ever added and drive this measure below the true penalty, silently.
+    """
+
+    forgiven = min(_duplicate_consonant_count(text), _RANKING_DOUBLET_FORGIVENESS)
+    return _text_quality_penalty(text) - forgiven * _DUPLICATE_CONSONANT_WEIGHT
 
 
 def _is_garbled_orphan(text: str) -> bool:
@@ -862,6 +1295,588 @@ _CONTENT_LEGACY_DICTIONARY: frozenset[str] = frozenset(
     }
 )
 
+# High-frequency Nepali word-forms, used ONLY as the `attested` ranking tie-break in
+# :func:`_map_ranking_key` -- never by the accept gate, never by the Latin veto. It is
+# deliberately a separate set from :data:`_CONTENT_LEGACY_DICTIONARY`: that one is read
+# by `_passes_content_legacy_gate` and `_reads_as_latin_text`, both calibrated against
+# their own populations, and adding words to it would loosen the gate and weaken the
+# veto at the same time.
+#
+# Derived by a RULE, not hand-picked, because a hand-list of the forms a bug was
+# reported on repairs exactly those forms: Devanagari-only, >= 4 code
+# points, and document frequency >= 5,000 of the 6,223 documents of published
+# `markdown-quality-v12` -- v12 and not v13, because v13 is the tree under suspicion
+# and must not certify its own vocabulary. 536 forms.
+# Instruments: `oag-corpus/runs/vol185/derive_attested_5f0833fc.py` and
+# `emit_attested_block_5f0833fc.py`.
+#
+# Garble cannot satisfy this. The forms VOL-185's wrong map produces sit far below the
+# floor -- `आथिंक` df 108, `कायंविधि` df 128, `गनुंपनें` df 276, `कमंचारी` df 291, and
+# `खचं`/`वषं` df **0** -- and the derivation asserts that, fatally, rather than assuming
+# it. ⚠️ This used to say "three orders of magnitude", which the figures beside it
+# contradict: against a floor of 5,000 those four are factors of 46x, 39x, 18x and 17x,
+# i.e. one to two orders. Stated as the data does instead: at most df 291 against a
+# floor of 5,000. `emit_attested_block_5f0833fc.py` generates this sentence, so the
+# template is wrong there too and must be corrected with it.
+#
+# A systematically garbled form is still rare across
+# documents, which is exactly what `gate_attested_nepali.py`'s df >= 20 bar is too low
+# to see (VOL-175).
+_ATTESTED_NEPALI_WORDS: frozenset[str] = frozenset(
+    {
+        "अख्तियारी",
+        "अद्यावधिक",
+        "अधिकार",
+        "अधिकृत",
+        "अध्यक्ष",
+        "अनियमित",
+        "अनुगमन",
+        "अनुगमनका",
+        "अनुदान",
+        "अनुदानको",
+        "अनुमान",
+        "अनुरुप",
+        "अनुशासन",
+        "अनुसार",
+        "अनुसारको",
+        "अनुसूची",
+        "अन्तर्गत",
+        "अन्तिम",
+        "अन्य",
+        "अभिलेख",
+        "अभिवृद्धि",
+        "अवधि",
+        "अवलम्बन",
+        "अवस्था",
+        "अवस्थामा",
+        "असार",
+        "असुल",
+        "असुली",
+        "आएको",
+        "आगामी",
+        "आधार",
+        "आधारका",
+        "आधारभुत",
+        "आधारमा",
+        "आधारित",
+        "आन्तरिक",
+        "आफ्नो",
+        "आम्दानी",
+        "आयको",
+        "आयोजना",
+        "आयोजनाको",
+        "आर्थिक",
+        "आवश्यक",
+        "आश्वस्तता",
+        "आषाढ",
+        "उक्त",
+        "उचित",
+        "उत्तरदायित्व",
+        "उद्देश्य",
+        "उपभोक्ता",
+        "उपयुक्त",
+        "उपयोग",
+        "उपलब्ध",
+        "उपलव्ध",
+        "उल्लेख",
+        "उल्लेखित",
+        "एउटै",
+        "एकिन",
+        "एकीकृत",
+        "एण्ड",
+        "ऐनको",
+        "ऐनमा",
+        "कट्टा",
+        "कट्टी",
+        "कमजोर",
+        "करार",
+        "करोड",
+        "कर्मचारी",
+        "कर्मचारीको",
+        "कर्मचारीले",
+        "कागजात",
+        "कानुन",
+        "कानून",
+        "कामको",
+        "काममा",
+        "कायम",
+        "कारण",
+        "कारोबार",
+        "कारोबारको",
+        "कारोवारको",
+        "कार्य",
+        "कार्यको",
+        "कार्यक्रम",
+        "कार्यक्रमको",
+        "कार्यक्रममा",
+        "कार्यदक्षता",
+        "कार्यमा",
+        "कार्यरत",
+        "कार्यविधि",
+        "कार्यसम्पन्न",
+        "कार्यसम्पादन",
+        "कार्यान्वयन",
+        "कार्यान्वयनमा",
+        "कार्यालय",
+        "कार्यालयका",
+        "कार्यालयको",
+        "कार्यालयबाट",
+        "कार्यालयमा",
+        "कार्यालयले",
+        "कुनै",
+        "कुरामा",
+        "कृषि",
+        "केही",
+        "कैफियत",
+        "कोषको",
+        "कोषमा",
+        "क्रममा",
+        "क्षमता",
+        "क्षेत्र",
+        "क्षेत्रमा",
+        "खण्डमा",
+        "खरिद",
+        "खर्च",
+        "खर्चको",
+        "खर्चमा",
+        "खाता",
+        "खातामा",
+        "खानेपानी",
+        "गएको",
+        "गराई",
+        "गराउँदा",
+        "गराउन",
+        "गराउनु",
+        "गराउने",
+        "गराएको",
+        "गरिएका",
+        "गरिएको",
+        "गरिने",
+        "गरेका",
+        "गरेको",
+        "गरेकोमा",
+        "गरेकोले",
+        "गरेर",
+        "गर्दछ",
+        "गर्दा",
+        "गर्दै",
+        "गर्न",
+        "गर्नु",
+        "गर्नुपर्दछ",
+        "गाउँ",
+        "गाउँपालिका",
+        "गुणस्तर",
+        "गुणस्तरीय",
+        "चालु",
+        "चित्रण",
+        "चौमासिक",
+        "छनौट",
+        "छलफल",
+        "जटिल",
+        "जनसहभागिता",
+        "जम्मा",
+        "जवाफदेहिता",
+        "जस्ता",
+        "जानकारी",
+        "जारी",
+        "जिन्सी",
+        "जिम्मेवार",
+        "जिम्मेवारी",
+        "जिल्ला",
+        "ठेक्का",
+        "ढाँचामा",
+        "तयार",
+        "तर्जुमा",
+        "तर्फ",
+        "तसर्थ",
+        "तहका",
+        "तहको",
+        "तहमा",
+        "तहले",
+        "तालिम",
+        "तोकिए",
+        "तोकिएको",
+        "तोकेको",
+        "त्यसैगरी",
+        "त्यस्तो",
+        "दरबन्दी",
+        "दरले",
+        "दर्ता",
+        "दाखिला",
+        "दायित्व",
+        "दिएको",
+        "दिगो",
+        "दिनुपर्दछ",
+        "दिने",
+        "देखि",
+        "देखिएका",
+        "देखिएको",
+        "देखिएकोले",
+        "देखिएन",
+        "देखिने",
+        "देखिन्छ",
+        "देखियो",
+        "देहाय",
+        "दैनिक",
+        "दोस्रो",
+        "दोहोरो",
+        "धरौटी",
+        "धारा",
+        "ध्यान",
+        "नगदमा",
+        "नगरी",
+        "नगरेको",
+        "नगरेकोले",
+        "नदेखिएको",
+        "नभएको",
+        "नभएकोले",
+        "नरहेको",
+        "नराखेको",
+        "नलिएको",
+        "नसकेको",
+        "नसारेको",
+        "नहुने",
+        "नागरिक",
+        "नाममा",
+        "निकायबाट",
+        "निकायले",
+        "निकासा",
+        "निम्न",
+        "निम्नानुसार",
+        "नियन्त्रण",
+        "नियम",
+        "नियमको",
+        "नियमानुसार",
+        "नियमावली",
+        "नियमावलीको",
+        "नियमित",
+        "नियमितता",
+        "निर्णय",
+        "निर्धारण",
+        "निर्माण",
+        "नीति",
+        "नेपाल",
+        "नेपालको",
+        "न्यायिक",
+        "न्यून",
+        "पत्र",
+        "पदपूर्ति",
+        "पदाधिकारी",
+        "परिचालन",
+        "परिमाण",
+        "परीक्षण",
+        "परेको",
+        "पर्दछ",
+        "पर्याप्त",
+        "पश्चात",
+        "पहिचान",
+        "पाइएन",
+        "पाइयो",
+        "पाईएन",
+        "पाउने",
+        "पारदर्शिता",
+        "पारित",
+        "पालना",
+        "पालिका",
+        "पालिकाको",
+        "पालिकाले",
+        "पूँजीगत",
+        "पूर्वाधार",
+        "पेश्की",
+        "प्रकारका",
+        "प्रकृतिका",
+        "प्रकृतिको",
+        "प्रक्षेपण",
+        "प्रगति",
+        "प्रचलित",
+        "प्रणाली",
+        "प्रति",
+        "प्रतिवेदन",
+        "प्रतिवेदनको",
+        "प्रतिवेदनमा",
+        "प्रतिशत",
+        "प्रत्येक",
+        "प्रथम",
+        "प्रदान",
+        "प्रदेश",
+        "प्रभावकारिता",
+        "प्रभावकारी",
+        "प्रमाण",
+        "प्रमाणित",
+        "प्रमुख",
+        "प्रमुखले",
+        "प्रयोग",
+        "प्रवाह",
+        "प्रशासकीय",
+        "प्रशासन",
+        "प्रशासनिक",
+        "प्रा",
+        "प्राप्त",
+        "प्राप्ति",
+        "प्रारम्भिक",
+        "प्राविधिक",
+        "फर्छ्यौट",
+        "फिर्ता",
+        "बजेट",
+        "बनाई",
+        "बनाउन",
+        "बमोजिम",
+        "बमोजिमको",
+        "बर्ष",
+        "बाँकी",
+        "बाहेक",
+        "बेरुजु",
+        "बेरुजू",
+        "बैंक",
+        "बैठक",
+        "भएका",
+        "भएको",
+        "भएकोमा",
+        "भएकोले",
+        "भएपछि",
+        "भएमा",
+        "भत्ता",
+        "भन्दा",
+        "भन्ने",
+        "भरपाई",
+        "भित्र",
+        "भित्रका",
+        "भुक्तानी",
+        "भुक्तानीको",
+        "भौचर",
+        "भौतिक",
+        "भ्रमण",
+        "मध्ये",
+        "मर्मत",
+        "महालेखा",
+        "महालेखापरीक्षक",
+        "महालेखापरीक्षकको",
+        "महालेखापरीक्षकबाट",
+        "महिना",
+        "मात्र",
+        "मानदण्ड",
+        "मापदण्ड",
+        "मार्गदर्शन",
+        "मार्फत",
+        "मालसामान",
+        "मासिक",
+        "मितव्ययिता",
+        "मिति",
+        "मिलान",
+        "मूल्य",
+        "मूल्याङ्कन",
+        "मौज्दात",
+        "म्याद",
+        "यकिन",
+        "यथार्थ",
+        "यसरी",
+        "यसैसाथ",
+        "यस्तो",
+        "योगदान",
+        "योजना",
+        "योजनाको",
+        "योजनामा",
+        "रकमको",
+        "रहेका",
+        "रहेको",
+        "रहेकोमा",
+        "राखी",
+        "राखेको",
+        "राख्ने",
+        "राजश्व",
+        "राजस्व",
+        "रायमा",
+        "रुपमा",
+        "लक्ष्य",
+        "लगती",
+        "लगाउने",
+        "लगायत",
+        "लगायतका",
+        "लगायतको",
+        "लागत",
+        "लागि",
+        "लागु",
+        "लागू",
+        "लाग्ने",
+        "लाभग्राही",
+        "लिएको",
+        "लिने",
+        "लेखा",
+        "लेखापरीक्षकको",
+        "लेखापरीक्षण",
+        "लेखापरीक्षणको",
+        "लेखापरीक्षणबाट",
+        "लेखापरीक्षणमा",
+        "लेखेको",
+        "वजेट",
+        "वमोजिम",
+        "वर्ष",
+        "वर्षको",
+        "वर्षमा",
+        "वापत",
+        "वार्षिक",
+        "वास्तविक",
+        "विकास",
+        "विकासका",
+        "वितरण",
+        "वितरणमुखी",
+        "वित्तीय",
+        "विद्यालय",
+        "विद्यालयको",
+        "विधायिकी",
+        "विनियोजन",
+        "विभिन्न",
+        "विवरण",
+        "विवरणको",
+        "विविध",
+        "विशेष",
+        "विश्लेषण",
+        "विश्वस्त",
+        "विषय",
+        "विषयः",
+        "विषयगत",
+        "विषयमा",
+        "व्यक्त",
+        "व्यक्ति",
+        "व्यय",
+        "व्ययको",
+        "व्यवसायी",
+        "व्यवस्था",
+        "व्यवस्थापन",
+        "व्यवस्थापनमा",
+        "व्यवस्थित",
+        "व्यहोरा",
+        "व्यहोराहरु",
+        "शासन",
+        "शिक्षक",
+        "शिक्षा",
+        "शुल्क",
+        "शैक्षिक",
+        "श्री",
+        "संकलन",
+        "संख्या",
+        "संघीय",
+        "संचालन",
+        "संचित",
+        "संरक्षण",
+        "संरचना",
+        "संलग्न",
+        "संविधान",
+        "संविधानको",
+        "संस्था",
+        "संस्थागत",
+        "सकिएन",
+        "सकिने",
+        "सक्ने",
+        "सञ्चालन",
+        "सञ्चालित",
+        "सञ्चित",
+        "सदस्य",
+        "समग्र",
+        "समयमा",
+        "समाप्त",
+        "समायोजन",
+        "समावेश",
+        "समिति",
+        "समितिको",
+        "समितिबाट",
+        "समितिलाई",
+        "समितिले",
+        "समेत",
+        "समेतको",
+        "सम्झौता",
+        "सम्पत्ति",
+        "सम्पत्तिको",
+        "सम्पन्न",
+        "सम्पादन",
+        "सम्पूर्ण",
+        "सम्बन्धमा",
+        "सम्बन्धित",
+        "सम्बन्धी",
+        "सम्म",
+        "सम्मको",
+        "सम्वन्धित",
+        "सरकार",
+        "सरकारका",
+        "सरकारको",
+        "सरकारबाट",
+        "सरकारले",
+        "सरकारी",
+        "सवारी",
+        "सशर्त",
+        "सहयोग",
+        "सहायता",
+        "सहित",
+        "सहितको",
+        "साथै",
+        "साधन",
+        "साधनको",
+        "साना",
+        "सामाग्री",
+        "सामाजिक",
+        "सामान",
+        "सामानको",
+        "सामान्य",
+        "सामुदायिक",
+        "सार्वजनिक",
+        "सीमा",
+        "सुझाव",
+        "सुदृढ",
+        "सुधार",
+        "सुनिश्चित",
+        "सुरक्षा",
+        "सुविधा",
+        "सुशासन",
+        "सूचना",
+        "सेवा",
+        "सेवाको",
+        "सोको",
+        "सोझै",
+        "सोधभर्ना",
+        "सोही",
+        "स्थानीय",
+        "स्थापना",
+        "स्थायी",
+        "स्थिति",
+        "स्पष्ट",
+        "स्रेस्ता",
+        "स्रोत",
+        "स्वास्थ्य",
+        "स्वीकृत",
+        "हजार",
+        "हजारमा",
+        "हस्तान्तरण",
+        "हामी",
+        "हामीले",
+        "हिसाब",
+        "हुँदा",
+        "हुनु",
+        "हुनुपर्दछ",
+        "हुने",
+        "हुन्छ",
+        "२०६३",
+        "२०६४",
+        "२०७४",
+        "२०७५",
+        "२०७६",
+        "२०७७",
+    }
+)
+
+# Token boundaries for `attested`. Counting DISTINCT tokens by set intersection, not
+# substrings: a substring test lets one long garbled token satisfy several short list
+# entries, and it costs O(list x text) per candidate map on every font of every
+# document, where this pass runs the list six times per font.
+_ATTESTED_TOKEN_PATTERN = re.compile(r"[^\s|*#>`~\[\]()!;:,.\-_/\\'\"=+]+")
+
+
+def _attested_word_count(text: str) -> int:
+    """How many distinct :data:`_ATTESTED_NEPALI_WORDS` forms ``text`` contains."""
+
+    tokens = {t.strip("।॥") for t in _ATTESTED_TOKEN_PATTERN.findall(text)}
+    return len(tokens & _ATTESTED_NEPALI_WORDS)
+
+
 # Accept gate thresholds. Calibrated so hand-built real Preeti keystrokes pass
 # (hits >= 2, penalty-per-Devanagari ~0.0) while CIB decoy text fails under all
 # five maps (hits == 0, penalty-per-Devanagari 0.09-0.17).
@@ -869,6 +1884,401 @@ _CONTENT_LEGACY_MIN_HITS = 2
 _CONTENT_LEGACY_MAX_PENALTY_PER_DEVA = 0.05
 _CONTENT_LEGACY_MIN_DEVA_RATIO = 0.6
 _CONTENT_LEGACY_MIN_DEVA = 8
+
+# Latin-side veto on the content-legacy remap (VOL-138). Calibrated on all 6,236
+# OAG corpus documents: 1,245 carry a candidate content-legacy font, 469,357 text
+# runs and 15,808,347 characters are remapped by the pass above. See
+# :func:`_reads_as_latin_text` for what each threshold is worth.
+_LATIN_VETO_MIN_CHARS = 16  # non-space characters, not raw length -- see below
+_LATIN_VETO_MIN_ALPHA_RATIO = 0.88
+_LATIN_VETO_MIN_VOWEL_RATIO = 0.30
+# ASCII a legacy 8-bit Devanagari layout uses as glyph codes and English does not
+# use inside running text. Their presence is a sufficient condition for keystrokes.
+_LEGACY_KEYSTROKE_SYMBOLS = frozenset("][{}|~^@+_=")
+_ASCII_VOWELS = frozenset("aeiouAEIOU")
+_MEDIAL_CAPS = re.compile(r"[a-z][A-Z]")
+
+# The THIRD Latin-side veto (VOL-180, calibrated in `runs/vol180/` on all 6,236 OAG
+# corpus documents). It exists because the two above are both decided on the run's
+# *own* text, and the residue they leave is runs that are nothing but a bare
+# acronym -- `QOC` (3 chars), `ECOD ` (5 chars) -- which carry no in-run context to
+# be judged on. The evidence has to come from outside the run, at document scope:
+# an acronym that is genuine Latin here almost always also appears somewhere in
+# this document in text the remap never rewrites.
+#
+# Calibration, from `runs/vol180/strict-calibration-635286f0.json`. 🛑 **Three numbers,
+# two tokenizers, and they must not be chained as though they were one funnel** -- an
+# earlier form of this comment wrote "cuts 7,864 to 16 fires", which mixes them:
+#
+#   7,864  `considered` -- runs holding a short all-caps ASCII token under the LOOSE
+#          tokenizer, i.e. the candidate population before the strict shape test;
+#     386  `shape_ok` -- the same population under the STRICT whitespace-delimited
+#          tokenizer this module ships;
+#      16  fires -- what survives requiring document-scope survivor evidence, 16/16
+#          genuine English, 0 Nepali touched, every one read individually.
+#
+# Vetoing on shape alone would be 41x the whole of `27d74f0` -- a licence to stop
+# decoding wherever two capitals appear -- so the shape is only the candidate generator
+# and the survivor condition is what makes the axis usable.
+#
+# ⚠️ The 16 is VOL-180's own calibration figure and it is NOT the current fire count:
+# later commits in this chain re-measured the axis at **26 fires**, which the purity
+# clause takes to **25** (see `detect_latin_acronym_survivors`). So 7,864 / 386 / 16 is
+# one snapshot, taken together, and quoting the 16 beside a later fire count chains two
+# instruments. `tests/test_content_legacy_acronym_veto.py` carries the same split.
+#
+# Three things the calibration forces that the issue's sketch did not say:
+#
+#   1. `>= 2 uppercase LETTERS`, not "letters or digits". `36L` is घटी -- a real
+#      whitespace-delimited all-caps ASCII keystroke word holding one letter.
+#   2. `_ACRONYM_FORBIDDEN` must never be stripped as edge punctuation. The
+#      assertion below keeps the two sets disjoint so that cannot regress.
+#
+#      §8 states this condition as if it were independent, and it is NOT: measured
+#      here 2026-08-13, **every character in `_ACRONYM_FORBIDDEN` is already
+#      excluded by the "ASCII uppercase or digit" condition below, so the membership
+#      test can never fire.** It is kept because it is the spec's own wording and
+#      because it becomes load-bearing the moment that shape condition is relaxed --
+#      but do not read it as what stops the spurious class.
+#
+#      What actually stops the 21 spurious fires is (a) **whitespace delimitation**
+#      and (b) note 1. Of the seven fragment shapes the loose tokenizer produced,
+#      `G6L`, `OG` and `PG6` PASS the strict shape test and are excluded only by
+#      being parts of a whitespace-delimited keystroke word; `6L`, `G6`, `G5` and
+#      `36L` are excluded by note 1's two-letter floor. Weaken either and the class
+#      returns -- weakening the forbidden set changes nothing.
+#   3. The survivor vocabulary must be built with this same strict tokenizer. Built
+#      loosely, `6L` attests itself from undecoded keystrokes elsewhere in the
+#      document (`w/f}6L` = धरौटी split at `}`), and survival is only evidence of
+#      Latin if the surviving occurrence is itself Latin-shaped.
+#   4. ⚠️ The audit of section 8's conditions is COMPLETE only with this: alongside
+#      `_ACRONYM_FORBIDDEN`, the LOWER half of the length check is also inert.
+#      `_ACRONYM_MIN_LEN <= len(token)` can never reject a token
+#      `_ACRONYM_MIN_UPPER` accepts, because a token shorter than 2 characters cannot
+#      hold 2 uppercase letters. Ablation over 111,151 enumerated inputs: dropping the
+#      lower bound to 1, or to 0, changes **0** outcomes. It is kept as the spec's own
+#      wording, not as an exclusion it performs -- so a derivation reading "a single
+#      upper-case letter is an initial or a list label, not an acronym" is describing
+#      what MIN_UPPER does.
+_ACRONYM_EDGE = ',.;:()“”‘’"?!'  # punctuation English puts against a word
+_ACRONYM_FORBIDDEN = frozenset("][{}|~^@+_=\\/'&*<>%$#«»")
+_ACRONYM_MIN_LEN = 2
+_ACRONYM_MAX_LEN = 5
+_ACRONYM_MIN_UPPER = 2
+# Note 2, made executable: if these ever intersect, stripping an edge could remove
+# a forbidden character and let a keystroke fragment qualify.
+assert not (_ACRONYM_FORBIDDEN & frozenset(_ACRONYM_EDGE))
+
+
+def _acronym_shaped(char: str) -> bool:
+    """One character of a qualifying acronym token: ASCII uppercase or an ASCII digit.
+
+    Named rather than inlined so the claim that `_ACRONYM_FORBIDDEN` is SUBSUMED by the
+    shape test can be asserted against the production predicate instead of a copy of it.
+    A test restating `("A" <= c <= "Z") or ("0" <= c <= "9")` as a literal is a property
+    of two constants and stays green when this relaxes -- and asserting it through
+    `_acronym_tokens` does not work either, because the forbidden-set check runs FIRST
+    and would swallow the relaxation. See
+    `test_the_forbidden_set_is_subsumed_by_the_shape_test`.
+    """
+
+    return ("A" <= char <= "Z") or ("0" <= char <= "9")
+
+
+def _acronym_tokens(text: str) -> frozenset[str]:
+    """The qualifying acronym-shaped tokens of ``text`` (VOL-180 §8).
+
+    Whitespace-delimited, because the defect this replaces came from tokenizing on
+    a punctuation class: `[A-Za-z0-9/&().,:;+\\-]+` splits `w/f}6L` at `}` and
+    hands back `6L` as though it were a word.
+
+    🛑 Unmarks first, and inside the function so both callers inherit it -- the same
+    rule `_reads_as_latin_words` and `_reads_as_latin_text` follow. Every caller reads
+    spans from `get_cid_marked_page_dict`, so a run whose glyphs failed to decode
+    arrives CID-marked, and a marked codepoint is in plane 15: it fails the
+    `"A" <= char <= "Z"` and `"0" <= char <= "9"` tests below, so NO token qualifies.
+    Measured: `The OAG and CIAA reports` yields `{OAG, CIAA}` plain and `{}` marked.
+
+    That silently emptied the survivor vocabulary, which disables this whole third
+    axis for marked spans -- and it disables it in the direction that vetoes LESS, so
+    the failure is more remapping of genuine Latin, not less. Raised in review.
+    """
+
+    text = unmark_cids(text)
+    tokens: set[str] = set()
+    for raw in text.split():
+        token = raw.strip(_ACRONYM_EDGE)
+        if not _ACRONYM_MIN_LEN <= len(token) <= _ACRONYM_MAX_LEN:
+            continue
+        if any(char in _ACRONYM_FORBIDDEN for char in token):
+            continue
+        if not all(_acronym_shaped(char) for char in token):
+            continue
+        if sum(1 for char in token if "A" <= char <= "Z") < _ACRONYM_MIN_UPPER:
+            continue
+        tokens.add(token)
+    return frozenset(tokens)
+
+
+# VOL-212: SURVIVOR PURITY, the narrowing note 3 above does not achieve.
+#
+# Note 3 makes the survivor vocabulary Latin-*shaped*. `PG6L` is Latin-shaped --
+# whitespace-delimited, 4 characters, 3 uppercase ASCII letters -- and is a Preeti
+# keystroke word for `एन्टी` ("anti"). On `11129__n30-Annual Report 2071.pdf` page 265
+# its whole survivor vocabulary is `OG6 P06L PG6L`, three keystroke fragments and no
+# English at all, and the resulting fire kept a 91-character run of correct Nepali as
+# raw ASCII -- a regression against published v12 and v13, which both decode it.
+# Found by VOL-197's corpus-scale A/B (`runs/vol197/FINDING-corpus-ab-f7071d15.md`).
+#
+# So survival is evidence of English only if the surviving token is ALSO not itself
+# plausibly legacy text. Stated directly: decode the token with the document's own
+# candidate map and ask whether the result is well-formed Devanagari.
+#
+# **No existing measure can stand in for this.** Measured over the 18 labelled decodes
+# in `runs/vol212/purity-probe-a3f21c8e.json`, `_text_quality_penalty` is **0** and the
+# `_CONTENT_LEGACY_DICTIONARY` hit count is **0** for every one of them, `एन्टी`
+# included -- the penalty charges garble artifacts and `एन्टी` has none, and the
+# dictionary holds no transliterated loanword. A threshold on either reads the same for
+# the tokens that must be dropped and the tokens that must be kept.
+#
+# The predicate is ONE-SIDED and its direction matters: calling a decode well-formed
+# only ever *removes* a token from the vocabulary, and fires are monotone in the
+# vocabulary, so a false "well-formed" costs a genuine recovery and a false "malformed"
+# lets the defect back. Six malformedness conditions, with the calibration's own
+# attribution over the 8 tokens carrying the 25 genuine fires (`runs/vol212/`):
+#
+#   C3 halant-final           -- carries IEE, DPR, GI, HDPE, MIS, NS, ECOD (7 of 8)
+#   C4 non-initial ind. vowel -- carries DPR, HDPE, ECOD, and QOC ALONE
+#   C1 non-Devanagari char    -- carries MIS, redundant with C3
+#   C2 initial combining mark -- carries nothing here
+#   C5 vowel sign after halant-- carries nothing here
+#   C6 two vowel signs in a row- carries nothing here
+#
+# **`{C3, C4}` is the minimal sufficient set and C4 cannot be dropped: it is the only
+# condition keeping `QOC`, worth 2 of the 25 fires.** C1/C2/C5/C6 are kept because each
+# is an independent rule of Devanagari orthography and each recovers genuine English
+# evidence the two load-bearing ones discard -- distinct bystander tokens dropped falls
+# from 23 distinct (28 token-map rows) to 16 distinct (19 rows) with them in.
+# ⚠️ Written as '28 to 16' this mixed two units -- 28 is a row count and 16 is a
+# distinct-token count -- which overstates what the four conditions buy. The
+# like-for-like comparison is 23 -> 16 distinct, or 28 -> 19 rows. Those 16 are the
+# measured recall cost of this filter and this comment is the only place a reader
+# will look for it. None of the six fires on `एन्टी`, `एण्टी` or `इन्ट`, so
+# they cannot re-admit 11129's vocabulary. Pinned by tests, per note 2's precedent.
+_DEVA_HALANT = "्"
+# Independent vowel LETTERS. Nepali writes a non-initial vowel as a matra, so one of
+# these away from the start of a word is a positive tell of a wrong byte map.
+_DEVA_INDEPENDENT_VOWEL = re.compile("[अ-औॠॡ]")
+# Vowel signs (matras), including the vocalic-L pair and the four the maps emit that an
+# `ा-ौ` range misses. Measured by inverting all seven maps over 0x00-0x2FFF: U+093A OE,
+# U+093B OOE, U+094E PRISHTHAMATRA E and U+094F AW are all reachable, so a pair involving
+# one of them was invisible to the matra-pair condition. (U+0955/0956/0957 are NOT
+# emitted by any map and are left out.)
+_DEVA_VOWEL_SIGN = re.compile("[\u093a\u093b\u093e-\u094c\u094e\u094f\u0962\u0963]")
+# Every combining mark ANY CANDIDATE MAP CAN EMIT -- measured, not "every combining mark
+# in the block", which is what this comment used to claim. A word cannot begin with one.
+#
+# ⚠️ The previous class omitted U+094E and U+094F, and both are emitted, so a decode
+# beginning with one was NOT flagged malformed. That is the costly direction: a false
+# "well-formed" disqualifies a survivor token and removes a veto (see
+# `_is_wellformed_devanagari`).
+_DEVA_COMBINING = re.compile("[\u0900-\u0903\u093a-\u094f\u0951-\u0957\u0962\u0963]")
+_DEVA_ANY = re.compile("[ऀ-ॿ]")
+
+
+def _is_wellformed_devanagari(text: str) -> bool:
+    """True if ``text`` could be a Devanagari word (VOL-212).
+
+    Generous by design -- see the six conditions above.
+
+    🛑 **The safe error is to answer FALSE**, and this docstring said True. Answering True
+    means "this decodes as Nepali", which DISQUALIFIES the survivor token, shrinks the
+    vocabulary and removes a veto -- the fail-open direction, where genuine English gets
+    remapped into Devanagari that spells nothing. The block comment above these
+    conditions has it right ("a false 'well-formed' costs a genuine recovery"), as does
+    `runs/vol212/FINDING-discriminator-a3f21c8e.md` ("a false 'well-formed' costs
+    recall"). Read "generous" the same way: generous about calling a decode well-formed
+    is the COSTLY direction, not the cautious one.
+
+    ⚠️ **This predicate is not the CAUSAL discriminator, and the direction of its error
+    is disclosed rather than fixed.** It separates 11129's keystroke tokens from real
+    acronyms only because their final ASCII character happens to map to a glyph that is
+    not halant-final -- a property independent of whether the token is English. So it
+    also removes genuine English acronyms from the vocabulary: 9.3% of the real survivor
+    set, which is the fail-open direction.
+
+    The causal property is font provenance: 11129's tokens survive ONLY in spans whose
+    font is NAME-mapped to a legacy map, i.e. keystrokes the name-based path decodes and
+    the content-legacy remap never rewrites. A rule counting a survivor token only when
+    at least one surviving occurrence sits in a span whose font is not name-mapped
+    (`legacy_maps.get_converter(_span_base_font(font)) is None`) separates the same
+    labelled set at ZERO bystander cost. It is candidate 2 in
+    `runs/vol212/FINDING-discriminator-a3f21c8e.md`, recorded there as "not needed", and
+    it is worth measuring corpus-wide before this axis ships more widely. Not swapped in
+    here because the acceptance holds as shipped and the swap is its own change with its
+    own corpus sweep to run.
+    """
+
+    if not text:
+        return False
+    if any(not (_DEVA_ANY.match(char) or char == " ") for char in text):
+        return False  # C1
+    if _DEVA_COMBINING.match(text[0]):
+        return False  # C2
+    if text.endswith(_DEVA_HALANT):
+        return False  # C3
+    if any(match.start() > 0 for match in _DEVA_INDEPENDENT_VOWEL.finditer(text)):
+        return False  # C4
+    if re.search(_DEVA_HALANT + _DEVA_VOWEL_SIGN.pattern, text):
+        return False  # C5
+    if re.search(_DEVA_VOWEL_SIGN.pattern + "{2}", text):
+        return False  # C6
+    return True
+
+
+def _decodes_as_legacy_devanagari(
+    token: str,
+    content_legacy_maps: dict[str, LegacyMapChoice],
+) -> bool:
+    """True if any of this document's candidate maps reads ``token`` as Nepali.
+
+    ``any``, not ``all``: a token that one candidate map turns into a Devanagari word
+    is not usable as evidence of English, whatever the other maps make of it. That is
+    the conservative side for the defect this closes.
+    """
+
+    seen: set[str] = set()
+    for choice in content_legacy_maps.values():
+        if choice.map_key is None or choice.map_key in seen:
+            continue
+        seen.add(choice.map_key)
+        if _is_wellformed_devanagari(get_converter_for_map(choice.map_key)(token)):
+            return True
+    return False
+
+
+# The SECOND, independent Latin-side veto (VOL-146, VOL-163). Both this one and
+# :func:`_reads_as_latin_text` are ONE-SIDED -- each only ever declines to remap --
+# so they compose as a disjunction rather than competing, and v13 carries both.
+# They certify Latin on different evidence at different granularities, and each
+# one's blind spot is the other's strength: the structural test reaches a bare
+# technical noun phrase (`Quality Of Care, QOC`) carrying no function word, and the
+# word test reaches prose whose letter statistics look like short keystroke words.
+# Containment measured corpus-wide over one shared label set: runs/vol163/.
+# Latin-side veto for the content-legacy pass. `detect_content_legacy_fonts`
+# decides candidacy per font NAME over that font's whole-document aggregate, then
+# every span of that font is remapped -- so genuine English set in the same face
+# as the keystrokes is destroyed too. On one OAG report that cost 1,362 characters
+# of an English appendix (VOL-126, VOL-134). The candidacy decision is correct and
+# stays: `hits >= 2` over the aggregate is what excludes the digit companions
+# (`Spins_EXT`, `TT33At00`), so it cannot be moved to a finer unit or relaxed.
+# The veto therefore reads the RAW ASCII, before the decode, and only ever
+# *declines* to remap.
+#
+# It must read the raw text because no post-decode axis can help: a character map
+# turns ASCII letters into Devanagari letters whether or not the input was Nepali,
+# so genuine English decodes to penalty 0 and ratio ~1.0 exactly like real
+# keystrokes (VOL-134 §3).
+#
+# **Why a word list and not a structural measure.** Measured over all 469,357
+# same-font runs in the 6,236-document OAG corpus, no structural axis reaches a
+# usable operating point: `alpha_ratio`, `vowel_ratio`, ratio-of-legacy-punctuation
+# and a conjunction of them all fire on short keystroke words, which are pure
+# letters containing vowels and so structurally indistinguishable from short
+# English words -- `ljifo` (विषय), `JolQmut` (व्यक्तिगत), `cWoIf` (अध्यक्ष). The
+# conjunction read 17% precise. Word identity is the only signal that separates
+# them.
+#
+# **Why three letters or more.** The obvious list -- English function words -- is
+# unusable with its two-letter entries in: they are the commonest Preeti digraphs.
+# `If]q` (क्षेत्र, ubiquitous in audit prose) tokenises to `If` -> "if"; `of]`
+# (यो/या) -> "of"; `On]S6«f]lgs` -> "on"; `To:tf]` -> "to". Over the 33,112 runs
+# that provably decode to Nepali (>= 2 dictionary words), `of` occurs in 12.4% and
+# `if` in 6.2%, while not one word of three letters or more occurs at all.
+#
+# This is English grammar, not a corpus frequency table, so it is a legitimate
+# constant for a general library. Closed, and short enough to audit by eye.
+_LATIN_VETO_WORDS: frozenset[str] = frozenset(
+    """also and are been but can for from has have into may not should such than
+    that the their then there these this those when which who will with""".split()
+)
+
+# Share of a span's multi-letter tokens that must be one of the above. A *share*,
+# not a count: a long keystroke run accumulates accidental collisions (`/l;but`
+# contains "but", `can` and `aNd` occur as tokens), and normalising by length
+# dilutes them while genuine English prose keeps a high function-word density.
+# At this cut the veto fires on 93 runs corpus-wide, of which 93 are genuine Latin
+# when every one is read (VOL-138).
+_LATIN_VETO_MIN_SHARE = 0.1
+
+# Tokens are only counted when their casing is one English actually uses. `aNd` is
+# a Preeti keystroke sequence, not a word: a legacy layout puts shifted glyphs
+# mid-word, so mixed case is a keystroke signature. This guard is what removes the
+# single false positive the share cut leaves.
+_LATIN_VETO_TOKEN = re.compile(r"[A-Za-z]+(?:[-'][A-Za-z]+)*")
+
+
+def _reads_as_latin_words(text: str) -> bool:
+    """True if ``text`` is genuine Latin prose rather than legacy keystrokes.
+
+    One-sided by construction: it certifies Latin, never keystrokes, so a span it
+    declines is decoded exactly as before. See ``_LATIN_VETO_WORDS`` for why the
+    test is word identity at a three-letter minimum rather than any structural
+    measure of the raw ASCII.
+
+    ⚠️ **It has NO minimum-length condition, unlike :func:`_reads_as_latin_text`, and
+    the share it applies was calibrated on a different unit.** Both are true and both
+    are deliberate, so they are recorded here rather than left to be rediscovered:
+    ``_LATIN_VETO_MIN_SHARE`` was measured over whole same-font RUNS (469,357 of them)
+    and this predicate applies it to a single SPAN, where a short span with one
+    accidental hit can clear 0.10 on arithmetic alone.
+
+    Measured at the real production unit before deciding to leave it: two disjoint
+    deterministic samples covering 2,183 of the 6,236 OAG PDFs, of which 432 carry a
+    content-legacy candidate font, giving **224,825 candidate-font spans**. This veto
+    fired **7 times, and all 7 are genuine Latin** (bill-of-quantity lines plus
+    "source not found."). **Zero Nepali spans abandoned.** 65.0% of candidate-font
+    spans are indeed under 16 non-space characters, so the length premise holds -- what
+    does not is the collision premise: only 7 of 146,752 spans carry any
+    ``_LATIN_VETO_WORDS`` token at all. The real corpus instance of the worst case
+    (`can` as the land grade अबल) has 13 multi-letter tokens, share 0.077, so the veto
+    declines and it decodes correctly. Corroborated from the output side: v16 was built
+    with this veto and holds 525 files containing अबल against zero containing the raw
+    keystrokes.
+
+    🛑 **Two length-floor fixes were tried and both are measurably worse.** A 16-non-space
+    floor fails this module's own ``test_reads_as_latin_words_requires_english_casing``
+    ("And the report", 12 non-space) and destroys 2 of the 7 real true positives
+    ("source not found." at 15, "of the Engineer. " at 14) while fixing 0 measured false
+    positives. Evaluating over the maximal same-font run instead of the span still fires
+    (share 0.222 -- `can` repeats). The failure direction is fail-CLOSED, i.e. a missed
+    remap rather than corrupted English, which is the recoverable side.
+    """
+
+    # Unmark first. A marked CID is chr(_CID_MARK_BASE + ord(char)), so `isascii()` is
+    # False for it and the token pattern below matches nothing -- this predicate returned
+    # False for a span of plain English purely because its glyphs had failed to decode.
+    # That is the case the veto needs: a PARTIALLY marked span of genuine Latin would
+    # otherwise have its unmarked half remapped into well-formed Devanagari that spells
+    # nothing. For a FULLY marked span the veto changes no bytes -- every plane-15 code
+    # point passes the converter untouched, so remap and no-remap are byte-identical, and
+    # the marks are exactly what `count_marked_cids` and `_private_use_count` notice. The
+    # damaging, reachable shape is the partial one, which
+    # `test_a_partially_marked_latin_span_is_returned_unchanged` covers.
+    #
+    # Done here rather than at the call site so every caller inherits it.
+    text = unmark_cids(text)
+    tokens = _LATIN_VETO_TOKEN.findall(text)
+    multi_letter = [token for token in tokens if len(token) > 1]
+    if not multi_letter:
+        return False
+    hits = sum(
+        1
+        for token in tokens
+        if token.lower() in _LATIN_VETO_WORDS
+        and (token.islower() or token.istitle() or token.isupper())
+    )
+    return hits / len(multi_letter) >= _LATIN_VETO_MIN_SHARE
 
 
 def _span_base_font(font_name: str) -> str:
@@ -889,12 +2299,152 @@ def _is_probably_legacy_ascii(text: str) -> bool:
     return printable_ascii / len(stripped) >= 0.8
 
 
+def _reads_as_latin_text(text: str, decoded: str) -> bool:
+    """True if this run's raw ASCII is genuine Latin text, not legacy keystrokes.
+
+    A legacy 8-bit face reaches the remap per **font**, decided on that font's whole
+    aggregate (:func:`detect_content_legacy_fonts`). Any genuine Latin set in the
+    same face is remapped with it, rewriting real words as Devanagari that spells
+    nothing: OAG's 2077 performance audit report renders ``QOC`` as ``त्तइऋ`` and
+    loses 1,362 characters of an English appendix that way (VOL-126). This is the
+    per-run veto that keeps such a run as it was, leaving the font's candidacy
+    decision untouched.
+
+    ``decoded`` is the run's text under the font's chosen map, used only for the
+    dictionary axis below.
+
+    **Why the veto reads raw ASCII and not the decode.** A character map turns ASCII
+    letters into Devanagari letters whatever the input language was, so genuine
+    English decodes to ``penalty 0``, ``ratio 1.0`` — indistinguishable from real
+    keystrokes on every purity axis (VOL-138). The evidence has to be read before
+    the substitution.
+
+    Calibrated over all 6,236 corpus documents against a lexicon built from the
+    4,991 that carry no candidate legacy font at all, so the label cannot have been
+    contaminated by this pass. At these thresholds the veto fires on **190 of the
+    469,357 remapped runs**: 185 are labelled genuine Latin (7,067 characters
+    recovered) and the other 5 were read individually and are **also** genuine Latin
+    — ``(prophylactic antibiotics)``, ``theatre personnel)``, ``charities such as
+    Lifebox)``, and two personal names — which the label missed only because it
+    wants two known words and a name supplies none. **No Nepali run in the corpus
+    is vetoed.** The ``alpha_ratio``-only form first proposed fires on 13,429 runs
+    for the same 273, i.e. ~2% precision.
+
+    Each condition, and what dropping it costs — measured, ``runs/vol138/ablation.json``:
+
+    ``at least _LATIN_VETO_MIN_CHARS non-space characters``
+        The load-bearing condition: without it the veto fires on 3,692 Nepali runs
+        instead of 0. It counts **non-space** characters for a reason found by
+        reading — ``alpha_ratio`` is itself computed over non-space characters, so a
+        *raw-length* floor is cleared by padding, and 23 runs of ~75 spaces followed
+        by ``gfo`` did exactly that during calibration.
+    ``vowel_ratio``
+        Share of ASCII letters that are vowels, and **the axis that separates these
+        two populations when no earlier one could**. Symbol-free Preeti keystrokes
+        are all-letter strings — ``ljBfno ejg``, ``:yfgLo tx`` — so any letter-share
+        axis is blind to them by construction. The layout's frequent codes are
+        consonants (``f`` = ा, ``g`` = न, ``l`` = ि), so keystroke runs carry 10-25%
+        vowels where English carries 35-40%. Dropping it: 126 Nepali runs vetoed.
+    ``alpha_ratio``
+        Share of non-space characters that are ASCII letters; keeps out the digit
+        and punctuation companions. Dropping it: 79 Nepali runs vetoed.
+    ``no medial capital``
+        ``ljBfno``, ``cGo``: an 8-bit layout uses shifted keys for distinct glyphs,
+        so capitals land mid-token; English does this only in CamelCase. Dropping
+        it: 12 Nepali runs vetoed, for 2 more Latin runs saved.
+    ``no legacy keystroke symbol``
+        ``][{}|~^@+_=`` are glyph codes for common Devanagari marks and English does
+        not use them in running text, so their presence is *sufficient* for
+        keystrokes — 74.8% of remapped runs and 94.8% of remapped characters carry
+        one. At these thresholds the other conditions already exclude almost all of
+        them and this removes **1** further run. Kept because it is the one
+        condition that is sufficient on its own rather than calibrated.
+    ``zero Nepali dictionary hits in the decode``
+        **Contributes nothing at these thresholds** — the numbers are identical with
+        and without it — and it is kept deliberately, so the record should say so.
+        It cannot cause a miss: ``hits == 0`` holds for **100%** of the labelled
+        Latin population, measured. And it is the conjunction's only Nepali-*lexical*
+        evidence, where every other condition is a character-class rate: keystrokes
+        decode into real Nepali words, English decodes into Devanagari that spells
+        nothing. That guards the failure this veto must not have — silently
+        abandoning a Nepali run — on documents shaped unlike this corpus's.
+        This is **not** the ``hits >= 2`` axis of
+        :func:`_passes_content_legacy_gate`. That decides a **font's** candidacy on
+        its whole aggregate and is untouched here (VOL-77, VOL-89); this asks one run
+        of an already-confirmed legacy font whether it, specifically, is Nepali.
+
+    What it deliberately does **not** save: English lines dense in numerals, which
+    is what most of the residue is — ``110mmɸ uPVC Bend-45˚``, ``1/2"GI Nipple 9"
+    Long``, ``40-4kg/sqcm series iii(280mm)``. They fail ``alpha_ratio``. Lowering
+    it to reach them costs Nepali faster than it recovers Latin, and an undecoded
+    bill-of-quantities line is legible where wrong Devanagari is not.
+    """
+
+    # Unmark first, for the same reason `_reads_as_latin_words` does and inside the
+    # predicate for the same reason -- so every caller inherits it. That sibling's
+    # comment claims the principle; this function did not follow it, which made the
+    # claim half true. Measured on one sentence of English: `True` plain, **`False`
+    # marked**, so a marked run of genuine Latin was remapped into Devanagari that
+    # spells nothing -- exactly the VOL-126 damage this veto exists to stop, and
+    # invisible because the remap leaves no U+FFFD behind.
+    #
+    # Both axes needed it, not just the ASCII ones. `decoded` is derived from the same
+    # run, and a converter passes a marked codepoint through unchanged, so a marked run
+    # decodes to no Devanagari at all -- the dictionary axis below then finds no word
+    # and never suppresses the veto. The caller now decodes the unmarked text; unmarking
+    # here as well keeps the two consistent whatever a future caller passes.
+    #
+    # 🛑 **The two halves fail in OPPOSITE directions, and an earlier form of this
+    # comment called both of them "failing OPEN".** Under this programme's own
+    # definition -- open corrupts English, closed blocks a correct remap -- the ASCII
+    # axes failed OPEN (a marked run of genuine Latin was remapped into Devanagari that
+    # spells nothing, invisibly, because the remap leaves no U+FFFD) and the dictionary
+    # axis failed CLOSED (measured through the caller, an unmark in the predicate alone
+    # makes the veto fire on a genuine NEPALI run and blocks a correct remap). Both
+    # needed fixing; only the first was the dangerous one. The labelling matters because
+    # the standing rule is "open is the dangerous direction", so calling the recoverable
+    # half dangerous mis-prices the next change to it. Raised in review.
+    text = unmark_cids(text)
+
+    non_space = [char for char in text if not char.isspace()]
+    if len(non_space) < _LATIN_VETO_MIN_CHARS:
+        return False
+    if any(char in _LEGACY_KEYSTROKE_SYMBOLS for char in text):
+        return False
+    letters = [char for char in non_space if char.isascii() and char.isalpha()]
+    if len(letters) / len(non_space) < _LATIN_VETO_MIN_ALPHA_RATIO:
+        return False
+    if not letters:  # unreachable while the ratio floor is above 0, but the
+        return False  # division below must not depend on that staying true
+    vowels = sum(1 for char in letters if char in _ASCII_VOWELS)
+    if vowels / len(letters) < _LATIN_VETO_MIN_VOWEL_RATIO:
+        return False
+    if _MEDIAL_CAPS.search(text):
+        return False
+    return not any(word in decoded for word in _CONTENT_LEGACY_DICTIONARY)
+
+
 def _nepali_validity(text: str) -> dict[str, float]:
     """Score how much ``text`` reads as genuine Nepali (higher = more valid)."""
 
     devanagari = len(_DEVANAGARI_CHAR.findall(text))
     non_space = len(re.sub(r"\s", "", text)) or 1
+    # Two garble measures, and which one goes where is load-bearing (VOL-185).
+    # `_legacy_map_garble` is comparative and feeds the RANKING axis; the full
+    # `_text_quality_penalty` is what the ABSOLUTE gate ceiling was calibrated
+    # against and feeds `penalty_per_deva`. `ecc5338` moved both at once and
+    # loosened the gate; see :func:`_legacy_map_garble`.
+    # Computed ONCE each and shared. `_legacy_map_garble(text)` is
+    # `_text_quality_penalty(text) - _duplicate_consonant_count(text) * weight`, so
+    # calling it here recomputed the penalty a second time and the doublet count a
+    # third: measured on a 7,680-character span that redundant half is 1.86 ms of
+    # 4.22 ms, 44.0%, and this runs for six candidate maps on every font of every
+    # document (31,174 font decisions corpus-wide). `_legacy_map_garble` stays as the
+    # named helper -- it is what the tests and the docstring reason about -- and
+    # `test_the_inlined_ranking_penalty_still_equals_the_named_helper` pins the two
+    # forms equal so this cannot silently drift into a third definition.
     penalty = _text_quality_penalty(text)
+    duplicates = _duplicate_consonant_count(text)
     hits = sum(1 for word in _CONTENT_LEGACY_DICTIONARY if word in text)
     return {
         "devanagari": devanagari,
@@ -905,7 +2455,22 @@ def _nepali_validity(text: str) -> dict[str, float]:
         # ``penalty_per_deva`` normalises it so one span can be compared against
         # an absolute ceiling. See :func:`_map_ranking_key` for why using the
         # normalised form to rank candidates is a bug.
-        "penalty": penalty,
+        #
+        # VOL-185: and they are no longer the same numerator. ``penalty`` drops the
+        # doubled-consonant term because it charges correct readings when maps are
+        # compared; ``penalty_per_deva`` keeps it because that is the measure the
+        # gate's 0.05 ceiling was calibrated against. See
+        # :func:`_legacy_map_garble` for what happens when one substitution moves both.
+        # ⚠️ `min(..., _RANKING_DOUBLET_FORGIVENESS)`, matching this commit's change to
+        # `_legacy_map_garble`. The parent inlined the subtraction here to avoid
+        # recomputing the penalty and the doublet count (44.0% of the call on a
+        # 7,680-character span), so the forgiveness floor has to be carried into the
+        # inlined copy too -- without it the floor simply does not apply on the
+        # ranking path, which is the only path it exists for.
+        # `test_the_inlined_ranking_penalty_still_equals_the_named_helper` is what
+        # caught that, and it is the reason that test was written.
+        "penalty": penalty
+        - min(duplicates, _RANKING_DOUBLET_FORGIVENESS) * _DUPLICATE_CONSONANT_WEIGHT,
         "penalty_per_deva": penalty / devanagari if devanagari else float("inf"),
         # Reported separately so `_map_ranking_key` can forgive a bounded number of
         # these sites WITHOUT the gate forgiving any -- see
@@ -915,6 +2480,8 @@ def _nepali_validity(text: str) -> dict[str, float]:
         "hits": hits,
         # Not part of `penalty`: see `_STRANDED_BRACKET_PATTERN`. Ranking only.
         "stranded": len(_STRANDED_BRACKET_PATTERN.findall(text)),
+        # Ranking only, and below `stranded`: see :func:`_map_ranking_key`.
+        "attested": _attested_word_count(text),
     }
 
 
@@ -929,10 +2496,13 @@ def _passes_content_legacy_gate(validity: dict[str, float]) -> bool:
 
 def _map_ranking_key(
     validity: dict[str, float],
-) -> tuple[float, float, float, float, float]:
+) -> tuple[float, float, float, float, float, float]:
     """Evidence axes for a candidate map, most decisive first, higher is better.
 
-    ``hits`` and ``penalty`` are the calibrated primary axes. ``ratio`` and
+    ``hits`` and ``penalty`` are the primary axes. ⚠️ ``penalty`` is deliberately NOT
+    the calibrated quantity -- the calibration is the 0.05 ceiling on
+    ``penalty_per_deva`` (:data:`_CONTENT_LEGACY_MAX_PENALTY_PER_DEVA`), which the gate
+    uses and this axis keeps its hands off, which is the whole point of VOL-185's split. ``ratio`` and
     ``devanagari`` are tie-breaks only: a map that fits the face maps every
     keystroke onto Devanagari, so the residue a *wrong* map leaves behind shows up
     as non-Devanagari characters. That is what separates Spins from Preeti on a
@@ -1016,6 +2586,37 @@ def _map_ranking_key(
     discriminator. The ordering below is the conservative default — the axis with a
     calibrated absolute meaning goes first — and the sweep that would settle it is still
     owed. Anything reordering these two must run it rather than cite 4487.
+
+    **``attested`` sits between ``stranded`` and ``ratio`` (VOL-185).** It counts how
+    many distinct high-frequency Nepali word-forms a reading actually produces, and it
+    is placed exactly where the axes stop being evidence: everything above it ties on
+    these spans, and the paragraph above records that every wrong ``ratio`` decision
+    sits at a margin below 0.004. ``ratio`` and ``devanagari`` ask how *Devanagari-shaped*
+    a reading is; a wrong map for a legacy face maps every keystroke onto Devanagari too,
+    so they are nearly blind here. Whether the output is Nepali *words* is a different
+    question and the one that separates.
+
+    On ``2424__…Ramechhap Nagarpalika`` (font ``Spins``, 283 characters) ``PCS NEPALI``
+    beat ``Spins`` on ``ratio`` by **0.000249** — 0.981900 against 0.981651 — and
+    rendered twelve repha as a misplaced anusvara (``आर्थिक``->``आथिंक``,
+    ``कार्यविधि``->``कायंविधि``, ``खर्च``->``खचं``). On that same span ``Spins`` carries
+    **12** attested forms against ``PCS NEPALI``'s **7**. The two readings hold 12 repha
+    and 0 anusvara versus 0 repha and 12 anusvara respectively.
+
+    It sits *below* ``stranded``, and therefore below ``penalty``, so it cannot disturb
+    either calibration: it decides only spans on which both already tie. Measured on the
+    corpus at ``677fa95``, that is the **127** of 1,390 gate-passing font decisions that
+    ``ratio`` or ``devanagari`` were deciding. See :data:`_ATTESTED_NEPALI_WORDS` for how
+    the vocabulary is derived and why it cannot be satisfied by garble.
+
+    **Both axes above it forgive one hit** (:data:`_RANKING_DOUBLET_FORGIVENESS`,
+    :data:`_RANKING_STRANDED_FORGIVENESS`), which is what lets ``attested`` reach the
+    spans it is for. A lone doublet or a lone bracket is not evidence about which map read
+    a span -- it lands on whichever reading happens to spell one -- and on
+    ``2992``/``2993 parsa gaupalika`` (font ``Arial``) a lone bracket was picking the map
+    that loses `समानीकरण`, `ऋण`, `संघिय` and `पोषण`. Forgiven, ``attested`` decides it 23
+    to 22. Note that margin is one word: this axis is a tie-break of last resort, not a
+    strong signal, and it is ordered accordingly.
     """
 
     return (
@@ -1033,19 +2634,283 @@ def _map_ranking_key(
             - min(validity["ikar_nasal"], _RANKING_IKAR_NASAL_FORGIVENESS)
             * _IKAR_NASAL_WEIGHT
         ),
-        -validity["stranded"],
+        # VOL-185: a single stranded bracket is forgiven for the same reason a single
+        # doublet is -- see `_RANKING_STRANDED_FORGIVENESS`.
+        -max(validity["stranded"] - _RANKING_STRANDED_FORGIVENESS, 0),
+        validity["attested"],
         validity["ratio"],
         validity["devanagari"],
     )
 
 
-def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
-    """Pick the best legacy map for ``text`` if one validates, else ``(None, best)``.
+# ---------------------------------------------------------------------------
+# VOL-218: the mixed letter+digit margin gate. OPT-IN, OFF by default.
+# ---------------------------------------------------------------------------
+#
+# The two legacy map families swap the number rows: `Preeti`/`Kantipur`/
+# `Sagarmatha`/`Spins` put the Devanagari digits on the SHIFTED row `!@#$%^&*()`
+# and read `0123456789` as consonants, while `PCS NEPALI`/`FONTASY_HIMALI_TT` do
+# the reverse. So choosing the wrong family does not garble a span, it *transposes*
+# letters and digits -- and on a document that types money on one row and place
+# names on the other, one flip produces both directions at once. Measured on
+# `3719__...Humla Sarkegad` (font `Felix Titling`, v13 `PCS NEPALI` -> v14
+# `Preeti`): 49 unshifted-row keystrokes became consonants and 23 shifted-row
+# keystrokes became digits, in the same table. See
+# `oag-corpus/runs/vol218/FINDING-19-...-72f6752a.md`.
+#
+# A token carrying BOTH a Devanagari letter and a Devanagari digit is the signature
+# of that transposition, because real Nepali orthography does not mix them inside a
+# word. Ordinals like `१०औं` do, which is why this is a comparative measure between
+# candidate readings of the SAME span and never an absolute quality score.
+#
+# 🛑 **Being comparative does NOT neutralise the second artifact, and this comment used
+# to present it as though it did.** Span concatenation manufactures mixed tokens, and it
+# does so ASYMMETRICALLY between the two map families: `PCS NEPALI` and
+# `FONTASY_HIMALI_TT` read ASCII digits as digits, so an amount span abutting a word span
+# produces a digit-next-to-letter token in their reading, while `Preeti`, `Kantipur` and
+# `Sagarmatha` read those same digits as consonants and produce nothing. The production
+# decision unit is exactly such a concatenation -- the per-font aggregate -- so the
+# artifact does not cancel; it favours one family systematically.
+#
+# That asymmetry is the reason this gate ships OFF, and the reason it must be measured
+# per generation rather than reasoned about. It was disclosed in the PR body and nobody
+# re-reads a merged PR body before turning a flag on, so it lives here.
+#
+# **Why a margin, and not simply another ranking axis.** The bare term was priced
+# corpus-wide first (`runs/vol218/FINDING-17-...-d2362b10.md`): placed below
+# `attested` (P1) it costs 0 attested forms but leaves `4834...खार्पुनाथ` damaged;
+# placed above (P2) it repairs all four damaged documents but takes `attested` -5
+# and makes four flips that are not repairs, because the term speaks on spans where
+# its advantage is a single token. Gating it on a margin keeps the shipped axis in
+# charge everywhere the evidence is thin: at M=5 it makes 6 flips, a strict subset
+# of P2's 11, keeps all four repairs and costs `attested` -2 -- all of which is
+# `4834`'s own repair (`runs/vol218/FINDING-18-...-0aa6842c.md`).
+#
+# **The term is an INDICATOR, not `-mixed`.** Among eligible candidates it does not
+# further prefer the lowest count; it promotes the eligible set and defers to
+# `attested`. That is what "only speak when the advantage exceeds a margin" means,
+# and it is why the arm cannot shrink a tie it is silent on.
+#
+# Which margin ships is open board decision `b70918c8`; until that is answered this
+# is unreachable unless a caller asks for it, so the default transcript is
+# unchanged. Enabling it also requires a generation build, the serialized
+# single-writer step.
 
-    Tries every :data:`ALL_MAP_KEYS` map and ranks the candidates by
-    :func:`_map_ranking_key`. Returns the winning map key only when it clears
-    :func:`_passes_content_legacy_gate`; otherwise the map key is ``None`` (the
-    second element is the best-scoring validity for diagnostics).
+_MIXED_MARGIN_ENV_VAR = "LIKHIT_LEGACY_MAP_MIXED_MARGIN"
+
+# Distinguishes "caller said nothing, read the environment" from "caller explicitly
+# passed None", which means off. A plain ``None`` default cannot express both, and a
+# test that means to force the gate OFF must not be silently overridden by an env var
+# some other test or a build driver left set.
+# ⚠️ Annotated `Any` deliberately. Unannotated, this is `object`, and `ty` then reports
+# error[invalid-parameter-default] on `mixed_margin: int | None = _MARGIN_FROM_ENV` --
+# taking likhit's `ty` baseline from the 8 AGENTS.md pins for `main` to 9, which is
+# exactly the phantom-regression trap that file warns about. The sentinel's identity is
+# what matters, never its type: the only thing done with it is `is _MARGIN_FROM_ENV`.
+_MARGIN_FROM_ENV: Any = object()
+#: Smallest legal margin, for BOTH the env route and the keyword. Named because the two
+#: used to enforce it in only one place: `_mixed_margin_setting` refused < 1 while a
+#: caller passing `mixed_margin=0` went straight through. See
+#: :func:`choose_legacy_map_detailed`.
+_MIXED_MARGIN_FLOOR = 1
+#: Where the ELIGIBLE indicator is spliced into :func:`_map_ranking_key`'s tuple: below
+#: the stranded-bracket tell (index 2) and above `attested` (which becomes index 4). It
+#: is a named index rather than a literal because
+#: :func:`_map_ranking_key_margin_gated` derives its whole key from the ungated one --
+#: see the note there for the divergence that made copying the axes untenable -- and a
+#: bare `3` in a slice is the sort of thing a later axis insertion moves silently.
+_MIXED_ELIGIBLE_INDEX = 3
+
+# Composed forms only. A Devanagari class written as a range over *composed*
+# characters decomposes if it is ever pasted through a shell, which compiles and
+# silently reclassifies every combining mark as a letter -- that has happened on
+# this corpus, so these are escapes and `_assert_mixed_classes_hold` checks them.
+_DEVA_LETTER_CLASS = "\u0915-\u0939\u0958-\u095f"
+_DEVA_DIGIT_CLASS = "\u0966-\u096f"
+_DEVA_MARK_CLASS = "\u093a-\u094f\u0951-\u0957\u0962\u0963"
+
+_DEVA_TOKEN_PATTERN = re.compile(
+    f"[{_DEVA_LETTER_CLASS}{_DEVA_MARK_CLASS}{_DEVA_DIGIT_CLASS}]{{2,}}"
+)
+_DEVA_HAS_LETTER = re.compile(f"[{_DEVA_LETTER_CLASS}]")
+_DEVA_HAS_DIGIT = re.compile(f"[{_DEVA_DIGIT_CLASS}]")
+
+
+def _mixed_letter_digit_count(text: str) -> int:
+    """Tokens in ``text`` carrying both a Devanagari letter and a Devanagari digit."""
+
+    return sum(
+        1
+        for token in _DEVA_TOKEN_PATTERN.findall(text)
+        if _DEVA_HAS_LETTER.search(token) and _DEVA_HAS_DIGIT.search(token)
+    )
+
+
+def _assert_mixed_classes_hold() -> None:
+    """Refuse to rank on these classes if the literals above decomposed in transit."""
+
+    if not (
+        _DEVA_HAS_LETTER.search("क")  # ka is a letter
+        and not _DEVA_HAS_LETTER.search("े")  # a vowel sign is not
+        and not _DEVA_HAS_LETTER.search("०")  # nor is a digit
+        and _DEVA_HAS_DIGIT.search("७")  # Devanagari 7
+        and not _DEVA_HAS_DIGIT.search("7")  # ASCII 7 is not
+        and _mixed_letter_digit_count("गो७ी") == 1  # go-7-i, damaged
+        and _mixed_letter_digit_count("गोठी") == 0  # gothi, correct
+    ):
+        raise ExtractionError(
+            "the Devanagari letter/digit character classes do not hold; "
+            f"{_MIXED_MARGIN_ENV_VAR} cannot be honoured safely"
+        )
+
+
+def _mixed_margin_setting() -> int | None:
+    """The configured margin, or ``None`` when the gate is off (the default).
+
+    A malformed value is a configuration error and is raised rather than silently
+    ignored: a gate that quietly disables itself would make a build's provenance
+    unfalsifiable.
+    """
+
+    raw = os.getenv(_MIXED_MARGIN_ENV_VAR)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        margin = int(raw)
+    except ValueError as exc:
+        raise ExtractionError(
+            f"{_MIXED_MARGIN_ENV_VAR}={raw!r} is not an integer"
+        ) from exc
+    if margin < _MIXED_MARGIN_FLOOR:
+        raise ExtractionError(
+            f"{_MIXED_MARGIN_ENV_VAR}={raw!r} must be >= {_MIXED_MARGIN_FLOOR}; "
+            f"unset it to disable the gate"
+        )
+    return margin
+
+
+def _map_ranking_key_margin_gated(threshold: float):
+    """:func:`_map_ranking_key` plus an ELIGIBLE indicator at P2's position.
+
+    ``threshold`` is ``mixed(shipped winner) - margin``. A candidate is eligible iff
+    its own mixed count is at or below it, so the gate promotes a candidate that beats
+    the shipped winner by **at least** the margin.
+
+    ⚠️ "By MORE THAN the margin" is what three records said, and it is off by one: the
+    comparison is `mixed <= threshold` with `threshold = mixed(winner) - margin`, so an
+    advantage of exactly `margin` fires. The measured M=5 figures were taken against
+    this code, so the code is the thing to keep and the wording is the thing to fix.
+    A consequence worth carrying: "any advantage at all" is M=**1** (threshold =
+    winner - 1), which `_mixed_margin_setting` ACCEPTS. M=0 is a different arm again --
+    "not worse than the winner" -- and it is the one the floor refuses.
+    """
+
+    def key(validity: dict[str, float]) -> tuple[float, ...]:
+        eligible = 1.0 if validity.get("mixed", 0.0) <= threshold else 0.0
+        # 🛑 SPLICED into :func:`_map_ranking_key`'s tuple, never restated. This function
+        # used to hand-copy those axes, and the copy drifted the moment one of them
+        # gained a term: `-validity["penalty"]` here stayed RAW while the ungated key
+        # started forgiving one ikar+nasal site, so the gate ranked on a different garble
+        # measure than the pass it is supposed to refine. Measured on
+        # `3229__...sidingwa gapa.pdf`, font `Spins`: ungated `-penalty` 0 (level with
+        # `Kantipur`, so the stranded tell decides it correctly), gated **-6** (Kantipur
+        # wins outright and the whole font unit is mis-decoded). Latent only because the
+        # gate ships OFF -- and the gate exists precisely so it can be turned ON, which
+        # is what makes a silent divergence here worse than a visible one.
+        base = _map_ranking_key(validity)
+        return base[:_MIXED_ELIGIBLE_INDEX] + (eligible,) + base[_MIXED_ELIGIBLE_INDEX:]
+
+    return key
+
+
+@dataclass(frozen=True)
+class LegacyMapChoice:
+    """What ranking every legacy map against one span decided.
+
+    ``ambiguous`` is the set of *input* code points the tied candidates read
+    differently. It is empty unless a tie survived every evidence axis, and when
+    it is non-empty those code points are left as raw keystrokes by
+    :func:`decode_with_legacy_map` — see :func:`choose_legacy_map_detailed`.
+
+    ⚠️ ``validity`` is **one reading's** axis -> value dict (``hits``, ``penalty``,
+    ``penalty_per_deva``, ``devanagari``, ``ratio``, ``stranded``), not a per-map
+    mapping: it is the winning reading's, or the MASKED reading's when a tie was
+    scoped. Nothing per-map survives the call. Records had it as "the per-map
+    validity scores", which is a different object entirely.
+    """
+
+    map_key: str | None
+    validity: dict[str, float] | None
+    ambiguous: frozenset[str] = frozenset()
+
+
+def _ambiguous_code_points(
+    text: str,
+    convert_best,
+    convert_tied: list,
+) -> frozenset[str]:
+    """Input code points that ``convert_best`` and any of ``convert_tied`` disagree on.
+
+    Compared one code point at a time, which is a *candidate* set only: these maps
+    reorder (a pre-base vowel sign moves across its consonant), so a per-character
+    comparison is not by itself proof that the disagreement is confined to these
+    code points. :func:`choose_legacy_map_detailed` verifies that claim on the
+    whole span before relying on it, and abstains when it does not hold.
+    """
+
+    ambiguous = set()
+    for code_point in set(text):
+        try:
+            best_reading = convert_best(code_point)
+        except Exception:  # noqa: BLE001 - cannot read it alone; treat as ambiguous
+            ambiguous.add(code_point)
+            continue
+        for convert in convert_tied:
+            try:
+                if convert(code_point) != best_reading:
+                    ambiguous.add(code_point)
+                    break
+            except Exception:  # noqa: BLE001 - same
+                ambiguous.add(code_point)
+                break
+    return frozenset(ambiguous)
+
+
+def _decode_masking(text: str, convert, masked: frozenset[str]) -> str:
+    """Convert ``text`` with ``convert``, leaving every code point in ``masked`` raw.
+
+    Splits on the masked code points and converts each run between them, so a
+    masked keystroke survives as itself and everything around it is decoded. The
+    split also bounds each conversion's context at the masked position, which is
+    intended: that position is where the candidates disagree, so it is not a
+    place to carry reordering context across.
+    """
+
+    if not masked:
+        return convert(text)
+    out: list[str] = []
+    run: list[str] = []
+    for char in text:
+        if char in masked:
+            if run:
+                out.append(convert("".join(run)))
+                run = []
+            out.append(char)
+        else:
+            run.append(char)
+    if run:
+        out.append(convert("".join(run)))
+    return "".join(out)
+
+
+def choose_legacy_map_detailed(
+    text: str, *, mixed_margin: int | None = _MARGIN_FROM_ENV
+) -> LegacyMapChoice:
+    """Rank every :data:`ALL_MAP_KEYS` map against ``text`` and decide what to read.
+
+    Returns the winning map key only when the reading clears
+    :func:`_passes_content_legacy_gate`; otherwise ``map_key`` is ``None`` (the
+    ``validity`` is the best-scoring candidate's, for diagnostics).
 
     **The order of ALL_MAP_KEYS is not a tie-break.** It used to be, implicitly:
     the loop kept the first strict maximum, so two maps level on every axis were
@@ -1053,60 +2918,174 @@ def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
     decided real documents — a 303-character face in one OAG municipality report
     tied all six maps at ``hits=3, penalty=0.0`` and was decoded as Preeti purely
     because Preeti is index 0, rendering ``;_Vof`` as ``स)ख्या`` where the correct
-    Spins read gives ``संख्या`` (VOL-77).
+    Spins read gives ``संख्या`` (VOL-77). Position in a tuple is not evidence.
 
-    ⚠️ **That document is fixed by the two added AXES, not by abstention, and the
-    two remedies must not be run together in one story.** Measured: it decodes as
-    ``Spins``, resolved by ``ratio``; the abstention branch never executes on it.
-    Someone debugging it from this docstring would read the wrong branch. The axes
-    fixed VOL-77; abstention handles the residue that no axis separates.
+    ⚠️ **That document is fixed by the two added AXES, not by the tie remedy below,
+    and the two must not be run together in one story.** Measured: it decodes as
+    ``Spins``, resolved by ``ratio``. Neither VOL-77's abstention nor VOL-156's
+    scope-masking ever runs on it, so someone debugging it from this docstring
+    would read the wrong branch. The axes fixed VOL-77; what follows handles the
+    residue no axis separates.
 
-    Abstention is the second remedy: position in a tuple is not evidence, so a tie
-    that survives every axis declines to choose. Well-formed Devanagari spelling the
-    wrong word is not detectable by any purity axis or by a reader, while undecoded
-    keystrokes are at least visible.
+    Maps that produce *identical* text are not an ambiguity at all and are decided
+    on the shared reading. Preeti, Kantipur and Sagarmatha decode much ordinary
+    text the same way.
 
-    🛑 **Abstaining is not free, and on this corpus it is a net regression until
-    #84 lands.** "Recoverable" describes the failure mode, not the cost. Measured
-    over all 6,236 OAG documents plus all 35 CIAA reports: 481 winner changes (the
-    win — 470 of them ``Preeti``→``Spins``, repairing systematically lost repha),
-    but also **46 fonts in 46 documents lose a gate-passing decode, 44,108
-    Devanagari characters that a build without abstention produces**. #84 measures
-    the same shape at 50 documents / 59,867 characters and fixes it by narrowing the
-    scope, and its diagnosis — right reasoning applied at the wrong scope — is
-    correct.
+    **A tie that survives every axis is resolved at the scope of the ambiguity,
+    not by discarding the span (VOL-156).** VOL-77's remedy for such a tie was to
+    return ``None`` for the whole font, on the reasoning that raw keystrokes are
+    recoverable where well-formed Devanagari spelling the wrong word is not. That
+    reasoning is right and was applied at the wrong scope: the tied candidates
+    agree about almost every code point, and *decoding what they agree on commits
+    to nothing*, because there is no choice being made there.
 
-    The ties are structural, not unlucky. ``Preeti`` and ``Sagarmatha`` differ on
-    **0** printable-ASCII keys; ``Preeti`` and ``Kantipur`` on **2** (``F`` is
-    ``ँ``/``ा``, ``X`` is ``ह्``/``हृ``); ``PCS NEPALI`` and
-    ``FONTASY_HIMALI_TT`` on **5**. Such pairs tie on every axis by construction —
-    both readings are pure Devanagari of the same length, and no dictionary word
-    contains ``ँ`` or ``ह्`` — so one poison keystroke anywhere abstains the whole
-    font. And because this is called **once per font on the document aggregate**,
-    a longer aggregate is *more* likely to abstain, not less: ``F`` is the
-    candrabindu in ``गाउँपालिका``, which titles most of these reports.
+    So a surviving tie now decodes with the ranking winner and leaves only the
+    code points the tied candidates read differently as raw keystrokes. On the
+    OAG corpus the difference is stark — on
+    ``11104__Sangathit Sangrachana 2073`` (font ``Nepali``, 4,916 characters)
+    ``PCS NEPALI`` and ``FONTASY_HIMALI_TT`` tie on all four axes to the last
+    digit and disagree about **one** code point, ``?``, which one reads ``रू`` and
+    the other ``रु`` — the rupee abbreviation with a long or a short vowel, 19
+    occurrences, 0.39% of the span. Abstaining discarded 4,433 Devanagari
+    characters, the whole of that document's v11 → v12 regression, to avoid
+    choosing a vowel length. Corpus-wide that shape accounts for 59,867 Devanagari
+    characters across 50 documents whose decode would have passed the content gate.
 
-    **So this must not land alone.** Either land it with #84 or accept 46-50
-    documents temporarily worse than the parent.
+    The localisation is **verified, not assumed**. These maps reorder, so a
+    per-code-point comparison cannot prove the disagreement is confined to those
+    code points. After masking, every tied candidate must produce a byte-identical
+    reading of the whole span; when one does not, the ambiguity is not localised
+    and the span abstains exactly as before.
 
-    Maps that produce *identical* text are not an ambiguity and do not abstain.
-    Preeti, Kantipur and Sagarmatha decode much ordinary text the same way, and
-    refusing to choose between two readings that do not differ would throw away
-    a correct decode over a distinction without a difference.
+    One consequence, deliberately left in place: where candidates read a span
+    identically the returned map *name* is still whichever comes first in
+    :data:`ALL_MAP_KEYS`. The decoded text cannot depend on that choice, so no
+    transcript is affected, but the recorded name is not a stable label for those
+    spans and should not be read as an identification of the face.
 
-    One consequence, deliberately left in place: for such a span the returned map
-    *name* is still whichever of the equal candidates comes first in
-    :data:`ALL_MAP_KEYS`. The decoded text cannot depend on that choice — the
-    readings are equal by definition — so no transcript is affected, but the
-    recorded map name is not a stable label for those spans and should not be read
-    as an identification of the face. Making it stable would mean inventing a
-    tie-break, which is the thing this function stopped doing.
+    **VOL-218's mixed letter+digit margin gate is OPT-IN and OFF by default.** When
+    ``mixed_margin`` is set -- by the argument, or by
+    :data:`_MIXED_MARGIN_ENV_VAR` -- this runs in two passes: pass 1 is the shipped
+    ranking above, and pass 2 re-ranks with an eligibility indicator for candidates
+    whose mixed letter+digit count beats the pass-1 winner's by **at least** the margin
+    (⚠️ not "by more than": the comparison is `mixed <= mixed(winner) - margin`, so an
+    advantage of exactly `margin` fires -- see
+    :func:`_map_ranking_key_margin_gated`). Both passes are *this* function's ranking
+    core, so the tie mask, the localisation check and the accept gate are the shipped
+    ones in both.
+
+    Where pass 1 abstains there is no winner to measure a margin against, so the gate
+    stays silent and the shipped result is returned unchanged. That forecloses
+    ``abstain -> decided`` **by construction**: the gate can never bring a rejected span
+    into the transcript.
+
+    🛑 **But "can only ever move a span from one map to another" is NOT the whole
+    invariant, and it was stated as though it were. There is a THIRD outcome: the gate
+    also changes which code points are emitted RAW.** Pass 2 re-derives the tie state
+    under a different key, and the gated key can only shrink a tie set, never grow it, so
+    it can add or drop the VOL-156 ambiguity mask. Measured on this PR's own headline
+    case, `3719`/`Felix Titling` at M=5: promoting `PCS NEPALI` creates an exact tie with
+    `FONTASY_HIMALI_TT` on ``?``, so `ambiguous` goes from ``{}`` to ``{'?'}`` and the
+    emitted text gains **7 raw `?`** where the shipped `Preeti` reading emitted 7 ``रु``.
+    The reject side of that same mechanism is the `decided -> abstain` case below; the
+    accept side is this.
+
+    🛑 ``decided -> abstain`` needed a guard, and did NOT have one. Raised in review and
+    measured on real spans: across the first 3 CIAA reports, 21,376 distinct spans, 2,015
+    of which pass 1 decides, the gate changes the winner on 275 and turned **2** into
+    abstentions. Synthetic strings cannot find this: 60,000 of them abstained in pass 1,
+    so they never reach the region where the gate does anything.
+
+    ⚠️ **"It dropped text that ships today" overstated it, and the correction matters for
+    how the fixtures are read.** Both witnesses are single SPANS whose font is literally
+    `Preeti`, and `classify_font` routes that name to ``legacy_remap`` -- so
+    `detect_content_legacy_fonts` skips the font and this function is never asked about
+    those spans on the production path, which passes only per-font AGGREGATES of fonts the
+    name classifier calls "correct". On that unit no instance was found at all: 3,148
+    aggregates from 515 PDFs, 104 decided by pass 1, **0** pass-2 abstentions at every
+    margin in {1, 2, 3, 5, 8, 13, 99}. So the invariant was violated at the FUNCTION
+    level on real span text, and the fixtures are function-level regression tests rather
+    than corpus witnesses. The fallback is still right -- an abstaining second pass is not
+    evidence against the first pass's accepted answer -- it is the claimed footprint that
+    was wrong.
+
+    Both were the ACCEPT-GATE path, and neither abstention was a finding about the span:
+
+    * ``/sddWo] ?=%,!!,**,^&).() ...`` -- pass 1 picks Spins and it passes; pass 2
+      promotes Preeti, which FAILS. An unacceptable candidate is not a better one, so
+      there is nothing here to prefer over pass 1's accepted answer.
+    * ``lhNnf lzIff sfof{no, 88]nw'/f`` -- the same map wins BOTH passes. Pass 1 reaches
+      it through the tie path, so it gates the MASKED reading and accepts; pass 2 finds
+      no tie under the gated key, so it gates the UNMASKED reading and rejects. The
+      abstention is a disagreement between the two passes about which text to gate, not
+      evidence about the span.
+
+    So pass 2 falls back to the shipped choice whenever it abstains. That makes "can only
+    ever move a span from one map to another" true in both directions rather than one,
+    which is what the sentence above always claimed.
+    """
+
+    margin = (
+        _mixed_margin_setting() if mixed_margin is _MARGIN_FROM_ENV else mixed_margin
+    )
+    # 🛑 The KEYWORD route must clear the same floor as the env route. `_mixed_margin_
+    # setting` refuses anything below 1 ("unset it to disable the gate"), but the guard
+    # below is `margin is None`, so a caller passing `mixed_margin=0` -- or a negative
+    # int -- went straight through to a value a build is forbidden to use. At M=0 the
+    # pass-1 winner is itself eligible, so the indicator promotes nobody and the gate's
+    # ONLY effect is to break pass-1 ties: that drops the VOL-156 ambiguity mask and
+    # decodes those code points as if the tie had been settled, which is the one thing
+    # the mask exists to prevent.
+    if margin is not None and margin < _MIXED_MARGIN_FLOOR:
+        raise ValidationError(
+            f"mixed_margin={margin!r} must be >= {_MIXED_MARGIN_FLOOR}; "
+            f"pass None to disable the gate"
+        )
+    shipped = _choose_legacy_map_ranked(text, _map_ranking_key, mixed_threshold=None)
+    if margin is None or shipped.map_key is None:
+        return shipped
+
+    _assert_mixed_classes_hold()
+    try:
+        winner_reading = get_converter_for_map(shipped.map_key)(text)
+    except Exception:  # noqa: BLE001 - cannot re-read the winner; leave shipped alone
+        return shipped
+    # The threshold is measured on the winner's UNMASKED decode, which is the same
+    # text each candidate's own `mixed` is measured on, so the comparison is between
+    # like quantities. A negative threshold makes every candidate ineligible, which
+    # is the silent case again and orders exactly as shipped.
+    threshold = float(_mixed_letter_digit_count(winner_reading) - margin)
+    gated = _choose_legacy_map_ranked(
+        text,
+        _map_ranking_key_margin_gated(threshold),
+        mixed_threshold=threshold,
+    )
+    # An abstaining second pass is not evidence against the first pass's accepted
+    # answer -- see the `decided -> abstain` note above, where both measured cases are
+    # artifacts of pass 2 rather than findings about the span. Keeping `shipped` is what
+    # makes this gate strictly a map-to-map move.
+    return gated if gated.map_key is not None else shipped
+
+
+def _choose_legacy_map_ranked(
+    text: str,
+    ranking_key,
+    mixed_threshold: float | None,
+) -> LegacyMapChoice:
+    """The shipped chooser, with the ranking key supplied by the caller.
+
+    Split out of :func:`choose_legacy_map_detailed` so VOL-218's margin gate can run
+    the *real* chooser a second time under a different key -- the tie mask, the
+    localisation check and the accept gate all stay the ones that ship, which is what
+    makes the gate's corpus sweep a measurement of this code path rather than of a
+    reimplementation of it. ``mixed_threshold`` is ``None`` on the shipped path, and
+    then no mixed count is computed at all.
     """
 
     # `tuple[float, ...]`, not a fixed arity: this used to spell out four floats and was
     # left at four when `_map_ranking_key` grew a fifth, so the declared arity became a
-    # second, disagreeing record of how many axes there are. Later commits in this chain
-    # add more. One place to change is `_map_ranking_key`'s own annotation.
+    # second, disagreeing record of how many axes there are. The margin-gated key adds
+    # two more. One place to change is `_map_ranking_key`'s own annotation.
     scored: list[tuple[tuple[float, ...], str, dict[str, float], str]] = []
     for map_key in ALL_MAP_KEYS:
         try:
@@ -1119,29 +3098,95 @@ def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
         except Exception:  # noqa: BLE001 - this map does not fit; try the next
             continue
         validity = _nepali_validity(converted)
+        if mixed_threshold is not None:
+            validity["mixed"] = float(_mixed_letter_digit_count(converted))
         digest = hashlib.blake2b(converted.encode("utf-8"), digest_size=16).hexdigest()
-        scored.append((_map_ranking_key(validity), map_key, validity, digest))
+        scored.append((ranking_key(validity), map_key, validity, digest))
     if not scored:
-        return None, None
+        return LegacyMapChoice(None, None)
 
     # Stable sort on the evidence alone, so candidates level on every axis keep
     # their walk order and the tie below is detected rather than resolved by it.
     scored.sort(key=lambda candidate: candidate[0], reverse=True)
     best_key, best, best_digest = scored[0][1], scored[0][2], scored[0][3]
     tied = [candidate for candidate in scored[1:] if candidate[0] == scored[0][0]]
+
+    masked: frozenset[str] = frozenset()
     if any(candidate[3] != best_digest for candidate in tied):
-        return None, best
+        convert_best = get_converter_for_map(best_key)
+        converters = [get_converter_for_map(candidate[1]) for candidate in tied]
+        masked = _ambiguous_code_points(text, convert_best, converters)
+        try:
+            readings = {
+                _decode_masking(text, convert, masked)
+                for convert in [convert_best, *converters]
+            }
+        except Exception:  # noqa: BLE001 - cannot mask this span; abstain as before
+            return LegacyMapChoice(None, best)
+        if not masked or len(readings) != 1:
+            # The disagreement is not confined to those code points, so masking
+            # them does not remove it. No evidence is left to choose on: abstain.
+            return LegacyMapChoice(None, best)
+        # Gate the text that will actually be emitted, not the unmasked reading.
+        best = _nepali_validity(readings.pop())
 
     if _passes_content_legacy_gate(best):
-        return best_key, best
-    return None, best
+        return LegacyMapChoice(best_key, best, masked)
+    return LegacyMapChoice(None, best)
+
+
+def choose_legacy_map(text: str) -> tuple[str | None, dict[str, float] | None]:
+    """``(map_key, validity)`` for ``text`` — see :func:`choose_legacy_map_detailed`.
+
+    Kept as the two-element view for callers that only need the decision. Anything
+    that goes on to *decode* the span must use
+    :func:`choose_legacy_map_detailed`, because the masked code points are part of
+    the decision and dropping them would decode an ambiguity as if it were settled.
+    """
+
+    choice = choose_legacy_map_detailed(text)
+    return choice.map_key, choice.validity
+
+
+def decode_with_legacy_map(text: str, choice: LegacyMapChoice) -> str:
+    """Decode ``text`` under ``choice``, leaving its ambiguous code points raw."""
+
+    if choice.map_key is None:
+        return text
+    # The GATED converter, and the un-lift, because this is an output path: its only
+    # caller in src/ is the content-legacy branch, which emits final text. Both used to
+    # be applied at that call site, and moving the decode into this helper would have
+    # dropped them -- reintroducing "(1)" -> "ढ१ण्" and leaving 0xF000-lifted bytes
+    # unconverted. choose_legacy_map keeps using the RAW get_converter_for_map to
+    # compare candidates, which is the distinction that matters here.
+    #
+    # 🛑 **The un-lift runs BEFORE the mask, and that order is load-bearing.** It was
+    # the other way round: `_decode_masking` split the still-lifted span, so a masked
+    # code point arriving as `chr(0xF000 + ord(c))` was not recognised as masked at all
+    # -- it went into a run, got un-lifted there, and was decoded with the ranking
+    # winner's map. That is exactly the commitment the mask exists to avoid, and it also
+    # emitted a raw PUA code point for any mask hit that WAS recognised. Un-lifting
+    # first fixes both: the mask sees bare code points, and an unresolvable one is left
+    # as legible ASCII rather than as U+F0xx.
+    #
+    # ⚠️ Reachable, contrary to an earlier form of this comment, which cited `ARAP 11`.
+    # That face classifies `legacy_remap`, so `detect_content_legacy_fonts` skips it and
+    # it can never appear on the content-legacy path. `Symbol`, `SymbolMT` and
+    # `Wingdings` can: measured, all three classify `correct` AND are
+    # `is_symbol_pua_font`, which is precisely the combination that reaches here
+    # carrying lifted bytes.
+    return _decode_masking(
+        unlift_symbol_pua(text),
+        get_output_converter_for_map(choice.map_key),
+        choice.ambiguous,
+    )
 
 
 def detect_content_legacy_fonts(
     doc: fitz.Document,
     skip_pages: frozenset[int] = frozenset(),
-) -> dict[str, str]:
-    """Map base-font name -> legacy map key for mislabeled legacy fonts.
+) -> dict[str, LegacyMapChoice]:
+    """Map base-font name -> the legacy-map choice for mislabeled legacy fonts.
 
     Considers every font the name-based classifier calls "correct" whose
     aggregate span text reads as raw legacy keystrokes and then validates as
@@ -1189,7 +3234,7 @@ def detect_content_legacy_fonts(
                 for span in line["spans"]:
                     text_by_font[str(span["font"])].append(str(span["text"]))
 
-    content_maps: dict[str, str] = {}
+    content_maps: dict[str, LegacyMapChoice] = {}
     for font_name, parts in text_by_font.items():
         # A font the name-based classifier already routes (legacy_remap, or a
         # broken-CMap family) is left to that path; this is only for fonts it
@@ -1199,10 +3244,305 @@ def detect_content_legacy_fonts(
         aggregate = "".join(parts)
         if not _is_probably_legacy_ascii(aggregate):
             continue
-        map_key, _validity = choose_legacy_map(aggregate)
-        if map_key is not None:
-            content_maps[font_name] = map_key
+        choice = choose_legacy_map_detailed(aggregate)
+        if choice.map_key is not None:
+            content_maps[font_name] = choice
     return content_maps
+
+
+#: Strategies :func:`classify_font` names that REWRITE the span's text. Both are decided
+#: from the font name alone, with no per-span veto, so a span of such a font is always
+#: rewritten -- which is what disqualifies it as "text the remap leaves alone".
+_TEXT_REWRITING_STRATEGIES = frozenset({"legacy_remap", "broken_cmap"})
+
+
+@lru_cache(maxsize=None)
+def _rewritten_outside_the_content_remap(font_name: str) -> bool:
+    """Is this font's text rewritten by a path OTHER than the content-legacy remap?
+
+    Three paths are, and :func:`detect_latin_acronym_survivors` must exclude all three:
+    ``legacy_remap``, ``broken_cmap``, and the symbol-PUA map. Only the first was
+    checked originally, which left `Kalimati`/`Lohit`/`Symbol` spans attesting acronym
+    tokens they had no business attesting.
+
+    `is_legacy_font` is kept alongside the strategy test rather than folded into it:
+    the two agree on every name measured, but `is_legacy_font` is the registry the
+    remap itself consults, so it is the authority for that channel and a strategy
+    string is a second opinion about it.
+
+    Cached on the name because this runs per SPAN over the whole document, while the
+    answer depends on nothing but the name.
+    """
+
+    # 🛑 The FULL name, not `_span_base_font(font_name)`. `_match_font` strips the subset
+    # prefix itself, so the wrapper bought nothing and introduced a divergence from the
+    # predicate this mirrors: `classify_font` and `is_latin_cid_font` both pass the full
+    # name to `is_legacy_font`, while `_span_base_font` takes the tail after the FIRST
+    # `+` and can discard the segment carrying the registry key. Measured on
+    # `XXXXXX+Preeti+Bold`: `is_legacy_font(full)` is True and `is_legacy_font(base)` is
+    # False, so the guard admitted a span the remap rewrites -- the same hole this
+    # function exists to close, reopened one name-shape later.
+    return (
+        is_legacy_font(font_name)
+        or classify_font(font_name, "") in _TEXT_REWRITING_STRATEGIES
+        or is_symbol_pua_font(font_name)
+    )
+
+
+def detect_latin_acronym_survivors(
+    doc: fitz.Document,
+    content_legacy_maps: dict[str, LegacyMapChoice] | None,
+    skip_pages: frozenset[int] = frozenset(),
+) -> frozenset[str]:
+    """Acronym-shaped tokens this document carries in text the remap leaves alone.
+
+    This is the document-scope evidence the third Latin veto needs (VOL-180 §8).
+    "Text the remap does not rewrite" is three things, and all three count:
+
+    1. spans of a font that is not a content-legacy candidate **and that no other
+       rewrite path touches either** -- see
+       :func:`_rewritten_outside_the_content_remap`, which is all three of them;
+    2. spans of a run `27d74f0` vetoes (:func:`_reads_as_latin_text`);
+    3. spans `5084fb8` vetoes (:func:`_reads_as_latin_words`).
+
+    ⚠️ **There is now a FOURTH source and it is not text the extractor read -- it is
+    text the extractor GUESSED.** `recover_latin_cid_text` turns a run of undecodable
+    glyph ids into ASCII, and that ASCII flows into this pass like any other span, so a
+    recovered token can enter the survivor vocabulary un-flagged as a guess. This veto
+    is one-sided in the direction "veto more", so a fabricated acronym costs a correct
+    remap of genuine Nepali. Measured false-recovery rate on arbitrary glyph ids:
+    1.5-2.1%.
+
+    Not excluded here because that needs recovery provenance carried on the span, which
+    `get_cid_marked_page_dict` does not record, and because the marked-CID exclusion
+    below already removes the runs that were NOT recovered. Stated so the enumeration
+    above is honest at three-of-four rather than reading as complete.
+
+    A surviving token additionally has to be **pure** -- not itself a legacy keystroke
+    word -- or the vocabulary attests Nepali as English. See VOL-212 and
+    :func:`_decodes_as_legacy_devanagari`.
+
+    (1)'s second clause is the fix for VOL-247's one measured false positive, and it
+    is a whole second remap this pass was blind to. `detect_content_legacy_fonts`
+    only ever considers fonts the name classifier calls ``"correct"``, so a font like
+    `Preeti` is never a *content*-legacy candidate — but
+    :meth:`_convert_span_text` routes it down ``strategy == "legacy_remap"`` to
+    :func:`get_converter`, which rewrites it just the same. Counting those spans as
+    survivors lets a keystroke sequence attest itself: on `11129` the token `PG6L` is
+    `एन्टी` ("anti"), attested from two `Preeti` spans, and the veto it licensed
+    would have shipped **91 characters of fluent Nepali** as raw keystrokes. That is
+    the same self-attestation the strict tokenizer closes for `w/f}6L` -> `6L`;
+    closing it there was necessary and not sufficient.
+
+    🛑 ``legacy_remap`` is **not the only** other rewrite path, and an earlier form of
+    this clause tested `is_legacy_font` alone. That closes the one channel VOL-247
+    measured and leaves two open, both verified live at the time of writing:
+    ``broken_cmap`` (`Kalimati`, `Lohit` — repaired from their embedded tables) and the
+    symbol-PUA map (`is_symbol_pua_font`). `is_legacy_font` is False for all three, so
+    their spans were still attesting. The condition is therefore expressed as "does any
+    non-content path rewrite this font", once, rather than as a list of names to
+    remember to extend.
+
+    Measured over the 74 documents that can fire (`runs/vol126r/`): without this
+    clause 26 fires, 25 genuine and that one false positive; with it 25 fires, 25/25
+    genuine, 0 Nepali touched. No genuine fire depends on name-legacy evidence.
+
+    VOL-212's token clause and (1)'s second clause close the SAME measured fire by
+    different mechanisms and neither subsumes the other: a name-legacy span can yield
+    a token that does not decode as a Devanagari word (token clause admits it, (1)
+    drops it), and a non-name-legacy span can yield one that does ((1) admits it, the
+    token clause drops it). Both are present deliberately. See VOL-197.
+
+    (2) is why this pass has to exist separately and has to run **after** the first
+    veto: `QOC`'s own survivor evidence is *created* by `27d74f0` firing on
+    `Quality Of Care, QOC` two pages earlier. Build the vocabulary before that veto
+    is decided and the axis reaches none of the three residual runs it is for.
+
+    Returns an empty set when the document has no candidate font, which is the
+    common case (1,245 of the 6,236 corpus documents carry one), so the extra
+    text-dict pass is paid only where it can change an outcome.
+    """
+
+    if not content_legacy_maps:
+        return frozenset()
+
+    survivors: set[str] = set()
+    for page_index in range(doc.page_count):
+        if (page_index + 1) in skip_pages:
+            continue
+        page_dict = get_cid_marked_page_dict(doc[page_index])
+        for block in page_dict["blocks"]:
+            if "lines" not in block:
+                continue
+            for line in block["lines"]:
+                spans = list(line["spans"])
+                # Deliberately the DEFAULT (survivor-free) call: this is the state
+                # of the veto before the third axis exists, which is exactly the
+                # evidence the third axis is allowed to read. Passing the set being
+                # built would make the vocabulary self-attesting.
+                flags = _content_legacy_veto_flags(spans, content_legacy_maps)
+                for index, span in enumerate(spans):
+                    text = str(span["text"])
+                    if not text.strip():
+                        continue
+                    font_name = str(span["font"])
+                    # Checked FIRST and unconditionally: each of these rewrites is
+                    # decided per font NAME with no per-span veto, so such a span is
+                    # always rewritten and can never be survivor evidence.
+                    if _rewritten_outside_the_content_remap(font_name):
+                        continue
+                    choice = content_legacy_maps.get(font_name)
+                    rewritten = (
+                        choice is not None
+                        and choice.map_key is not None
+                        and not flags[index]
+                        and not _reads_as_latin_words(text)
+                    )
+                    # 🛑 A CID-MARKED span contributes NOTHING to the vocabulary, and
+                    # this is the asymmetry the run side must not copy.
+                    # `get_cid_marked_page_dict` marks the raw CID of every glyph that
+                    # failed to decode, and `_acronym_tokens` unmarks, recovering
+                    # `chr(cid)`. For a legacy 8-bit face the CID *is* the keystroke byte
+                    # and that recovery is exactly right -- which is why the run side
+                    # keeps it. For a subset font the CIDs are arbitrary glyph indices
+                    # and are not text at all, so any 2-5 consecutive unmapped glyphs
+                    # whose indices happen to fall in {48..57, 65..90} would yield a
+                    # qualifying token and enter the vocabulary as evidence.
+                    #
+                    # Survival is only evidence of Latin if the surviving occurrence is
+                    # itself Latin, and a glyph index is not. Before the unmark was added
+                    # marked input contributed nothing at all, so this restores that
+                    # property on the side where it was load-bearing while keeping the
+                    # unmark on the side where it fixed a real defect.
+                    #
+                    # ⚠️ Mechanism confirmed at the function level; corpus reachability is
+                    # NOT measured (a marked-CID PDF cannot be built from PyMuPDF's core
+                    # fonts), so this is a guard against a proven mechanism with an
+                    # unmeasured footprint, not a repair of a counted defect.
+                    if not rewritten and count_marked_cids(text) == 0:
+                        # VOL-212: survivor purity. Latin *shape* is not enough --
+                        # `PG6L` has it and is `एन्टी`. Drop any token this
+                        # document's own candidate map reads as a Devanagari word. This
+                        # is a SECOND, independent narrowing of the same set: the
+                        # condition above asks "is this text the extractor really read",
+                        # and this asks "is this token really English".
+                        survivors |= {
+                            token
+                            for token in _acronym_tokens(text)
+                            if not _decodes_as_legacy_devanagari(
+                                token, content_legacy_maps
+                            )
+                        }
+    return frozenset(survivors)
+
+
+def _content_legacy_veto_flags(
+    spans: list[dict],
+    # VOL-163: `aa4caff` widened this map's values from a bare map key to a
+    # `LegacyMapChoice`. This helper is `27d74f0`'s and was written against the old
+    # `str`; unwidened it would hand a dataclass to `get_converter_for_map`.
+    content_legacy_maps: dict[str, LegacyMapChoice] | None,
+    acronym_survivors: frozenset[str] = frozenset(),
+) -> list[bool]:
+    """Per span: does the Latin-side veto apply to it? (VOL-138)
+
+    The decision unit is a **maximal run of consecutive same-font spans within one
+    line**, not a single span. PyMuPDF splits spans at a font change, so such a run
+    is what the producer laid down as one contiguous piece of that face — and it is
+    the unit :func:`_reads_as_latin_text`'s thresholds were calibrated on
+    (``runs/vol138/`` in the OAG corpus, via that sweep's ``_runs_of_line``). Judging
+    a lone span instead would ask a 3-character fragment whether it is English.
+
+    Every span of a vetoed run is flagged, so the run is kept or remapped whole.
+    Spans of fonts that are not content-legacy candidates are never flagged.
+    """
+
+    flags = [False] * len(spans)
+    if not content_legacy_maps:
+        return flags
+    start = 0
+    while start < len(spans):
+        font_name = str(spans[start]["font"])
+        end = start + 1
+        while end < len(spans) and str(spans[end]["font"]) == font_name:
+            end += 1
+        choice = content_legacy_maps.get(font_name)
+        if choice is not None and choice.map_key is not None:
+            run_text = "".join(str(spans[index]["text"]) for index in range(start, end))
+            # `spans` come straight from `get_cid_marked_page_dict`, so this run can
+            # carry marked CIDs. Decode the UNMARKED text: a converter passes a marked
+            # codepoint through untouched, so decoding the marked form yields no
+            # Devanagari and silently disables the veto's dictionary axis.
+            raw_text = unmark_cids(run_text)
+            if raw_text.strip():
+                # The unmasked decode is right here: this is the *evidence* for
+                # "would decoding this run produce Nepali words", not the output. The
+                # mask (VOL-156) applies when the span is actually written.
+                #
+                # 🛑 DELIBERATELY UNGUARDED, and this note exists because review proposed
+                # wrapping it in `except Exception: decoded = None`. Two reasons, and the
+                # second is decisive:
+                #
+                #   1. No reachable input raises. Probed all 6 candidate maps against 18
+                #      adversarial inputs -- NUL, embedded NUL, U+FFFD, BMP private use,
+                #      a plane-15 CID mark, an astral emoji, every Latin-1 byte, control
+                #      characters, a combining storm, 2,000 chars -- 0 raises. That run probed 18
+                #      inputs x 6 maps = 108 pairs; the version KEPT as a test carries 16 of the
+                #      18, so it performs 96. Two inputs did not survive the move, and quoting
+                #      108 for the test overstates what CI re-checks.
+                #   2. A blanket `except Exception` here would swallow `ExtractionError`,
+                #      which `choose_legacy_map_detailed` above RE-RAISES on purpose: "a
+                #      missing/broken npttf2utf is a real config error -- surface it
+                #      rather than silently disabling Part B". Catching it here would do
+                #      exactly what that comment forbids, and it would do it one run at a
+                #      time, so a broken install would read as a corpus with no Latin in
+                #      it rather than as a broken install.
+                #
+                # If this ever does need a guard, it must mirror the ranking loop: let
+                # `ExtractionError` through and catch only the rest.
+                # `test_an_extraction_error_from_the_veto_is_not_swallowed` pins that.
+                decoded = get_converter_for_map(choice.map_key)(raw_text)
+                if _reads_as_latin_text(raw_text, decoded):
+                    for index in range(start, end):
+                        flags[index] = True
+                elif acronym_survivors and (
+                    _acronym_tokens(run_text) & acronym_survivors
+                ):
+                    # 🛑 **This axis has NO evidence floor of any kind, and that is a
+                    # deliberate, priced position rather than an oversight.** The fire
+                    # condition is membership alone: one 2-5 character token attested
+                    # once anywhere in the document vetoes every run containing it, and
+                    # the unit of damage is the whole same-font run. Axis 1 requires
+                    # >=16 non-space characters, >=0.88 alpha, >=0.30 vowels and zero
+                    # dictionary hits in the decode; axis 2 requires a >=10%
+                    # function-word share. So the loosest of the three is the one that
+                    # fires on the residue the other two rejected, and VOL-180 §9's
+                    # own flag for this was dropped.
+                    #
+                    # Measured before leaving it: a deterministic 700-PDF sample (11.2%
+                    # of the corpus, seeded) produced **0** axis-3 fires, and the
+                    # obvious fix -- adding axis 1's dictionary condition here, where
+                    # `decoded` is already in scope -- would have changed **0** of them.
+                    # A sample this size cannot bound a rare axis tightly, and that is
+                    # the point: the footprint is small enough that a floor cannot be
+                    # calibrated on it, so adding one would be guessing. If this axis is
+                    # ever widened, the floor is the first thing to add, and axis 1's
+                    # dictionary condition is the cheapest one.
+                    #
+                    # ⚠️ The `elif` is a SHORT-CIRCUIT, not the
+                    # second-pass rule: both branches set the same flags, so
+                    # `if A: flag elif B: flag` is `if A or B: flag` and replacing the
+                    # `elif` with an independent `if` leaves the whole suite green. All
+                    # it buys is skipping one `_acronym_tokens` call when axis 1 already
+                    # fired. §8's second-pass requirement is implemented in
+                    # `detect_latin_acronym_survivors`, which calls this function with
+                    # the DEFAULT survivor-free set -- that is where the ordering claim
+                    # is true and it is documented there. Same run unit either way, so a
+                    # vetoed acronym run is kept whole like any other.
+                    for index in range(start, end):
+                        flags[index] = True
+        start = end
+    return flags
 
 
 class FontBasedStrategy(ExtractionStrategy):
@@ -1263,6 +3603,16 @@ class FontBasedStrategy(ExtractionStrategy):
                 page for page in range(1, doc.page_count + 1) if page not in in_range
             )
             content_legacy_maps = detect_content_legacy_fonts(doc, skip_for_content)
+            # VOL-180's third Latin veto reads document-scope evidence, so its
+            # vocabulary is built once here and shared by every extraction pass
+            # below -- including the broken-CMap repaired pass, which is the same
+            # document's content and must not disagree with the first pass about
+            # which acronyms this document attests.
+            acronym_survivors = detect_latin_acronym_survivors(
+                doc,
+                content_legacy_maps,
+                skip_for_content,
+            )
 
             # On a broken-CMap PDF this document is extracted twice, before and
             # after the ToUnicode repair, and the merge below keeps the repaired
@@ -1287,6 +3637,7 @@ class FontBasedStrategy(ExtractionStrategy):
                 needs_reorder=False,
                 decoy_pages=decoy_pages,
                 content_legacy_maps=content_legacy_maps,
+                acronym_survivors=acronym_survivors,
                 detect_tables=detect_tables,
             )
             if has_broken_cmap:
@@ -1307,6 +3658,7 @@ class FontBasedStrategy(ExtractionStrategy):
                     needs_reorder=needs_reorder,
                     decoy_pages=decoy_pages,
                     content_legacy_maps=content_legacy_maps,
+                    acronym_survivors=acronym_survivors,
                 )
                 tables = repaired_document.tables
                 if not tables:
@@ -1321,6 +3673,7 @@ class FontBasedStrategy(ExtractionStrategy):
                         needs_reorder=False,
                         decoy_pages=decoy_pages,
                         content_legacy_maps=content_legacy_maps,
+                        acronym_survivors=acronym_survivors,
                     ).tables
                 raw_document = _raw_document_from_fragments(
                     _merge_fragment_variants(
@@ -1366,7 +3719,8 @@ class FontBasedStrategy(ExtractionStrategy):
         page_end: int,
         needs_reorder: bool,
         decoy_pages: frozenset[int] = frozenset(),
-        content_legacy_maps: dict[str, str] | None = None,
+        content_legacy_maps: dict[str, LegacyMapChoice] | None = None,
+        acronym_survivors: frozenset[str] = frozenset(),
         detect_tables: bool = True,
     ) -> RawDocument:
         paragraphs: list[str] = []
@@ -1394,13 +3748,20 @@ class FontBasedStrategy(ExtractionStrategy):
                 if "lines" not in block:
                     continue
                 for line_number, line in enumerate(block["lines"]):
-                    for span in line["spans"]:
+                    spans = list(line["spans"])
+                    latin_veto = _content_legacy_veto_flags(
+                        spans,
+                        content_legacy_maps,
+                        acronym_survivors,
+                    )
+                    for span_index, span in enumerate(spans):
                         text = self._convert_span_text(
                             str(span["text"]),
                             str(span["font"]),
                             page_font_strategies,
                             needs_reorder,
                             content_legacy_maps=content_legacy_maps,
+                            skip_content_legacy=latin_veto[span_index],
                         )
                         if not text:
                             continue
@@ -1481,7 +3842,11 @@ class FontBasedStrategy(ExtractionStrategy):
         font_name: str,
         font_strategies: dict[str, str],
         needs_reorder: bool,
-        content_legacy_maps: dict[str, str] | None = None,
+        # VOL-163: `aa4caff` widened the value type from `str` to `LegacyMapChoice`
+        # (it carries the ambiguous code points), and `27d74f0` added the veto flag.
+        # Both, not either.
+        content_legacy_maps: dict[str, LegacyMapChoice] | None = None,
+        skip_content_legacy: bool = False,
     ) -> str:
         base = _span_base_font(font_name)
         strategy = font_strategies.get(base, "correct")
@@ -1490,15 +3855,41 @@ class FontBasedStrategy(ExtractionStrategy):
         # pages are skipped wholesale), so no span-level decoy branch is needed.
         # Content-legacy maps are keyed by full font name (subset prefix included)
         # so only the exact mislabeled font resource is remapped.
-        if content_legacy_maps:
-            content_map_key = content_legacy_maps.get(font_name)
-            if content_map_key is not None:
-                # Output, not scoring, so this takes the gated converter -- same
-                # as the name-based branch below. choose_legacy_map keeps using
-                # the raw get_converter_for_map to compare candidates (VOL-166).
-                return get_output_converter_for_map(content_map_key)(
-                    unlift_symbol_pua(text)
-                )
+        # Three guards now stand between a candidate font and its remap, and VOL-163
+        # composes all of them. They are independent and ordered cheapest-first:
+        #
+        #   1. `skip_content_legacy` -- the structural Latin veto (`27d74f0`),
+        #      decided by `_content_legacy_veto_flags` over this span's whole
+        #      same-font run.
+        #   2. `_reads_as_latin_words` -- the word-identity Latin veto (`5084fb8`),
+        #      decided on this span. Corpus-wide it spares 14 runs (409 chars) that
+        #      (1) misses, all 14 genuine English (runs/vol163/), which is why both
+        #      ship rather than one.
+        #   3. `decode_with_legacy_map` -- the tie mask (`aa4caff`). Where a tie
+        #      survived every evidence axis, only the *disputed* code points stay
+        #      raw; the rest decode, because the tied candidates agree about them
+        #      and decoding an agreed code point commits to nothing (VOL-156).
+        #
+        # 1 and 2 decline the remap entirely; 3 narrows it. A span vetoed by 1 or 2
+        # falls through to the strategy branches below, which return its raw text
+        # unchanged for a font the name classifier calls "correct".
+        if content_legacy_maps and not skip_content_legacy:
+            content_choice = content_legacy_maps.get(font_name)
+            # ⚠️ BOTH halves, matching `_content_legacy_veto_flags`. The parent tested
+            # the map key; when this became a `LegacyMapChoice` wrapper the test was
+            # widened to the wrapper, and a `LegacyMapChoice(map_key=None)` is not None
+            # -- so an UNDECIDED choice entered the branch, `decode_with_legacy_map`
+            # returned the text unchanged, and the `legacy_remap`, `is_symbol_pua_font`
+            # and reorder branches below were all short-circuited for that span. The
+            # sibling helper added in the same commit kept both halves; this one did not.
+            if content_choice is not None and content_choice.map_key is not None:
+                # Candidacy was decided per font over the whole document, so this
+                # span may be genuine Latin that merely shares the face. Leaving
+                # readable English alone is strictly better than remapping it into
+                # well-formed Devanagari that spells nothing.
+                if _reads_as_latin_words(text):
+                    return text
+                return decode_with_legacy_map(text, content_choice)
 
         if strategy == "legacy_remap":
             converter = get_converter(font_name)
