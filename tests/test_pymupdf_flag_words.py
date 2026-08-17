@@ -76,11 +76,14 @@ _EXPLICIT_FLAG_SITES: dict[tuple[str, str, str], str] = {
     "that one-bit difference is the contrast the marking is derived from.",
     (
         "likhit/extractors/numeric_boundaries.py",
-        "collect_page_numeric_boundary_repairs",
+        "collect_page_numeric_boundary_evidence",
         "fitz.TEXT_PRESERVE_WHITESPACE",
     ): "the numeric-boundary repair reads character ORIGINS, so a clipped glyph is "
     "a lost digit, not merely a lost glyph. See the behavioural test at the "
-    "bottom of this file, which is what this site was missing.",
+    "bottom of this file, which is what this site was missing. The site moved here "
+    "from `collect_page_numeric_boundary_repairs`, which is now a thin wrapper that "
+    "returns this function's `.repairs` -- so the behavioural test below still "
+    "reaches it through the wrapper and still bites.",
     (
         "likhit/extractors/digit_companion.py",
         "detect_digit_companion_fonts",

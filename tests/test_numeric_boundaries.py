@@ -1055,7 +1055,11 @@ class _PlainDigitSplitPage:
         lines = [self._line("6976254161032", boundary=7, gap=4.0)]
         if repeat_whole:
             lines.append(self._line("6976254161032", boundary=None, gap=0.0))
-        self._raw = {"blocks": [{"lines": lines}]}
+        # Annotated because `ty` otherwise infers this literal's own narrow
+        # value type and reports `get_text` below as a return-type mismatch.
+        # The two older stubs in this file carry that advisory diagnostic;
+        # this stub is new, so it does not add a third.
+        self._raw: dict[str, object] = {"blocks": [{"lines": lines}]}
 
     def _line(
         self,
