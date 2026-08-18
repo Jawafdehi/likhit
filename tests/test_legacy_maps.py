@@ -702,6 +702,13 @@ _HIMAL_COLLATERAL_NAMES = (
     "Himalli",
     "Himalli,Italic",
     "Himallbold",
+    # The last two come from VOL-693's own census of every "himal"-containing font
+    # name across both corpora (runs/vol693/HIMAL-FONTNAMES-041493f7.txt, all 6,249
+    # PDFs), which found EIGHT such names the registry deliberately does not place.
+    # Six were already pinned here or in _CONTENT_OWNED_FONT_NAMES; these two were
+    # not, so they are added rather than left to a second list saying the same thing.
+    "Himalaya",
+    "Himalayabold",
 )
 
 
