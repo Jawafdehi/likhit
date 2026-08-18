@@ -12,10 +12,12 @@ import re
 
 from likhit.extractors.base import TextFragment
 from likhit.extractors.tables import (
+    _drop_frame_cells,
     _extract_cell_text,
     _same_printed_position,
     detect_page_tables,
 )
+from likhit.models import TableCell
 
 #: `tools/verify_numeric_boundaries.py`'s rule in the OAG corpus: a run this long
 #: is a spliced figure, not a number anyone printed.
@@ -448,3 +450,355 @@ def test_the_origin_tolerance_is_the_boundary_the_corpus_needs() -> None:
 
     assert _same_printed_position(*_shifted(dy0=0.24)) is True
     assert _same_printed_position(*_shifted(dy0=3.723)) is False
+
+
+# ---------------------------------------------------------------------------
+# VOL-744: a ruled FRAME read as a cell makes the page say everything twice.
+#
+# Measured on the OAG corpus: 2,423 pages of 309,231, 634,084 duplicated word
+# tokens across 981 of 6,235 documents, in three successive generations. The
+# witness is `11781__ललितपुर महानगरपालिका.pdf` p105, whose `find_tables()` grid is
+# 17x9 with an `r0 c1` spanning 16x8 -- the whole grid -- carrying all 1,958
+# characters that its 90 inner cells already carry.
+#
+# The scaffolding above (FakeFitzTable and friends) is reused deliberately: the
+# defect is in how `_build_table` reads a grid, so it must be provable without a
+# PDF.
+# ---------------------------------------------------------------------------
+
+
+def framed_register_table() -> FakeFitzTable:
+    """A 3x3 grid whose row 0 holds one cell covering the WHOLE grid.
+
+    This is the shape p105 has. The frame's bbox spans every column and every row,
+    so `_extract_cell_text` reads each inner value into it a second time.
+    """
+    return FakeFitzTable(
+        bbox=(10.0, 60.0, 250.0, 150.0),
+        rows=[
+            # The frame: one cell over the entire table.
+            FakeRow([(10.0, 60.0, 250.0, 150.0)]),
+            FakeRow(
+                [
+                    (10.0, 90.0, 90.0, 120.0),
+                    (90.0, 90.0, 170.0, 120.0),
+                    (170.0, 90.0, 250.0, 120.0),
+                ]
+            ),
+            FakeRow(
+                [
+                    (10.0, 120.0, 90.0, 150.0),
+                    (90.0, 120.0, 170.0, 150.0),
+                    (170.0, 120.0, 250.0, 150.0),
+                ]
+            ),
+        ],
+        col_count=3,
+    )
+
+
+def framed_register_fragments() -> list[TextFragment]:
+    return [
+        fragment("१", 20.0, 100.0, 40.0, 109.0),
+        fragment("सडक मर्मत", 100.0, 100.0, 160.0, 109.0),
+        fragment("२४५९९९", 180.0, 100.0, 240.0, 109.0),
+        fragment("२", 20.0, 130.0, 40.0, 139.0),
+        fragment("खानेपानी", 100.0, 130.0, 160.0, 139.0),
+        fragment("४९३२८०", 180.0, 130.0, 240.0, 139.0),
+    ]
+
+
+def test_a_frame_cell_covering_the_grid_does_not_duplicate_the_page() -> None:
+    """Every value appears exactly ONCE. Before the fix each appeared twice."""
+
+    tables = detect_page_tables(
+        FakePage([framed_register_table()]), framed_register_fragments()
+    )
+
+    assert len(tables) == 1
+    table = tables[0]
+    # The grid itself is unchanged -- the frame is not a detection error to be
+    # re-detected, it is a cell that must not carry text.
+    assert (table.row_count, table.col_count) == (3, 3)
+
+    # Compared as a multiset of whole cell texts, never with `count()` on the
+    # joined string: a Devanagari digit is a SUBSTRING of the longer figures here
+    # (`२` sits inside `२४५९९९` and `४९३२८०`), so substring counting reports 3 for a
+    # correct transcript. My own first version of this assertion failed that way.
+    assert sorted(cell.text for cell in table.cells if cell.text) == sorted(
+        ["१", "सडक मर्मत", "२४५९९९", "२", "खानेपानी", "४९३२८०"]
+    )
+
+    # And the frame is gone rather than merely blanked, so nothing downstream has
+    # to know to skip it.
+    assert not [cell for cell in table.cells if cell.rowspan == 3 and cell.colspan == 3]
+
+
+def test_a_merged_header_that_contains_no_other_cell_survives() -> None:
+    """The control that keeps the rule honest -- a real spanned header is NOT a frame.
+
+    Sizing the rule on `rowspan`/`colspan` would delete this. Containment is what
+    separates them: this header's rectangle holds no other cell, because
+    `find_tables()` gives each grid region to exactly one cell.
+    """
+
+    merged = FakeFitzTable(
+        bbox=(10.0, 60.0, 250.0, 120.0),
+        rows=[
+            FakeRow([(10.0, 60.0, 250.0, 90.0)]),
+            FakeRow([(10.0, 90.0, 130.0, 120.0), (130.0, 90.0, 250.0, 120.0)]),
+        ],
+        col_count=2,
+    )
+    fragments = [
+        fragment("आर्थिक विवरण", 20.0, 70.0, 200.0, 79.0),
+        fragment("शीर्षक", 20.0, 100.0, 60.0, 109.0),
+        fragment("रकम", 140.0, 100.0, 180.0, 109.0),
+    ]
+
+    tables = detect_page_tables(FakePage([merged]), fragments)
+
+    assert len(tables) == 1
+    header = next(cell for cell in tables[0].cells if (cell.row, cell.col) == (0, 0))
+    assert header.colspan == 2
+    assert header.text == "आर्थिक विवरण"
+
+
+def test_only_a_containing_cell_is_dropped_and_equal_rectangles_are_kept() -> None:
+    """The predicate on its own, at each edge that decides a real corpus page."""
+
+    # A frame whose words the inner cells already hold: a duplicate, so it goes.
+    frame = TableCell(row=0, col=0, text="एक दुई", rowspan=3, colspan=3)
+    inner_one = TableCell(row=1, col=1, text="एक")
+    inner_two = TableCell(row=1, col=2, text="दुई")
+    assert _drop_frame_cells([frame, inner_one, inner_two]) == [inner_one, inner_two]
+
+    # Tall-only and wide-only frames both contain, and both must go.
+    tall = TableCell(row=0, col=0, text="एक", rowspan=3, colspan=1)
+    in_column = TableCell(row=1, col=0, text="एक")
+    assert _drop_frame_cells([tall, in_column]) == [in_column]
+    wide = TableCell(row=0, col=0, text="एक", rowspan=1, colspan=3)
+    in_row = TableCell(row=0, col=1, text="एक")
+    assert _drop_frame_cells([wide, in_row]) == [in_row]
+
+    # A span that contains nothing is a merged cell, not a frame.
+    beside = TableCell(row=1, col=0, text="एक")
+    assert _drop_frame_cells([wide, beside]) == [wide, beside]
+
+    # Equal rectangles: neither is the other's frame, so the rule declines to
+    # choose. A different defect with a different fix.
+    twin_a = TableCell(row=0, col=0, text="क", rowspan=2, colspan=2)
+    twin_b = TableCell(row=0, col=0, text="ख", rowspan=2, colspan=2)
+    assert _drop_frame_cells([twin_a, twin_b]) == [twin_a, twin_b]
+
+    # A grid with no spanning cell at all is returned untouched.
+    plain = [TableCell(row=0, col=0, text="क"), TableCell(row=0, col=1, text="ख")]
+    assert _drop_frame_cells(plain) == plain
+
+
+def test_a_spanning_cell_holding_the_only_copy_is_kept() -> None:
+    """Containment alone is not enough, and assuming it was destroyed real pages.
+
+    `11727__भरतपुर महानगरपालिका.pdf` p101 is one 6x11 grid whose spanning cell carries
+    143 of the page's 169 tokens while the 33 cells inside it hold 26 between them --
+    they are largely EMPTY, so the frame is the only copy. Containment-only took that
+    page from 101 distinct words to 21, and did the same to 27 of 1,400 pages on the
+    paired control sweep.
+    """
+
+    frame = TableCell(row=0, col=0, text="कुल जम्मा रकम", rowspan=3, colspan=3)
+    inner = TableCell(row=1, col=1, text="रकम")
+    empty = TableCell(row=1, col=2, text="")
+
+    # `कुल` and `जम्मा` live nowhere else, so the frame is content, not a duplicate.
+    assert _drop_frame_cells([frame, inner, empty]) == [frame, inner, empty]
+
+    # Vary ONE thing: give the inner cells those two words as well, and the same
+    # frame becomes a duplicate and goes.
+    covered = TableCell(row=1, col=1, text="कुल जम्मा रकम")
+    assert _drop_frame_cells([frame, covered, empty]) == [covered, empty]
+
+
+# ---------------------------------------------------------------------------
+# VOL-744, second cause: TWO grids for one printed table -- a coarse one whose
+# few cells swallow the page, and the real one. The frame-cell rule above cannot
+# see this, because the container is a grid of its own rather than a cell.
+#
+# Witness `12788__मालिकार्जुन गाउँपालिका, दार्चुला.pdf` p61: a 5-cell grid over the
+# whole page (0,0,792,612) beside a 629-cell grid at (51.5,30.3,741.1,588.0),
+# both carrying the same 674 tokens over the same 105 distinct words.
+# ---------------------------------------------------------------------------
+
+
+def coarse_and_fine_tables() -> list[FakeFitzTable]:
+    """A coarse 2x3 grid over the page, and the real 2x3 grid inside it.
+
+    The coarse grid's row 0 is one cell covering everything above the footer, so it
+    swallows every value the fine grid resolves; its row 1 is the page-furniture
+    footer, which the fine grid does NOT hold.
+
+    The footer's THIRD column is left empty on purpose. p61's real footer has one
+    (`| 8 of 10 | https://... |  |`), and a rule that strips empty cells as
+    "covered" -- the empty set is a subset of anything -- would delete it and shift
+    the row a column left.
+    """
+    coarse = FakeFitzTable(
+        bbox=(0.0, 0.0, 300.0, 200.0),
+        rows=[
+            FakeRow([(0.0, 0.0, 300.0, 160.0)]),
+            FakeRow(
+                [
+                    (0.0, 160.0, 100.0, 200.0),
+                    (100.0, 160.0, 200.0, 200.0),
+                    (200.0, 160.0, 300.0, 200.0),
+                ]
+            ),
+        ],
+        col_count=3,
+    )
+    fine = FakeFitzTable(
+        bbox=(10.0, 10.0, 290.0, 150.0),
+        rows=[
+            FakeRow(
+                [
+                    (10.0, 10.0, 100.0, 80.0),
+                    (100.0, 10.0, 190.0, 80.0),
+                    (190.0, 10.0, 290.0, 80.0),
+                ]
+            ),
+            FakeRow(
+                [
+                    (10.0, 80.0, 100.0, 150.0),
+                    (100.0, 80.0, 190.0, 150.0),
+                    (190.0, 80.0, 290.0, 150.0),
+                ]
+            ),
+        ],
+        col_count=3,
+    )
+    return [coarse, fine]
+
+
+FINE_VALUES = ("क्र", "विद्यालय", "शिक्षक", "१", "श्री", "४")
+
+
+def coarse_and_fine_fragments() -> list[TextFragment]:
+    return [
+        fragment("क्र", 20.0, 20.0, 60.0, 29.0),
+        fragment("विद्यालय", 110.0, 20.0, 170.0, 29.0),
+        fragment("शिक्षक", 200.0, 20.0, 260.0, 29.0),
+        fragment("१", 20.0, 90.0, 60.0, 99.0),
+        fragment("श्री", 110.0, 90.0, 170.0, 99.0),
+        fragment("४", 200.0, 90.0, 260.0, 99.0),
+        # The footer, which only the coarse grid covers.
+        fragment("8 of 10", 5.0, 170.0, 80.0, 179.0),
+        fragment("https://nams.oag.gov.np Page 58 of 64", 105.0, 170.0, 195.0, 179.0),
+    ]
+
+
+def test_a_coarse_grid_over_a_finer_one_does_not_duplicate_the_page() -> None:
+    tables = detect_page_tables(
+        FakePage(coarse_and_fine_tables()), coarse_and_fine_fragments()
+    )
+
+    assert len(tables) == 2
+    texts = [cell.text for table in tables for cell in table.cells if cell.text.strip()]
+    for value in FINE_VALUES:
+        assert sum(1 for text in texts if text == value) == 1, f"{value!r} in {texts}"
+    # The swallowing cell held every value at once, so no surviving cell may hold
+    # more than one of them.
+    assert not [
+        text for text in texts if sum(value in text for value in FINE_VALUES) > 1
+    ]
+
+
+def test_the_coarse_grid_keeps_the_page_footer_it_alone_holds() -> None:
+    """Dropping the container WHOLE was tried and lost this row. It must survive.
+
+    The footer is the only record of which printed page a transcript page came from,
+    and the fine grid does not carry it.
+    """
+
+    tables = detect_page_tables(
+        FakePage(coarse_and_fine_tables()), coarse_and_fine_fragments()
+    )
+
+    coarse = tables[0]
+    texts = [cell.text for cell in coarse.cells]
+    assert "8 of 10" in texts
+    assert "https://nams.oag.gov.np Page 58 of 64" in texts
+    # And the footer's empty third cell, or the row loses a column.
+    assert sum(1 for text in texts if not text.strip()) == 1
+    assert len(coarse.cells) == 3
+
+
+def test_a_container_holding_content_of_its_own_is_left_alone() -> None:
+    """The condition that makes the strip safe, exercised on its own.
+
+    Vary ONE thing against the fixture above: the swallowing cell also holds a word
+    the fine grid does not (a total). Its content is then no longer covered, so it
+    is not a duplicate and must be kept whole -- otherwise the total is deleted.
+    """
+
+    fragments = [
+        *coarse_and_fine_fragments(),
+        # Inside the coarse row-0 cell, outside the fine grid's region.
+        fragment("जम्मा", 292.0, 20.0, 299.0, 29.0),
+    ]
+
+    tables = detect_page_tables(FakePage(coarse_and_fine_tables()), fragments)
+
+    joined = "\n".join(cell.text for table in tables for cell in table.cells)
+    assert "जम्मा" in joined
+    # Kept whole: the swallowing cell is still there, so every value appears twice.
+    texts = [cell.text for table in tables for cell in table.cells]
+    assert any("क्र" in text and "शिक्षक" in text for text in texts)
+
+
+def test_a_grid_no_coarser_than_the_one_it_encloses_is_left_alone() -> None:
+    """The `>=` boundary of the coarser guard, on a genuinely nested table.
+
+    `outer` encloses `inner` and its bottom-right cell holds exactly `inner`'s four
+    values, so the coverage rule ALONE would strip it. What stops that is the coarser
+    guard: 4 cells against 4 is not coarser, so neither grid strips the other.
+
+    ⚠️ The first version of this test gave `inner` `col_count=1`, which
+    `_is_accepted_table` rejects outright -- so `outer` contained nothing, the guard was
+    never reached, and the test passed with the guard mutated away. Both grids must be
+    ACCEPTED for this to test anything.
+    """
+
+    outer = FakeFitzTable(
+        bbox=(0.0, 0.0, 300.0, 200.0),
+        rows=[
+            FakeRow([(0.0, 0.0, 150.0, 100.0), (150.0, 0.0, 300.0, 100.0)]),
+            FakeRow([(0.0, 100.0, 150.0, 200.0), (150.0, 100.0, 300.0, 200.0)]),
+        ],
+        col_count=2,
+    )
+    inner = FakeFitzTable(
+        bbox=(160.0, 110.0, 290.0, 190.0),
+        rows=[
+            FakeRow([(160.0, 110.0, 225.0, 150.0), (225.0, 110.0, 290.0, 150.0)]),
+            FakeRow([(160.0, 150.0, 225.0, 190.0), (225.0, 150.0, 290.0, 190.0)]),
+        ],
+        col_count=2,
+    )
+    fragments = [
+        fragment("क", 10.0, 20.0, 60.0, 29.0),
+        fragment("ख", 160.0, 20.0, 210.0, 29.0),
+        fragment("ग", 10.0, 120.0, 60.0, 129.0),
+        fragment("घ", 170.0, 120.0, 220.0, 129.0),
+        fragment("ङ", 235.0, 120.0, 285.0, 129.0),
+        fragment("च", 170.0, 160.0, 220.0, 169.0),
+        fragment("छ", 235.0, 160.0, 285.0, 169.0),
+    ]
+
+    tables = detect_page_tables(FakePage([outer, inner]), fragments)
+
+    assert len(tables) == 2
+    assert [len(table.cells) for table in tables] == [4, 4]
+    outer_built = tables[0]
+    assert sorted(cell.text for cell in outer_built.cells) == sorted(
+        ["क", "ख", "ग", "घ ङ\nच छ"]
+    )

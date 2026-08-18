@@ -468,6 +468,22 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "Above it: two distinct CIAA list items sit 3.723pt apart at the same x "
         "(2077-78 p256), and suppressing those deletes a real bullet",
     ),
+    (
+        "likhit/extractors/tables.py",
+        "_REGION_TOLERANCE",
+    ): (
+        3.0,
+        "points of slack when asking whether one detected table's REGION encloses "
+        "another's (VOL-744's container-table rule). ROLE ONLY -- INERT ON THIS "
+        "CORPUS AT ANY VALUE UNDER ~24pt, and said so rather than dressed up as a "
+        "calibration. Measured over 880 multi-table pairs on 500 pages "
+        "(runs/vol744-fix-d22f13e13bfe9d0d/REGION-SLACK-*.json): the containment "
+        "margin separates by TENS of points, never fractions -- contained pairs sit "
+        "at +24.0 and the 440 non-contained pairs reach no closer than -36.558. So "
+        "no pair on this corpus falls within 3pt of the boundary and the value is "
+        "not doing work here; it is kept nonzero for a foundry whose ruled border "
+        "strokes put the two grids a hair apart, which is what a zero would refuse",
+    ),
     # -- page furniture ------------------------------------------------------- #
     (
         "likhit/renderers/markdown.py",
