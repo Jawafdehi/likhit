@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import redirect_stdout
+from dataclasses import replace
 import io
 import re
 
