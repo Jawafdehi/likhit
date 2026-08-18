@@ -30,6 +30,10 @@ from likhit.extractors.kalimati import (
     normalize_devanagari_spacing,
     reorder_devanagari,
 )
+from likhit.extractors.latin_structure import (
+    _LEGACY_KEYSTROKE_SYMBOLS,
+    reads_as_latin_structure,
+)
 from likhit.extractors.legacy_maps import (
     ALL_MAP_KEYS,
     get_converter,
@@ -2040,9 +2044,6 @@ _LATIN_VETO_MIN_CHARS = 13  # non-space characters, not raw length -- see below
 _LATIN_VETO_MIN_CHARS_UPPER = 3
 _LATIN_VETO_MIN_ALPHA_RATIO = 0.88
 _LATIN_VETO_MIN_VOWEL_RATIO = 0.30
-# ASCII a legacy 8-bit Devanagari layout uses as glyph codes and English does not
-# use inside running text. Their presence is a sufficient condition for keystrokes.
-_LEGACY_KEYSTROKE_SYMBOLS = frozenset("][{}|~^@+_=")
 _ASCII_VOWELS = frozenset("aeiouAEIOU")
 _MEDIAL_CAPS = re.compile(r"[a-z][A-Z]")
 
@@ -3625,6 +3626,15 @@ def detect_latin_acronym_survivors(
     ``_LATIN_VETO_MIN_CHARS_UPPER``**, so the third axis's calibration cannot be moved
     by that constant. Pinned by test.
 
+    **(2)'s second narrowing, VOL-446.** The vowel-structure axis is a further
+    relaxation of `27d74f0` and is withheld from this vocabulary for the same reason,
+    via ``apply_structure_axis=False``: a run certified only by its word shape is also
+    residue this axis exists to adjudicate, and admitting it would make the third axis's
+    calibration movable by ``latin_structure.STRUCTURE_FLOOR`` and by a 588-type
+    corpus-derived word list. The two flags are separate rather than one ``strict``
+    switch so that a future fourth relaxation cannot inherit either decision by
+    default. Measured both ways over all 6,236 documents in ``runs/vol446/``.
+
     This is a narrowing of the evidence, not of the veto. VOL-321's own 34
     certifications are untouched: they are decided by
     :func:`_content_legacy_veto_flags`'s shipping call, which leaves the relaxation
@@ -3660,10 +3670,18 @@ def detect_latin_acronym_survivors(
                 # it is not the same one (VOL-363). The survivor-free call closes
                 # attestation from the set being built; this closes attestation from
                 # a run whose only claim to Latin is that it is short and all-caps.
+                #
+                # `apply_structure_axis=False` is the THIRD, and it is VOL-446's
+                # (a run whose only claim to Latin is its word shape). Each relaxation
+                # of the veto has to be withheld here explicitly or it re-enters this
+                # vocabulary; that is why these are separate flags and not one
+                # `strict=True`, so adding a fourth cannot silently inherit either
+                # decision.
                 flags = _content_legacy_veto_flags(
                     spans,
                     content_legacy_maps,
                     relax_all_upper=False,
+                    apply_structure_axis=False,
                 )
                 for index, span in enumerate(spans):
                     text = str(span["text"])
@@ -3729,6 +3747,7 @@ def _content_legacy_veto_flags(
     acronym_survivors: frozenset[str] = frozenset(),
     *,
     relax_all_upper: bool = True,
+    apply_structure_axis: bool = True,
 ) -> list[bool]:
     """Per span: does the Latin-side veto apply to it? (VOL-138)
 
@@ -3746,6 +3765,17 @@ def _content_legacy_veto_flags(
     for exactly one caller, :func:`detect_latin_acronym_survivors`. VOL-363: it keeps
     the third axis's own evidence independent of the all-upper floor. Every shipping
     caller leaves it ``True``, so the write path is unchanged.
+
+    ``apply_structure_axis`` is VOL-446's vowel-structure veto
+    (:func:`likhit.extractors.latin_structure.reads_as_latin_structure`) and is
+    ``False`` for the same one caller, for the same reason generalised: a veto
+    relaxation must not be able to move the acronym axis's calibration. VOL-363 closed
+    that route for the all-upper floor; leaving this one open would reopen it through a
+    different door, because a structure-certified run's tokens would enter the survivor
+    vocabulary and licence acronym fires elsewhere in the document. The cost of
+    withholding it is **measured, not assumed**: ``runs/vol446/`` in the OAG corpus
+    sweeps the survivor vocabulary both ways over all 6,236 documents and records the
+    delta. Every shipping caller leaves it ``True``.
     """
 
     flags = [False] * len(spans)
@@ -3796,6 +3826,17 @@ def _content_legacy_veto_flags(
                 if _reads_as_latin_text(
                     raw_text, decoded, relax_all_upper=relax_all_upper
                 ):
+                    for index in range(start, end):
+                        flags[index] = True
+                elif apply_structure_axis and reads_as_latin_structure(run_text):
+                    # VOL-446's vowel-structure axis, the THIRD structural veto and
+                    # one-sided like the other two, so the three compose as a
+                    # disjunction and the branch order below cannot change an outcome:
+                    # every branch here flags the same whole run. It sits after
+                    # `_reads_as_latin_text` because that veto is the calibrated one and
+                    # this is the recall extension, and before the acronym axis so
+                    # VOL-180 §8's "second pass over runs the structural vetoes have
+                    # declined" stays true of both of them.
                     for index in range(start, end):
                         flags[index] = True
                 elif acronym_survivors and (

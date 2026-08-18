@@ -332,9 +332,150 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "likhit/extractors/font_based.py",
         "_LATIN_VETO_MIN_CHARS",
     ): (
-        16,
+        13,
         "absolute floor on the run, so a two-word fragment cannot veto a document's "
-        "decode on volume alone",
+        "decode on volume alone. VOL-146 moved it from 16, which is the ONE line of "
+        "behaviour in that change; 13 is the lowest value that still admits every run "
+        "the read census cleared, and 12 would abandon real Nepali -- both edges are "
+        "pinned in tests/test_content_legacy_latin_veto.py",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "_LATIN_VETO_MIN_CHARS_UPPER",
+    ): (
+        3,
+        "VOL-321: the all-upper relaxation of the floor above, and it relaxes ONLY "
+        "that floor and ONLY for runs whose letters are all upper case. 3 because an "
+        "acronym is 2-4 characters and 16 put the whole class out of both Latin "
+        "vetoes' reach -- the word veto declines it too, at function-word share 0.0 "
+        "against its 0.1 floor. Its own output must not become acronym-axis evidence: "
+        "see `relax_all_upper` (VOL-363)",
+    ),
+    # -- public constants, invisible to this guard until the scan was widened ---- #
+    (
+        "likhit/extractors/docx_based.py",
+        "SOFFICE_TIMEOUT_SECONDS",
+    ): (
+        120,
+        "a bound, not a calibration: LibreOffice HANGS rather than failing on some "
+        "malformed .doc inputs and this runs inside a queue consumer, so the "
+        "conversion has to be bounded. Raising it makes a hung consumer wait longer; "
+        "lowering it fails slow-but-valid documents",
+    ),
+    (
+        "likhit/extractors/kalimati_reference.py",
+        "REFERENCE_UNITS_PER_EM",
+    ): (
+        2048,
+        "a FACT about the reference font, not a tunable. Outline digests are computed "
+        "from raw font-unit coordinates, so they are comparable only at this em square "
+        "-- changing the number does not rescale anything, it invalidates every digest",
+    ),
+    (
+        "likhit/extractors/kalimati_reference.py",
+        "REFERENCE_GLYPH_COUNT",
+    ): (
+        696,
+        "provenance only, and that IS the point: nothing is keyed on glyph count, so a "
+        "subset reporting fewer is not an error. Recorded so a re-vendored reference "
+        "font is noticed",
+    ),
+    (
+        "likhit/extractors/lohit.py",
+        "EXPECTED_UNITS_PER_EM",
+    ): (
+        1024,
+        "as REFERENCE_UNITS_PER_EM above, for the Lohit table: a property of the build "
+        "the table was derived from, fingerprinted alongside name IDs 3 and 5",
+    ),
+    (
+        "likhit/extractors/lohit.py",
+        "UPSTREAM_GLYPH_COUNT",
+    ): (
+        407,
+        "the upstream font's glyph count. A subset truncates the tail but never "
+        "reorders, so a real font may report FEWER and never more -- the asymmetry is "
+        "the check, not the number",
+    ),
+    (
+        "likhit/extractors/pua_maps.py",
+        "SYMBOL_PUA_LIFT",
+    ): (
+        0xF000,
+        "a FORMAT CONSTANT, not a threshold: the offset a symbol-font ToUnicode CMap "
+        "conventionally applies to a single-byte code, and the same offset a legacy "
+        "Devanagari font's symbol-style (3,0) cmap applies. There is no other value it "
+        "could take",
+    ),
+    (
+        "likhit/extractors/font_based.py",
+        "SPAN_GAP_THRESHOLD",
+    ): (
+        0.75,
+        "ROLE ONLY, and it says so: a horizontal gap in PDF points above which two "
+        "adjacent spans are joined with a space rather than concatenated. It arrived "
+        "undocumented and no sweep chose it; 0.75pt is well under a character width at "
+        "every body size in these corpora, so it fires on a real gap and not on "
+        "kerning. A run that wants to MOVE it owes a calibration this entry does not "
+        "have",
+    ),
+    (
+        "likhit/extractors/latin_structure.py",
+        "STRUCTURE_FLOOR",
+    ): (
+        25,
+        "VOL-446: length floor for the ungated arm of the vowel-structure axis",
+    ),
+    (
+        "likhit/extractors/latin_structure.py",
+        "GATED_FLOOR",
+    ): (
+        12,
+        "VOL-446: the lower floor, reachable only when VOCABULARY_SHARE of the run's "
+        "tokens are in the gate vocabulary -- the pair is the rule, so neither number "
+        "means anything alone",
+    ),
+    (
+        "likhit/extractors/latin_structure.py",
+        "VOCABULARY_SHARE",
+    ): (
+        0.60,
+        "VOL-446: the share of length>=TOKEN_MIN_LENGTH [A-Za-z]+ tokens that must be "
+        "in the gate vocabulary before GATED_FLOOR applies",
+    ),
+    (
+        "likhit/extractors/latin_structure.py",
+        "TOKEN_MIN_LENGTH",
+    ): (
+        3,
+        "VOL-446: shorter tokens are excluded from the vocabulary share, because a "
+        "one- or two-letter token carries no word shape to measure",
+    ),
+    (
+        "likhit/extractors/latin_structure.py",
+        "MIN_TOKENS",
+    ): (
+        3,
+        "VOL-446: fewer tokens than this is not a phrase, and the axis measures word "
+        "SHAPE across a phrase rather than letter density in one token",
+    ),
+    (
+        "likhit/extractors/latin_structure.py",
+        "MIN_ALPHA_RATIO",
+    ): (
+        0.6,
+        "VOL-446: deliberately far below `font_based._LATIN_VETO_MIN_ALPHA_RATIO` "
+        "(0.88) -- reaching English prose that carries punctuation and digits is the "
+        "whole reason this axis exists",
+    ),
+    (
+        "likhit/extractors/latin_structure.py",
+        "MIN_VOWEL_TOKEN_SHARE",
+    ): (
+        0.9,
+        "VOL-446: share of tokens that must contain an ASCII vowel. High on purpose: a "
+        "legacy keystroke run is consonant-dense, so this is the axis's main "
+        "discriminator",
     ),
     (
         "likhit/extractors/font_based.py",
@@ -613,10 +754,19 @@ def _iter_module_level_constants() -> list[tuple[str, str, float]]:
             if not isinstance(node, ast.Assign) or len(node.targets) != 1:
                 continue
             target = node.targets[0]
-            if not isinstance(target, ast.Name) or not target.id.startswith("_"):
+            if not isinstance(target, ast.Name):
                 continue
             if not target.id.isupper() and not target.id.lstrip("_").isupper():
                 continue
+            # 🛑 A PUBLIC constant is scanned too, and it did not used to be. The
+            # filter here was `target.id.startswith("_")`, so every SCREAMING_CASE
+            # name without a leading underscore was invisible to this guard --
+            # measured, 14 of them across src/, and 7 arrived in one change
+            # (VOL-446's `latin_structure`) whose whole content is calibration.
+            # A tuning constant does not become safe to move by being importable;
+            # if anything the opposite, because a public name may have callers
+            # outside this repo. Nothing about the hazard depends on the
+            # underscore, so nothing about the scan does either.
             value = node.value
             if isinstance(value, ast.Constant) and isinstance(
                 value.value, (int, float)
