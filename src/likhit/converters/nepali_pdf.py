@@ -28,8 +28,8 @@ from likhit.errors import ExtractionError
 from likhit.extractors.base import RawDocument, TextFragment
 from likhit.extractors.font_based import FontBasedStrategy, parse_page_range
 from likhit.extractors.numeric_boundaries import (
-    NumericBoundaryRepair,
-    collect_document_numeric_boundary_repairs,
+    NumericBoundaryEvidence,
+    collect_document_numeric_boundary_evidence,
     repair_markdown_numeric_boundaries,
     requires_geometry_aware_candidate,
 )
@@ -155,7 +155,7 @@ class NepaliPdfConverter(DocumentConverter):
         if isinstance(pages, str) and pages.strip():
             raw = _slice_pdf_to_requested_pages(raw, pages)
 
-        numeric_repairs = _try_collect_numeric_boundary_repairs(raw)
+        numeric_evidence = _try_collect_numeric_boundary_evidence(raw)
         prefetched_likhit: DocumentConverterResult | None = None
         force_ocr = False
         # Set by EITHER likhit attempt below, and CLEARED by a likhit attempt that
@@ -184,7 +184,7 @@ class NepaliPdfConverter(DocumentConverter):
             if likhit_result is not None and not likhit_needs_ocr:
                 return _repair_result_numeric_boundaries(
                     likhit_result,
-                    numeric_repairs,
+                    numeric_evidence,
                 )
             elif likhit_needs_ocr:
                 # likhit dropped scanned/decoy pages; keep its result as a
@@ -204,10 +204,10 @@ class NepaliPdfConverter(DocumentConverter):
         logger.info("PDF converter: running default MarkItDown PDF extraction first.")
         default_result = _repair_result_numeric_boundaries(
             _run_default_pdf_converter(raw, stream_info),
-            numeric_repairs,
+            numeric_evidence,
         )
         prefer_geometry_aware = requires_geometry_aware_candidate(
-            numeric_repairs,
+            numeric_evidence.repairs,
             markdown=default_result.markdown,
         )
         candidates: list[tuple[DocumentConverterResult, bool]] = [
@@ -230,7 +230,7 @@ class NepaliPdfConverter(DocumentConverter):
                     (
                         _repair_result_numeric_boundaries(
                             ocr_result,
-                            numeric_repairs,
+                            numeric_evidence,
                         ),
                         False,
                     )
@@ -251,7 +251,7 @@ class NepaliPdfConverter(DocumentConverter):
                 (
                     _repair_result_numeric_boundaries(
                         prefetched_likhit,
-                        numeric_repairs,
+                        numeric_evidence,
                     ),
                     True,
                 )
@@ -277,7 +277,7 @@ class NepaliPdfConverter(DocumentConverter):
                     (
                         _repair_result_numeric_boundaries(
                             likhit_result,
-                            numeric_repairs,
+                            numeric_evidence,
                         ),
                         True,
                     )
@@ -303,7 +303,7 @@ class NepaliPdfConverter(DocumentConverter):
                 _markdown_quality_score(result.markdown),
                 geometry_aware
                 or not requires_geometry_aware_candidate(
-                    numeric_repairs,
+                    numeric_evidence.repairs,
                     markdown=result.markdown,
                 ),
             )
@@ -327,23 +327,27 @@ class NepaliPdfConverter(DocumentConverter):
         return _stamp_degraded(best_result, degraded_reason)
 
 
-def _try_collect_numeric_boundary_repairs(
+def _try_collect_numeric_boundary_evidence(
     raw: bytes,
-) -> list[NumericBoundaryRepair]:
+) -> NumericBoundaryEvidence:
     try:
-        return collect_document_numeric_boundary_repairs(raw)
+        return collect_document_numeric_boundary_evidence(raw)
     except Exception as exc:  # noqa: BLE001 - degrade to no repairs, never fail
         logger.debug("PDF converter: numeric boundary analysis failed: %s", exc)
-        return []
+        return NumericBoundaryEvidence((), frozenset())
 
 
 def _repair_result_numeric_boundaries(
     result: DocumentConverterResult,
-    repairs: list[NumericBoundaryRepair],
+    evidence: NumericBoundaryEvidence,
 ) -> DocumentConverterResult:
-    if not repairs:
+    if not evidence.repairs:
         return result
-    markdown = repair_markdown_numeric_boundaries(result.markdown, repairs)
+    markdown = repair_markdown_numeric_boundaries(
+        result.markdown,
+        evidence.repairs,
+        unsplit_runs=evidence.unsplit_runs,
+    )
     if markdown == result.markdown:
         return result
     return DocumentConverterResult(markdown=markdown, title=result.title)

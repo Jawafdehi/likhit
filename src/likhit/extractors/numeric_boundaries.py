@@ -73,6 +73,20 @@ class NumericBoundaryRepair:
 
 
 @dataclass(frozen=True)
+class NumericBoundaryEvidence:
+    """What geometry proved, and which runs it examined and left whole.
+
+    `unsplit_runs` holds the canonical text of every maximal numeric run no
+    repair covers. A merged value absent from it never appeared in the source
+    as one cell, so every occurrence of it in the rendered Markdown is the
+    proven merge -- however many times the renderer emitted the line.
+    """
+
+    repairs: tuple[NumericBoundaryRepair, ...]
+    unsplit_runs: frozenset[str]
+
+
+@dataclass(frozen=True)
 class _Character:
     text: str
     origin_x: float
@@ -89,10 +103,10 @@ class _VerticalEdge:
     y1: float
 
 
-def collect_document_numeric_boundary_repairs(
+def collect_document_numeric_boundary_evidence(
     source: bytes | str | Path,
-) -> list[NumericBoundaryRepair]:
-    """Collect numeric boundary repairs from every page in a PDF."""
+) -> NumericBoundaryEvidence:
+    """Collect repairs and unsplit runs from every page in a PDF."""
 
     if isinstance(source, bytes):
         doc = fitz.open(stream=source, filetype="pdf")
@@ -101,16 +115,25 @@ def collect_document_numeric_boundary_repairs(
 
     try:
         repairs: list[NumericBoundaryRepair] = []
+        unsplit_runs: set[str] = set()
         for page_index in range(doc.page_count):
-            repairs.extend(
-                collect_page_numeric_boundary_repairs(
-                    doc[page_index],
-                    page_number=page_index + 1,
-                )
+            evidence = collect_page_numeric_boundary_evidence(
+                doc[page_index],
+                page_number=page_index + 1,
             )
-        return repairs
+            repairs.extend(evidence.repairs)
+            unsplit_runs |= evidence.unsplit_runs
+        return NumericBoundaryEvidence(tuple(repairs), frozenset(unsplit_runs))
     finally:
         doc.close()
+
+
+def collect_document_numeric_boundary_repairs(
+    source: bytes | str | Path,
+) -> list[NumericBoundaryRepair]:
+    """Collect numeric boundary repairs from every page in a PDF."""
+
+    return list(collect_document_numeric_boundary_evidence(source).repairs)
 
 
 def collect_page_numeric_boundary_repairs(
@@ -120,8 +143,21 @@ def collect_page_numeric_boundary_repairs(
 ) -> list[NumericBoundaryRepair]:
     """Find erased numeric separators using character origins and PDF rulings."""
 
+    return list(
+        collect_page_numeric_boundary_evidence(page, page_number=page_number).repairs
+    )
+
+
+def collect_page_numeric_boundary_evidence(
+    page: object,
+    *,
+    page_number: int | None = None,
+) -> NumericBoundaryEvidence:
+    """Find erased numeric separators using character origins and PDF rulings."""
+
+    empty = NumericBoundaryEvidence((), frozenset())
     if not hasattr(page, "get_text") or not hasattr(page, "get_cdrawings"):
-        return []
+        return empty
 
     try:
         # Non-additive on purpose, same as `font_based.py`'s two passes: OR-ing
@@ -130,11 +166,11 @@ def collect_page_numeric_boundary_repairs(
         # repair reads character origins, so a clipped glyph is a lost boundary.
         raw = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
     except (AttributeError, RuntimeError, TypeError, ValueError):
-        return []
+        return empty
 
     lines = _extract_lines(raw)
     if not lines:
-        return []
+        return empty
 
     edges = _extract_vertical_edges(page)
     expected_advances = _expected_digit_advances(lines)
@@ -143,8 +179,16 @@ def collect_page_numeric_boundary_repairs(
         resolved_page_number = int(getattr(page, "number", 0)) + 1
 
     repairs: list[NumericBoundaryRepair] = []
+    run_positions: dict[str, set[tuple[int, int, int]]] = defaultdict(set)
     for block_number, line_number, characters in lines:
         line_text = "".join(character.text for character in characters)
+        for run_start, run_end in _maximal_numeric_runs(characters):
+            run_text = "".join(
+                character.text for character in characters[run_start:run_end]
+            )
+            run_positions[_canonical_numeric_text(run_text)].add(
+                (block_number, line_number, run_start)
+            )
         rule_cuts = _rule_boundary_cuts(characters, edges)
         rule_cuts, preferred_runs = _prefer_numeric_span_cuts(
             characters,
@@ -187,7 +231,36 @@ def collect_page_numeric_boundary_repairs(
             )
         )
 
-    return _deduplicate_repairs(repairs)
+    deduplicated = _deduplicate_repairs(repairs)
+    repaired_positions: dict[str, set[tuple[int, int, int]]] = defaultdict(set)
+    for repair in deduplicated:
+        repaired_positions[_canonical_numeric_text(repair.merged_text)].add(
+            (repair.block_number, repair.line_number, repair.start_index)
+        )
+    unsplit_runs = frozenset(
+        text
+        for text, positions in run_positions.items()
+        if positions - repaired_positions[text]
+    )
+    return NumericBoundaryEvidence(tuple(deduplicated), unsplit_runs)
+
+
+def _maximal_numeric_runs(
+    characters: list[_Character],
+) -> list[tuple[int, int]]:
+    """Bound every maximal run of digits and numeric punctuation in a line."""
+
+    runs: list[tuple[int, int]] = []
+    index = 0
+    while index < len(characters):
+        if characters[index].text not in _NUMERIC_CHARS:
+            index += 1
+            continue
+        start = index
+        while index < len(characters) and characters[index].text in _NUMERIC_CHARS:
+            index += 1
+        runs.append((start, index))
+    return runs
 
 
 def apply_line_numeric_boundary_repairs(
@@ -262,8 +335,17 @@ def collect_page_repairs_by_line(
 def repair_markdown_numeric_boundaries(
     markdown: str,
     repairs: Iterable[NumericBoundaryRepair],
+    *,
+    unsplit_runs: frozenset[str] | None = None,
 ) -> str:
-    """Repair unambiguous merged values in a converter's Markdown output."""
+    """Repair unambiguous merged values in a converter's Markdown output.
+
+    Pass `unsplit_runs` from `NumericBoundaryEvidence` to decide safety from
+    the source geometry rather than from how many times the merged value
+    appears in the Markdown. Occurrence counting cannot tell a renderer that
+    emitted one table twice from a second, legitimately unmerged value that
+    happens to carry the same digits, and declines both.
+    """
 
     repairs = list(repairs)
     unique = _unique_text_repairs(repairs)
@@ -288,11 +370,16 @@ def repair_markdown_numeric_boundaries(
                 continue
             pattern = _complete_numeric_run_pattern(merged_text)
             matches = pattern.findall(repaired)
-            key = (
-                _canonical_numeric_text(merged_text),
-                tuple(_canonical_numeric_text(part) for part in parts),
-            )
-            if not matches or len(matches) > evidence_counts[key]:
+            if not matches:
+                continue
+            if unsplit_runs is None:
+                key = (
+                    _canonical_numeric_text(merged_text),
+                    tuple(_canonical_numeric_text(part) for part in parts),
+                )
+                if len(matches) > evidence_counts[key]:
+                    continue
+            elif _canonical_numeric_text(merged_text) in unsplit_runs:
                 continue
         else:
             pattern = _complete_numeric_run_pattern(merged_text)
@@ -524,18 +611,7 @@ def _prefer_numeric_span_cuts(
     if len(crossing_edge_positions) < 2:
         return adjusted, preferred_runs
 
-    runs: list[tuple[int, int]] = []
-    index = 0
-    while index < len(characters):
-        if characters[index].text not in _NUMERIC_CHARS:
-            index += 1
-            continue
-        start = index
-        while index < len(characters) and characters[index].text in _NUMERIC_CHARS:
-            index += 1
-        runs.append((start, index))
-
-    for start, end in runs:
+    for start, end in _maximal_numeric_runs(characters):
         segments: list[tuple[int, int]] = []
         segment_start = start
         for index in range(start + 1, end):
