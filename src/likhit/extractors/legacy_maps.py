@@ -396,6 +396,26 @@ def _map_reads_ascii_digits_as_digits(map_key: str) -> bool:
     return cached
 
 
+# The same construct as `_ASCII_BRACKETED_NUMBER`, unanchored and with the digit
+# class spelled out, for the run-scoped key in `font_based` (VOL-515). Two
+# deliberate differences from the whole-span anchor above:
+#
+#   * no `^...$`, because the defect this reaches is glued inside a clause
+#     ("दफा ७४(२) अनुसार"), so the whole-span anchor cannot match it -- and the
+#     match is sought in the concatenation of a whole LINE's span texts, since
+#     the construct straddles up to three spans in 109 of 145 corpus sites;
+#   * `[0-9०-९]` rather than `\d`, because both digit families occur inside the
+#     source parens (79 Devanagari-only / 36 ASCII-only / 4 mixed of the 119
+#     located sources, VOL-571) and `\d`'s coverage of Devanagari digits is an
+#     accident of Python rather than a stated intent.
+#
+# Adjacency is strict: no whitespace is tolerated inside the parens. Three
+# corpus sites are missed for that reason alone ("( ३१२१६६)", "(१४ )", "(८ )");
+# tolerating interior whitespace is a separately priced call (VOL-515 item 6),
+# not a free widening, because it changes the firing set.
+ASCII_BRACKETED_NUMBER_RUN = re.compile(r"\(([0-9०-९]+)\)")
+
+
 def devanagarize_ascii_digits(text: str) -> str:
     """Translate ASCII digits to Devanagari, leaving every other character alone.
 
@@ -407,6 +427,18 @@ def devanagarize_ascii_digits(text: str) -> str:
     ``123`` where the pipeline already emits ``१२३``.
 
     A no-op on digits that are already Devanagari.
+
+    This is the digit half of :func:`_decode_ascii_bracketed_number`'s effect,
+    factored out so the run-scoped key in `font_based` writes exempted runs with
+    the *same* table rather than a second copy of it. Translating rather than
+    passing the digits through is the load-bearing part: `PCS NEPALI` and
+    `FONTASY_HIMALI_TT` map all ten ASCII digits onto Devanagari digits, so an
+    exempted run that merely passed its bytes through unmapped would emit "(123)"
+    where the pipeline already emits "(१२३)" -- a regression on 49 of 145 sites,
+    18 of them repairs VOL-166's gate already makes (VOL-606 item A3).
+
+    It is a no-op on digits that are already Devanagari, which is why it costs
+    nothing on the 95 Devanagari-only straddles.
     """
 
     return text.translate(_LATIN_TO_DEVANAGARI_DIGITS)
