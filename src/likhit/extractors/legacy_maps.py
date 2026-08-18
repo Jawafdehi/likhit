@@ -109,6 +109,47 @@ _REGISTRY: dict[str, str] = {
     # '158.25 67235.67 0 0' in 3120__इलाम नगरपालिका -- decode to Devanagari
     # digits with a real decimal point, which is what the page draws.
     "siddhi": "Siddhi",
+    # DO NOT add "spins", and DO NOT broaden "himali" to "himal" or add
+    # "himalaya". Both look like two-line omissions and both are deliberate; the
+    # guards are test_spins_family_is_absent_from_the_name_table and
+    # test_no_name_table_key_captures_the_himal_collateral. VOL-429 measured it
+    # (runs/vol429/AGG-priority80-efef04ed.json, the 80 highest-volume documents of
+    # the 3,441 carrying one of these faces -- a subset, not a corpus total).
+    #
+    # 'Spins', 'Spins_EXT', 'SpinsEXT' and 'HIMALAYA TT FONT' are ASCII-layout
+    # legacy faces, so is_legacy_font() returning False for them reads like a
+    # bug. It is what ROUTES them: detect_content_legacy_fonts considers only
+    # fonts classify_font calls "correct", so the absence here is what puts them
+    # on the content path, and the content path is strictly better on them.
+    #
+    #   - Content detection nominates 'Spins' in 58 of 78 documents, covering
+    #     5,735,893 of 5,740,171 non-space characters (99.93%), and it picks
+    #     SPINS_MAP_KEY -- not Preeti, which is the only thing a single name-table
+    #     value could say. The 20 residue documents hold 4,278 non-space
+    #     characters between them, spacer spans rather than prose.
+    #   - 'HIMALAYA TT FONT' is nominated in 3 of 5 documents, 40,949 of 41,116
+    #     non-space characters (99.59%), and 'HIMALAYATTFONT' in 1 of 2 -- both
+    #     chosen onto FONTASY_HIMALI_TT, not the Preeti family a "himal" key would
+    #     suggest.
+    #
+    # And a "spins" key cannot be narrow: "spins" is a substring of "spins_ext"
+    # and _match_font returns on the first hit, so it also captures the numeral
+    # companion font that carries the clause and page numbers -- 80 documents,
+    # 430,291 spans, 1,658,855 non-space characters, 1,401,946 of them ASCII
+    # digits against 46,887 ASCII letters. Content detection declines 77 of those
+    # 80 documents today, correctly, and that declined part alone is 1,529,495
+    # non-space characters and 1,326,534 ASCII digits. Preeti's unshifted row is
+    # where the digits are not, so this is the same destruction the
+    # "fontasyhimali" block above measures, three orders of magnitude larger.
+    #
+    # A bare "himal" key is worse than it looks for a second reason: over the
+    # corpus's 53,088 distinct font names it newly captures seven base names in 73
+    # documents that this table has never had an opinion about -- 'Microsoft
+    # Himalaya' (a Unicode OpenType Devanagari face, not a legacy 8-bit one),
+    # 'Himalli', 'Himallbold', 'Himalaya', 'Himalayabold', 'Himalayattfont'.
+    # 'himalb' and 'fontasy_himali' would stay correct on order alone, so
+    # test_registry_orders_the_underscored_spelling_before_bare_himali does NOT
+    # catch this.
 }
 
 #: Map key for the Spins layout, which npttf2utf does not ship. It is not an
@@ -452,6 +493,27 @@ def _get_mapper():
 
         map_json = os.path.join(os.path.dirname(npttf2utf.__file__), "map.json")
         _mapper = FontMapper(map_json)
+        if orphan_repha_guard_enabled():
+            _install_orphan_repha_guard(_mapper)
+
+        # 🛑 `_compiled_maps` is DERIVED from this mapper's `all_rules`, so a new
+        # mapper invalidates every compiled map. Without this, resetting `_mapper`
+        # -- which is how the guard is toggled -- leaves the previous mapper's
+        # rules live behind the cache, and the observable effect is that a guard
+        # switched OFF keeps producing guarded output. Measured on the Spins repha
+        # cases: `'+kflnsf'` decoded to the guarded `पालिका` with the guard both on
+        # and then off, because the second read never recompiled.
+        #
+        # Clearing here rather than in the test fixture on purpose: the staleness
+        # is a property of the two caches, not of the tests, so any future caller
+        # that rebuilds the mapper gets a correct cache without knowing to ask.
+        #
+        # Lock order is `_mapper_lock` then `_compiled_maps_lock`, and it cannot
+        # invert: `_compiled_map` calls `_get_mapper()` and releases that lock
+        # BEFORE taking `_compiled_maps_lock`, and inside that block it touches
+        # only the already-resolved local `mapper`.
+        with _compiled_maps_lock:
+            _compiled_maps.clear()
     return _mapper
 
 
@@ -567,11 +629,23 @@ def _get_compiled_map(map_key: str) -> _CompiledMap:
     ``FontMapper.map_to_unicode`` directly.
     """
 
+    # 🛑 The mapper is resolved BEFORE the cache is read, not after. This cache is
+    # derived from the mapper's rules, and `_get_mapper` is what invalidates it when
+    # it builds a new one -- so a fast path that answered from the cache first would
+    # skip the invalidation and hand back a compiled map belonging to a mapper that
+    # no longer exists. That is not hypothetical: it is exactly how a rebuilt mapper
+    # with the orphan-repha guard turned OFF kept returning guarded output.
+    #
+    # This costs nothing measurable. `_get_compiled_map` runs once per converter
+    # handed out by `get_converter_for_map`, not once per word -- the per-word work
+    # is inside `_CompiledMap.convert` -- and `_get_mapper` on the warm path is a
+    # single `is not None` check.
+    mapper = _get_mapper()
+
     compiled = _compiled_maps.get(map_key)
     if compiled is not None:
         return compiled
 
-    mapper = _get_mapper()
     with _compiled_maps_lock:
         compiled = _compiled_maps.get(map_key)
         if compiled is not None:
@@ -584,6 +658,113 @@ def _get_compiled_map(map_key: str) -> _CompiledMap:
         compiled = _CompiledMap(mapper.all_rules[map_key]["rules"])
         _compiled_maps[map_key] = compiled
     return compiled
+
+
+#: Post-rule pattern that npttf2utf uses to convert a repha keystroke. It is
+#: ``['{', 'र्']`` in all five shipped maps, at index 12, and it is unconditional.
+_REPHA_RULE_PATTERN = "{"
+
+#: What a word-initial ``{`` emits once guarded. Empty: a repha keystroke with no
+#: consonant to its left encodes no repha at all, so the correct reading is that
+#: there is nothing there. See :func:`_install_orphan_repha_guard`.
+_ORPHAN_REPHA_EMIT = ""
+
+
+def orphan_repha_guard_enabled() -> bool:
+    """Whether to guard the token-initial repha emitter. Default OFF.
+
+    This changes decoded output, so it is generation-affecting and stays opt-in
+    until a generation slot is allocated for it. Enable with
+    ``LIKHIT_ORPHAN_REPHA_GUARD=1``.
+    """
+
+    return os.environ.get("LIKHIT_ORPHAN_REPHA_GUARD", "").strip() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _install_orphan_repha_guard(mapper) -> int:
+    """Stop npttf2utf fabricating a repha from a keystroke that has nothing to close.
+
+    ``{`` (and, under :data:`SPINS_MAP_KEY`, the ``+`` that rotates onto it) is the
+    repha keystroke. It is in no font's ``character-map``; it is handled only by
+    three post-rules, which in every shipped map sit in this order:
+
+    ==== ============================== =============================================
+    idx  pattern                        effect
+    ==== ============================== =============================================
+    8    ``(.[ािी…]*?){`` and friends    move ``{`` LEFT past one consonant+marks
+    10   (same family)                  move ``{`` LEFT past a half-form cluster
+    11   (same family)                  ditto
+    12   ``{`` -> ``र्``                 UNCONDITIONAL
+    ==== ============================== =============================================
+
+    Legacy Nepali is typed in **visual** order, so the repha hook is struck
+    *after* the consonant it sits above. Rules 8/10/11 exist to walk it back to
+    the front of the word, and rule 12 then converts it, which puts the repha
+    ahead of its consonant in logical order. That is correct, and it means **a
+    ``{`` sitting at position 0 when rule 12 fires is the normal state** --
+    ``k{`` becomes ``प{``, rule 8 makes it ``{प``, rule 12 makes it ``र्प``.
+
+    So the defect is *not* "rule 12 fires at position 0", and a position
+    condition on rule 12 would destroy every correct repha in the corpus. The
+    defect is a ``{`` that was **already** at position 0 before the relocating
+    rules ran: nothing to its left, nothing to move past, nothing to close. Rule
+    12 converts it anyway and fabricates a repha the source never encoded --
+    ``+kflnsf`` (Spins) is ``पालिका``, but ships as ``र्पालिका``.
+
+    That predicate is invisible from rule 12, because by then the two cases are
+    byte-identical. It is reachable by **order**: insert a handler for ``^{``
+    immediately *before* the first relocating rule, where the string has not been
+    rewritten yet. Rule 12 is left exactly as it is and still converts every
+    ``{`` that the relocating rules move.
+
+    ``npttf2utf`` applies post-rules per whitespace-split word
+    (:meth:`FontMapper.map_to_unicode` splits on ``(\\s+|\\S+)`` and runs the
+    rule list inside the loop), so ``^`` anchors to the **word**, which is the
+    scope the defect lives at.
+
+    Note this must not be done by stripping a leading ``र्`` from the decoded
+    text instead: ``Sagarmatha``'s ``character-map`` emits repha *directly*
+    (``'Š' -> 'र्'``, ``'¥' -> 'र्‍'``) before any post-rule runs, so a
+    text-level guard would also eat those. Scoping the guard to the rule cannot.
+
+    Mutates ``mapper.all_rules`` in place. That is a third-party object's
+    internals, which is acceptable only because ``_mapper`` is this module's
+    private singleton, built once under ``_mapper_lock`` and never handed out.
+    Deriving the guard from whatever ``map.json`` npttf2utf ships -- rather than
+    vendoring a patched copy -- keeps upstream as the source of truth.
+
+    :returns: the number of maps guarded, for the caller to assert on.
+    """
+
+    guarded = 0
+    for map_name, block in mapper.all_rules.items():
+        post_rules = block["rules"]["post-rules"]
+        relocating = [
+            i
+            for i, rule in enumerate(post_rules)
+            if _REPHA_RULE_PATTERN in rule[0] and rule[0] != _REPHA_RULE_PATTERN
+        ]
+        converting = [
+            i for i, rule in enumerate(post_rules) if rule[0] == _REPHA_RULE_PATTERN
+        ]
+        if not converting:
+            # A map with no repha rule needs no guard. Not an error.
+            continue
+        if not relocating or min(relocating) > min(converting):
+            # The order this guard depends on is not there. Refuse rather than
+            # install a guard whose position is meaningless.
+            raise ExtractionError(
+                f"legacy map {map_name!r} does not order its repha-relocating "
+                f"post-rules {relocating} before its converting rule "
+                f"{converting}; the orphan-repha guard cannot be positioned"
+            )
+        post_rules.insert(min(relocating), ["^\\{", _ORPHAN_REPHA_EMIT])
+        guarded += 1
+    return guarded
 
 
 def get_converter(font_name: str) -> Callable[[str], str] | None:
@@ -698,4 +879,19 @@ def get_output_converter_for_map(map_key: str) -> Callable[[str], str]:
 
 
 def is_legacy_font(font_name: str) -> bool:
+    """True if the font NAME alone identifies a legacy 8-bit Nepali layout.
+
+    This is a name test, not a claim about the bytes, and a ``False`` is not the
+    same as "this span is Unicode". Several ASCII-layout legacy faces in the OAG
+    corpus answer ``False`` deliberately -- ``Spins``, ``Spins_EXT``,
+    ``HIMALAYA TT FONT`` -- because :func:`~likhit.extractors.font_based.detect_content_legacy_fonts`
+    only considers fonts :func:`~likhit.extractors.font_classifier.classify_font`
+    calls ``"correct"``, so answering ``False`` here is what routes them to
+    content-based detection. See the tail of :data:`_REGISTRY` for the measured
+    reason a name-table entry would be worse, and note that the two callers read
+    this with opposite polarity: ``classify_font`` treats ``True`` as "remap by
+    name", while ``font_based.is_latin_cid_font`` treats ``True`` as
+    "disqualified from Latin-CID recovery".
+    """
+
     return _match_font(font_name) is not None
