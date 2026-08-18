@@ -109,6 +109,47 @@ _REGISTRY: dict[str, str] = {
     # '158.25 67235.67 0 0' in 3120__इलाम नगरपालिका -- decode to Devanagari
     # digits with a real decimal point, which is what the page draws.
     "siddhi": "Siddhi",
+    # DO NOT add "spins", and DO NOT broaden "himali" to "himal" or add
+    # "himalaya". Both look like two-line omissions and both are deliberate; the
+    # guards are test_spins_family_is_absent_from_the_name_table and
+    # test_no_name_table_key_captures_the_himal_collateral. VOL-429 measured it
+    # (runs/vol429/AGG-priority80-efef04ed.json, the 80 highest-volume documents of
+    # the 3,441 carrying one of these faces -- a subset, not a corpus total).
+    #
+    # 'Spins', 'Spins_EXT', 'SpinsEXT' and 'HIMALAYA TT FONT' are ASCII-layout
+    # legacy faces, so is_legacy_font() returning False for them reads like a
+    # bug. It is what ROUTES them: detect_content_legacy_fonts considers only
+    # fonts classify_font calls "correct", so the absence here is what puts them
+    # on the content path, and the content path is strictly better on them.
+    #
+    #   - Content detection nominates 'Spins' in 58 of 78 documents, covering
+    #     5,735,893 of 5,740,171 non-space characters (99.93%), and it picks
+    #     SPINS_MAP_KEY -- not Preeti, which is the only thing a single name-table
+    #     value could say. The 20 residue documents hold 4,278 non-space
+    #     characters between them, spacer spans rather than prose.
+    #   - 'HIMALAYA TT FONT' is nominated in 3 of 5 documents, 40,949 of 41,116
+    #     non-space characters (99.59%), and 'HIMALAYATTFONT' in 1 of 2 -- both
+    #     chosen onto FONTASY_HIMALI_TT, not the Preeti family a "himal" key would
+    #     suggest.
+    #
+    # And a "spins" key cannot be narrow: "spins" is a substring of "spins_ext"
+    # and _match_font returns on the first hit, so it also captures the numeral
+    # companion font that carries the clause and page numbers -- 80 documents,
+    # 430,291 spans, 1,658,855 non-space characters, 1,401,946 of them ASCII
+    # digits against 46,887 ASCII letters. Content detection declines 77 of those
+    # 80 documents today, correctly, and that declined part alone is 1,529,495
+    # non-space characters and 1,326,534 ASCII digits. Preeti's unshifted row is
+    # where the digits are not, so this is the same destruction the
+    # "fontasyhimali" block above measures, three orders of magnitude larger.
+    #
+    # A bare "himal" key is worse than it looks for a second reason: over the
+    # corpus's 53,088 distinct font names it newly captures seven base names in 73
+    # documents that this table has never had an opinion about -- 'Microsoft
+    # Himalaya' (a Unicode OpenType Devanagari face, not a legacy 8-bit one),
+    # 'Himalli', 'Himallbold', 'Himalaya', 'Himalayabold', 'Himalayattfont'.
+    # 'himalb' and 'fontasy_himali' would stay correct on order alone, so
+    # test_registry_orders_the_underscored_spelling_before_bare_himali does NOT
+    # catch this.
 }
 
 #: Map key for the Spins layout, which npttf2utf does not ship. It is not an
@@ -698,4 +739,19 @@ def get_output_converter_for_map(map_key: str) -> Callable[[str], str]:
 
 
 def is_legacy_font(font_name: str) -> bool:
+    """True if the font NAME alone identifies a legacy 8-bit Nepali layout.
+
+    This is a name test, not a claim about the bytes, and a ``False`` is not the
+    same as "this span is Unicode". Several ASCII-layout legacy faces in the OAG
+    corpus answer ``False`` deliberately -- ``Spins``, ``Spins_EXT``,
+    ``HIMALAYA TT FONT`` -- because :func:`~likhit.extractors.font_based.detect_content_legacy_fonts`
+    only considers fonts :func:`~likhit.extractors.font_classifier.classify_font`
+    calls ``"correct"``, so answering ``False`` here is what routes them to
+    content-based detection. See the tail of :data:`_REGISTRY` for the measured
+    reason a name-table entry would be worse, and note that the two callers read
+    this with opposite polarity: ``classify_font`` treats ``True`` as "remap by
+    name", while ``font_based.is_latin_cid_font`` treats ``True`` as
+    "disqualified from Latin-CID recovery".
+    """
+
     return _match_font(font_name) is not None

@@ -645,3 +645,141 @@ def test_the_marker_gate_still_uses_the_extracted_table() -> None:
     decoded = _decode_ascii_bracketed_number("(123)")
     assert decoded is not None
     assert devanagarize_ascii_digits("123") in decoded
+
+
+# The POSITIVE control for the VOL-429 block below, and it is not redundant with the
+# Himalb/Himali tests above: those assert which MAP each name resolves to, while the
+# negative tests below assert `is_legacy_font` is False for a whole other family. A
+# defect that made `is_legacy_font` answer False for everything would satisfy every
+# negative assertion in this file, so the two directions are pinned side by side.
+#
+# ⚠️ Re-expressed against the CURRENT group names. VOL-429 was written when these were
+# `_PREETI_ENCODED_HIMALI_NAMES` and `_GENUINE_HIMALI_NAMES`; #58 split the Himalb
+# family down to the two names that earn the move and renamed both groups, so the old
+# spelling is a NameError, not a rename this test can carry forward silently.
+@pytest.mark.parametrize(
+    "font_name", (*_HIMALB_SPELLINGS, *_GENUINELY_HIMALI_SPELLINGS, "Preeti")
+)
+def test_all_of_these_names_are_still_recognised_as_legacy(font_name: str) -> None:
+    assert is_legacy_font(font_name)
+
+
+# --- VOL-429: the names this table deliberately does NOT carry -----------------
+#
+# These are the mirror of the numeral-only Himali guards above, in two other font
+# families, and they exist because the omissions read as two-line oversights.
+# `Spins` and `HIMALAYA TT FONT` are genuinely ASCII-layout legacy faces, so
+# `is_legacy_font` answering False for them looks wrong. It is what routes them:
+# `detect_content_legacy_fonts` considers only fonts `classify_font` calls
+# "correct". Measured in `oag-corpus/runs/vol429/AGG-priority-efef04ed.json`.
+
+#: Faces that must stay OFF the name table so content detection owns them.
+_CONTENT_OWNED_FONT_NAMES = (
+    "Spins",
+    "ABCDEE+Spins",
+    "AAAAAB+Spins,Bold",
+    "HIMALAYA TT FONT",
+    "ABCDEE+HIMALAYA TT FONT",
+    "HIMALAYATTFONT",
+)
+
+#: The numeral companion faces a bare "spins" key would capture as collateral.
+#: 80 documents, 430,291 spans, 1,658,855 non-space characters, 1,401,946 of them
+#: ASCII digits against 46,887 ASCII letters.
+_SPINS_NUMERAL_COMPANION_NAMES = (
+    "Spins_EXT",
+    "SpinsEXT",
+    "ABCDEE+Spins_EXT",
+    "AAAABK+SpinsEXT",
+)
+
+#: Corpus font names a bare "himal" key would newly capture, in 73 documents.
+#: 'Microsoft Himalaya' is a Unicode OpenType Devanagari face, not a legacy
+#: 8-bit one, so a name-based remap of it corrupts text that is already correct.
+_HIMAL_COLLATERAL_NAMES = (
+    "Microsoft Himalaya",
+    "ABCDEE+Microsoft Himalaya",
+    "Himalli",
+    "Himalli,Italic",
+    "Himallbold",
+)
+
+
+@pytest.mark.parametrize("font_name", _CONTENT_OWNED_FONT_NAMES)
+def test_spins_family_is_absent_from_the_name_table(font_name: str) -> None:
+    """Answering False here is the routing decision, not a miss.
+
+    Content detection nominates ``Spins`` in 58 of 78 documents, covering 99.93%
+    of its non-space characters, and it selects :data:`SPINS_MAP_KEY` -- which no
+    single name-table value could reproduce, because the table maps a name to one
+    map key while the right answer is per-document.
+    """
+
+    assert _match_font(font_name) is None
+    assert not is_legacy_font(font_name)
+    assert get_converter(font_name) is None
+
+
+@pytest.mark.parametrize("font_name", _SPINS_NUMERAL_COMPANION_NAMES)
+def test_no_name_table_key_captures_the_spins_numeral_companion(
+    font_name: str,
+) -> None:
+    """The reason a ``"spins"`` key cannot be narrow.
+
+    ``"spins"`` is a substring of ``"spins_ext"`` and ``_match_font`` returns on
+    the first hit, so the two cannot be separated by name at all. These spans are
+    85-86% ASCII digits -- clause and page numbers -- and Preeti's unshifted row
+    is where its digits are not.
+    """
+
+    assert _match_font(font_name) is None
+    assert get_converter(font_name) is None
+
+
+@pytest.mark.parametrize("font_name", _HIMAL_COLLATERAL_NAMES)
+def test_no_name_table_key_captures_the_himal_collateral(font_name: str) -> None:
+    """Why ``"himali"`` must not be broadened to ``"himal"``.
+
+    ``test_registry_orders_the_underscored_spelling_before_bare_himali`` does NOT
+    catch this: ``himalb`` and ``fontasy_himali`` stay correct on order alone. The
+    damage is to names the table has never had an opinion about.
+    """
+
+    assert _match_font(font_name) is None
+    assert not is_legacy_font(font_name)
+
+
+def test_preeti_would_destroy_the_spins_companion_clause_numbers() -> None:
+    """Pin the consequence, not just the table entry.
+
+    Same shape as ``test_preeti_would_destroy_the_numeral_only_spans``, for the
+    other family. A clause number routed onto Preeti by name comes back as
+    consonant clusters, and it is 1,401,946 ASCII digits' worth of them.
+    """
+
+    preeti = get_converter("Preeti")
+    assert preeti is not None
+    for clause_number in ("179", "23.2", "100"):
+        decoded = preeti(clause_number)
+        assert not any("०" <= char <= "९" for char in decoded), (
+            f"{clause_number!r} -> {decoded!r}"
+        )
+
+
+def test_the_registry_names_no_key_that_could_reach_these_faces() -> None:
+    """Guard the table directly, so a new key cannot re-open any of the above.
+
+    The per-name tests are parametrised over spellings seen in this corpus; this
+    one is the general statement, and it is what fails if someone adds ``spins``,
+    ``himal``, or ``himalaya`` without reading the comment.
+    """
+
+    protected = (
+        *_CONTENT_OWNED_FONT_NAMES,
+        *_SPINS_NUMERAL_COMPANION_NAMES,
+        *_HIMAL_COLLATERAL_NAMES,
+    )
+    for font_name in protected:
+        base = font_name.split("+", 1)[-1].split(",")[0].lower().strip()
+        offenders = [key for key in _REGISTRY if key in base]
+        assert not offenders, f"{font_name!r} would be captured by {offenders!r}"
