@@ -1967,7 +1967,60 @@ _CONTENT_LEGACY_MIN_DEVA = 8
 # runs less the 194 this veto certifies structurally and the 14 that
 # `_reads_as_latin_words` certifies whole (15 spans). A count that subtracts only the
 # structural 194 gives 473,791 and is a different quantity -- name which one you mean.
-_LATIN_VETO_MIN_CHARS = 16  # non-space characters, not raw length -- see below
+#
+# Re-derived again at `b02b1af` (VOL-321's tip, VOL-146 run 7c712e1c): candidate
+# documents **1,272** and candidate-font runs **473,985**, both agreeing exactly with
+# the figures above, and measured by three independently written instruments in that
+# run which agree to the digit. What moved is the structural certification: **228**,
+# not 194, and the difference is precisely VOL-321's 34 all-upper runs (194 + 34 =
+# 228).
+#
+# The `_reads_as_latin_words` figure was re-derived too, and it is **15 runs / 15
+# spans / 399 characters**, not the 14 runs / 409 characters recorded above. The
+# **15 spans reproduces exactly**; the run count is one higher because at this tip
+# every spared span sits in its own run (15 distinct (document, page, line), 6
+# documents); and no character matcher reproduces 409 -- stripped gives 399 and
+# unstripped 412. Quote 15/15 at this tip and name the matcher for the characters.
+#
+# So net of both vetoes it is **473,742** at floor 16 and **473,726** at floor 13,
+# where `677fa95` read 473,777. ⚠️ That subtraction treats a run with any spared span
+# as un-remapped, which **over-subtracts** for any run whose spared span is not the
+# whole run -- the rest of such a run still decodes. Three of the 15 spared spans are
+# not their line's first span, so the true figure is between these and 473,985 - 228.
+# The published 473,777 has the same wrinkle and does not mention it.
+#
+# THE MIXED-CASE FLOOR: 13 (VOL-146). Every mixed-case run is judged by this one;
+# `_LATIN_VETO_MIN_CHARS_UPPER` below relaxes it for all-upper runs only.
+#
+# Calibrated on a READ CENSUS, not a sample: every run this floor ALONE rejected at
+# length >= 10 in all 6,236 documents -- 91 runs, each read blind, 41 keystrokes and
+# 50 genuine Latin. Priced at `b02b1af` through this module's own
+# `_reads_as_latin_text` rather than a re-implementation of it
+# (`runs/vol146-floor13-7c712e1c/floor-admission-7c712e1c.json`):
+#
+#     floor   admitted   LATIN   KEYSTROKE   precision
+#        16          0       0           0         n/a
+#        15          4       4           0       1.000
+#        14          9       9           0       1.000
+#        13         14      14           0       1.000
+#        12         24      19           5       0.792
+#        11         33      24           9       0.727
+#        10         91      50          41       0.549
+#
+# 13 is the last floor that admits nothing but Latin, and 12 is the first that
+# abandons real Nepali -- `lakb Aoa:yfkg` (बिपद ब्यबस्थापन), `Zofd afa' ofba`
+# (श्याम बाबु यादब). That is why the step stops here and not at 10, where more than
+# two of every five admissions would be a Nepali run published as ASCII garbage.
+#
+# Shipped effect, measured pairwise on two built trees at this tip and NOT inferred
+# from the veto's own flags: **14 runs / 11 documents / 212 characters** recovered, 0
+# documents regressed, 6/6 controls byte-identical, gate directional (exits 0/0/1).
+# The corpus screen counts **16** runs / 12 documents, and the two figures are both
+# right: the extra two are runs `_reads_as_latin_words` already spares per span on the
+# write path, so they are certified-set gains with no transcript effect. A
+# certified-set count is therefore an UPPER BOUND on the transcript effect, not equal
+# to it -- name which one you mean.
+_LATIN_VETO_MIN_CHARS = 13  # non-space characters, not raw length -- see below
 # The floor for runs whose ASCII letters are ALL upper case (VOL-319, VOL-321).
 # An acronym carries no function word and is 2-4 characters long, so neither veto
 # could reach the class: `_reads_as_latin_words` declines at function-word share
@@ -2517,7 +2570,7 @@ def _reads_as_latin_text(text: str, decoded: str) -> bool:
     # Hoisted above the floor test only so the all-upper floor can consult it; the
     # comprehension is pure, and a letter is never whitespace, so this is the same
     # list the alpha ratio has always divided by. An empty run still returns False
-    # here -- `letters` is empty, so the floor stays at 16 -- which is what keeps
+    # here -- `letters` is empty, so the floor stays at the mixed-case one -- which keeps
     # the ratio below from dividing by zero.
     letters = [char for char in non_space if char.isascii() and char.isalpha()]
     floor = (
