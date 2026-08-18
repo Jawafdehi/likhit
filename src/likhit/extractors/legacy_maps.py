@@ -493,6 +493,27 @@ def _get_mapper():
 
         map_json = os.path.join(os.path.dirname(npttf2utf.__file__), "map.json")
         _mapper = FontMapper(map_json)
+        if orphan_repha_guard_enabled():
+            _install_orphan_repha_guard(_mapper)
+
+        # 🛑 `_compiled_maps` is DERIVED from this mapper's `all_rules`, so a new
+        # mapper invalidates every compiled map. Without this, resetting `_mapper`
+        # -- which is how the guard is toggled -- leaves the previous mapper's
+        # rules live behind the cache, and the observable effect is that a guard
+        # switched OFF keeps producing guarded output. Measured on the Spins repha
+        # cases: `'+kflnsf'` decoded to the guarded `पालिका` with the guard both on
+        # and then off, because the second read never recompiled.
+        #
+        # Clearing here rather than in the test fixture on purpose: the staleness
+        # is a property of the two caches, not of the tests, so any future caller
+        # that rebuilds the mapper gets a correct cache without knowing to ask.
+        #
+        # Lock order is `_mapper_lock` then `_compiled_maps_lock`, and it cannot
+        # invert: `_compiled_map` calls `_get_mapper()` and releases that lock
+        # BEFORE taking `_compiled_maps_lock`, and inside that block it touches
+        # only the already-resolved local `mapper`.
+        with _compiled_maps_lock:
+            _compiled_maps.clear()
     return _mapper
 
 
@@ -608,11 +629,23 @@ def _get_compiled_map(map_key: str) -> _CompiledMap:
     ``FontMapper.map_to_unicode`` directly.
     """
 
+    # 🛑 The mapper is resolved BEFORE the cache is read, not after. This cache is
+    # derived from the mapper's rules, and `_get_mapper` is what invalidates it when
+    # it builds a new one -- so a fast path that answered from the cache first would
+    # skip the invalidation and hand back a compiled map belonging to a mapper that
+    # no longer exists. That is not hypothetical: it is exactly how a rebuilt mapper
+    # with the orphan-repha guard turned OFF kept returning guarded output.
+    #
+    # This costs nothing measurable. `_get_compiled_map` runs once per converter
+    # handed out by `get_converter_for_map`, not once per word -- the per-word work
+    # is inside `_CompiledMap.convert` -- and `_get_mapper` on the warm path is a
+    # single `is not None` check.
+    mapper = _get_mapper()
+
     compiled = _compiled_maps.get(map_key)
     if compiled is not None:
         return compiled
 
-    mapper = _get_mapper()
     with _compiled_maps_lock:
         compiled = _compiled_maps.get(map_key)
         if compiled is not None:
@@ -625,6 +658,113 @@ def _get_compiled_map(map_key: str) -> _CompiledMap:
         compiled = _CompiledMap(mapper.all_rules[map_key]["rules"])
         _compiled_maps[map_key] = compiled
     return compiled
+
+
+#: Post-rule pattern that npttf2utf uses to convert a repha keystroke. It is
+#: ``['{', 'र्']`` in all five shipped maps, at index 12, and it is unconditional.
+_REPHA_RULE_PATTERN = "{"
+
+#: What a word-initial ``{`` emits once guarded. Empty: a repha keystroke with no
+#: consonant to its left encodes no repha at all, so the correct reading is that
+#: there is nothing there. See :func:`_install_orphan_repha_guard`.
+_ORPHAN_REPHA_EMIT = ""
+
+
+def orphan_repha_guard_enabled() -> bool:
+    """Whether to guard the token-initial repha emitter. Default OFF.
+
+    This changes decoded output, so it is generation-affecting and stays opt-in
+    until a generation slot is allocated for it. Enable with
+    ``LIKHIT_ORPHAN_REPHA_GUARD=1``.
+    """
+
+    return os.environ.get("LIKHIT_ORPHAN_REPHA_GUARD", "").strip() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _install_orphan_repha_guard(mapper) -> int:
+    """Stop npttf2utf fabricating a repha from a keystroke that has nothing to close.
+
+    ``{`` (and, under :data:`SPINS_MAP_KEY`, the ``+`` that rotates onto it) is the
+    repha keystroke. It is in no font's ``character-map``; it is handled only by
+    three post-rules, which in every shipped map sit in this order:
+
+    ==== ============================== =============================================
+    idx  pattern                        effect
+    ==== ============================== =============================================
+    8    ``(.[ािी…]*?){`` and friends    move ``{`` LEFT past one consonant+marks
+    10   (same family)                  move ``{`` LEFT past a half-form cluster
+    11   (same family)                  ditto
+    12   ``{`` -> ``र्``                 UNCONDITIONAL
+    ==== ============================== =============================================
+
+    Legacy Nepali is typed in **visual** order, so the repha hook is struck
+    *after* the consonant it sits above. Rules 8/10/11 exist to walk it back to
+    the front of the word, and rule 12 then converts it, which puts the repha
+    ahead of its consonant in logical order. That is correct, and it means **a
+    ``{`` sitting at position 0 when rule 12 fires is the normal state** --
+    ``k{`` becomes ``प{``, rule 8 makes it ``{प``, rule 12 makes it ``र्प``.
+
+    So the defect is *not* "rule 12 fires at position 0", and a position
+    condition on rule 12 would destroy every correct repha in the corpus. The
+    defect is a ``{`` that was **already** at position 0 before the relocating
+    rules ran: nothing to its left, nothing to move past, nothing to close. Rule
+    12 converts it anyway and fabricates a repha the source never encoded --
+    ``+kflnsf`` (Spins) is ``पालिका``, but ships as ``र्पालिका``.
+
+    That predicate is invisible from rule 12, because by then the two cases are
+    byte-identical. It is reachable by **order**: insert a handler for ``^{``
+    immediately *before* the first relocating rule, where the string has not been
+    rewritten yet. Rule 12 is left exactly as it is and still converts every
+    ``{`` that the relocating rules move.
+
+    ``npttf2utf`` applies post-rules per whitespace-split word
+    (:meth:`FontMapper.map_to_unicode` splits on ``(\\s+|\\S+)`` and runs the
+    rule list inside the loop), so ``^`` anchors to the **word**, which is the
+    scope the defect lives at.
+
+    Note this must not be done by stripping a leading ``र्`` from the decoded
+    text instead: ``Sagarmatha``'s ``character-map`` emits repha *directly*
+    (``'Š' -> 'र्'``, ``'¥' -> 'र्‍'``) before any post-rule runs, so a
+    text-level guard would also eat those. Scoping the guard to the rule cannot.
+
+    Mutates ``mapper.all_rules`` in place. That is a third-party object's
+    internals, which is acceptable only because ``_mapper`` is this module's
+    private singleton, built once under ``_mapper_lock`` and never handed out.
+    Deriving the guard from whatever ``map.json`` npttf2utf ships -- rather than
+    vendoring a patched copy -- keeps upstream as the source of truth.
+
+    :returns: the number of maps guarded, for the caller to assert on.
+    """
+
+    guarded = 0
+    for map_name, block in mapper.all_rules.items():
+        post_rules = block["rules"]["post-rules"]
+        relocating = [
+            i
+            for i, rule in enumerate(post_rules)
+            if _REPHA_RULE_PATTERN in rule[0] and rule[0] != _REPHA_RULE_PATTERN
+        ]
+        converting = [
+            i for i, rule in enumerate(post_rules) if rule[0] == _REPHA_RULE_PATTERN
+        ]
+        if not converting:
+            # A map with no repha rule needs no guard. Not an error.
+            continue
+        if not relocating or min(relocating) > min(converting):
+            # The order this guard depends on is not there. Refuse rather than
+            # install a guard whose position is meaningless.
+            raise ExtractionError(
+                f"legacy map {map_name!r} does not order its repha-relocating "
+                f"post-rules {relocating} before its converting rule "
+                f"{converting}; the orphan-repha guard cannot be positioned"
+            )
+        post_rules.insert(min(relocating), ["^\\{", _ORPHAN_REPHA_EMIT])
+        guarded += 1
+    return guarded
 
 
 def get_converter(font_name: str) -> Callable[[str], str] | None:

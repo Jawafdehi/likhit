@@ -783,3 +783,43 @@ def test_the_registry_names_no_key_that_could_reach_these_faces() -> None:
         base = font_name.split("+", 1)[-1].split(",")[0].lower().strip()
         offenders = [key for key in _REGISTRY if key in base]
         assert not offenders, f"{font_name!r} would be captured by {offenders!r}"
+
+
+# --- the compiled-map cache is DERIVED state, and must not outlive its mapper ----
+#
+# Found while integrating the orphan-repha guard, which toggles by rebuilding the
+# mapper: `_compiled_maps` is built from `mapper.all_rules`, so a compiled entry that
+# survives a rebuild is a decoder for rules that are no longer in force. The
+# observable symptom was a guard switched OFF still producing guarded output.
+#
+# Pinned here, in the general file, deliberately: the invariant belongs to the two
+# caches and holds whether or not the guard exists, so it must not be reachable only
+# through the guard's own tests.
+def test_rebuilding_the_mapper_invalidates_the_compiled_map_cache() -> None:
+    from likhit.extractors import legacy_maps
+
+    convert = legacy_maps.get_converter_for_map("Preeti")
+    assert convert("kmn") == "फल"  # warms the cache for this key
+    assert "Preeti" in legacy_maps._compiled_maps
+
+    first = legacy_maps._compiled_maps["Preeti"]
+    legacy_maps._mapper = None  # what the guard's toggle does
+
+    # Asking for the converter again must recompile, not answer from the stale entry.
+    again = legacy_maps.get_converter_for_map("Preeti")
+    assert legacy_maps._compiled_maps["Preeti"] is not first, (
+        "a compiled map outlived the mapper it was derived from; the cache is stale "
+        "and a rules change (e.g. the orphan-repha guard) would not take effect"
+    )
+    assert again("kmn") == "फल"  # and the recompiled pipeline still decodes
+
+
+def test_the_compiled_map_cache_is_still_a_cache() -> None:
+    # The other direction. Invalidation is worthless if it happens every call: two
+    # requests with no mapper rebuild between them must share one compiled pipeline.
+    from likhit.extractors import legacy_maps
+
+    legacy_maps.get_converter_for_map("Preeti")
+    first = legacy_maps._compiled_maps["Preeti"]
+    legacy_maps.get_converter_for_map("Preeti")
+    assert legacy_maps._compiled_maps["Preeti"] is first
