@@ -2447,7 +2447,12 @@ def _is_probably_legacy_ascii(text: str) -> bool:
     return printable_ascii / len(stripped) >= 0.8
 
 
-def _reads_as_latin_text(text: str, decoded: str) -> bool:
+def _reads_as_latin_text(
+    text: str,
+    decoded: str,
+    *,
+    relax_all_upper: bool = True,
+) -> bool:
     """True if this run's raw ASCII is genuine Latin text, not legacy keystrokes.
 
     A legacy 8-bit face reaches the remap per **font**, decided on that font's whole
@@ -2498,6 +2503,18 @@ def _reads_as_latin_text(text: str, decoded: str) -> bool:
         declines them. The 3,692 figure above is VOL-138's *labelled-Nepali* count
         at its own calibration tip, and is **not** the same quantity as the 3,755
         floor-only runs measured at the v13 tip — do not quote one as the other.
+
+        ``relax_all_upper=False`` suppresses that relaxation for one caller only,
+        and the reason is VOL-363. See :func:`detect_latin_acronym_survivors`: a run
+        certified *only* by the all-upper floor is a **bare acronym with no in-run
+        context**, which is precisely the residue the third axis exists to
+        adjudicate — so admitting it as that axis's own document-scope evidence is
+        circular. The vocabulary is therefore built with the relaxation off, which
+        makes it independent of this constant. Measured over VOL-321's own 16
+        documents (``runs/vol363/``): with the relaxation on, the vocabulary gains
+        **17 tokens in 10 of the 16** and those tokens license **0** further fires,
+        so closing the circularity costs nothing on this corpus and restores the
+        premise VOL-180's 386 -> 25 calibration was measured under.
     ``vowel_ratio``
         Share of ASCII letters that are vowels, and **the axis that separates these
         two populations when no earlier one could**. Symbol-free Preeti keystrokes
@@ -2575,7 +2592,7 @@ def _reads_as_latin_text(text: str, decoded: str) -> bool:
     letters = [char for char in non_space if char.isascii() and char.isalpha()]
     floor = (
         _LATIN_VETO_MIN_CHARS_UPPER
-        if letters and "".join(letters).isupper()
+        if relax_all_upper and letters and "".join(letters).isupper()
         else _LATIN_VETO_MIN_CHARS
     )
     if len(non_space) < floor:
@@ -3541,7 +3558,8 @@ def detect_latin_acronym_survivors(
     1. spans of a font that is not a content-legacy candidate **and that no other
        rewrite path touches either** -- see
        :func:`_rewritten_outside_the_content_remap`, which is all three of them;
-    2. spans of a run `27d74f0` vetoes (:func:`_reads_as_latin_text`);
+    2. spans of a run `27d74f0` vetoes (:func:`_reads_as_latin_text`) **on evidence
+       other than the all-upper length floor** -- see VOL-363 below;
     3. spans `5084fb8` vetoes (:func:`_reads_as_latin_words`).
 
     ⚠️ **There is now a FOURTH source and it is not text the extractor read -- it is
@@ -3597,6 +3615,24 @@ def detect_latin_acronym_survivors(
     `Quality Of Care, QOC` two pages earlier. Build the vocabulary before that veto
     is decided and the axis reaches none of the three residual runs it is for.
 
+    **(2)'s narrowing, VOL-363.** Since VOL-321, `27d74f0` also fires on a run that
+    is *nothing but* a short all-caps token, on the all-upper length floor alone. Such
+    a run carries no in-run context — it is the exact residue this axis exists to
+    adjudicate — so counting it as this axis's evidence is circular: a bare `MIS` run
+    would attest `MIS` for every other run in the document. The vocabulary is
+    therefore built with ``relax_all_upper=False``, which is a *stronger* statement
+    than "not self-attesting": it makes the vocabulary **independent of
+    ``_LATIN_VETO_MIN_CHARS_UPPER``**, so the third axis's calibration cannot be moved
+    by that constant. Pinned by test.
+
+    This is a narrowing of the evidence, not of the veto. VOL-321's own 34
+    certifications are untouched: they are decided by
+    :func:`_content_legacy_veto_flags`'s shipping call, which leaves the relaxation
+    on. Measured over VOL-321's 16 documents (``runs/vol363/``): the relaxation was
+    adding **17 tokens across 10 of the 16** documents and those tokens licensed
+    **0** acronym-axis fires, so this removes a latent circularity at zero measured
+    cost and restores the vocabulary `runs/vol180/`'s 386 -> 25 was calibrated on.
+
     Returns an empty set when the document has no candidate font, which is the
     common case (1,245 of the 6,236 corpus documents carry one), so the extra
     text-dict pass is paid only where it can change an outcome.
@@ -3619,7 +3655,16 @@ def detect_latin_acronym_survivors(
                 # of the veto before the third axis exists, which is exactly the
                 # evidence the third axis is allowed to read. Passing the set being
                 # built would make the vocabulary self-attesting.
-                flags = _content_legacy_veto_flags(spans, content_legacy_maps)
+                #
+                # `relax_all_upper=False` is the SECOND self-attestation route, and
+                # it is not the same one (VOL-363). The survivor-free call closes
+                # attestation from the set being built; this closes attestation from
+                # a run whose only claim to Latin is that it is short and all-caps.
+                flags = _content_legacy_veto_flags(
+                    spans,
+                    content_legacy_maps,
+                    relax_all_upper=False,
+                )
                 for index, span in enumerate(spans):
                     text = str(span["text"])
                     if not text.strip():
@@ -3682,6 +3727,8 @@ def _content_legacy_veto_flags(
     # `str`; unwidened it would hand a dataclass to `get_converter_for_map`.
     content_legacy_maps: dict[str, LegacyMapChoice] | None,
     acronym_survivors: frozenset[str] = frozenset(),
+    *,
+    relax_all_upper: bool = True,
 ) -> list[bool]:
     """Per span: does the Latin-side veto apply to it? (VOL-138)
 
@@ -3694,6 +3741,11 @@ def _content_legacy_veto_flags(
 
     Every span of a vetoed run is flagged, so the run is kept or remapped whole.
     Spans of fonts that are not content-legacy candidates are never flagged.
+
+    ``relax_all_upper`` is forwarded to :func:`_reads_as_latin_text` and is ``False``
+    for exactly one caller, :func:`detect_latin_acronym_survivors`. VOL-363: it keeps
+    the third axis's own evidence independent of the all-upper floor. Every shipping
+    caller leaves it ``True``, so the write path is unchanged.
     """
 
     flags = [False] * len(spans)
@@ -3741,7 +3793,9 @@ def _content_legacy_veto_flags(
                 # `ExtractionError` through and catch only the rest.
                 # `test_an_extraction_error_from_the_veto_is_not_swallowed` pins that.
                 decoded = get_converter_for_map(choice.map_key)(raw_text)
-                if _reads_as_latin_text(raw_text, decoded):
+                if _reads_as_latin_text(
+                    raw_text, decoded, relax_all_upper=relax_all_upper
+                ):
                     for index in range(start, end):
                         flags[index] = True
                 elif acronym_survivors and (
