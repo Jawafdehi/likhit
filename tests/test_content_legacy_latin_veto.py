@@ -547,3 +547,145 @@ def test_the_veto_decode_has_no_demonstrated_failing_input() -> None:
         convert = get_converter_for_map(map_key)
         for text in inputs:
             convert(text)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# The all-upper length floor (VOL-188 -> VOL-319 -> VOL-321).
+#
+# `_LATIN_VETO_MIN_CHARS` = 16 rejected a run before any other gate was consulted,
+# and an acronym is 2-4 characters, so neither veto could reach the class: the
+# word veto declines it too, at function-word share 0.0 against its 0.1 floor.
+# `_LATIN_VETO_MIN_CHARS_UPPER` = 3 relaxes ONLY that floor and ONLY for runs whose
+# ASCII letters are all upper case.
+#
+# The token lists are the complete read census of the population in all 6,236 OAG
+# documents (runs/vol319/, blind read, controls 15/15) -- not a sample and not a
+# selection. That is what makes the two boundaries below assertable as exhaustive:
+# the whole false-positive set is length 2 and the whole noise class is length 1.
+# ---------------------------------------------------------------------------
+
+# All 12 distinct tokens of the 34 admitted runs, verbatim from the census.
+CENSUS_ACRONYMS = [
+    "MIS",
+    "PAN",
+    "ICT",
+    "QOC",
+    "TOR",
+    "TOD",
+    "UPS",
+    "ECOD",
+    "IEE",
+    "OJT",
+    "TEE",
+    "WAN",
+]
+
+# The complete false-positive set: both tokens are two characters and both are
+# Preeti fragments, so the floor of 3 excludes exactly them. `OF` is the tail of
+# `8«OF` = ड्रइङ ("drawing") -- the `8«` sits on another font, so the same-font run
+# is the bare `OF`, which is why an English preposition appears to stand alone.
+# `OG` -> इन् is a correct decode (इन्फ्लुएन्जा, इन्टरनेशनल).
+CENSUS_FALSE_POSITIVES = ["OF", "OG"]
+
+# The complete length-1 noise class: 136 of the 177 all-upper runs in the corpus.
+CENSUS_NOISE = ["O", "A", "E", "I"]
+
+
+@pytest.mark.parametrize("text", CENSUS_ACRONYMS)
+def test_all_upper_acronyms_are_vetoed(text: str) -> None:
+    """The 34 runs the floor destroyed, read as genuine Latin 34/34."""
+
+    assert len(text) >= 3
+    assert _veto(text) is True
+
+
+@pytest.mark.parametrize("text", CENSUS_FALSE_POSITIVES)
+def test_two_character_all_upper_runs_keep_decoding(text: str) -> None:
+    """The calibrated boundary, from below. These are the ONLY false positives.
+
+    Dropping the floor to 2 admits these 7 occurrences and takes precision from
+    1.000 to 0.829, which is the whole reason the constant is 3 and not 2.
+    """
+
+    assert len(text) == 2
+    assert _veto(text) is False
+
+
+@pytest.mark.parametrize("text", CENSUS_NOISE)
+def test_single_character_all_upper_runs_keep_decoding(text: str) -> None:
+    """The noise class -- page labels, not acronyms -- stays out at any floor >= 2."""
+
+    assert _veto(text) is False
+
+
+def test_the_all_upper_conjunction_is_load_bearing() -> None:
+    """A minimal pair: same characters, same length, differing only in case.
+
+    Without the conjunction the constant would be a bare floor of 3, which admits
+    2,306 runs in 919 documents to reach the same 34 -- and 98 of those admissions
+    are contradicted by the run's own decode appearing as genuine Nepali elsewhere
+    in the same document. The case test is what keeps the blast radius at 16
+    documents, so it is pinned here rather than left to the constant.
+    """
+
+    assert _veto("MIS") is True
+    for variant in ("Mis", "mis", "MiS"):
+        assert _veto(variant) is False, variant
+
+
+@pytest.mark.parametrize(
+    ("text", "gate"),
+    [
+        ("XYZ", "vowel share 0/3"),
+        ("BCD", "vowel share 0/3"),
+        ("MIS]", "legacy keystroke symbol"),
+        ("MIS+", "legacy keystroke symbol"),
+    ],
+)
+def test_every_other_gate_still_applies_to_an_all_upper_run(
+    text: str, gate: str
+) -> None:
+    """The relaxation is of the floor alone; the conjunction is otherwise intact."""
+
+    letters = [char for char in text if char.isascii() and char.isalpha()]
+    assert "".join(letters).isupper()
+    assert len([c for c in text if not c.isspace()]) >= 3
+    assert _veto(text) is False, gate
+
+
+def test_an_empty_run_cannot_reach_the_ratio() -> None:
+    """`letters` is hoisted above the floor test, so this is the guard that matters.
+
+    An empty run has no letters, so the floor stays at 16 and the function returns
+    False there -- which is what stops `alpha_ratio` dividing by zero. A hoist that
+    also moved the floor would turn this into a ZeroDivisionError.
+    """
+
+    assert _reads_as_latin_text("", "") is False
+    assert _reads_as_latin_text("   ", "") is False
+
+
+def test_an_all_upper_acronym_run_is_kept_whole_across_spans() -> None:
+    """The decision unit is the same-font run, and the floor now sees it as one.
+
+    `Q`, `O`, `C` split across three spans is one run of 3 characters, not three
+    runs of 1 -- so it clears the upper floor, where per-span evaluation would leave
+    every piece in the length-1 noise class and destroy the acronym.
+    """
+
+    spans = [
+        {"font": "Spins", "text": "Q"},
+        {"font": "Spins", "text": "O"},
+        {"font": "Spins", "text": "C"},
+    ]
+    assert _content_legacy_veto_flags(spans, SPINS_CHOICE) == [True, True, True]
+
+
+def test_a_two_character_fragment_split_across_spans_still_decodes() -> None:
+    """`OF` as two spans is still a 2-character run, so it stays below the floor."""
+
+    spans = [
+        {"font": "Spins", "text": "O"},
+        {"font": "Spins", "text": "F"},
+    ]
+    assert _content_legacy_veto_flags(spans, SPINS_CHOICE) == [False, False]

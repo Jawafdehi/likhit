@@ -1948,11 +1948,43 @@ _CONTENT_LEGACY_MAX_PENALTY_PER_DEVA = 0.05
 _CONTENT_LEGACY_MIN_DEVA_RATIO = 0.6
 _CONTENT_LEGACY_MIN_DEVA = 8
 
-# Latin-side veto on the content-legacy remap (VOL-138). Calibrated on all 6,236
-# OAG corpus documents: 1,245 carry a candidate content-legacy font, 469,357 text
-# runs and 15,808,347 characters are remapped by the pass above. See
+# Latin-side veto on the content-legacy remap (VOL-138). See
 # :func:`_reads_as_latin_text` for what each threshold is worth.
+#
+# **Every denominator here belongs to a named tip.** VOL-138 calibrated on all 6,236
+# OAG corpus documents and recorded 1,245 candidate documents / 469,357 remapped runs
+# / 15,808,347 remapped characters at ITS OWN tip. Re-derived at the v13 build tip
+# `677fa95` the first two are 1,272 and 473,777 -- about 0.9% higher, because eight
+# fixes landed between the two tips. Anyone using 469,357 or 1,245 as a denominator
+# at `677fa95` is that much low. Measured three times independently and in agreement:
+# VOL-188 run 2bbcb233, VOL-319 run bf632b05, VOL-321 run 37bfbe8a.
+#
+# The 15,808,347 CHARACTER figure is VOL-138's and has NOT been re-derived at
+# `677fa95` -- none of those three runs measured remapped characters. Do not pair it
+# with the two figures above as though all three came from one tip.
+#
+# 473,777 is runs actually remapped, i.e. net of BOTH vetoes: 473,985 candidate-font
+# runs less the 194 this veto certifies structurally and the 14 that
+# `_reads_as_latin_words` certifies whole (15 spans). A count that subtracts only the
+# structural 194 gives 473,791 and is a different quantity -- name which one you mean.
 _LATIN_VETO_MIN_CHARS = 16  # non-space characters, not raw length -- see below
+# The floor for runs whose ASCII letters are ALL upper case (VOL-319, VOL-321).
+# An acronym carries no function word and is 2-4 characters long, so neither veto
+# could reach the class: `_reads_as_latin_words` declines at function-word share
+# 0.0 against its 0.1 floor, and the floor above rejects before any other gate is
+# consulted. Calibrated on a READ CENSUS of the whole all-upper floor-only
+# population at the v13 tip -- not a sample -- where the entire false-positive set
+# is length 2 (`OF` x5, `OG` x2, both Preeti fragments) and the entire noise class
+# is length 1 (136 runs: `O` 92, `A` 33, `E` 10, `I` 1), so a single length cut at
+# 3 separates the 34 read-verified Latin runs from both with nothing left over:
+# precision 1.000, recall 1.000 over 34 runs / 16 documents / 103 characters.
+# The conjunction with all-upper is load-bearing, not decoration: a bare move of
+# the constant to 3 is not case-aware and admits 2,306 runs in 919 documents to
+# reach the same 34, and 98 of those admissions are provably wrong on evidence
+# independent of this veto. Residual risk, stated: an all-caps legacy fragment of
+# length >= 3, of which there are 0 in 6,236 documents but which nothing in the
+# mechanism forbids.
+_LATIN_VETO_MIN_CHARS_UPPER = 3
 _LATIN_VETO_MIN_ALPHA_RATIO = 0.88
 _LATIN_VETO_MIN_VOWEL_RATIO = 0.30
 # ASCII a legacy 8-bit Devanagari layout uses as glyph codes and English does not
@@ -2385,7 +2417,9 @@ def _reads_as_latin_text(text: str, decoded: str) -> bool:
     Calibrated over all 6,236 corpus documents against a lexicon built from the
     4,991 that carry no candidate legacy font at all, so the label cannot have been
     contaminated by this pass. At these thresholds the veto fires on **190 of the
-    469,357 remapped runs**: 185 are labelled genuine Latin (7,067 characters
+    469,357 remapped runs at VOL-138's tip** — **194 of 473,777** re-derived at the
+    v13 tip ``677fa95``, three times independently: 185 are labelled genuine Latin
+    (7,067 characters
     recovered) and the other 5 were read individually and are **also** genuine Latin
     — ``(prophylactic antibiotics)``, ``theatre personnel)``, ``charities such as
     Lifebox)``, and two personal names — which the label missed only because it
@@ -2401,6 +2435,16 @@ def _reads_as_latin_text(text: str, decoded: str) -> bool:
         reading — ``alpha_ratio`` is itself computed over non-space characters, so a
         *raw-length* floor is cleared by padding, and 23 runs of ~75 spaces followed
         by ``gfo`` did exactly that during calibration.
+
+        ``_LATIN_VETO_MIN_CHARS_UPPER`` relaxes **only this** condition, and only
+        for runs whose ASCII letters are all upper case, because that floor is what
+        rejected every acronym in the corpus before any other gate was consulted
+        (VOL-188, VOL-319, VOL-321). Every other condition below still applies to
+        an all-upper run: ``MIS``, ``PAN``, ``QOC`` clear the vowel ratio at 1/3
+        against 0.30, and a legacy keystroke symbol or a dictionary hit still
+        declines them. The 3,692 figure above is VOL-138's *labelled-Nepali* count
+        at its own calibration tip, and is **not** the same quantity as the 3,755
+        floor-only runs measured at the v13 tip — do not quote one as the other.
     ``vowel_ratio``
         Share of ASCII letters that are vowels, and **the axis that separates these
         two populations when no earlier one could**. Symbol-free Preeti keystrokes
@@ -2470,11 +2514,21 @@ def _reads_as_latin_text(text: str, decoded: str) -> bool:
     text = unmark_cids(text)
 
     non_space = [char for char in text if not char.isspace()]
-    if len(non_space) < _LATIN_VETO_MIN_CHARS:
+    # Hoisted above the floor test only so the all-upper floor can consult it; the
+    # comprehension is pure, and a letter is never whitespace, so this is the same
+    # list the alpha ratio has always divided by. An empty run still returns False
+    # here -- `letters` is empty, so the floor stays at 16 -- which is what keeps
+    # the ratio below from dividing by zero.
+    letters = [char for char in non_space if char.isascii() and char.isalpha()]
+    floor = (
+        _LATIN_VETO_MIN_CHARS_UPPER
+        if letters and "".join(letters).isupper()
+        else _LATIN_VETO_MIN_CHARS
+    )
+    if len(non_space) < floor:
         return False
     if any(char in _LEGACY_KEYSTROKE_SYMBOLS for char in text):
         return False
-    letters = [char for char in non_space if char.isascii() and char.isalpha()]
     if len(letters) / len(non_space) < _LATIN_VETO_MIN_ALPHA_RATIO:
         return False
     if not letters:  # unreachable while the ratio floor is above 0, but the
