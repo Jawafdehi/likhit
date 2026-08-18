@@ -1942,3 +1942,398 @@ def test_recover_or_mark_span_marks_what_it_cannot_read() -> None:
     marked = "".join(char["c"] for char in span["chars"])
     assert marked == mark_unmappable_cids(encoded)
     assert count_marked_cids(marked) == len(encoded)
+
+
+# ---------------------------------------------------------------------------
+# VOL-515: the RUN-SCOPED ASCII-bracketed marker key.
+#
+# VOL-166's gate anchors on a WHOLE SPAN being "(12)" and is therefore blind to
+# the same construct glued inside a clause -- "दफा ७४ढ२ण् अनुसार" for "section
+# 74(2)". That second population is 106 of the 127 corruptions v14 ships, and it
+# is a different sub-defect rather than an incomplete fix (VOL-505).
+#
+# The unit here is the LINE, not the span: "a maximal run of consecutive spans
+# within one line, regardless of font" has no partitioning predicate left once the
+# font `while` in `_content_legacy_veto_flags` is dropped. That is what buys the
+# straddles -- the construct is confined to one span at only 36 of 145 corpus
+# sites, and at the other 109 it spans up to three (VOL-606 item A).
+#
+# The tests below pin the four census classes, both digit families, both arms of
+# the cross-map carve-out, and the two shapes that must NOT fire. Every case is a
+# shape measured in the OAG corpus, cited by document and page, not invented.
+# ---------------------------------------------------------------------------
+
+_HIMALI_SPAN_FONT = "AAAAAA+FontAsyHimali"
+_PREETI_SPAN_FONT = "BBBBBB+Preeti"
+# `Lohit-Devanagari` is the real unmapped font the digits of a straddling run sit
+# in; it is the middle span of the 3-span shape (VOL-603).
+_UNMAPPED_SPAN_FONT = "CCCCCC+Lohit-Devanagari"
+
+
+def _marker_span(text: str, font: str, x0: float = 0.0) -> dict:
+    return {"text": text, "font": font, "bbox": (x0, 0.0, x0 + 10.0, 10.0)}
+
+
+def _marker_maps(**by_font: str) -> dict[str, font_based_module.LegacyMapChoice]:
+    return {
+        font: font_based_module.LegacyMapChoice(
+            map_key=map_key, validity=None, ambiguous=frozenset()
+        )
+        for font, map_key in by_font.items()
+    }
+
+
+def _exemptions(spans, maps):
+    veto = font_based_module._content_legacy_veto_flags(spans, maps or None)
+    return (
+        font_based_module._ascii_bracketed_run_exemptions(
+            spans, maps or None, veto, {}
+        ),
+        veto,
+    )
+
+
+def _convert_line(spans, maps) -> str:
+    """The line as the pipeline ships it, with the key active."""
+
+    exemptions, veto = _exemptions(spans, maps)
+    strategy = FontBasedStrategy()
+    return "".join(
+        strategy._convert_span_text(
+            str(span["text"]),
+            str(span["font"]),
+            {},
+            False,
+            content_legacy_maps=maps or None,
+            skip_content_legacy=veto[index],
+            exempt_slices=exemptions[index],
+        )
+        for index, span in enumerate(spans)
+    )
+
+
+def _convert_line_without_key(spans, maps) -> str:
+    """The same line with no exemption at all -- what ships today."""
+
+    _, veto = _exemptions(spans, maps)
+    strategy = FontBasedStrategy()
+    return "".join(
+        strategy._convert_span_text(
+            str(span["text"]),
+            str(span["font"]),
+            {},
+            False,
+            content_legacy_maps=maps or None,
+            skip_content_legacy=veto[index],
+        )
+        for index, span in enumerate(spans)
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "spans", "maps", "ships", "expected"),
+    [
+        # 4452 p12, 5309 p13, 4817 p16, 5021 p12: the statute subsection, one span.
+        # This is the class VOL-166's whole-span anchor cannot reach.
+        (
+            "intra_span_mapped -- statute subsection inside a clause",
+            [_marker_span("dfa 74(2) anusar", _HIMALI_SPAN_FONT)],
+            {"font": _HIMALI_SPAN_FONT, "map_key": "FONTASY_HIMALI_TT"},
+            "माब ७४ढ२ण् बलगकबच",
+            "माब ७४(२) बलगकबच",
+        ),
+        # 4810 p14, 4817 p11, 5022 p11, 5023 p10: three spans, digits in a
+        # separate UNMAPPED font. 107 of the 145 corpus sites are this shape.
+        (
+            "straddle_some_mapped -- digits in an unmapped font",
+            [
+                _marker_span("(", _HIMALI_SPAN_FONT, 0),
+                _marker_span("14", _UNMAPPED_SPAN_FONT, 10),
+                _marker_span(")", _HIMALI_SPAN_FONT, 20),
+            ],
+            {"font": _HIMALI_SPAN_FONT, "map_key": "FONTASY_HIMALI_TT"},
+            "ढ14ण्",
+            "(१४)",
+        ),
+        # Both parens mapped, run split across two mapped spans of the same map.
+        (
+            "straddle_all_mapped -- two mapped spans, one map",
+            [
+                _marker_span("(48", _HIMALI_SPAN_FONT, 0),
+                _marker_span("01)", _HIMALI_SPAN_FONT, 10),
+            ],
+            {"font": _HIMALI_SPAN_FONT, "map_key": "FONTASY_HIMALI_TT"},
+            "ढ४८०१ण्",
+            "(४८०१)",
+        ),
+        # 6795 p12: exactly ONE paren is in a mapped span, so this ships as a
+        # MISMATCHED PAIR that the published `ढ[०-९]+ण्` signature cannot see by
+        # construction -- it needs both ends. 19 sites / 12 documents that no
+        # count on VOL-515 carried before VOL-606.
+        (
+            "mismatched pair -- open paren mapped, close literal",
+            [
+                _marker_span("(", _HIMALI_SPAN_FONT, 0),
+                _marker_span("५४५०)", _UNMAPPED_SPAN_FONT, 10),
+            ],
+            {"font": _HIMALI_SPAN_FONT, "map_key": "FONTASY_HIMALI_TT"},
+            "ढ५४५०)",
+            "(५४५०)",
+        ),
+        # 4452 p7: MIXED digit families inside one run. The digits that are
+        # already Devanagari are left alone and the ASCII ones are translated, so
+        # the whole run lands as one well-formed number.
+        #
+        # The span layout is the measured one and it is load-bearing: the ASCII
+        # digits sit in the UNMAPPED span, which is why they ship as ASCII at all.
+        # Put them in the Himali-mapped span instead and the base leg already
+        # reads "(१५९५८८६५ण्", because that map Devanagari-izes ASCII digits 10 of
+        # 10 -- the same map algebra that makes the pass-through effect clause
+        # wrong (VOL-606 item A3).
+        (
+            "mixed digit families in one run",
+            [
+                _marker_span("(१५958865", _UNMAPPED_SPAN_FONT, 0),
+                _marker_span(")", _HIMALI_SPAN_FONT, 10),
+            ],
+            {"font": _HIMALI_SPAN_FONT, "map_key": "FONTASY_HIMALI_TT"},
+            "(१५958865ण्",
+            "(१५९५८८६५)",
+        ),
+        # 4119 p33: the Preeti half of the same defect. `(` -> `९` and `)` -> `०`,
+        # so it ships as a pure digit string with NO consonant for an output
+        # signature to anchor on -- which is why the key has to be source-keyed.
+        (
+            "Preeti family -- ships as a pure digit string, no signature",
+            [
+                _marker_span("(", _PREETI_SPAN_FONT, 0),
+                _marker_span("७", _UNMAPPED_SPAN_FONT, 10),
+                _marker_span(")", _PREETI_SPAN_FONT, 20),
+            ],
+            {"font": _PREETI_SPAN_FONT, "map_key": "Preeti"},
+            "९७०",
+            "(७)",
+        ),
+    ],
+)
+def test_run_scoped_marker_key_repairs_the_embedded_construct(
+    label, spans, maps, ships, expected
+) -> None:
+    del label
+    assert (
+        _convert_line_without_key(
+            spans, _marker_maps(**{maps["font"]: maps["map_key"]})
+        )
+        == ships
+    )
+    assert (
+        _convert_line(spans, _marker_maps(**{maps["font"]: maps["map_key"]}))
+        == expected
+    )
+
+
+def test_run_scoped_key_is_byte_identical_to_the_vol166_gate_on_its_own_shape() -> None:
+    """The layering decision, asserted rather than asserted-in-prose.
+
+    VOL-166's whole-span gate stays in place, and this rule layers on it. Where
+    both can fire the output must be the same byte string, because both write
+    literal parens and translate the digits with the SAME table
+    (`devanagarize_ascii_digits`). The digit translate is idempotent, so a double
+    application cannot corrupt.
+    """
+
+    spans = [_marker_span("(2)", _HIMALI_SPAN_FONT)]
+    maps = _marker_maps(**{_HIMALI_SPAN_FONT: "FONTASY_HIMALI_TT"})
+    # VOL-166's gate alone already repairs this shape...
+    assert _convert_line_without_key(spans, maps) == "(२)"
+    # ...and the run-scoped key writes the identical bytes.
+    assert _convert_line(spans, maps) == "(२)"
+
+
+def test_run_scoped_key_does_not_fire_across_two_distinct_legacy_maps() -> None:
+    """The carve-out. 11105 p117: parens `Preeti`, ASCII digits `FONTASY_HIMALI_TT`.
+
+    Within ONE map an exempted ASCII-digit run always images as something
+    malformed: the Preeti family sends `(`->`९`, `)`->`०` and ASCII digits to
+    CONSONANTS (0 of 10 reach a Devanagari digit), and the Himali family sends
+    `(`->`ढ`, `)`->`ण्` and ASCII digits to Devanagari digits (10 of 10). So the
+    only combination that images as a well-formed pure Devanagari number is
+    Preeti-family parens around Himali-family digits -- and under the more
+    plausible provenance reading each keystroke there is correct in its own font,
+    making `९४८०१०` a genuine number that firing would destroy.
+
+    That is a property of the six maps rather than of this corpus, so the carve-out
+    closes the hole BY CONSTRUCTION and survives a change of corpus. Price: exactly
+    2 sites of 145 (VOL-606 item A3).
+    """
+
+    spans = [
+        _marker_span("(", _PREETI_SPAN_FONT, 0),
+        _marker_span("4801", _HIMALI_SPAN_FONT, 10),
+        _marker_span(")", _PREETI_SPAN_FONT, 20),
+    ]
+    maps = _marker_maps(
+        **{_PREETI_SPAN_FONT: "Preeti", _HIMALI_SPAN_FONT: "FONTASY_HIMALI_TT"}
+    )
+    exemptions, _ = _exemptions(spans, maps)
+    assert exemptions == [(), (), ()]
+    assert _convert_line(spans, maps) == _convert_line_without_key(spans, maps)
+
+
+def test_carve_out_does_not_swallow_the_ordinary_straddle() -> None:
+    """The negative control on the carve-out, and it is the one that matters.
+
+    An unmapped span does NOT count toward the distinct-map total, so the ordinary
+    straddle -- one mapped map plus an unmapped `Lohit-Devanagari` digit span --
+    must still fire. Without this the carve-out would silently eat the 107
+    straddles the key exists to reach.
+    """
+
+    spans = [
+        _marker_span("(", _PREETI_SPAN_FONT, 0),
+        _marker_span("14", _UNMAPPED_SPAN_FONT, 10),
+        _marker_span(")", _PREETI_SPAN_FONT, 20),
+    ]
+    maps = _marker_maps(**{_PREETI_SPAN_FONT: "Preeti"})
+    assert _convert_line_without_key(spans, maps) == "९14०"
+    assert _convert_line(spans, maps) == "(१४)"
+
+
+@pytest.mark.parametrize(
+    ("label", "spans", "maps"),
+    [
+        # Nothing is legacy-mapped, so nothing is being corrupted.
+        (
+            "no span mapped",
+            [_marker_span("(2)", _UNMAPPED_SPAN_FONT)],
+            {},
+        ),
+        # STRICT ADJACENCY. 3 corpus sites are missed for a single interior
+        # U+0020 ("( ३१२१६६)", "(१४ )", "(८ )"). Tolerating it buys +3 of 148 and
+        # requires a fresh collateral pass over a NEW firing set, so it is a
+        # separately priced call (VOL-515 item 6) and must not creep in here.
+        (
+            "interior whitespace",
+            [_marker_span("(१४ )", _HIMALI_SPAN_FONT)],
+            {_HIMALI_SPAN_FONT: "FONTASY_HIMALI_TT"},
+        ),
+        (
+            "empty parens",
+            [_marker_span("()", _HIMALI_SPAN_FONT)],
+            {_HIMALI_SPAN_FONT: "FONTASY_HIMALI_TT"},
+        ),
+        # The discriminator's whole point: a genuine `ढ` in a real Nepali word
+        # carries a literal ASCII "(" in its source bytes, because the "(" key IS
+        # the `ढ` key in this layout. It must survive, and it does, because the key
+        # requires the whole contiguous "(" + digits + ")" run. "k(f" decodes with
+        # the paren in the middle of a syllable and no closing paren at all.
+        (
+            "genuine dha in a real word -- no closing paren",
+            [_marker_span("k(f", _HIMALI_SPAN_FONT)],
+            {_HIMALI_SPAN_FONT: "FONTASY_HIMALI_TT"},
+        ),
+        # A bracketed run whose interior is not digits at all: a genuine
+        # Preeti-typed number presents as "(!@#)", whose inner characters are
+        # outside the key's digit class.
+        (
+            "bracketed non-digits -- a genuine Preeti-typed number",
+            [_marker_span("(!@#)", _PREETI_SPAN_FONT)],
+            {_PREETI_SPAN_FONT: "Preeti"},
+        ),
+    ],
+)
+def test_run_scoped_key_declines_shapes_it_must_not_touch(label, spans, maps) -> None:
+    del label
+    choices = _marker_maps(**maps)
+    exemptions, _ = _exemptions(spans, choices)
+    assert exemptions == [()] * len(spans)
+    # And the shipped output is untouched, which is the claim that matters.
+    assert _convert_line(spans, choices) == _convert_line_without_key(spans, choices)
+
+
+def test_run_scoped_key_exempts_the_run_and_never_the_line() -> None:
+    """Two runs on one line both fire, and the Nepali between them is untouched.
+
+    The unit being the line is what finds the runs; what gets exempted is each
+    matched RUN. `_convert_span_exempting` splices per span, and the splice is
+    exact because the digit table leaves parens alone and is length-preserving.
+    """
+
+    spans = [_marker_span("dfa 74(2) nirm 7(11) ma", _HIMALI_SPAN_FONT)]
+    maps = _marker_maps(**{_HIMALI_SPAN_FONT: "FONTASY_HIMALI_TT"})
+    exemptions, _ = _exemptions(spans, maps)
+    assert exemptions == [((6, 9), (16, 20))]
+    shipped = _convert_line(spans, maps)
+    assert shipped == "माब ७४(२) mलष्च ७(११) mब"
+    # The text outside the two runs is byte-identical to what ships today.
+    today = _convert_line_without_key(spans, maps)
+    assert today == "माब ७४ढ२ण् mलष्च ७ढ११ण् mब"
+    assert shipped.replace("(२)", "ढ२ण्").replace("(११)", "ढ११ण्") == today
+
+
+def test_devanagarize_ascii_digits_is_shared_with_the_vol166_gate() -> None:
+    """The effect must TRANSLATE the digits, not pass them through.
+
+    `PCS NEPALI` and `FONTASY_HIMALI_TT` map all ten ASCII digits onto Devanagari
+    digits (10 of 10, re-derived from the maps in VOL-606's DIGITTABLE), so an
+    exempted run that merely passed its bytes through unmapped would emit "(123)"
+    where the pipeline already emits "(१२३)" -- 49 of 145 sites regressed, 18 of
+    them repairs VOL-166's gate already makes. One table, one behaviour.
+    """
+
+    from likhit.extractors.legacy_maps import (
+        _LATIN_TO_DEVANAGARI_DIGITS,
+        devanagarize_ascii_digits,
+    )
+
+    assert devanagarize_ascii_digits("0123456789") == "०१२३४५६७८९"
+    # Idempotent, which is what makes layering on VOL-166's gate safe.
+    assert devanagarize_ascii_digits("०१२३४५६७८९") == "०१२३४५६७८९"
+    # Parens are not in the table, so they pass through literally and the splice
+    # stays length-preserving.
+    assert devanagarize_ascii_digits("(48)") == "(४८)"
+    assert "0123456789".translate(_LATIN_TO_DEVANAGARI_DIGITS) == "०१२३४५६७८९"
+
+
+# --- the exemption splice must forward every decision the span still needs ------
+#
+# 🛑 Not in VOL-515 as written, because VOL-323 (#93) landed after it and ships ON by
+# default. `_convert_span_exempting` re-enters `_convert_span_text` for each segment
+# OUTSIDE an exempt slice, so any keyword it fails to forward is silently decided
+# wrong for those segments only -- the exempt slice itself still looks right, which is
+# what makes it hard to see.
+#
+# Measured before the fix: `(12) 345` on a digit-companion face shipped `(१२) 345`.
+# The marker is correct, the loose figures are not.
+def test_the_exemption_splice_keeps_the_digit_companion_on_the_rest_of_the_span():
+    from likhit.extractors.font_based import FontBasedStrategy
+
+    strategy = FontBasedStrategy()
+    companion = frozenset({"CIDFont+F9"})
+    strategies = {"CIDFont+F9": "correct"}
+
+    # Control: with no exemption the whole span transliterates.
+    assert (
+        strategy._convert_span_text(
+            "(12) 345",
+            "CIDFont+F9",
+            strategies,
+            False,
+            digit_companion_fonts=companion,
+        )
+        == "(१२) ३४५"
+    )
+
+    # And with one, the segments outside it must reach the same decision. `(१२) 345`
+    # is the regression this pins: the exempt slice devanagarizes itself either way.
+    assert (
+        strategy._convert_span_text(
+            "(12) 345",
+            "CIDFont+F9",
+            strategies,
+            False,
+            digit_companion_fonts=companion,
+            exempt_slices=((0, 4),),
+        )
+        == "(१२) ३४५"
+    )

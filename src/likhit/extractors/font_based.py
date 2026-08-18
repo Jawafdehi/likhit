@@ -32,6 +32,9 @@ from likhit.extractors.kalimati import (
 )
 from likhit.extractors.legacy_maps import (
     ALL_MAP_KEYS,
+    ASCII_BRACKETED_NUMBER_RUN,
+    _match_font,
+    devanagarize_ascii_digits,
     get_converter,
     get_converter_for_map,
     get_output_converter_for_map,
@@ -3677,6 +3680,159 @@ def _content_legacy_veto_flags(
     return flags
 
 
+def _span_legacy_map_key(
+    text: str,
+    font_name: str,
+    font_strategies: dict[str, str],
+    content_legacy_maps: dict[str, LegacyMapChoice] | None,
+    vetoed: bool,
+) -> str | None:
+    """The map key :meth:`FontBasedStrategy._convert_span_text` would decode this span with.
+
+    Replicates that method's ordering exactly -- content path first, then the
+    name path -- and returns ``None`` when neither fires, i.e. when the span
+    keeps its raw text.
+
+    🛑 ``is_legacy_font(span.font)`` is NOT the pipeline's decision procedure and
+    must not be substituted for this. The documents this defect hits hardest are
+    precisely the ones a font-name hook is blind on: `4817` is entirely
+    `CIDFont+F1..F6` with **zero** name-recognised legacy spans, and
+    `4810`/`5021`/`5309`/`4834`/`4835`/`5022`/`5023` raw-extract mojibake from
+    damaged cmaps with only 30-55 name-recognised spans out of 16k-25k. likhit
+    reaches those spans by content map-ranking (VOL-185), so the hook has to be
+    on the ranking decision (VOL-571 hazard 1).
+    """
+
+    if content_legacy_maps and not vetoed:
+        content_choice = content_legacy_maps.get(font_name)
+        if (
+            content_choice is not None
+            and content_choice.map_key is not None
+            and not _reads_as_latin_words(text)
+        ):
+            return content_choice.map_key
+    if font_strategies.get(_span_base_font(font_name), "correct") == "legacy_remap":
+        return _match_font(font_name)
+    return None
+
+
+def _ascii_bracketed_run_exemptions(
+    spans: list[dict],
+    content_legacy_maps: dict[str, LegacyMapChoice] | None,
+    latin_veto: list[bool],
+    font_strategies: dict[str, str],
+) -> list[tuple[tuple[int, int], ...]]:
+    """Per span: which character ranges are an ASCII-bracketed number to exempt? (VOL-515)
+
+    VOL-166's gate anchors on a **whole span** being "(12)", which is right for a
+    marker that is an entire table cell -- an accounting negative like
+    ``| ढ८०८५८००ण् |`` for −8,085,800 -- and structurally blind to the same
+    construct glued inside a clause: ``दफा ७४ढ२ण् अनुसार`` for "section 74(2)".
+    That second population is 106 of the 127 corruptions v14 ships, and it is a
+    different sub-defect rather than an incomplete fix (VOL-505).
+
+    **The unit is the line.** The amendment asks for "a maximal run of
+    consecutive spans within one line, regardless of font", and dropping the font
+    predicate that :func:`_content_legacy_veto_flags` partitions on leaves no
+    partitioning predicate at all -- so the maximal run *is* the line, and that is
+    intended. It is what buys the straddles: the construct is confined to one
+    span at only 36 of 145 corpus sites, and at the other 109 it spans up to
+    three (``(`` in a content-mapped span, the digits in a separate *unmapped*
+    font, ``)`` back in the mapped span). A same-font unit would find exactly the
+    36 -- i.e. span scope again, measured (VOL-606 item A).
+
+    **What is exempted is the matched run, never the line.** Everything outside
+    it decodes exactly as before.
+
+    **Fires only if at least one character of the matched run lies in a span the
+    pipeline legacy-maps**, decided by :func:`_span_legacy_map_key`.
+
+    🛑 **Carve-out: a run touching two or more DISTINCT legacy maps does not
+    fire.** Unmapped spans do not count toward that total, so the ordinary
+    straddle -- one mapped map plus an unmapped `Lohit-Devanagari` digit span --
+    still fires. This closes the one hole in the safety argument **by
+    construction** rather than by fitting this corpus, and the reason is map
+    algebra: within a single map an exempted ASCII-digit run always images as
+    something malformed (Preeti/Kantipur/Sagarmatha/Spins send ``(``→``९``,
+    ``)``→``०`` and ASCII digits to *consonants*, 0 of 10 reaching a Devanagari
+    digit; PCS NEPALI/FONTASY_HIMALI_TT send ``(``→``ढ``, ``)``→``ण्`` and ASCII
+    digits to *Devanagari digits*, 10 of 10). The only combination imaging as a
+    well-formed pure Devanagari number is Preeti-family parens around
+    Himali-family digits -- exactly one cross-map pair, and it costs 2 sites of
+    145. Under the more plausible provenance reading each of those keystrokes is
+    correct in its own font (``(``/``)`` *are* the ``९``/``०`` keys in Preeti;
+    ASCII digits *are* the digit keys in Himali), so ``९४८०१०`` is a genuine
+    number and firing would destroy correct text (VOL-606 item A3).
+
+    This is why the exemption is safe where a character-level one is not: in the
+    Fontasy Himali layout the ASCII ``(`` key *is* the ``ढ`` key, so blanket
+    exempting parens would destroy real Nepali words containing ``ढ``. Requiring
+    the whole contiguous ``(`` + digits + ``)`` run is the discriminator -- a
+    genuine ``ढ`` in a real word is followed by a vowel or consonant byte, not by
+    a digit run closed by ``)``.
+    """
+
+    exemptions: list[tuple[tuple[int, int], ...]] = [()] * len(spans)
+    if not spans:
+        return exemptions
+
+    # Cheapest possible screen first: this runs on every line of every page, and
+    # only a vanishing fraction of them carry the construct at all. Deciding each
+    # span's map key costs a `_reads_as_latin_words` call, so it must not be paid
+    # on lines that cannot fire.
+    texts = [str(span["text"]) for span in spans]
+    concatenated = "".join(texts)
+    if "(" not in concatenated:
+        return exemptions
+    matches = list(ASCII_BRACKETED_NUMBER_RUN.finditer(concatenated))
+    if not matches:
+        return exemptions
+
+    owner: list[int] = []
+    for span_index, text in enumerate(texts):
+        owner.extend([span_index] * len(text))
+    offsets: list[int] = []
+    running = 0
+    for text in texts:
+        offsets.append(running)
+        running += len(text)
+
+    map_keys = [
+        _span_legacy_map_key(
+            texts[span_index],
+            str(span["font"]),
+            font_strategies,
+            content_legacy_maps,
+            latin_veto[span_index],
+        )
+        for span_index, span in enumerate(spans)
+    ]
+    if not any(key is not None for key in map_keys):
+        return exemptions
+
+    pending: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for match in matches:
+        touched = sorted(set(owner[match.start() : match.end()]))
+        touched_keys = {map_keys[index] for index in touched if map_keys[index]}
+        if not touched_keys:
+            # No character of the run is legacy-mapped, so nothing is being
+            # corrupted and there is nothing to exempt.
+            continue
+        if len(touched_keys) > 1:
+            continue
+        for span_index in touched:
+            start = max(match.start(), offsets[span_index])
+            end = min(match.end(), offsets[span_index] + len(texts[span_index]))
+            if start < end:
+                pending[span_index].append(
+                    (start - offsets[span_index], end - offsets[span_index])
+                )
+
+    for span_index, slices in pending.items():
+        exemptions[span_index] = tuple(slices)
+    return exemptions
+
+
 class FontBasedStrategy(ExtractionStrategy):
     """Extract text from Nepali PDFs using PyMuPDF blocks."""
 
@@ -3899,6 +4055,16 @@ class FontBasedStrategy(ExtractionStrategy):
                         content_legacy_maps,
                         acronym_survivors,
                     )
+                    # Decided over the whole line, because the construct straddles
+                    # spans at 109 of 145 corpus sites (VOL-515). Must be computed
+                    # here rather than inside `_convert_span_text`, which sees one
+                    # span and cannot know what its neighbours contribute.
+                    bracket_exemptions = _ascii_bracketed_run_exemptions(
+                        spans,
+                        content_legacy_maps,
+                        latin_veto,
+                        page_font_strategies,
+                    )
                     for span_index, span in enumerate(spans):
                         text = self._convert_span_text(
                             str(span["text"]),
@@ -3908,6 +4074,7 @@ class FontBasedStrategy(ExtractionStrategy):
                             content_legacy_maps=content_legacy_maps,
                             digit_companion_fonts=digit_companion_fonts,
                             skip_content_legacy=latin_veto[span_index],
+                            exempt_slices=bracket_exemptions[span_index],
                         )
                         if not text:
                             continue
@@ -3997,7 +4164,27 @@ class FontBasedStrategy(ExtractionStrategy):
         # glyph program and which no map already handles. Keyed on the FULL name, like
         # `content_legacy_maps`, because the decision is per font resource.
         digit_companion_fonts: frozenset[str] | None = None,
+        # VOL-515: character ranges of `text` that `_ascii_bracketed_run_exemptions`
+        # matched as an ASCII-bracketed number, decided over this span's whole line.
+        exempt_slices: tuple[tuple[int, int], ...] = (),
+        # The text every *decision* below is made on, when it differs from the text
+        # being converted. Only the exemption splice passes it: the vetoes and the
+        # reorder branch were calibrated on whole spans, so a segment must not be
+        # allowed to answer them differently from the span it came from.
+        decision_text: str | None = None,
     ) -> str:
+        if exempt_slices:
+            return self._convert_span_exempting(
+                text,
+                exempt_slices,
+                font_name,
+                font_strategies,
+                needs_reorder,
+                content_legacy_maps=content_legacy_maps,
+                skip_content_legacy=skip_content_legacy,
+                digit_companion_fonts=digit_companion_fonts,
+            )
+        decided_on = text if decision_text is None else decision_text
         base = _span_base_font(font_name)
         strategy = font_strategies.get(base, "correct")
 
@@ -4053,7 +4240,7 @@ class FontBasedStrategy(ExtractionStrategy):
                 # span may be genuine Latin that merely shares the face. Leaving
                 # readable English alone is strictly better than remapping it into
                 # well-formed Devanagari that spells nothing.
-                if _reads_as_latin_words(text):
+                if _reads_as_latin_words(decided_on):
                     return text
                 return decode_with_legacy_map(text, content_choice)
 
@@ -4081,8 +4268,86 @@ class FontBasedStrategy(ExtractionStrategy):
             return remap_symbol_pua(text, font_name)
 
         if needs_reorder and (
-            strategy == "broken_cmap" or _contains_private_use_marker(text)
+            strategy == "broken_cmap" or _contains_private_use_marker(decided_on)
         ):
             text = reorder_devanagari(text)
             text = normalize_devanagari_spacing(text)
         return text
+
+    def _convert_span_exempting(
+        self,
+        text: str,
+        exempt_slices: tuple[tuple[int, int], ...],
+        font_name: str,
+        font_strategies: dict[str, str],
+        needs_reorder: bool,
+        content_legacy_maps: dict[str, LegacyMapChoice] | None,
+        skip_content_legacy: bool,
+        # 🛑 Forwarded, and it was NOT in VOL-515 as written -- VOL-323 landed after it
+        # (#93) and ships ON by default. Without this, a digit-companion face carrying a
+        # bracketed marker loses transliteration on every segment OUTSIDE the exempt
+        # slice: `(12) 345` would ship `(१२) 345`, because the exemption devanagarizes
+        # its own slice and the recursive calls below decided the rest without knowing
+        # the face was a companion. Every keyword this method forwards has to be
+        # re-checked whenever `_convert_span_text` gains one; a positional-only splice
+        # would have been silently wrong instead of visibly incomplete.
+        digit_companion_fonts: frozenset[str] | None = None,
+    ) -> str:
+        """Convert a span, writing its matched bracketed-number runs unmapped. (VOL-515)
+
+        The matched run emits a literal ``(``, its digits translated
+        ASCII→Devanagari, and a literal ``)``; nothing in the run goes through the
+        legacy map. This is byte-for-byte what VOL-166's landed gate already does
+        to a whole span shaped that way -- see
+        :func:`~likhit.extractors.legacy_maps.devanagarize_ascii_digits`, whose
+        table both share -- so where both could fire the outputs agree and that
+        gate is left in place rather than replaced. The translate is idempotent,
+        so even a double application cannot corrupt.
+
+        The exempt effect is applied on **every** path, including spans the
+        pipeline does not legacy-map at all: a straddling run's digits often sit
+        in a separate unmapped font, and the run's output is defined on the whole
+        run rather than on the mapped part of it. ``(१५958865)`` in three spans
+        must ship ``(१५९५८८६५)``, not ``(१५958865)``.
+
+        Splicing is exact because the effect is character-wise and
+        length-preserving: parens are left alone by the digit table, so each
+        span's slice of the run can be written independently and the shipped
+        assembly re-joins them adjacently. That adjacency is measured, not assumed
+        -- all 145 corpus sites have inter-span gaps within `SPAN_GAP_THRESHOLD`
+        and raw span order equal to x0 order, so none of them renders ``( ६ )``
+        (VOL-606 item A4).
+        """
+
+        pieces: list[str] = []
+        cursor = 0
+        for start, end in exempt_slices:
+            if cursor < start:
+                pieces.append(
+                    self._convert_span_text(
+                        text[cursor:start],
+                        font_name,
+                        font_strategies,
+                        needs_reorder,
+                        content_legacy_maps=content_legacy_maps,
+                        skip_content_legacy=skip_content_legacy,
+                        digit_companion_fonts=digit_companion_fonts,
+                        decision_text=text,
+                    )
+                )
+            pieces.append(devanagarize_ascii_digits(text[start:end]))
+            cursor = end
+        if cursor < len(text):
+            pieces.append(
+                self._convert_span_text(
+                    text[cursor:],
+                    font_name,
+                    font_strategies,
+                    needs_reorder,
+                    content_legacy_maps=content_legacy_maps,
+                    skip_content_legacy=skip_content_legacy,
+                    digit_companion_fonts=digit_companion_fonts,
+                    decision_text=text,
+                )
+            )
+        return "".join(pieces)
