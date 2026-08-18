@@ -76,7 +76,12 @@ KNOWN_MISSES = [
     ("Supplying, mixing , placing, compacting & curing ", "vowel share 0.29"),
     ('1/2"GI Nipple 9" Long ', "letter share, numerals and quotes"),
     ("40-4kg/sqcm series iii(280mm)", "letter share 0.63"),
-    ("engineering work ", "15 non-space characters, one below the floor"),
+    # ``engineering work `` used to sit here, with the reason "15 non-space
+    # characters, one below the floor". The floor is 13 as of VOL-146 and it is now
+    # saved, so the entry moved into ``FLOOR_13_ADMITTED`` below rather than being
+    # deleted -- its length is the reason it was ever a miss, and that is exactly what
+    # this change moves. This pin is the whole reason the suite bit the constant edit
+    # with no new test written: at 13 it was the single failure in 685.
 ]
 
 # Real Preeti keystrokes, also verbatim from that sweep, and all of them
@@ -547,3 +552,258 @@ def test_the_veto_decode_has_no_demonstrated_failing_input() -> None:
         convert = get_converter_for_map(map_key)
         for text in inputs:
             convert(text)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# The all-upper length floor (VOL-188 -> VOL-319 -> VOL-321).
+#
+# `_LATIN_VETO_MIN_CHARS` was 16 when this was calibrated and is 13 since VOL-146,
+# which changes nothing here: an acronym is 2-4 characters, so it is below either
+# figure and neither veto could reach the class. The word veto declines it too, at
+# function-word share 0.0 against its 0.1 floor.
+# `_LATIN_VETO_MIN_CHARS_UPPER` = 3 relaxes ONLY that floor and ONLY for runs whose
+# ASCII letters are all upper case.
+#
+# The token lists are the complete read census of the population in all 6,236 OAG
+# documents (runs/vol319/, blind read, controls 15/15) -- not a sample and not a
+# selection. That is what makes the two boundaries below assertable as exhaustive:
+# the whole false-positive set is length 2 and the whole noise class is length 1.
+# ---------------------------------------------------------------------------
+
+# All 12 distinct tokens of the 34 admitted runs, verbatim from the census.
+CENSUS_ACRONYMS = [
+    "MIS",
+    "PAN",
+    "ICT",
+    "QOC",
+    "TOR",
+    "TOD",
+    "UPS",
+    "ECOD",
+    "IEE",
+    "OJT",
+    "TEE",
+    "WAN",
+]
+
+# The complete false-positive set: both tokens are two characters and both are
+# Preeti fragments, so the floor of 3 excludes exactly them. `OF` is the tail of
+# `8«OF` = ड्रइङ ("drawing") -- the `8«` sits on another font, so the same-font run
+# is the bare `OF`, which is why an English preposition appears to stand alone.
+# `OG` -> इन् is a correct decode (इन्फ्लुएन्जा, इन्टरनेशनल).
+CENSUS_FALSE_POSITIVES = ["OF", "OG"]
+
+# The complete length-1 noise class: 136 of the 177 all-upper runs in the corpus.
+CENSUS_NOISE = ["O", "A", "E", "I"]
+
+
+@pytest.mark.parametrize("text", CENSUS_ACRONYMS)
+def test_all_upper_acronyms_are_vetoed(text: str) -> None:
+    """The 34 runs the floor destroyed, read as genuine Latin 34/34."""
+
+    assert len(text) >= 3
+    assert _veto(text) is True
+
+
+@pytest.mark.parametrize("text", CENSUS_FALSE_POSITIVES)
+def test_two_character_all_upper_runs_keep_decoding(text: str) -> None:
+    """The calibrated boundary, from below. These are the ONLY false positives.
+
+    Dropping the floor to 2 admits these 7 occurrences and takes precision from
+    1.000 to 0.829, which is the whole reason the constant is 3 and not 2.
+    """
+
+    assert len(text) == 2
+    assert _veto(text) is False
+
+
+@pytest.mark.parametrize("text", CENSUS_NOISE)
+def test_single_character_all_upper_runs_keep_decoding(text: str) -> None:
+    """The noise class -- page labels, not acronyms -- stays out at any floor >= 2."""
+
+    assert _veto(text) is False
+
+
+def test_the_all_upper_conjunction_is_load_bearing() -> None:
+    """A minimal pair: same characters, same length, differing only in case.
+
+    Without the conjunction the constant would be a bare floor of 3, which admits
+    2,306 runs in 919 documents to reach the same 34 -- and 98 of those admissions
+    are contradicted by the run's own decode appearing as genuine Nepali elsewhere
+    in the same document. The case test is what keeps the blast radius at 16
+    documents, so it is pinned here rather than left to the constant.
+    """
+
+    assert _veto("MIS") is True
+    for variant in ("Mis", "mis", "MiS"):
+        assert _veto(variant) is False, variant
+
+
+@pytest.mark.parametrize(
+    ("text", "gate"),
+    [
+        ("XYZ", "vowel share 0/3"),
+        ("BCD", "vowel share 0/3"),
+        ("MIS]", "legacy keystroke symbol"),
+        ("MIS+", "legacy keystroke symbol"),
+    ],
+)
+def test_every_other_gate_still_applies_to_an_all_upper_run(
+    text: str, gate: str
+) -> None:
+    """The relaxation is of the floor alone; the conjunction is otherwise intact."""
+
+    letters = [char for char in text if char.isascii() and char.isalpha()]
+    assert "".join(letters).isupper()
+    assert len([c for c in text if not c.isspace()]) >= 3
+    assert _veto(text) is False, gate
+
+
+def test_an_empty_run_cannot_reach_the_ratio() -> None:
+    """`letters` is hoisted above the floor test, so this is the guard that matters.
+
+    An empty run has no letters, so the floor stays at the mixed-case one -- whatever
+    its value -- and the function returns False there, which is what stops
+    `alpha_ratio` dividing by zero. A hoist that also moved the floor would turn this
+    into a ZeroDivisionError.
+    """
+
+    assert _reads_as_latin_text("", "") is False
+    assert _reads_as_latin_text("   ", "") is False
+
+
+def test_an_all_upper_acronym_run_is_kept_whole_across_spans() -> None:
+    """The decision unit is the same-font run, and the floor now sees it as one.
+
+    `Q`, `O`, `C` split across three spans is one run of 3 characters, not three
+    runs of 1 -- so it clears the upper floor, where per-span evaluation would leave
+    every piece in the length-1 noise class and destroy the acronym.
+    """
+
+    spans = [
+        {"font": "Spins", "text": "Q"},
+        {"font": "Spins", "text": "O"},
+        {"font": "Spins", "text": "C"},
+    ]
+    assert _content_legacy_veto_flags(spans, SPINS_CHOICE) == [True, True, True]
+
+
+def test_a_two_character_fragment_split_across_spans_still_decodes() -> None:
+    """`OF` as two spans is still a 2-character run, so it stays below the floor."""
+
+    spans = [
+        {"font": "Spins", "text": "O"},
+        {"font": "Spins", "text": "F"},
+    ]
+    assert _content_legacy_veto_flags(spans, SPINS_CHOICE) == [False, False]
+
+
+# ---------------------------------------------------------------------------
+# The MIXED-CASE length floor: 13, not 16 and not 12 (VOL-146 -> VOL-319 -> VOL-146).
+#
+# `_LATIN_VETO_MIN_CHARS_UPPER` above relaxes the floor for all-upper runs only. This
+# section is the other floor -- the one every mixed-case run is judged by -- and it
+# moved 16 -> 13.
+#
+# Why 13 is the boundary and not a preference. The population is every run the floor
+# ALONE rejected at length >= 10 in all 6,236 OAG documents: 91 runs, each read blind
+# and given a verdict, 41 keystrokes and 50 genuine Latin. Re-derived at the build tip
+# through this module's own `_reads_as_latin_text` -- not a re-implementation of it --
+# `runs/vol146-floor13-7c712e1c/floor-admission-7c712e1c.json`:
+#
+#   floor   admitted   LATIN   KEYSTROKE   precision
+#      16          0       0           0        n/a
+#      15          4       4           0      1.000
+#      14          9       9           0      1.000
+#      13         14      14           0      1.000
+#      12         24      19           5      0.792
+#      11         33      24           9      0.727
+#      10         91      50          41      0.549
+#
+# So 13 is the LAST floor with nothing but Latin in it, and 12 is the first that
+# abandons real Nepali. The two lists below are that boundary, verbatim, and the
+# keystroke list is what makes a further step down fail rather than merely look worse.
+#
+# The step also has a transcript-level cost, measured pairwise on built trees at the
+# same tip and not inferred from these flags: 14 runs / 11 documents / 245 characters
+# recovered, 0 documents regressed. `runs/vol146-floor13-7c712e1c/`.
+
+#: Every run the 16 -> 13 step admits, with its non-space length. All 14 carry the
+#: blind-read verdict LATIN; there is no admitted run at 13 that a reader called
+#: keystrokes, which is the claim `precision 1.000` above makes.
+FLOOR_13_ADMITTED = [
+    ("Cost Valuation ", 13),
+    ("specification ", 13),
+    ("Rate Analaysis ", 13),
+    ("Dipendra Rawal", 13),
+    ("Non filer since ", 13),
+    ("Debilal Sapkota", 14),
+    ("Implementation ", 14),
+    ("non-hierarchal ", 14),
+    ("Ramesh Pun Magar", 14),
+    ("LS Solar Asia Pvt ", 14),
+    ("engineering work ", 15),
+    ("Govinda Raj Bista", 15),
+    ("Pasang lamu sadak", 15),
+    ("Error! Reference ", 15),
+]
+
+#: The three distinct strings behind the five runs a floor of 12 would admit, with the
+#: Nepali they decode to. Every one is real Nepali set in a mislabeled legacy face, so
+#: admitting them means publishing the ASCII keystrokes instead of the words -- the
+#: failure this veto exists to prevent, and the reason the floor stops at 13.
+FLOOR_12_WOULD_ABANDON = [
+    ("lakb Aoa:yfkg ", "बिपद"),
+    ("Zofd afa' ofba ", "श्याम"),
+    ("Zofdafa' ofba ", "श्यामबाबु"),
+]
+
+
+@pytest.mark.parametrize(("text", "nonspace"), FLOOR_13_ADMITTED)
+def test_the_floor_admits_every_run_the_read_census_cleared(
+    text: str, nonspace: int
+) -> None:
+    """Fails at 16 and passes at 13 -- the bite test for the constant itself.
+
+    The length is asserted alongside the verdict so a future edit to either the
+    string or the floor cannot leave this passing for a different reason than the one
+    it was written for.
+    """
+
+    assert sum(1 for char in text if not char.isspace()) == nonspace
+    assert 13 <= nonspace < 16, "outside the band this step can reach"
+    assert _veto(text) is True
+
+
+@pytest.mark.parametrize(("text", "word"), FLOOR_12_WOULD_ABANDON)
+def test_a_further_step_to_12_would_abandon_real_nepali(text: str, word: str) -> None:
+    """The assertion that must fail if the floor is lowered again.
+
+    This is the mutation guard: set `_LATIN_VETO_MIN_CHARS` to 12 and every case here
+    goes red, because each run then clears the floor and every other condition of the
+    conjunction already passes it -- letter share >= 0.88, vowel share >= 0.30, no
+    legacy keystroke symbol, no medial capital, and no dictionary word in the Spins
+    decode. The floor is the only thing standing between these runs and being
+    published as ASCII garbage.
+    """
+
+    assert sum(1 for char in text if not char.isspace()) == 12
+    assert word in SPINS(text), "the decode is real Nepali, so the run must decode"
+    assert _veto(text) is False
+
+
+def test_the_floor_boundary_is_13_exactly() -> None:
+    """13 is admitted, 12 is not, on one string whose length is the only variable.
+
+    Both halves matter. A test that only pins the admitted side passes at any floor
+    of 13 or lower and so cannot notice a step down; a test that only pins the
+    rejected side passes at any floor of 13 or higher and cannot notice this change
+    at all.
+    """
+
+    thirteen = "Cost Valuation "
+    twelve = "Cost Valuatio "  # the same string, one letter shorter
+    assert sum(1 for char in thirteen if not char.isspace()) == 13
+    assert sum(1 for char in twelve if not char.isspace()) == 12
+    assert _veto(thirteen) is True
+    assert _veto(twelve) is False
