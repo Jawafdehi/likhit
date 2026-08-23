@@ -2350,6 +2350,42 @@ def _span_base_font(font_name: str) -> str:
     return font_name.split("+", 1)[-1] if "+" in font_name else font_name
 
 
+def unmark_cid_ascii(text: str) -> str:
+    """Undo CID marking where the CID is itself a printable-ASCII code.
+
+    A legacy 8-bit face carries its keystrokes as byte values, so when the PDF
+    gives no usable ToUnicode CMap the raw CIDs *are* those bytes -- and
+    :func:`get_cid_marked_page_dict` has already moved them to ``_CID_MARK_BASE +
+    cid``. Both legacy decode paths then fail on text that is perfectly
+    recoverable: the content path measures a printable-ASCII share of 0.00-0.29
+    against a 0.8 floor and skips the font, and the name path hands U+F0000+
+    codepoints to npttf2utf, which has no mapping for them and passes them
+    through unchanged. So a font can be correctly *routed* to Preeti and still
+    decode to nothing.
+
+    Measured on ``11320__1 Bulletin_Asar_2074_Nepali`` (VOL-159), whose four
+    "lost" pages carry a present, readable text layer. Subtracting the mark base
+    returns it byte-exact -- ``hglxtsf nflu hjfkmb]lxtf, kf/bzL{tf ...`` -- which
+    Preeti reads as ``जनहितका लागि जवाफदेहिता, पारदर्शीता ...``, the OAG's own
+    motto, at a garble penalty of 0.
+
+    Only codes in ``0x20..0x7E`` are unmarked. A marked CID outside that range is
+    not a legacy keystroke and keeps its mark, so the marked-CID census and the
+    broken-CMap path see exactly what they saw before. This is applied ONLY on the
+    legacy branches, never to text on its way to the reorder/broken-CMap path,
+    which needs the markers.
+    """
+
+    if _CID_MARK_BASE + 0x20 > 0x10FFFF:  # pragma: no cover - defensive
+        return text
+    return "".join(
+        chr(code - _CID_MARK_BASE)
+        if 0x20 <= (code := ord(character)) - _CID_MARK_BASE < 0x7F
+        else character
+        for character in text
+    )
+
+
 def _is_probably_legacy_ascii(text: str) -> bool:
     """True if ``text`` looks like raw legacy-font keystrokes (ASCII, no Devanagari)."""
 
@@ -3373,7 +3409,11 @@ def detect_content_legacy_fonts(
         # calls "correct".
         if classify_font(font_name, "") != "correct":
             continue
-        aggregate = "".join(parts)
+        # Unmark before both the ASCII test and the map choice, so a face whose
+        # keystrokes only survive as raw CIDs is judged on the same evidence as
+        # one whose ToUnicode CMap happened to be usable. See
+        # :func:`unmark_cid_ascii`.
+        aggregate = unmark_cid_ascii("".join(parts))
         if not _is_probably_legacy_ascii(aggregate):
             continue
         choice = choose_legacy_map_detailed(aggregate)
@@ -4049,13 +4089,34 @@ class FontBasedStrategy(ExtractionStrategy):
             # and reorder branches below were all short-circuited for that span. The
             # sibling helper added in the same commit kept both halves; this one did not.
             if content_choice is not None and content_choice.map_key is not None:
+                # VOL-159: unmark once, and give the veto the same bytes the
+                # decoder will see.
+                #
+                # ⚠️ This is behaviour-NEUTRAL for the veto, and the first version
+                # of this comment claimed otherwise -- that `_reads_as_latin_words`
+                # "cannot read words in a marked span at all", which a test
+                # written to pin it immediately disproved. It calls `unmark_cids`
+                # on its own first line, so it was never blind to marks. Kept
+                # anyway, for the two reasons that do hold: the DECODE below needs
+                # unmarked text (that is this change), and the veto and the decode
+                # should demonstrably be judging one string rather than two that
+                # happen to agree.
+                #
+                # The two unmarks differ in WIDTH and the narrow one runs first,
+                # which is the safe order: `unmark_cid_ascii` restores only CIDs in
+                # 0x20..0x7E, the range a legacy keystroke can occupy, while the
+                # veto's `unmark_cids` restores every mark. So nothing here can
+                # hand the DECODER a code point that is not a plausible keystroke,
+                # which is exactly what keeps the marked-CID census and the
+                # broken-CMap path seeing what they saw before.
+                unmarked = unmark_cid_ascii(text)
                 # Candidacy was decided per font over the whole document, so this
                 # span may be genuine Latin that merely shares the face. Leaving
                 # readable English alone is strictly better than remapping it into
                 # well-formed Devanagari that spells nothing.
-                if _reads_as_latin_words(text):
+                if _reads_as_latin_words(unmarked):
                     return text
-                return decode_with_legacy_map(text, content_choice)
+                return decode_with_legacy_map(unmarked, content_choice)
 
         if strategy == "legacy_remap":
             converter = get_converter(font_name)
@@ -4067,7 +4128,15 @@ class FontBasedStrategy(ExtractionStrategy):
                 # exactly how 1,363 glyphs of Nepali text shipped as U+F0xx.
                 # A no-op for every legacy font likhit already handled, since
                 # those arrive as ASCII keystrokes.
-                return converter(unlift_symbol_pua(text))
+                #
+                # VOL-159: and unmark, because a name-registered face (Preeti,
+                # Himalb) whose CIDs were marked is routed correctly and would
+                # otherwise hand npttf2utf U+F0000+ code points it passes straight
+                # through. The two transforms are on DISJOINT ranges and compose
+                # in either order: un-lifting reads U+F020-F0FF, unmarking reads
+                # `_CID_MARK_BASE + 0x20..0x7E`. Whichever applies, the other is a
+                # no-op, so this is not a hidden ordering dependency.
+                return converter(unmark_cid_ascii(unlift_symbol_pua(text)))
             return text
 
         # VOL-704: a legacy SYMBOL font (Symbol, Wingdings) classifies "correct",

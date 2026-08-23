@@ -42,6 +42,8 @@ from likhit.extractors.font_based import (
     choose_legacy_map_detailed,
     decode_with_legacy_map,
     detect_content_legacy_fonts,
+    unmark_cid_ascii,
+    unmark_cids,
 )
 from likhit.extractors.font_classifier import (
     IMAGE_ONLY,
@@ -236,6 +238,227 @@ def test_is_probably_legacy_ascii() -> None:
     assert _is_probably_legacy_ascii("g]kfn ;/sf/ cbfnt cg';Gwfg")
     assert not _is_probably_legacy_ascii("नेपाल सरकार")  # already Devanagari
     assert not _is_probably_legacy_ascii("   ")
+
+
+# --- VOL-159: CID-marked legacy keystrokes ------------------------------------
+#
+# When a PDF gives no usable ToUnicode CMap, get_cid_marked_page_dict moves the
+# raw CIDs to _CID_MARK_BASE + cid. For a legacy 8-bit face those CIDs ARE the
+# keystroke bytes, so both decode paths fail on recoverable text. Measured on
+# 11320__1 Bulletin_Asar_2074_Nepali, whose four "lost" pages have a present,
+# readable text layer at a printable-ASCII share of 0.067-0.286 against the 0.8
+# floor. Blast radius over all 6,236 corpus PDFs: 4 documents, 40 aggregates,
+# zero English false positives (runs/vol159/blast-radius-c47ffc8f/).
+
+MARK = 0xF0000
+
+
+def _mark(text: str) -> str:
+    """Mark every printable-ASCII character, as an absent ToUnicode CMap would."""
+    return "".join(chr(MARK + ord(c)) if 0x20 <= ord(c) < 0x7F else c for c in text)
+
+
+# The real OAG motto off page 7 of 11320, as `BikuRegularThin` keystrokes.
+OAG_MOTTO_KEYSTROKES = (
+    "hglxtsf nflu hjfkmb]lxtf, kf/bzL{tf / lgi7f k|a4{gdf ljZj;gLo n]vfk/LIf0f ;+:yf"
+)
+
+
+def test_unmark_cid_ascii_recovers_the_keystrokes_byte_exact() -> None:
+    assert unmark_cid_ascii(_mark(OAG_MOTTO_KEYSTROKES)) == OAG_MOTTO_KEYSTROKES
+
+
+def test_unmark_cid_ascii_leaves_unmarked_text_alone() -> None:
+    for text in ("नेपाल सरकार", OAG_MOTTO_KEYSTROKES, "", "Cash flow"):
+        assert unmark_cid_ascii(text) == text
+
+
+def test_unmark_cid_ascii_keeps_marks_outside_printable_ascii() -> None:
+    # A marked CID that is not a legacy keystroke must keep its mark, so the
+    # marked-CID census and the broken-CMap path see what they saw before.
+    for code in (0x00, 0x1F, 0x7F, 0x80, 0x3000):
+        marked = chr(MARK + code)
+        assert unmark_cid_ascii(marked) == marked
+
+
+def test_marked_legacy_keystrokes_are_invisible_without_the_unmark() -> None:
+    # The defect itself, pinned: the predicate that gates content detection
+    # measures a printable-ASCII share on PUA codepoints and refuses the font.
+    marked = _mark(OAG_MOTTO_KEYSTROKES)
+    assert not _is_probably_legacy_ascii(marked)
+    assert _is_probably_legacy_ascii(unmark_cid_ascii(marked))
+
+
+# --- the WIRING, one test per production site -----------------------------------
+#
+# 🛑 Added because all three of VOL-159's call sites SURVIVED mutation. Its six tests
+# exercise `unmark_cid_ascii` and `_is_probably_legacy_ascii` in isolation, and nothing
+# reached the three places the function is actually used -- so decoding the MARKED text
+# on the content path, dropping the unmark on the name path, and dropping it from the
+# detector's aggregate each left 1492 passed / 14 skipped / 5 xfailed. A helper can be
+# perfectly tested and still not be called.
+#
+# The expected string is the real OAG motto, spelled out rather than computed from the
+# input: a test that builds its expectation by calling the same converter would hold at
+# any wiring, which is the failure this file's own `_mark` docstring warns about.
+_OAG_MOTTO_DEVANAGARI = (
+    "जनहितका लागि जवाफदेहिता, पारदर्शीता र निष्ठा प्रबर्द्धनमा विश्वसनीय लेखापरीक्षण संस्था"
+)
+
+
+def test_the_content_path_decodes_a_marked_span() -> None:
+    from likhit.extractors.font_based import FontBasedStrategy, LegacyMapChoice
+
+    marked = _mark(OAG_MOTTO_KEYSTROKES)
+    out = FontBasedStrategy()._convert_span_text(
+        marked,
+        "CIDFont+F1",
+        {"CIDFont+F1": "correct"},
+        False,
+        content_legacy_maps={"CIDFont+F1": LegacyMapChoice("Preeti", None)},
+    )
+    assert out == _OAG_MOTTO_DEVANAGARI
+    # And the failure it replaces is not "slightly wrong output" -- it is the span
+    # shipping its PUA code points verbatim.
+    assert out != marked
+
+
+def test_the_name_path_decodes_a_marked_span() -> None:
+    from likhit.extractors.font_based import FontBasedStrategy
+
+    marked = _mark(OAG_MOTTO_KEYSTROKES)
+    out = FontBasedStrategy()._convert_span_text(
+        marked, "Preeti", {"Preeti": "legacy_remap"}, False
+    )
+    assert out == _OAG_MOTTO_DEVANAGARI
+    assert out != marked
+
+
+def test_the_detector_hands_the_chooser_unmarked_text(monkeypatch) -> None:
+    # The third site. `detect_content_legacy_fonts` builds its per-font aggregate from
+    # `get_cid_marked_page_dict` -- so it really does see marked text -- and gates on a
+    # printable-ASCII share that is 0.00 on it. Without the unmark the font is refused
+    # before any map is scored, and the two decode tests above are never reached in
+    # production however well they pass here.
+    #
+    # ⚠️ Asserted on the text the chooser RECEIVES, not on the nomination. The natural
+    # test -- "a marked font is nominated" -- cannot be built from a synthetic fixture:
+    # `choose_legacy_map_detailed` abstains on this motto at every length tried (79 to
+    # 2,528 characters), because its accept gate is about dictionary evidence and not
+    # volume. That is the same property C15 measured corpus-wide (32,307 candidate spans
+    # decide 0), so the fixture is not at fault and lengthening it is not the fix.
+    # Capturing the aggregate pins the exact line the mutant changes, which the
+    # nomination would only have pinned indirectly.
+    import fitz
+
+    from likhit.extractors import font_based as module
+
+    seen: list[str] = []
+
+    monkeypatch.setattr(
+        module,
+        "get_cid_marked_page_dict",
+        lambda _page: {
+            "blocks": [
+                {
+                    "lines": [
+                        {
+                            "spans": [
+                                {
+                                    "font": "BikuRegularThin",
+                                    "text": _mark(OAG_MOTTO_KEYSTROKES),
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+    )
+    real_chooser = module.choose_legacy_map_detailed
+    monkeypatch.setattr(
+        module,
+        "choose_legacy_map_detailed",
+        lambda text, *a, **k: (seen.append(text), real_chooser(text, *a, **k))[1],
+    )
+
+    doc = fitz.open()
+    doc.new_page()
+    try:
+        module.detect_content_legacy_fonts(doc)
+    finally:
+        doc.close()
+
+    assert seen, (
+        "the chooser was never reached: the aggregate gate refused the font, which is "
+        "the defect itself -- a printable-ASCII share of 0.00 on marked code points"
+    )
+    assert seen[0] == OAG_MOTTO_KEYSTROKES, (
+        "the chooser was handed marked code points; it must see the keystrokes"
+    )
+
+
+# --- the two unmarks, and which one the decode path may use ---------------------
+#
+# Written after a test disproved the comment it was meant to pin. Integrating VOL-159
+# into current main means `_convert_span_text` now unmarks BEFORE the Latin-words veto
+# as well as before the decode, and the justification for that is not the obvious one:
+# `_reads_as_latin_words` calls `unmark_cids` on its own first line, so it never was
+# blind to a marked span. Pinned here so nobody re-derives the wrong reason.
+def test_the_latin_words_veto_unmarks_on_its_own() -> None:
+    english = "Statement of cash flows for the year ended and the notes thereto"
+    assert _reads_as_latin_words(english)
+    # The marked form too -- unchanged, because the veto unmarks internally. A caller
+    # that pre-unmarks is therefore NEUTRAL here, not a fix.
+    assert _reads_as_latin_words(_mark(english))
+    assert _reads_as_latin_words(unmark_cid_ascii(_mark(english)))
+
+
+def test_the_narrow_unmark_is_narrower_than_the_vetos_and_that_is_the_safe_order() -> (
+    None
+):
+    # Why `_convert_span_text` may run `unmark_cid_ascii` before the veto without
+    # widening what reaches the DECODER: the narrow one restores only 0x20..0x7E, the
+    # range a legacy keystroke can occupy. `unmark_cids` restores everything, which is
+    # fine for a read-only predicate and would not be fine for the decode.
+    for code in (0x41, 0x20, 0x7E):  # inside the keystroke range: both restore
+        marked = chr(MARK + code)
+        assert unmark_cid_ascii(marked) == chr(code)
+        assert unmark_cids(marked) == chr(code)
+    for code in (0x7F, 0x0A, 0x3000):  # outside it: only the wide one restores
+        marked = chr(MARK + code)
+        assert unmark_cid_ascii(marked) == marked, hex(code)
+        assert unmark_cids(marked) == chr(code), hex(code)
+
+
+def test_unmarking_before_the_veto_does_not_veto_real_keystrokes() -> None:
+    # The control that matters. The OAG motto unmarks to legacy keystrokes, and those
+    # must NOT read as Latin words -- otherwise unmarking early would trade one silent
+    # failure for another and the four recovered pages would go back to shipping raw.
+    assert not _reads_as_latin_words(unmark_cid_ascii(_mark(OAG_MOTTO_KEYSTROKES)))
+    assert not _reads_as_latin_words(_mark(OAG_MOTTO_KEYSTROKES))
+
+
+def test_marked_english_is_still_refused_after_unmarking() -> None:
+    # The control that decides the fix. 11320 carries genuine English under
+    # `TimesNewRomanPSMT,Bold`, marked the same way. Un-marking must not make it
+    # decodable: it scores penalty_per_deva 0.09-0.11 under every map, above the
+    # 0.05 ceiling, and zero dictionary hits.
+    english = "(Year 1, Issue 1,     Jun/July 2017)" * 3
+    unmarked = unmark_cid_ascii(_mark(english))
+    assert unmarked == english
+    assert _is_probably_legacy_ascii(unmarked)  # it does look like ASCII...
+    map_key, validity = choose_legacy_map(unmarked)
+    assert map_key is None  # ...and is still refused, on the evidence
+    assert validity is not None and validity["hits"] == 0
+
+
+def test_marked_decorative_filler_is_still_refused_after_unmarking() -> None:
+    # `SymbolMT` in 11392 and 11129 is a run of "x" used as a rule. Two of the
+    # four documents the fix newly exposes contribute only this.
+    unmarked = unmark_cid_ascii(_mark("x" * 200))
+    assert unmarked == "x" * 200
+    assert choose_legacy_map(unmarked)[0] is None
 
 
 def test_detect_content_legacy_fonts_on_mislabeled_preeti() -> None:
