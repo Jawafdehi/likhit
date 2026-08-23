@@ -248,16 +248,41 @@ def test_length_bounds() -> None:
     assert _acronym_tokens("ABCDE") == frozenset({"ABCDE"})
 
 
+# The subject of the two tests below was a **bare** `QOC` run until VOL-363. It can no
+# longer be: VOL-321 gave axis 1 an all-upper length floor of 3, so axis 1 now certifies
+# a bare `QOC` on its own and the `elif` never reaches this axis for it. That is a real
+# change of which axis is credited and it is measured, not assumed — over VOL-321's own
+# 16 documents, 16 of this axis's 20 fires moved to axis 1
+# (`runs/vol363/ANALYSIS-armAB-2c55f12a.txt`).
+#
+# It is NOT a reason to weaken axis 1: VOL-321 read the whole all-upper floor-only
+# population of all 6,236 documents and found 34/34 genuine Latin, and deferring the
+# class to attestation would drop **18 of those 34 runs / 54 characters** which no
+# survivor attests (measured, same record). So the subject moves instead, and it has to
+# move to a run axis 1 genuinely declines or these two tests assert nothing.
+#
+# `(QOC),` is that run, and it is what the corpus actually carries — `_acronym_tokens`
+# strips the edge punctuation (tested above), while axis 1 declines it on the ALPHA
+# RATIO at 3/6 = 0.5 against its 0.88 floor, not on the length floor. Asserting the
+# reason is the point: a subject that declined for the same reason as the old one would
+# silently stop covering this branch the next time a floor moves.
+ATTESTED_SUBJECT = "(QOC),"
+
+
 def test_the_axis_vetoes_a_bare_acronym_run_when_the_document_attests_it() -> None:
-    """The whole point: a 3-character run no other axis can judge.
+    """The whole point: a run no other axis can judge, decided by attestation."""
 
-    `QOC` alone is far below `_reads_as_latin_text`'s 16-character floor and holds no
-    dictionary word, so both shipped vetoes decline it and v13 remaps it into
-    Devanagari that spells nothing.
-    """
+    spans = [_span("Spins", ATTESTED_SUBJECT)]
+    decoded = SPINS(ATTESTED_SUBJECT)
+    assert _reads_as_latin_text(ATTESTED_SUBJECT, decoded) is False, "axis 1 declines"
+    # ...and it declines on the alpha ratio, not on either length floor. Both floors
+    # are cleared, so this subject cannot be rescued by moving one of them.
+    non_space = [char for char in ATTESTED_SUBJECT if not char.isspace()]
+    assert len(non_space) >= font_based._LATIN_VETO_MIN_CHARS_UPPER
+    letters = [char for char in non_space if char.isascii() and char.isalpha()]
+    assert "".join(letters).isupper()
+    assert len(letters) / len(non_space) < font_based._LATIN_VETO_MIN_ALPHA_RATIO
 
-    spans = [_span("Spins", "QOC")]
-    assert _reads_as_latin_text("QOC", SPINS("QOC")) is False, "axis 1 declines it"
     assert _content_legacy_veto_flags(spans, SPINS_CHOICE) == [False]
     assert _content_legacy_veto_flags(spans, SPINS_CHOICE, frozenset({"QOC"})) == [True]
 
@@ -265,7 +290,7 @@ def test_the_axis_vetoes_a_bare_acronym_run_when_the_document_attests_it() -> No
 def test_without_survivor_evidence_the_axis_declines() -> None:
     """The shape is only the candidate generator — 7,864 runs carry it."""
 
-    spans = [_span("Spins", "QOC")]
+    spans = [_span("Spins", ATTESTED_SUBJECT)]
     assert _content_legacy_veto_flags(spans, SPINS_CHOICE, frozenset({"MIS"})) == [
         False
     ]
@@ -859,3 +884,79 @@ def test_the_exclusion_reads_the_base_name_and_still_lets_real_evidence_through(
         assert font_based._rewritten_outside_the_content_remap(font) is True, font
     for font in ("Helvetica", "Times New Roman", "TT339t00", "Spins"):
         assert font_based._rewritten_outside_the_content_remap(font) is False, font
+
+
+# ---------------------------------------------------------------------------
+# VOL-363: the THIRD self-attestation route, and it is not either of the two above.
+#
+# The survivor-free call closes attestation from the set being built. VOL-247's clause
+# closes attestation from a name-legacy span. Neither can see this one: since VOL-321,
+# axis 1 certifies a run that is *nothing but* a short all-caps token, on the all-upper
+# length floor alone. Such a run then survives the remap and becomes document-scope
+# evidence of English — so a bare `MIS` run attests `MIS` for every other run in the
+# document, on no evidence beyond its own shape. That is circular, and it is the shape
+# `runs/vol180/`'s calibration explicitly calls a candidate generator and not a rule.
+#
+# Measured over VOL-321's own 16 documents, `runs/vol363/ANALYSIS-armAB-2c55f12a.txt`:
+# the relaxation was adding **17 tokens across 10 of the 16** documents, and those
+# tokens licensed **0** further fires. So this is a latent defect closed at zero
+# measured cost, not a recovery of lost fires — say which, because the two are
+# different claims.
+# ---------------------------------------------------------------------------
+
+
+def test_a_bare_all_caps_run_does_not_attest(monkeypatch) -> None:
+    """The circularity, closed. Both halves are load-bearing.
+
+    The first half is the positive control: it proves the subject really is inside the
+    all-upper relaxation's reach. Without it this test would pass just as well on a
+    subject the vocabulary drops for some unrelated reason — a length-1 run, or one
+    carrying a forbidden character — and would stop covering anything the moment the
+    relaxation moved.
+    """
+
+    bare = "MIS"
+    assert _acronym_tokens(bare) == frozenset({bare})
+    # Positive control: axis 1's SHIPPING call certifies it, on the relaxation alone.
+    assert _reads_as_latin_text(bare, SPINS(bare)) is True
+    assert _content_legacy_veto_flags([_span("Spins", bare)], SPINS_CHOICE) == [True]
+    # Suppressed — which is how the vocabulary is built — it is not certified...
+    assert _reads_as_latin_text(bare, SPINS(bare), relax_all_upper=False) is False
+    # ...so it is remapped, and a remapped run is not a survivor source.
+    assert _survivors_for(monkeypatch, [_span("Spins", bare)]) == frozenset()
+
+
+def test_the_survivor_vocabulary_is_independent_of_the_all_upper_floor(
+    monkeypatch,
+) -> None:
+    """The invariant, which is stronger than "not self-attesting".
+
+    Sweeping the constant is what makes this a claim about the *mechanism* rather than
+    about one value of it: the third axis's calibration cannot be moved by VOL-321's
+    constant, at any setting of it. `2` is below the census's own false-positive
+    boundary and `16` is the pre-VOL-321 state, so the sweep spans the whole range the
+    constant has ever plausibly held.
+    """
+
+    spans = [_span("Spins", "MIS")]
+    for upper in (2, 3, 4, 16):
+        monkeypatch.setattr(font_based, "_LATIN_VETO_MIN_CHARS_UPPER", upper)
+        assert _survivors_for(monkeypatch, spans) == frozenset(), upper
+
+
+def test_the_narrowing_is_of_the_evidence_not_of_the_veto() -> None:
+    """VOL-321's 34 certifications are untouched, and that is the whole design.
+
+    The shipping call keeps the relaxation on, so every run VOL-321's read census
+    cleared is still vetoed. Deferring the class to attestation instead would drop
+    **18 of those 34 runs / 54 characters** that no survivor attests — measured over
+    VOL-321's own 16 documents in `runs/vol363/`, which is why this fix narrows the
+    evidence rather than the veto.
+    """
+
+    for token in ("MIS", "PAN", "ICT", "QOC", "TOR", "ECOD", "IEE", "OJT"):
+        spans = [_span("Spins", token)]
+        assert _content_legacy_veto_flags(spans, SPINS_CHOICE) == [True], token
+        assert _content_legacy_veto_flags(
+            spans, SPINS_CHOICE, relax_all_upper=False
+        ) == [False], token
