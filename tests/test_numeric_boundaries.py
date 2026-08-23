@@ -14,13 +14,16 @@ from likhit.extractors.font_based import FontBasedStrategy
 import likhit.extractors.numeric_boundaries as numeric_boundaries_module
 from likhit.extractors.numeric_boundaries import (
     _Character,
+    NumericBoundaryEvidence,
     _extract_vertical_edges,
     _MAX_PARTITION_SEGMENTS,
     _plausible_span_partition_cuts,
     _select_minimal_rule_cuts,
     NumericBoundaryRepair,
     apply_line_numeric_boundary_repairs,
+    collect_document_numeric_boundary_evidence,
     collect_document_numeric_boundary_repairs,
+    collect_page_numeric_boundary_evidence,
     collect_page_numeric_boundary_repairs,
     collect_page_repairs_by_line,
     repair_markdown_numeric_boundaries,
@@ -568,8 +571,8 @@ def test_converter_uses_successful_known_font_candidate_directly(
 
     monkeypatch.setattr(
         nepali_pdf_module,
-        "_try_collect_numeric_boundary_repairs",
-        lambda _raw: [],
+        "_try_collect_numeric_boundary_evidence",
+        lambda _raw: NumericBoundaryEvidence(tuple([]), frozenset()),
     )
     monkeypatch.setattr(
         nepali_pdf_module,
@@ -610,8 +613,8 @@ def test_converter_repairs_unambiguous_numeric_merges_in_known_font_candidate(
 
     monkeypatch.setattr(
         nepali_pdf_module,
-        "_try_collect_numeric_boundary_repairs",
-        lambda _raw: [repair],
+        "_try_collect_numeric_boundary_evidence",
+        lambda _raw: NumericBoundaryEvidence(tuple([repair]), frozenset()),
     )
     monkeypatch.setattr(
         nepali_pdf_module,
@@ -681,8 +684,8 @@ def test_converter_repairs_a_prefetched_likhit_candidate_forced_to_ocr(
 
     monkeypatch.setattr(
         nepali_pdf_module,
-        "_try_collect_numeric_boundary_repairs",
-        lambda _raw: [repair],
+        "_try_collect_numeric_boundary_evidence",
+        lambda _raw: NumericBoundaryEvidence(tuple([repair]), frozenset()),
     )
     monkeypatch.setattr(
         nepali_pdf_module,
@@ -742,8 +745,10 @@ def test_converter_repairs_a_likhit_re_extraction_candidate(
 
     monkeypatch.setattr(
         nepali_pdf_module,
-        "_try_collect_numeric_boundary_repairs",
-        lambda _raw: [ambiguous, unambiguous],
+        "_try_collect_numeric_boundary_evidence",
+        lambda _raw: NumericBoundaryEvidence(
+            tuple([ambiguous, unambiguous]), frozenset()
+        ),
     )
     # No repair font, so the early return is not taken and the default runs first.
     monkeypatch.setattr(
@@ -799,8 +804,10 @@ def test_converter_prefers_geometry_candidate_for_ambiguous_short_merge(
     )
     monkeypatch.setattr(
         nepali_pdf_module,
-        "_try_collect_numeric_boundary_repairs",
-        lambda _raw: [_repair("12500", ("1", "2500"))],
+        "_try_collect_numeric_boundary_evidence",
+        lambda _raw: NumericBoundaryEvidence(
+            tuple([_repair("12500", ("1", "2500"))]), frozenset()
+        ),
     )
     monkeypatch.setattr(
         nepali_pdf_module,
@@ -949,8 +956,10 @@ def test_converter_prefers_a_safe_candidate_over_a_higher_scoring_unsafe_one(
     monkeypatch.setattr(nepali_pdf_module, "pdf_likely_needs_ocr", lambda _raw: False)
     monkeypatch.setattr(
         nepali_pdf_module,
-        "_try_collect_numeric_boundary_repairs",
-        lambda _raw: [_repair("12500", ("1", "2500"))],
+        "_try_collect_numeric_boundary_evidence",
+        lambda _raw: NumericBoundaryEvidence(
+            tuple([_repair("12500", ("1", "2500"))]), frozenset()
+        ),
     )
     monkeypatch.setattr(
         nepali_pdf_module,
@@ -977,3 +986,202 @@ def test_converter_prefers_a_safe_candidate_over_a_higher_scoring_unsafe_one(
     result = converter.convert(io.BytesIO(raw), stream_info)
 
     assert result.markdown == "split 1 | 2500"
+
+
+def test_markdown_repair_declines_a_duplicated_render_without_source_evidence() -> None:
+    """The occurrence-count guard alone: two renders, one proof, no repair.
+
+    Pinned so the fix below is measured against the behaviour it replaces rather
+    than against an assumption about it.
+    """
+    repair = _repair("6976254161032", ("6976254", "161032"))
+    markdown = "| 6976254161032 |\n| 6976254161032 |"
+
+    assert repair_markdown_numeric_boundaries(markdown, [repair]) == markdown
+
+
+def test_markdown_repair_fixes_every_render_of_a_run_geometry_never_saw_whole() -> None:
+    """A renderer that emits one table twice must not cost the proven split.
+
+    likhit renders a page's table both as a degenerate one-value-per-row table
+    and as the wide one, so the merged value appears more often in the Markdown
+    than geometry proved it. Counting occurrences cannot tell that from a second
+    legitimate value carrying the same digits; the source runs can, and every
+    occurrence here traces to the one run geometry split.
+    """
+    repair = _repair("6976254161032", ("6976254", "161032"))
+    markdown = "| 6976254161032 |\n| 6976254161032 |"
+
+    repaired = repair_markdown_numeric_boundaries(
+        markdown,
+        [repair],
+        unsplit_runs=frozenset(),
+    )
+
+    assert repaired == "| 6976254 | 161032 |\n| 6976254 | 161032 |"
+
+
+def test_markdown_repair_still_declines_a_value_geometry_saw_whole() -> None:
+    """The risk the count guard existed for, tested directly.
+
+    When the same digits also occur as a run geometry examined and left whole,
+    one of the Markdown occurrences may be that legitimate value, and a global
+    substitution would rewrite it into a wrong figure.
+    """
+    repair = _repair("6976254161032", ("6976254", "161032"))
+    markdown = "| 6976254161032 |\n| 6976254161032 |"
+
+    repaired = repair_markdown_numeric_boundaries(
+        markdown,
+        [repair],
+        unsplit_runs=frozenset({"6976254161032"}),
+    )
+
+    assert repaired == markdown
+
+
+class _PlainDigitSplitPage:
+    """A plausible plain-digit run split by a ruling, optionally repeated whole.
+
+    Plain digits are the shape the OAG corpus fails on, and the only cut that
+    reaches them is a ruling backed by an origin-gap outlier -- the decimal
+    path needs `.dd` on both halves.
+    """
+
+    number = 0
+
+    def __init__(self, *, repeat_whole: bool) -> None:
+        self._edges: list[dict[str, object]] = []
+        lines = [self._line("6976254161032", boundary=7, gap=4.0)]
+        if repeat_whole:
+            lines.append(self._line("6976254161032", boundary=None, gap=0.0))
+        # Annotated because `ty` otherwise infers this literal's own narrow
+        # value type and reports `get_text` below as a return-type mismatch.
+        # The two older stubs in this file carry that advisory diagnostic;
+        # this stub is new, so it does not add a third.
+        self._raw: dict[str, object] = {"blocks": [{"lines": lines}]}
+
+    def _line(
+        self,
+        text: str,
+        *,
+        boundary: int | None,
+        gap: float,
+    ) -> dict[str, object]:
+        origin = 40.0
+        chars: list[dict[str, object]] = []
+        for index, char in enumerate(text):
+            if index == boundary:
+                self._edges.append(
+                    {
+                        "items": [
+                            ("l", (origin + gap / 2, 68.0), (origin + gap / 2, 84.0))
+                        ]
+                    }
+                )
+                origin += gap
+            chars.append(
+                {
+                    "c": char,
+                    "origin": (origin, 80.0),
+                    "bbox": (origin, 68.0, origin + 7.0, 83.0),
+                }
+            )
+            origin += 7.0
+        return {"spans": [{"font": "Kalimati", "size": 10.0, "chars": chars}]}
+
+    def get_text(self, mode: str, flags: int) -> dict[str, object]:
+        assert mode == "rawdict"
+        del flags
+        return self._raw
+
+    def get_cdrawings(self) -> list[dict[str, object]]:
+        return self._edges
+
+
+def _with_whole_run_page(stream: bytes, text: str) -> bytes:
+    doc = fitz.open(stream=stream, filetype="pdf")
+    page = doc.new_page(width=360, height=160)
+    page.insert_text((40.0, 80.0), text, fontname="helv", fontsize=12.0)
+    appended = doc.tobytes()
+    doc.close()
+    return appended
+
+
+def test_document_evidence_unions_unsplit_runs_across_pages() -> None:
+    """A run left whole on a later page reaches the document's evidence.
+
+    The value here is the implausible shape, because a real PDF cannot easily be
+    made to hold a *plausible* merged run -- MuPDF inserts a separator between two
+    text objects on one baseline, which is not the erased-separator defect. The
+    decline that `unsplit_runs` gates is pinned on the page fakes below; what this
+    proves is that the set is document-scoped rather than per page.
+    """
+    merged = "267,000.00267,000.00"
+    split_only = collect_document_numeric_boundary_evidence(
+        _ruled_numeric_pdf(merged, cuts=(10,))
+    )
+    with_whole = collect_document_numeric_boundary_evidence(
+        _with_whole_run_page(_ruled_numeric_pdf(merged, cuts=(10,)), merged)
+    )
+
+    assert [repair.parts for repair in split_only.repairs] == [
+        ("267,000.00", "267,000.00")
+    ]
+    assert merged not in split_only.unsplit_runs
+    assert merged in with_whole.unsplit_runs
+    assert [repair.parts for repair in with_whole.repairs] == [
+        ("267,000.00", "267,000.00")
+    ]
+
+
+def test_page_evidence_splits_a_plain_digit_run_and_reports_nothing_unsplit() -> None:
+    """`unsplit_runs` is derived from the page, not asserted by the caller."""
+
+    evidence = collect_page_numeric_boundary_evidence(
+        _PlainDigitSplitPage(repeat_whole=False),
+        page_number=1,
+    )
+
+    assert [repair.parts for repair in evidence.repairs] == [("6976254", "161032")]
+    assert "6976254161032" not in evidence.unsplit_runs
+
+
+def test_evidence_repairs_a_duplicated_render_end_to_end() -> None:
+    """The 69-document shape: one proven split, two renders of it, both repaired."""
+
+    evidence = collect_page_numeric_boundary_evidence(
+        _PlainDigitSplitPage(repeat_whole=False),
+        page_number=1,
+    )
+    markdown = "|  | 6976254161032 |\n| 18 | 6976254161032 | 0 |"
+
+    repaired = repair_markdown_numeric_boundaries(
+        markdown,
+        evidence.repairs,
+        unsplit_runs=evidence.unsplit_runs,
+    )
+
+    assert repaired == "|  | 6976254 | 161032 |\n| 18 | 6976254 | 161032 | 0 |"
+    # Occurrence counting declines the same input, which is the V10 behaviour.
+    assert repair_markdown_numeric_boundaries(markdown, evidence.repairs) == markdown
+
+
+def test_evidence_declines_when_the_same_run_also_appears_whole() -> None:
+    """A second occurrence geometry left whole may be a legitimate value."""
+
+    evidence = collect_page_numeric_boundary_evidence(
+        _PlainDigitSplitPage(repeat_whole=True),
+        page_number=1,
+    )
+    markdown = "|  | 6976254161032 |\n| 18 | 6976254161032 | 0 |"
+
+    assert "6976254161032" in evidence.unsplit_runs
+    assert (
+        repair_markdown_numeric_boundaries(
+            markdown,
+            evidence.repairs,
+            unsplit_runs=evidence.unsplit_runs,
+        )
+        == markdown
+    )
