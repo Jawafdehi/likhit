@@ -525,6 +525,7 @@ def prefers_devanagari_over_latin(
 def detect_digit_companion_fonts(
     doc: fitz.Document,
     skip_pages: frozenset[int] = frozenset(),
+    embedded_legacy_maps: dict[str, str] | None = None,
 ) -> frozenset[str]:
     """Full font names whose digit row is Devanagari and which no map already handles.
 
@@ -575,11 +576,17 @@ def detect_digit_companion_fonts(
                     if name and text:
                         texts.setdefault(name, []).append(text)
 
-    # Condition 1 and 2, before any rendering.
+    # Condition 1 and 2, before any rendering. An embedded-name binding is the
+    # same name route as a registry match; admitting it here would let this path
+    # return before the legacy decoder and shadow that binding.
     candidates = [
         name
         for name, parts in texts.items()
         if _matched_registry_key(name) is None
+        and (
+            not embedded_legacy_maps
+            or name.split("+", 1)[-1] not in embedded_legacy_maps
+        )
         and content_is_digit_dominant("".join(parts))
     ]
     if not candidates:

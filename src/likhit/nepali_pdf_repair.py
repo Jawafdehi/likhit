@@ -10,7 +10,7 @@ import fitz
 
 from likhit.errors import ExtractionError, ValidationError
 from likhit.extractors.base import TextFragment
-from likhit.extractors.font_based import get_cid_marked_page_dict
+from likhit.extractors.font_based import get_cid_marked_page_dict, unmark_cid_ascii
 from likhit.extractors.font_classifier import scan_pdf_fonts
 from likhit.extractors.kalimati import (
     fix_kalimati_cmap,
@@ -261,7 +261,7 @@ def _convert_span_text(
             # VOL-704: same un-lift as font_based._convert_span_text. A legacy
             # Devanagari font with a symbol-style cmap ("ARAP 11") hands us
             # byte + 0xF000; the converter needs the byte. No-op on ASCII.
-            return converter(unlift_symbol_pua(text))
+            return converter(unmark_cid_ascii(unlift_symbol_pua(text)))
         return text
 
     # VOL-704: a legacy symbol font (Symbol, Wingdings) classifies "correct", so

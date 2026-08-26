@@ -138,6 +138,12 @@ def test_the_guard_is_scoped_to_the_word_not_the_run(guard_on: None) -> None:
     assert convert("+kflnsf +vGg]") == "पालिका खन्ने"
 
 
+def test_the_guard_runs_before_an_m_relocation_rule(guard_on: None) -> None:
+    """An orphan followed by ``m`` escapes if the guard starts at rule eight."""
+
+    assert legacy_maps.get_converter_for_map("Preeti")("{m") == "m"
+
+
 def test_the_guard_does_not_touch_sagarmathas_direct_repha(guard_on: None) -> None:
     """Sagarmatha emits repha from its character-map, before any post-rule.
 
@@ -165,7 +171,7 @@ def test_installing_the_guard_covers_every_shipped_map(guard_on: None) -> None:
             for i, r in enumerate(post_rules)
             if "{" in r[0] and r[0] != "{" and list(r) != ["^\\{", ""]
         ]
-        # The guard is only meaningful ahead of the relocating rules.
+        assert guard_at == 0, f"{map_name}: guard must precede every post-rule"
         assert guard_at < min(relocating), f"{map_name}: guard is not before relocation"
         assert guard_at < min(converting), f"{map_name}: guard is not before conversion"
 

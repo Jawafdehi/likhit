@@ -794,7 +794,7 @@ def _install_orphan_repha_guard(mapper) -> int:
                 f"post-rules {relocating} before its converting rule "
                 f"{converting}; the orphan-repha guard cannot be positioned"
             )
-        post_rules.insert(min(relocating), ["^\\{", _ORPHAN_REPHA_EMIT])
+        post_rules.insert(0, ["^\\{", _ORPHAN_REPHA_EMIT])
         guarded += 1
     return guarded
 
@@ -927,3 +927,9 @@ def is_legacy_font(font_name: str) -> bool:
     """
 
     return _match_font(font_name) is not None
+
+
+def match_legacy_map_name(font_name: str) -> str | None:
+    """Return the map selected by the shipping name matcher, if any."""
+
+    return _match_font(font_name)

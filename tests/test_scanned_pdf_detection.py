@@ -273,10 +273,14 @@ def test_unmark_cid_ascii_leaves_unmarked_text_alone() -> None:
         assert unmark_cid_ascii(text) == text
 
 
-def test_unmark_cid_ascii_keeps_marks_outside_printable_ascii() -> None:
-    # A marked CID that is not a legacy keystroke must keep its mark, so the
-    # marked-CID census and the broken-CMap path see what they saw before.
-    for code in (0x00, 0x1F, 0x7F, 0x80, 0x3000):
+def test_unmark_cid_ascii_decodes_defined_winansi_bytes() -> None:
+    assert unmark_cid_ascii(chr(MARK + 0x88)) == "ˆ"
+    assert unmark_cid_ascii(chr(MARK + 0xAB)) == "«"
+
+
+def test_unmark_cid_ascii_keeps_non_winansi_marks() -> None:
+    # Undefined CP1252 slots and values outside the byte window stay marked.
+    for code in (0x00, 0x1F, 0x81, 0x8D, 0x8F, 0x90, 0x9D, 0x100, 0x3000):
         marked = chr(MARK + code)
         assert unmark_cid_ascii(marked) == marked
 
@@ -414,18 +418,18 @@ def test_the_latin_words_veto_unmarks_on_its_own() -> None:
     assert _reads_as_latin_words(unmark_cid_ascii(_mark(english)))
 
 
-def test_the_narrow_unmark_is_narrower_than_the_vetos_and_that_is_the_safe_order() -> (
+def test_the_winansi_unmark_is_narrower_than_the_vetos_and_that_is_the_safe_order() -> (
     None
 ):
     # Why `_convert_span_text` may run `unmark_cid_ascii` before the veto without
-    # widening what reaches the DECODER: the narrow one restores only 0x20..0x7E, the
-    # range a legacy keystroke can occupy. `unmark_cids` restores everything, which is
-    # fine for a read-only predicate and would not be fine for the decode.
-    for code in (0x41, 0x20, 0x7E):  # inside the keystroke range: both restore
+    # widening what reaches the DECODER beyond the maps' byte domain: the narrow
+    # helper restores only defined WinAnsi bytes. `unmark_cids` restores everything,
+    # which is fine for a read-only predicate and would not be fine for the decode.
+    for code in (0x41, 0x20, 0x7E, 0x7F):  # defined WinAnsi: both restore
         marked = chr(MARK + code)
         assert unmark_cid_ascii(marked) == chr(code)
         assert unmark_cids(marked) == chr(code)
-    for code in (0x7F, 0x0A, 0x3000):  # outside it: only the wide one restores
+    for code in (0x0A, 0x81, 0x3000):  # outside/undefined: only the wide one restores
         marked = chr(MARK + code)
         assert unmark_cid_ascii(marked) == marked, hex(code)
         assert unmark_cids(marked) == chr(code), hex(code)
