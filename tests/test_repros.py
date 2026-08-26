@@ -16,6 +16,8 @@ import fitz
 import pytest
 from markitdown import MarkItDown
 
+from likhit.errors import ExtractionError
+
 SAMPLES = Path(__file__).resolve().parents[1] / "samples"
 CORPUS = Path(__file__).resolve().parents[1] / "research" / "corpus" / "gon_mixed"
 
@@ -287,15 +289,10 @@ class TestPasswordProtected:
             f.write(encrypted)
             f.flush()
             try:
-                text = _convert(f.name)
-                # Should either raise or return meaningful error indication
-                # The bug: returns empty string with no error
-                assert text.strip(), (
-                    "Password-protected PDF returned empty string instead of "
-                    "raising an error or including an error message"
-                )
-            except Exception:  # noqa: BLE001 - ANY error is the acceptable outcome here
-                pass  # Raising is the correct behavior
+                with pytest.raises(
+                    ExtractionError, match="Password-protected PDFs are not supported"
+                ):
+                    _convert(f.name)
             finally:
                 os.unlink(f.name)
 

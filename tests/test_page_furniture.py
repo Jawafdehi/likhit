@@ -30,6 +30,8 @@ from __future__ import annotations
 from likhit.converters.nepali_pdf import _render_markdown_from_blocks
 from likhit.models import ParagraphBlock, Table, TableBlock, TableCell, TableRegion
 from likhit.renderers.markdown import (
+    FURNITURE_MAX_COMPACT_CHARS,
+    _line_is_page_furniture,
     _looks_like_page_furniture,
     strip_page_furniture_lines,
 )
@@ -79,6 +81,27 @@ def test_stripping_an_all_furniture_block_leaves_nothing() -> None:
     assert strip_page_furniture_lines(f"{HEADER}\n२४५").strip() == ""
 
 
+def test_a_long_body_line_that_mentions_an_annual_report_survives() -> None:
+    body = (
+        "• पालिकाले एक आर्थिक वर्ष भित्र भएको आर्थिक कारोवारको अनुसूची १४ "
+        "वमोजिमको ढाँचामा वार्षिक प्रतिवेदन तयार गरेको पाइएन।"
+    )
+
+    assert _looks_like_page_furniture(body)
+    assert len("".join(body.split())) > FURNITURE_MAX_COMPACT_CHARS
+    assert not _line_is_page_furniture(body)
+    assert strip_page_furniture_lines(body) == body
+
+
+def test_line_length_bound_is_measured_without_whitespace() -> None:
+    token = "वार्षिकप्रतिवेदन"
+    at_bound = "क" * (FURNITURE_MAX_COMPACT_CHARS - len(token)) + token
+    over_bound = "क" + at_bound
+
+    assert _line_is_page_furniture(at_bound)
+    assert not _line_is_page_furniture(over_bound)
+
+
 #: `HEADER` with the line break the layout puts in when the column is narrow. The
 #: token the predicate matches -- "वार्षिकप्रतिवेदन" -- straddles the break, so it is
 #: present in the whitespace-compacted BLOCK and in neither LINE.
@@ -117,6 +140,14 @@ def test_a_wrapped_header_does_not_take_the_body_with_it() -> None:
     """
 
     assert strip_page_furniture_lines(f"{WRAPPED_HEADER}\n{BODY}") == BODY
+
+
+def test_a_long_wrapped_run_that_only_mentions_the_phrase_survives() -> None:
+    first = "क" * FURNITURE_MAX_COMPACT_CHARS + " वार्षिक"
+    text = f"{first}\nप्रतिवेदन"
+
+    assert _looks_like_page_furniture(text)
+    assert strip_page_furniture_lines(text) == text
 
 
 def test_a_wrapped_header_is_found_across_blank_lines() -> None:
