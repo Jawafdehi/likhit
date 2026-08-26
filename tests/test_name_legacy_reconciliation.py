@@ -137,6 +137,27 @@ def test_embedded_binding_is_scoped_to_the_document() -> None:
     assert resolve_embedded_legacy_maps(himali) == {"F1": "FONTASY_HIMALI_TT"}
 
 
+def test_conflicting_embedded_identities_for_one_resource_fail_closed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    doc = _Doc(
+        [
+            _Page([_font_info(1, "CIDFont+F1")]),
+            _Page([_font_info(2, "CIDFont+F1")]),
+        ],
+        {
+            1: _ttf("Preeti", "Preeti"),
+            2: _ttf("Fontasy Himali", "FontasyHimali"),
+        },
+    )
+
+    with caplog.at_level("WARNING", logger="likhit.extractors.font_classifier"):
+        binding = resolve_embedded_legacy_maps(doc)
+
+    assert binding == {}
+    assert "conflicting embedded legacy identities" in caplog.text
+
+
 def test_unparseable_embedded_font_is_not_routing_evidence() -> None:
     assert _embedded_name_candidates(b"not a font") == []
 

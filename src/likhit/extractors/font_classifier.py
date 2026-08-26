@@ -120,9 +120,14 @@ def _embedded_name_candidates(font_bytes: bytes) -> list[tuple[int, str]]:
 
 
 def resolve_embedded_legacy_maps(doc: fitz.Document) -> dict[str, str]:
-    """Resolve resource base names through each embedded font's own name table."""
+    """Resolve resource base names through each embedded font's own name table.
+
+    A document-wide binding cannot represent two identities for the same resource
+    base name, so conflicting embedded claims are logged and left unresolved.
+    """
 
     resolved: dict[str, str] = {}
+    conflicted_bases: set[str] = set()
     seen_xrefs: dict[int, str | None] = {}
     for page_index in range(doc.page_count):
         try:
@@ -139,7 +144,7 @@ def resolve_embedded_legacy_maps(doc: fitz.Document) -> dict[str, str]:
                 if "+" in resource_name
                 else resource_name
             )
-            if base in resolved or legacy_maps.is_legacy_font(resource_name):
+            if legacy_maps.is_legacy_font(resource_name):
                 continue
             if ext in ("n/a", ""):
                 continue
@@ -169,8 +174,21 @@ def resolve_embedded_legacy_maps(doc: fitz.Document) -> dict[str, str]:
                         )
                         break
                 seen_xrefs[xref] = map_key
-            if map_key is not None:
+            if map_key is None or base in conflicted_bases:
+                continue
+            previous = resolved.get(base)
+            if previous is None:
                 resolved[base] = map_key
+            elif previous != map_key:
+                logger.warning(
+                    "Font '%s' has conflicting embedded legacy identities %s and "
+                    "%s; declining its document-scoped binding",
+                    base,
+                    previous,
+                    map_key,
+                )
+                resolved.pop(base)
+                conflicted_bases.add(base)
     return resolved
 
 

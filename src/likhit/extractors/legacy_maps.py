@@ -722,11 +722,12 @@ def _install_orphan_repha_guard(mapper) -> int:
 
     ``{`` (and, under :data:`SPINS_MAP_KEY`, the ``+`` that rotates onto it) is the
     repha keystroke. It is in no font's ``character-map``; it is handled only by
-    three post-rules, which in every shipped map sit in this order:
+    post-rules, which in every shipped map include these operations:
 
     ==== ============================== =============================================
     idx  pattern                        effect
     ==== ============================== =============================================
+    0    ``्ा`` -> ``""``               can expose a leading ``{``
     8    ``(.[ािी…]*?){`` and friends    move ``{`` LEFT past one consonant+marks
     10   (same family)                  move ``{`` LEFT past a half-form cluster
     11   (same family)                  ditto
@@ -748,10 +749,18 @@ def _install_orphan_repha_guard(mapper) -> int:
     ``+kflnsf`` (Spins) is ``पालिका``, but ships as ``र्पालिका``.
 
     That predicate is invisible from rule 12, because by then the two cases are
-    byte-identical. It is reachable by **order**: insert a handler for ``^{``
-    immediately *before* the first relocating rule, where the string has not been
-    rewritten yet. Rule 12 is left exactly as it is and still converts every
-    ``{`` that the relocating rules move.
+    byte-identical. It is reachable by **order**, at two boundaries:
+
+    * a guard before post-rule 0 catches a source that already starts with ``{``;
+      this must run first because the intervening ``m`` rules can move a following
+      ``m`` ahead of the brace and hide the orphan;
+    * a second guard immediately before the first repha-relocating rule catches a
+      brace that rule 0 exposed by deleting a leading ``्ा``.
+
+    Rule 12 is left exactly as it is and still converts every ``{`` that the
+    relocating rules move. Running the guard twice cannot over-strip: after the
+    first guard removes a leading brace there is none for the second to see, and
+    the intervening rules do not move a brace into position 0.
 
     ``npttf2utf`` applies post-rules per whitespace-split word
     (:meth:`FontMapper.map_to_unicode` splits on ``(\\s+|\\S+)`` and runs the
@@ -787,13 +796,15 @@ def _install_orphan_repha_guard(mapper) -> int:
             # A map with no repha rule needs no guard. Not an error.
             continue
         if not relocating or min(relocating) > min(converting):
-            # The order this guard depends on is not there. Refuse rather than
-            # install a guard whose position is meaningless.
+            # The relocation window this guard depends on is not there. Refuse
+            # rather than install guards around an unsupported rule shape.
             raise ExtractionError(
                 f"legacy map {map_name!r} does not order its repha-relocating "
                 f"post-rules {relocating} before its converting rule "
-                f"{converting}; the orphan-repha guard cannot be positioned"
+                f"{converting}; the orphan-repha guard requires a relocation "
+                "window before conversion"
             )
+        post_rules.insert(min(relocating), ["^\\{", _ORPHAN_REPHA_EMIT])
         post_rules.insert(0, ["^\\{", _ORPHAN_REPHA_EMIT])
         guarded += 1
     return guarded
