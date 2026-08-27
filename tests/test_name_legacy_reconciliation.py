@@ -182,6 +182,15 @@ def test_name_candidacy_uses_the_aggregate_and_honours_skips(
     assert detect_name_legacy_candidates(doc, frozenset({1})) == frozenset()
 
 
+def test_name_candidacy_accepts_the_calibrated_digit_share(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(font_based, "get_cid_marked_page_dict", _page_dict)
+    doc = _Doc([_Page(spans=[("FONTASY_HIMALI_TT", "20702070!!!!!!!!!!!!!!!!@@")])])
+
+    assert detect_name_legacy_candidates(doc) == frozenset({"FONTASY_HIMALI_TT"})
+
+
 def test_embedded_name_needs_no_second_map_corroboration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
