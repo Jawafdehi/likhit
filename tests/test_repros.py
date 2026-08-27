@@ -17,6 +17,7 @@ from markitdown_ocr import LLMVisionOCRService, OCRResult
 from likhit.converters.nepali_pdf import (
     _base64_encoded_size,
     _ocr_render_matrix,
+    _raise_if_unrecoverable_scan_without_ocr,
     _render_page_for_ocr,
     _run_full_page_ocr,
 )
@@ -48,6 +49,29 @@ def _clear_ocr_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class TestSilentMojibake:
     """An OCR-only PDF must fail loudly when OCR is unavailable."""
+
+    def test_scan_preflight_stops_at_first_recoverable_page(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        raw = _blank_pdf(page_count=200)
+        visited: list[int] = []
+
+        def classify(_document: fitz.Document, page_index: int) -> str | None:
+            visited.append(page_index)
+            return None if page_index == 1 else "image_only"
+
+        monkeypatch.setattr(
+            "likhit.converters.nepali_pdf._ocr_is_configured",
+            lambda: False,
+        )
+        monkeypatch.setattr(
+            "likhit.converters.nepali_pdf.classify_ocr_page",
+            classify,
+        )
+
+        _raise_if_unrecoverable_scan_without_ocr(raw, pages=None)
+
+        assert visited == [0, 1]
 
     def test_nirnaya_requires_ocr_instead_of_returning_latin_garbage(
         self, monkeypatch: pytest.MonkeyPatch

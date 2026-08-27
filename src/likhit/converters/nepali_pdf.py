@@ -405,17 +405,15 @@ def _raise_if_unrecoverable_scan_without_ocr(
         page_start, page_end = 0, document.page_count - 1
         if pages:
             page_start, page_end = parse_page_range(pages, document.page_count)
-        requested = range(page_start, page_end + 1)
-        needs_ocr = [
-            page_index + 1
-            for page_index in requested
-            if classify_ocr_page(document, page_index) is not None
-        ]
-        requested_count = page_end - page_start + 1
+        needs_ocr: list[int] = []
+        for page_index in range(page_start, page_end + 1):
+            if classify_ocr_page(document, page_index) is None:
+                return
+            needs_ocr.append(page_index + 1)
     finally:
         document.close()
 
-    if needs_ocr and len(needs_ocr) == requested_count:
+    if needs_ocr:
         raise ScannedPdfError(
             "PDF has no recoverable text layer and OCR is not configured",
             needs_ocr,
