@@ -190,6 +190,9 @@ class TestPluginConversion:
         _assert_lines_in_order(
             markdown,
             [
+                # See the note on this masthead in test_sample_pdfs.py: the
+                # "द्दण्टछ, अंक ट" spelling this used to assert was the Himali
+                # map applied to Preeti-encoded shifted digits.
                 "नेपाल कानून पत्रिका २०६५, अंक ६",
                 "निर्णय नं.७९७३ ने.का.प. २०६५",
                 "सर्बोच्च अदालत विशेष इजलास",
