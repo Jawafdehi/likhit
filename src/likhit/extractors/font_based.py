@@ -422,6 +422,67 @@ _STRANDED_BRACKET_PATTERN = re.compile(
     + "])"
 )
 
+# A maximal run of digits and the separators this corpus uses inside figures. The
+# DEVANAGARI DANDA doubles as the decimal mark in OAG audit tables, so it is a
+# separator here and not punctuation.
+#
+# Written as literals, unlike `_DEVA_LETTER_CLASS` below, and safely so: the trap that
+# comment records is DECOMPOSITION, and none of these characters has a canonical
+# decomposition. U+0966-U+096F (the Devanagari digits) and U+0964 (the danda) are atomic,
+# unlike the U+0958-095F range -- base+nukta pairs -- whose decomposed form raised
+# `re.error` and stopped this module importing. `test_the_figure_classes_are_atomic`
+# asserts that rather than trusting this comment, so a future edit that reaches for a
+# decomposable character here fails instead of silently widening the class.
+_FIGURE_DIGIT_CLASS = "०-९0-9"
+_FIGURE_SEPARATORS = ",.।"
+_FIGURE_RUN_PATTERN = re.compile(f"[{_FIGURE_DIGIT_CLASS}{_FIGURE_SEPARATORS}]+")
+_FIGURE_DIGIT_PATTERN = re.compile(f"[{_FIGURE_DIGIT_CLASS}]")
+
+
+def _money_figure_count(text: str) -> int:
+    """Count runs that are STRUCTURALLY a figure, not merely digits (VOL-67 / run 71280cb8).
+
+    A figure is a digit run carrying at least four digits, or one whose separator has a
+    digit on each side -- `६१२०।००`, `93083.32`, `५९४०००।००`. A lone numeral, or a
+    numeral loose among punctuation, is not one.
+
+    **Structure is the whole point, and a plain digit count is measurably the wrong
+    instrument here.** :func:`_map_ranking_key`'s docstring already establishes (VOL-89)
+    that a reading can gain Devanagari digits *because the map is wrong* -- converting
+    ASCII digits into Devanagari digits raises `ratio` too, which is why `ratio` sits
+    below the garble axis. A count of free-standing Devanagari numerals inherits exactly
+    that mirage: measured on `4487__...बसबरिया गाउँपालिका` (font `Spins`, 2,156
+    characters), VOL-89's own anchor, such a count prefers `Preeti` over the
+    `PCS NEPALI` that record establishes as correct. Requiring a grouped,
+    separator-bearing shape does not: on the same span it is level, and across every
+    anchor that docstring names it moves no span that carries a decision. Grouping is
+    evidence about the *source*, because an audit table's money column is grouped in the
+    input and a mis-keyed numeral is not.
+
+    Both digit systems count. The figure a wrong map destroys may be ASCII in the source
+    (an amounts column typed in English digits inside otherwise-legacy prose is ordinary
+    in this corpus), and a map that turns it into consonants has destroyed a figure
+    whichever script it was in.
+    """
+
+    total = 0
+    for match in _FIGURE_RUN_PATTERN.finditer(text):
+        run = match.group(0)
+        digits = len(_FIGURE_DIGIT_PATTERN.findall(run))
+        if not digits:
+            continue
+        if digits >= 4:
+            total += 1
+            continue
+        for index, char in enumerate(run):
+            if index and index < len(run) - 1 and char in _FIGURE_SEPARATORS:
+                if _FIGURE_DIGIT_PATTERN.match(
+                    run[index - 1]
+                ) and _FIGURE_DIGIT_PATTERN.match(run[index + 1]):
+                    total += 1
+                    break
+    return total
+
 
 def parse_page_range(spec: str, total_pages: int) -> tuple[int, int]:
     """Parse a 1-based inclusive page range to 0-based bounds."""
@@ -2725,6 +2786,9 @@ def _nepali_validity(text: str) -> dict[str, float]:
         "hits": hits,
         # Not part of `penalty`: see `_STRANDED_BRACKET_PATTERN`. Ranking only.
         "stranded": len(_STRANDED_BRACKET_PATTERN.findall(text)),
+        # Ranking only, between `stranded` and `attested`: see
+        # :func:`_map_ranking_key` and :func:`_money_figure_count`.
+        "figures": _money_figure_count(text),
         # Ranking only, and below `stranded`: see :func:`_map_ranking_key`.
         "attested": _attested_word_count(text),
     }
@@ -2793,7 +2857,12 @@ def _passes_name_legacy_gate(
 
 def _map_ranking_key(
     validity: dict[str, float],
-) -> tuple[float, float, float, float, float, float, float]:
+    # Eight axes since the money-figure one was carried over from the corpus line. Spelled
+    # out at fixed length rather than as `tuple[float, ...]`: `ty` reported the length
+    # mismatch the moment the axis was added, which is the whole value of pinning it --
+    # `_map_ranking_key_margin_gated` splices a ninth element in by INDEX, so a silent
+    # length change is exactly the failure this annotation catches.
+) -> tuple[float, float, float, float, float, float, float, float]:
     """Evidence axes for a candidate map, most decisive first, higher is better.
 
     ``hits`` and ``penalty`` are the primary axes. ⚠️ ``penalty`` is deliberately NOT
@@ -2999,10 +3068,22 @@ def _map_ranking_key(
         # VOL-185: a single stranded bracket is forgiven for the same reason a single
         # doublet is -- see `_RANKING_STRANDED_FORGIVENESS`.
         -max(validity["stranded"] - _RANKING_STRANDED_FORGIVENESS, 0),
+        # VOL-67 / run 71280cb8: how many money-shaped figures the reading preserves.
+        # Above `attested` because `attested` is letters-only and cannot see a destroyed
+        # amounts column -- see `_money_figure_count`. Below `stranded` because the
+        # stranded tell is evidence about the MAP while a figure count is evidence about
+        # the SOURCE, and the map question is the one being decided.
+        #
+        # 🛑 `_MIXED_ELIGIBLE_INDEX` splices the ELIGIBLE indicator immediately BELOW this
+        # axis, and that coupling is load-bearing, not incidental: adding this axis
+        # without moving that index puts the gate ABOVE `figures`, so turning the gate on
+        # would outrank the axis it is supposed to refine. The two changes are one unit.
+        validity["figures"],
         validity["attested"],
         # VOL-226: the raw count, restored as the LAST evidence axis. What the floor
         # above forgives, this recovers -- so a forgiven margin can only ever be
-        # overruled by `stranded` or `attested`, never by `ratio`, which is a mirage.
+        # overruled by `stranded`, `figures` or `attested`, never by `ratio`, which is a
+        # mirage.
         -validity["penalty"],
         validity["ratio"],
         validity["devanagari"],
@@ -3080,12 +3161,22 @@ _MARGIN_FROM_ENV: Any = object()
 #: :func:`choose_legacy_map_detailed`.
 _MIXED_MARGIN_FLOOR = 1
 #: Where the ELIGIBLE indicator is spliced into :func:`_map_ranking_key`'s tuple: below
-#: the stranded-bracket tell (index 2) and above `attested` (which becomes index 4). It
+#: the money-figure axis (index 3) and above `attested` (which becomes index 5). It
 #: is a named index rather than a literal because
 #: :func:`_map_ranking_key_margin_gated` derives its whole key from the ungated one --
 #: see the note there for the divergence that made copying the axes untenable -- and a
 #: bare `3` in a slice is the sort of thing a later axis insertion moves silently.
-_MIXED_ELIGIBLE_INDEX = 3
+#:
+#: 🛑 **That is exactly what happened, and this 3 -> 4 is the correction.** The comment
+#: above anticipated it in the abstract; the concrete case is the `figures` axis carried
+#: over from the corpus line, which lands at index 3 and pushed this splice point down by
+#: one. Left at 3 the ELIGIBLE indicator would sit ABOVE `figures`, so enabling the
+#: mixed-margin gate would outrank the figure axis instead of refining the pass beneath
+#: it -- the gate's second pass would effectively drop the axis. The historical split of
+#: these two changes auto-merged cleanly and did precisely that, which is why
+#: `test_the_gated_key_is_the_shipped_key_plus_exactly_one_element` and
+#: `test_the_indicator_sits_immediately_below_the_figure_axis` both pin the position.
+_MIXED_ELIGIBLE_INDEX = 4
 
 # Composed forms only. A Devanagari class written as a range over *composed*
 # characters decomposes if it is ever pasted through a shell, which compiles and
