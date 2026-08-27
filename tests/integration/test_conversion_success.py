@@ -190,9 +190,12 @@ class TestPluginConversion:
         _assert_lines_in_order(
             markdown,
             [
-                # See the note on this masthead in test_sample_pdfs.py: the
-                # "द्दण्टछ, अंक ट" spelling this used to assert was the Himali
-                # map applied to Preeti-encoded shifted digits.
+                # See the note on this masthead on the `kanunpatrika` case in
+                # test_sample_pdfs.py: the "द्दण्टछ, अंक ट" spelling this used to
+                # assert was the Himali map applied to Preeti-encoded shifted
+                # digits. Anchored to the case rather than the file so the pointer
+                # survives that file being reorganised -- it asserts this same
+                # masthead at two sites and the note sits above both.
                 "नेपाल कानून पत्रिका २०६५, अंक ६",
                 "निर्णय नं.७९७३ ने.का.प. २०६५",
                 "सर्बोच्च अदालत विशेष इजलास",
