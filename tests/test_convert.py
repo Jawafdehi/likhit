@@ -314,9 +314,18 @@ def test_converter_forces_ocr_when_likhit_flags_dropped_pages(
     assert result.markdown == "ओसीआर एनेक्स पृष्ठ नतिजा हो"
 
 
-def test_converter_logs_when_ocr_is_needed_but_not_configured(
+@pytest.mark.parametrize(
+    ("ocr_configured", "expected_message"),
+    [
+        (False, "OCR appears necessary, but OCR is not configured"),
+        (True, "OCR appears necessary, but the configured OCR service failed"),
+    ],
+)
+def test_converter_logs_why_an_ocr_candidate_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    ocr_configured: bool,
+    expected_message: str,
 ) -> None:
     sample = ROOT / "samples" / "pressrelease.pdf"
     converter = NepaliPdfConverter()
@@ -334,6 +343,11 @@ def test_converter_logs_when_ocr_is_needed_but_not_configured(
         nepali_pdf_module,
         "pdf_likely_needs_ocr",
         lambda _raw: True,
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_ocr_is_configured",
+        lambda: ocr_configured,
     )
     monkeypatch.setattr(
         nepali_pdf_module,
@@ -355,7 +369,7 @@ def test_converter_logs_when_ocr_is_needed_but_not_configured(
         with sample.open("rb") as stream:
             converter.convert(stream, stream_info)
 
-    assert "OCR appears necessary, but OCR is not configured" in caplog.text
+    assert expected_message in caplog.text
 
 
 def _content_lines(markdown: str) -> list[str]:

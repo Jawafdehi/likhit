@@ -1,25 +1,29 @@
-"""Failing reproducer tests for likhit breakpoints found during research.
+"""Regression tests for likhit breakpoints found during research.
 
-Each test targets a specific confirmed finding. They are EXPECTED TO FAIL
-until the underlying bug is fixed — run with `pytest tests/test_repros.py`
-and count the failures as a scoreboard toward resolution.
-
-Finding IDs reference research/REPORT.md.
+Finding IDs reference the original breakpoint research.
 """
 
 import os
 import re
 import tempfile
+from typing import cast
 from pathlib import Path
 
 import fitz
 import pytest
 from markitdown import MarkItDown
+from markitdown_ocr import LLMVisionOCRService, OCRResult
 
-from likhit.errors import ExtractionError
+from likhit.converters.nepali_pdf import (
+    _base64_encoded_size,
+    _ocr_render_matrix,
+    _render_page_for_ocr,
+    _run_full_page_ocr,
+)
+from likhit.errors import ExtractionError, ScannedPdfError, ValidationError
+from likhit.extractors.kalimati import normalize_devanagari_spacing
 
 SAMPLES = Path(__file__).resolve().parents[1] / "samples"
-CORPUS = Path(__file__).resolve().parents[1] / "research" / "corpus" / "gon_mixed"
 
 
 def _convert(path: str | Path, **kwargs) -> str:
@@ -31,59 +35,123 @@ def _convert(path: str | Path, **kwargs) -> str:
 # ── P0: Silent mojibake on OCR-required files without OCR configured ──
 
 
-class TestSilentMojibake:
-    """nirnaya.pdf returns Latin mojibake instead of Nepali when OCR is unavailable."""
+def _clear_ocr_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "MARKITDOWN_OCR_MODEL",
+        "OPENAI_MODEL",
+        "GEMINI_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F1, LIVE on this base: a scanned Nepali document with no OCR "
-        "configured returns 0 Devanagari against 1,717 Latin characters (13,527 "
-        "total) and reports success. Silent, so no caller can detect it.",
-    )
-    def test_nirnaya_should_not_silently_return_latin_garbage(self):
-        """F1: If a file is all-scan (scanned_decoy_text), and OCR is not
-        configured, the converter MUST either raise or clearly indicate failure —
-        not return 13k chars of mojibake."""
-        text = _convert(SAMPLES / "nirnaya.pdf")
-        # The bug: returns 13,527 chars that are pure Latin (deva_frac = 0.0)
-        # despite being a Nepali document. A correct implementation would either:
-        # - Raise an error explaining OCR is needed
-        # - Return an empty/marker result
-        # - NOT return confident-looking Latin garbage
-        deva = sum(1 for c in text if 0x0900 <= ord(c) < 0x0980)
-        latin = sum(1 for c in text if c.isalpha() and ord(c) < 0x250)
-        assert deva > latin, (
-            f"Expected Devanagari output or an error for this scanned Nepali doc, "
-            f"but got {deva} Devanagari vs {latin} Latin chars ({len(text)} total)"
-        )
+
+class TestSilentMojibake:
+    """An OCR-only PDF must fail loudly when OCR is unavailable."""
+
+    def test_nirnaya_requires_ocr_instead_of_returning_latin_garbage(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _clear_ocr_environment(monkeypatch)
+
+        with pytest.raises(ScannedPdfError, match="OCR is not configured") as exc_info:
+            _convert(SAMPLES / "nirnaya.pdf")
+
+        assert exc_info.value.needs_ocr_pages
+
+    def test_requested_scan_page_reaches_the_caller_with_its_page_number(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _clear_ocr_environment(monkeypatch)
+
+        with pytest.raises(ScannedPdfError) as exc_info:
+            _convert(SAMPLES / "nirnaya.pdf", pages="1")
+
+        assert exc_info.value.needs_ocr_pages == [1]
 
 
 # ── P0: 300 DPI hardcoded causes OCR to always exceed API limits ──
 
 
 class TestOCRImageSize:
-    """likhit renders OCR pages at 300 DPI, yielding ~10MB PNGs for A4."""
+    """OCR renders must fit the providers' per-image payload limit."""
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F2, LIVE: 300 DPI is hardcoded, so a 2550x3300 page renders to "
-        "13.57 MB base64 against the 5 MB API limit -- every OCR call on a "
-        "full-page scan is rejected before it is made.",
-    )
-    def test_ocr_image_should_fit_within_5mb(self):
-        """F2: _run_full_page_ocr should produce images under 5MB base64."""
+    def test_ocr_image_fits_within_5_mib(self) -> None:
         raw = (SAMPLES / "nirnaya.pdf").read_bytes()
         doc = fitz.open(stream=raw, filetype="pdf")
-        # Reproduce the hardcoded DPI from nepali_pdf.py:218
-        matrix = fitz.Matrix(300 / 72, 300 / 72)
-        pixmap = doc[0].get_pixmap(matrix=matrix)
-        png = pixmap.tobytes("png")
-        b64_size = len(png) * 4 / 3
-        max_bytes = 5 * 1024 * 1024
-        assert b64_size <= max_bytes, (
-            f"OCR image at 300 DPI is {b64_size / 1e6:.2f} MB base64, "
-            f"exceeds 5 MB limit. Page dims: {pixmap.width}x{pixmap.height}"
+        try:
+            page = doc[0]
+            old_png = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72)).tobytes(
+                "png"
+            )
+            assert _base64_encoded_size(len(old_png)) > 5 * 1024 * 1024
+
+            png = _render_page_for_ocr(page)
+            assert png is not None
+            assert _base64_encoded_size(len(png)) <= 5 * 1024 * 1024
+        finally:
+            doc.close()
+
+    def test_oversized_media_box_is_bounded_before_rendering(self) -> None:
+        doc = fitz.open()
+        page = doc.new_page(width=14_400, height=14_400)
+        try:
+            matrix = _ocr_render_matrix(page)
+            assert page.rect.width * matrix.a <= 1650
+            assert page.rect.height * matrix.d <= 1650
+        finally:
+            doc.close()
+
+    def test_total_ocr_failure_returns_no_candidate(self) -> None:
+        raw = _blank_pdf(page_count=2)
+        service = _StubOCRService(
+            [
+                OCRResult(text="", error="provider rejected image"),
+                OCRResult(text=""),
+            ]
         )
+
+        result = _run_full_page_ocr(
+            raw,
+            cast(LLMVisionOCRService, service),
+        )
+
+        assert result is None
+
+    def test_partial_ocr_failure_preserves_successful_pages(self) -> None:
+        raw = _blank_pdf(page_count=2)
+        service = _StubOCRService(
+            [
+                OCRResult(text="", error="temporary provider failure"),
+                OCRResult(text="सफल पाठ"),
+            ]
+        )
+
+        result = _run_full_page_ocr(
+            raw,
+            cast(LLMVisionOCRService, service),
+        )
+
+        assert result is not None
+        assert result.markdown == "सफल पाठ"
+
+
+class _StubOCRService:
+    def __init__(self, results: list[OCRResult]) -> None:
+        self.results = iter(results)
+
+    def extract_text(self, _image_stream: object) -> OCRResult:
+        return next(self.results)
+
+
+def _blank_pdf(page_count: int) -> bytes:
+    document = fitz.open()
+    try:
+        for _ in range(page_count):
+            document.new_page(width=200, height=300)
+        return document.tobytes()
+    finally:
+        document.close()
 
 
 # ── P0: Invalid pages spec silently returns entire document ──
@@ -93,30 +161,32 @@ class TestPagesValidation:
     """Invalid page specs should error, not silently return the whole doc."""
 
     @pytest.mark.parametrize("pages_spec", ["abc", "0", "-1", "3-1", "999"])
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F3, LIVE: `pages` is not validated. 'abc', '0', '-1', '3-1' and "
-        "'999' all DO NOT RAISE and silently convert the whole document, so a "
-        "caller asking for one page gets everything and cannot tell.",
-    )
-    def test_invalid_pages_should_raise(self, pages_spec):
-        """F3: Invalid page ranges must not silently return content."""
-        # samples/Press Release.pdf is a 1-page doc
-        with pytest.raises(Exception):
+    def test_invalid_pages_should_raise(self, pages_spec: str) -> None:
+        with pytest.raises(ValidationError):
             _convert(SAMPLES / "Press Release.pdf", pages=pages_spec)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F3, the other half: an out-of-range range returns content rather "
-        "than an error, which is worse than raising because it looks like a "
-        "successful narrow read.",
-    )
-    def test_out_of_range_pages_returns_wrong_content(self):
-        """F3b: Requesting page 5 of a 1-page doc should error, not return mojibake."""
-        # When pages="5" on a 1-page doc, a correct implementation raises.
-        # The bug: it silently returns the entire document.
-        with pytest.raises(Exception):
+    @pytest.mark.parametrize("pages_spec", ["1000000000", "1-1000000000"])
+    def test_page_numbers_are_length_bounded(self, pages_spec: str) -> None:
+        with pytest.raises(ValidationError, match="Invalid page range format"):
+            _convert(SAMPLES / "Press Release.pdf", pages=pages_spec)
+
+    def test_out_of_range_pages_raises(self) -> None:
+        with pytest.raises(ValidationError, match="starts beyond document length"):
             _convert(SAMPLES / "Press Release.pdf", pages="5")
+
+    @pytest.mark.parametrize("pages", [True, 1.5, [1], (1,), b"1"])
+    def test_non_string_non_integer_pages_raise(self, pages: object) -> None:
+        with pytest.raises(ValidationError, match="pages must be"):
+            _convert(SAMPLES / "Press Release.pdf", pages=pages)
+
+    def test_integer_page_is_accepted(self) -> None:
+        assert _convert(SAMPLES / "Press Release.pdf", pages=1) == _convert(
+            SAMPLES / "Press Release.pdf", pages="1"
+        )
+
+    def test_enormous_integer_page_raises_validation_error(self) -> None:
+        with pytest.raises(ValidationError, match="integer pages must be"):
+            _convert(SAMPLES / "Press Release.pdf", pages=10**5000)
 
 
 # ── P0: ValueError in Kalimati repair silently drops all content ──
@@ -143,38 +213,20 @@ class TestContentDrop:
             f.flush()
             try:
                 trunc_text = _convert(f.name)
-                # If it succeeds, it should have substantial content (>50% of full)
-                # The bug: ValueError in kalimati repair drops everything
-                ratio = len(trunc_text) / len(full_text) if full_text else 0
-                assert ratio > 0.4 or len(trunc_text) < 10, (
-                    f"Truncated PDF returned {len(trunc_text)} chars "
-                    f"({ratio:.1%} of full {len(full_text)}); "
-                    f"expected either substantial content (>40%) or an error"
-                )
             except Exception:  # noqa: BLE001 - ANY error is the acceptable outcome here
-                pass  # An error on a truncated PDF is acceptable
+                return
             finally:
                 os.unlink(f.name)
 
-
-# ── P0: GSUB fixpoint with 3.4KB PDF causes 5GB memory allocation ──
-
-
-class TestResourceExhaustion:
-    """Adversarial font tables must not cause unbounded resource use."""
-
-    @pytest.mark.skip(
-        reason="Triggers OOM/core dump — run only in isolated subprocess harness"
-    )
-    def test_crafted_gsub_does_not_allocate_gigabytes(self):
-        """F5: A small PDF with a pathological GSUB table should fail fast,
-        not allocate 5GB of memory.
-
-        The real trigger is in /tmp/evil26.pdf from the workflow.
-        Skipped from pytest because it causes a core dump; run via the
-        subprocess harness (research/harness/run_one.py) instead.
-        """
-        pass
+        # If extraction succeeds, it must retain substantial content. This
+        # assertion sits outside the broad conversion-error handler so the test
+        # cannot swallow its own failure.
+        ratio = len(trunc_text) / len(full_text) if full_text else 0
+        assert ratio > 0.4 or len(trunc_text) < 10, (
+            f"Truncated PDF returned {len(trunc_text)} chars "
+            f"({ratio:.1%} of full {len(full_text)}); "
+            "expected either substantial content (>40%) or an error"
+        )
 
 
 # ── P0: normalize_devanagari_spacing deletes spaces after virama ──
@@ -183,68 +235,20 @@ class TestResourceExhaustion:
 class TestDevanagariSpacing:
     """The spacing normalizer must not delete meaningful word boundaries."""
 
-    @pytest.mark.skipif(
-        not list(CORPUS.glob("2bc394a568*")),
-        reason="corpus file missing",
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("सम्वत् २०८०", "सम्वत् २०८०"),
+            ("पश्चात् 2024", "पश्चात् 2024"),
+            ("एवम् ।", "एवम् ।"),
+            ("अर्थात् अब", "अर्थात् अब"),
+            ("छन् तथा", "छन् तथा"),
+            ("क् ख", "क् ख"),
+            ("क्", "क्"),
+        ],
     )
-    def test_virama_space_not_deleted(self):
-        """F6: Space after virama is a word boundary, not disposable."""
-        f = next(CORPUS.glob("2bc394a568*"))
-        text = _convert(f)
-        # Virama (U+094D) followed by space is a word boundary in Nepali.
-        # The bug: normalize_devanagari_spacing at kalimati.py:719
-        # unconditionally deletes such spaces.
-        virama = "्"
-        # Count spaces after virama in the source vs output
-        # A correct conversion preserves word boundaries.
-        virama_space = text.count(virama + " ")
-        virama_nospace = text.count(virama) - virama_space
-        # If the fix is applied, there should be SOME virama+space sequences
-        # For unfixed code, virama_space will be 0 or very low
-        total_virama = virama_space + virama_nospace
-        if total_virama > 0:
-            ratio = virama_space / total_virama
-            # In natural Nepali text, a significant fraction of viramas
-            # are at word boundaries (followed by space)
-            assert ratio > 0.05, (
-                f"Only {virama_space}/{total_virama} ({ratio:.1%}) viramas "
-                f"are followed by a space — expected >5% for word boundaries"
-            )
-
-
-# ── P0: MemoryError silently swallowed returns mojibake ──
-
-
-class TestMemoryErrorSwallowed:
-    """OOM in kalimati.py should propagate, not silently return garbage."""
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F7, LIVE: same document as F1 and the same 0.0% Devanagari of "
-        "1,717 letters. Kept separate because it asserts the general principle "
-        "-- an internal error must not yield garbage-but-successful -- while F1 "
-        "asserts the specific OCR path. ⚠️ NOT the MemoryError re-raise C17 "
-        "proposed: #66 settled that by signalling in band, because a re-raised "
-        "MemoryError cannot reach the caller through MarkItDown's loop.",
-    )
-    def test_conversion_error_should_not_produce_garbage(self):
-        """F7: If any internal error occurs, the output must either be correct
-        or the error must propagate — never garbage-but-successful."""
-        # This tests the principle: for any file where conversion encounters
-        # an internal error, status should not be "ok" with garbage.
-        # We use nirnaya.pdf as the archetype of this pattern.
-        text = _convert(SAMPLES / "nirnaya.pdf")
-        if not text.strip():
-            return  # Empty is acceptable for error cases
-        # If text is produced, it should be valid Nepali, not mojibake
-        letters = [c for c in text if c.isalpha()]
-        if len(letters) > 100:
-            deva = sum(1 for c in letters if 0x0900 <= ord(c) < 0x0980)
-            ratio = deva / len(letters)
-            assert ratio > 0.3, (
-                f"Document produced {len(letters)} letters but only "
-                f"{ratio:.1%} are Devanagari — likely mojibake"
-            )
+    def test_virama_space_is_preserved(self, text: str, expected: str) -> None:
+        assert normalize_devanagari_spacing(text) == expected
 
 
 # ── P0: my-table.pdf drops entire page of table content ──

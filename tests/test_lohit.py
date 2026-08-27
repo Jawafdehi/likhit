@@ -1,15 +1,14 @@
 """Tests for Lohit-Devanagari ToUnicode recovery.
 
-The reference font is not vendored, so the test that re-derives
-:data:`likhit.extractors.lohit.GID_TO_UNICODE` from it is skipped unless
-``LIKHIT_LOHIT_REFERENCE_TTF`` points at a copy. Everything else -- the shipped
-table's load-bearing entries, the visual-order marker rules and the identity
-guard -- runs unconditionally against synthetic fonts.
+The reference font is not vendored, so checks that re-derive
+:data:`likhit.extractors.lohit.GID_TO_UNICODE` live in
+``tests/manual/test_lohit_reference.py``. Everything here runs unconditionally:
+the shipped table's load-bearing entries, visual-order marker rules, and identity
+guard against synthetic fonts.
 """
 
 from __future__ import annotations
 
-import os
 from io import BytesIO
 from pathlib import Path
 
@@ -359,77 +358,6 @@ def test_correction_map_stays_empty_for_an_unrecognised_font(
         doc.close()
 
 
-# --------------------------------------------------------------------------
-# Provenance
-# --------------------------------------------------------------------------
-
-
-def _reference_font() -> TTFont | None:
-    raw = os.environ.get("LIKHIT_LOHIT_REFERENCE_TTF")
-    if not raw:
-        return None
-    path = Path(raw)
-    if not path.is_file():
-        return None
-    return TTFont(path, lazy=False)
-
-
-@pytest.mark.skipif(
-    _reference_font() is None,
-    reason="set LIKHIT_LOHIT_REFERENCE_TTF to the upstream Lohit-Devanagari 2.5.3 TTF",
-)
-def test_table_re_derives_from_the_reference_font() -> None:
-    """The shipped table is exactly the derivation plus the recorded corrections.
-
-    Regenerating it is not a manual edit: this is the recipe.
-    """
-
-    font = _reference_font()
-    assert font is not None
-    glyph_order = font.getGlyphOrder()
-    best_cmap = kalimati._safe_get_best_cmap(font)
-    assert best_cmap, "the reference font must still have its own cmap"
-    name_to_unicode = {name: codepoint for codepoint, name in best_cmap.items()}
-
-    gid_to_correct = {
-        gid: chr(name_to_unicode[name])
-        for gid, name in enumerate(glyph_order)
-        if name in name_to_unicode
-    }
-    gid_to_correct.update(
-        kalimati._infer_mark_variants(font, glyph_order, gid_to_correct)
-    )
-    derived = kalimati._analyze_gsub(font, glyph_order, gid_to_correct)
-    expected = dict(derived)
-    expected.update(gid_to_correct)
-    for cid, (was, now) in lohit.BELOW_FORM_RA_CORRECTIONS.items():
-        assert expected[cid] == was, f"CID {cid} no longer derives as {was!r}"
-        expected[cid] = now
-    for cid, (source, value) in lohit.GSUB_VARIANT_ADDITIONS.items():
-        assert cid not in expected, f"CID {cid} now derives on its own"
-        assert expected[source] == value, f"CID {source} no longer derives as {value!r}"
-        expected[cid] = value
-
-    assert expected == lohit.GID_TO_UNICODE
-
-
-@pytest.mark.skipif(
-    _reference_font() is None,
-    reason="set LIKHIT_LOHIT_REFERENCE_TTF to the upstream Lohit-Devanagari 2.5.3 TTF",
-)
-def test_reference_font_matches_the_declared_identity_and_anchors() -> None:
-    font = _reference_font()
-    assert font is not None
-    assert lohit._name_record(font, _NAME_BUILD) == lohit.EXPECTED_BUILD
-    assert lohit._name_record(font, _NAME_VERSION) == lohit.EXPECTED_VERSION
-    assert font["head"].unitsPerEm == lohit.EXPECTED_UNITS_PER_EM
-    assert font["maxp"].numGlyphs == lohit.UPSTREAM_GLYPH_COUNT
-    glyph_order = font.getGlyphOrder()
-    for gid, expected_digest in lohit._ANCHOR_OUTLINES.items():
-        assert lohit._outline_digest(font, glyph_order[gid]) == expected_digest
-    assert lohit.is_known_lohit_subset(font) is True
-
-
 def test_gsub_variant_additions_are_what_the_table_ships() -> None:
     """Each addition carries its source's value, and the table agrees."""
 
@@ -470,101 +398,3 @@ def test_the_repha_carrying_variant_does_reorder() -> None:
 
     assert lohit.with_reordering_markers(value) != value
     assert lohit.with_reordering_markers(value) == "ी" + lohit._PUA_REPH
-
-
-@pytest.mark.skipif(
-    _reference_font() is None,
-    reason="set LIKHIT_LOHIT_REFERENCE_TTF to the upstream Lohit-Devanagari 2.5.3 TTF",
-)
-def test_variant_additions_rest_on_a_single_subst_rule_in_the_font() -> None:
-    """The provenance, checked against the font rather than taken on trust.
-
-    Two halves, and the second is the load-bearing one. That *a* SingleSubst maps
-    source to target only makes them related; what makes them the *same text* is
-    the feature it sits under. `psts` is post-base positional substitution, so
-    the pair is one glyph drawn differently. An `aalt`/`salt`/`ss01` rule would
-    be a stylistic alternate, and a future release could add one of those while
-    repurposing the target glyph entirely -- which the source-to-target check
-    alone would wave through.
-
-    This test is env-gated on the reference font, and CI sets no such variable,
-    so it is skipped there. It does not fail the build; it fails *this* check when
-    someone runs it with the font present. The two unconditional tests above check
-    the table's self-consistency, which is a different and weaker property: a
-    consistent mistype across the table, the addition record and the shipped
-    value passes both of them.
-    """
-
-    positional_features = {"psts", "pres", "abvs", "blws", "half", "rphf", "vatu"}
-
-    font = _reference_font()
-    assert font is not None
-    glyph_order = font.getGlyphOrder()
-    gsub = font["GSUB"].table
-
-    # feature tag -> the lookups it reaches, directly or as a nested lookup of a
-    # contextual rule. Lookup 82 is reachable only via the second path.
-    direct: dict[int, set[str]] = {}
-    for record in gsub.FeatureList.FeatureRecord:
-        for index in record.Feature.LookupListIndex:
-            direct.setdefault(index, set()).add(record.FeatureTag)
-
-    def _nested_indices(subtable: object) -> set[int]:
-        found: set[int] = set()
-        for records in _substitution_record_lists(subtable):
-            for record in records:
-                found.add(record.LookupListIndex)
-        return found
-
-    reaching: dict[int, set[str]] = {index: set(tags) for index, tags in direct.items()}
-    for index, lookup in enumerate(gsub.LookupList.Lookup):
-        for subtable in lookup.SubTable:
-            for nested in _nested_indices(subtable):
-                reaching.setdefault(nested, set()).update(direct.get(index, set()))
-
-    substitutions: dict[str, set[tuple[str, int]]] = {}
-    for index, lookup in enumerate(gsub.LookupList.Lookup):
-        for subtable in lookup.SubTable:
-            if subtable.__class__.__name__ != "SingleSubst":
-                continue
-            for source_name, target_name in subtable.mapping.items():
-                substitutions.setdefault(target_name, set()).add((source_name, index))
-
-    for cid, (source, _value) in lohit.GSUB_VARIANT_ADDITIONS.items():
-        target_name = glyph_order[cid]
-        source_name = glyph_order[source]
-        rules = {
-            index
-            for name, index in substitutions.get(target_name, set())
-            if name == source_name
-        }
-        assert rules, (
-            f"no SingleSubst produces {target_name} (CID {cid}) from CID {source}"
-        )
-        tags = {tag for index in rules for tag in reaching.get(index, set())}
-        assert tags & positional_features, (
-            f"CID {source} -> {cid} is reached only by {sorted(tags)}, none of "
-            f"which means 'same text, different position'"
-        )
-
-
-def _substitution_record_lists(subtable: object) -> list[list[object]]:
-    """Every `SubstLookupRecord` list a contextual subtable can hold.
-
-    fontTools spells these differently per format, and lookup 82 is reached only
-    through Format-3 `ChainContextSubst`, whose records hang off the subtable
-    directly rather than off a rule.
-    """
-
-    lists: list[list[object]] = []
-    records = getattr(subtable, "SubstLookupRecord", None)
-    if records:
-        lists.append(list(records))
-    for container in ("ChainSubClassSet", "SubRuleSet", "ChainSubRuleSet"):
-        for entry in getattr(subtable, container, None) or []:
-            for attribute in ("ChainSubClassRule", "SubRule", "ChainSubRule"):
-                for rule in getattr(entry, attribute, None) or []:
-                    rule_records = getattr(rule, "SubstLookupRecord", None)
-                    if rule_records:
-                        lists.append(list(rule_records))
-    return lists

@@ -71,13 +71,10 @@ def test_explicit_blank_table_cells_do_not_lower_the_score() -> None:
     sparse = _table(blank_cells=0)
     explicit = _table(blank_cells=4)
 
-    # >= rather than > so this keeps holding if the +len(tokens) bonus stops
-    # counting table syntax as content (research fix-plan F05); it must never
-    # go the other way.
-    assert _markdown_quality_score(explicit) >= _markdown_quality_score(sparse)
+    assert _markdown_quality_score(explicit) == _markdown_quality_score(sparse)
 
 
-def test_bare_pipes_do_not_trip_the_single_character_token_penalty() -> None:
+def test_table_syntax_retains_the_pipe_heavy_line_penalty() -> None:
     # Direct form of the same defect: pipes here are 69.2% of all tokens (360 of
     # 520 -- the row is 9 pipes of 13 tokens), well past the 35% single-token
     # ceiling, yet they are structure rather than the per-character garble
@@ -86,11 +83,11 @@ def test_bare_pipes_do_not_trip_the_single_character_token_penalty() -> None:
     tokens = piped.split()
     assert sum(1 for token in tokens if token == "|") / len(tokens) > 0.35
 
-    # Same words and rows without any table syntax at all. If pipes still
-    # counted as single-character tokens, the piped form would be charged for
-    # them and fall behind.
+    # Same words and rows without any table syntax at all. Pipes are not content
+    # tokens, but each pipe-heavy row still pays the dedicated four-point table
+    # penalty.
     prose = "\n".join([" ".join(CELLS)] * ROWS)
-    assert _markdown_quality_score(piped) >= _markdown_quality_score(prose)
+    assert _markdown_quality_score(piped) == _markdown_quality_score(prose) - 160
 
 
 def test_per_character_garble_is_still_penalised() -> None:
@@ -149,42 +146,17 @@ def test_padding_empty_columns_cannot_refund_the_garble_penalty() -> None:
     words purely by padding empty columns -- 3801 against 3750 at 60 pad columns,
     on byte-identical Devanagari.
 
-    Padding can still win eventually, and that is deliberately not asserted away:
-    `+len(tokens)` credits +1 per pipe with no bound, which is F05's half of the
-    problem and what `test_pipe_heavy_output_is_still_penalised` xfails on. What
-    the fix buys is that the *penalty* stops shrinking, which moves the crossover
-    from 70 pad columns to 292 -- so the crossover itself is the measurement, and
-    it collapses if the refund returns.
+    Table syntax is no longer counted by the positive token term either, so
+    padding must never produce a crossover.
     """
     intact = _markdown_quality_score(_table(blank_cells=0))
 
-    # 120 columns is past where the refund let garble win (70) and well short of
-    # where the unbounded token credit does (292).
+    # 120 columns is past where the denominator refund let garble win.
     assert _markdown_quality_score(_per_character_table(120)) < intact
 
-    crossover = _padding_crossover()
-    assert crossover is not None, "the token credit should still win eventually"
-    assert crossover > 240, (
-        f"garble outscored intact words at only {crossover} pad columns; the "
-        f"single-token penalty is being refunded by padding again"
-    )
+    assert _padding_crossover() is None
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Nothing charges a candidate per column. pipe_heavy_lines is flat per "
-        "line while +len(tokens) credits +1 per pipe, so widening a table is "
-        "pure gain (measured here: 6,516 against 5,000). Excusing pipes from "
-        "the single-token ceiling removed the only term that happened to scale "
-        "with column count, taking the net from -2.9 to exactly +1.0 per pipe "
-        "-- an accidental brake that charged likhit's real blank cells and "
-        "markitdown's invented separator rows alike. Now that pipes are out of "
-        "both sides of that ratio the remaining +1 is the token credit alone, "
-        "which is research fix-plan F05; this passes once F05 stops counting "
-        "table syntax as content."
-    ),
-    strict=True,
-)
 def test_pipe_heavy_output_is_still_penalised() -> None:
     # The table signal ought to survive: excusing pipes from the single-token
     # ceiling should not leave runaway column counts uncharged.

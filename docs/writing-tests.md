@@ -53,26 +53,25 @@ number belongs to one invocation. Run the gate on an untouched worktree with the
 *identical* invocation and diff the two counts. `uv sync --locked` in the new worktree
 also gets you back to the 8.
 
-### The skips are three different things
+### External checks are manual, not skipped
 
-Measured on this commit. Re-derive with `uv run pytest -q -rs` rather than quoting the
-total, which moves as tests are added:
+The default suite is hermetic and should report passed tests only. Checks requiring
+private PDFs, extracted font programs, or unvendored reference fonts live under
+`tests/manual/`, which `pyproject.toml` excludes from default recursion. Passing a
+manual path explicitly overrides that exclusion:
 
+```sh
+uv run pytest tests/manual/test_cib_pdfs.py
+uv run pytest tests/manual/test_spins_faces.py
+uv run pytest tests/manual/test_kalimati_reference.py
+uv run pytest tests/manual/test_lohit_reference.py
 ```
-5   real CIB fixtures -- git-ignored (PII), absent locally and in CI
-3   LIKHIT_LOHIT_REFERENCE_TTF unset
-2   LIKHIT_KALIMATI_REFERENCE_TTF unset
-```
 
-Only the first group is unavoidable. The other five are **coverage you do not have
-unless you opt in** — they compare against upstream reference fonts, and they are the
-tests most likely to catch a glyph-mapping regression. If you are touching
-`lohit.py` or `kalimati_reference.py`, set the variable.
-
-This table lives here and nowhere else; the README points at it rather than repeating
-it. A figure copied into two files is a figure that will eventually disagree with
-itself — the same defect class as the predicate defined twice in
-`src/likhit/renderers/markdown.py`.
+Each command requires the environment variable named in its failure message. A missing
+prerequisite is a failure, not a skipped pass. CI downloads and verifies the Lohit
+reference font, then runs its manual module when that download succeeds. If you touch
+`lohit.py`, `kalimati_reference.py`, or the Spins digit companion, run the corresponding
+manual check with its real input.
 
 ## Prove the test bites
 

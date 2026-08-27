@@ -60,7 +60,7 @@ from likhit.extractors.pua_maps import (
 from likhit.extractors.tables import detect_page_tables, merge_continuation_tables
 from likhit.models import Table
 
-PAGE_RANGE_PATTERN = re.compile(r"^\d+(?:-\d+)?$")
+PAGE_RANGE_PATTERN = re.compile(r"^\d{1,9}(?:-\d{1,9})?$")
 SPAN_GAP_THRESHOLD = 0.75
 # Zeroed ToUnicode maps otherwise collapse every unknown glyph to the same
 # replacement character. Raw CIDs keep those glyphs distinct for later repair.

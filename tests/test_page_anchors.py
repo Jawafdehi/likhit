@@ -17,6 +17,7 @@ from likhit.converters.nepali_pdf import (
     _assemble_with_page_anchors,
     _markdown_quality_score,
 )
+from likhit.errors import ScannedPdfError
 from likhit.extractors.base import TextFragment
 import likhit.extractors.font_based as font_based_module
 from likhit.extractors.font_based import FontBasedStrategy
@@ -141,21 +142,26 @@ def test_anchor_count_equals_the_pdf_page_count(sample: str) -> None:
     assert anchors == list(range(1, page_count + 1))
 
 
-def test_an_image_dominant_pdf_falls_back_unanchored() -> None:
-    """Pin a known gap rather than leave it to be discovered downstream.
-
-    When likhit produces no usable text, the winning candidate is MarkItDown's
-    own PDF converter, which knows nothing about anchors. Such a transcript has
-    no per-page positions, so a merge cannot place page-keyed OCR into it and
-    must detect and report that instead of silently producing a whole-document
-    blob.
-    """
+def test_an_image_dominant_pdf_requires_ocr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An OCR-only document must not fall back to an unanchored junk transcript."""
 
     path = ROOT / "samples" / "nirnaya.pdf"
-    if not path.exists():
-        pytest.skip("nirnaya.pdf not available")
+    assert path.exists()
+    for name in (
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "MARKITDOWN_OCR_MODEL",
+        "OPENAI_MODEL",
+        "GEMINI_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
-    assert page_anchor_numbers(_convert(path)) == []
+    with pytest.raises(ScannedPdfError) as exc_info:
+        _convert(path)
+
+    assert exc_info.value.needs_ocr_pages == [1, 2]
 
 
 def test_page_numbers_cover_a_suppressed_scanned_page(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@ Implementation summary (2026-07-17):
 - **Part A** — `font_classifier.classify_ocr_page`/`scan_ocr_pages` detect scanned-decoy and image-only pages; `FontBasedStrategy` suppresses decoy pages, sets `RawDocument.needs_ocr_pages`, and raises `errors.ScannedPdfError` (a catchable `ExtractionError`) when a document has no recoverable text. Validated on all sampled CIB releases: 3 decoy-layer → `scanned_decoy_text`, the rest → `image_only`; none emit the `qt+:` junk.
 - **Part B** — `font_based.detect_content_legacy_fonts`/`choose_legacy_map` rescue mislabeled bare-core legacy fonts via a `>=4`-char dictionary + penalty gate (never Devanagari-ratio, per §2). Proven to decline on CIB under all five maps and accept genuine Preeti.
 - **npttf2utf** — the invalid-escape `SyntaxWarning` is suppressed at the `legacy_maps._get_mapper` import site (upstream raw-string PR still warranted).
-- **Tests** — `tests/test_scanned_pdf_detection.py` (CI, PII-free synthetic fixtures via `tests/synthetic_pdfs.py`) and `tests/integration/test_cib_pdfs.py` (skip-when-absent over the git-ignored real originals).
+- **Tests** — `tests/test_scanned_pdf_detection.py` (CI, PII-free synthetic fixtures via `tests/synthetic_pdfs.py`) and `tests/manual/test_cib_pdfs.py` (explicit local check over the git-ignored real originals; missing fixtures fail).
 
 ## TL;DR — the premise changed, read this first
 

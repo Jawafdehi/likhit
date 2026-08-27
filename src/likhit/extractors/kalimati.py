@@ -863,15 +863,12 @@ def normalize_devanagari_spacing(text: str) -> str:
     index = 0
     while index < len(text):
         if text[index] == " ":
-            previous = result[-1] if result else None
             next_char = text[index + 1] if index + 1 < len(text) else None
             remove = False
             if next_char and (
                 _is_devanagari_combining(next_char)
                 or next_char in {_PUA_REPH, _PUA_IKAR}
             ):
-                remove = True
-            if previous == _VIRAMA:
                 remove = True
             if remove:
                 index += 1

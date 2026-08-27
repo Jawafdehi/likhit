@@ -24,9 +24,10 @@ from markitdown.converters import PdfConverter
 from markitdown_ocr import LLMVisionOCRService
 from markitdown_ocr import PdfConverterWithOCR
 
-from likhit.errors import ExtractionError
+from likhit.errors import ExtractionError, ScannedPdfError, ValidationError
 from likhit.extractors.base import RawDocument, TextFragment
 from likhit.extractors.font_based import FontBasedStrategy, parse_page_range
+from likhit.extractors.font_classifier import classify_ocr_page
 from likhit.extractors.numeric_boundaries import (
     NumericBoundaryEvidence,
     collect_document_numeric_boundary_evidence,
@@ -92,10 +93,16 @@ _ORPHAN_MATRA_PATTERN = re.compile(
 )
 _VIRAMA_MATRA_PATTERN = re.compile(r"्[ा-ौ]")
 _OCR_SERIAL_PATTERN = re.compile(r"^\s*([०-९0-9]{1,2}[.)।])\s+(.*\S)\s*$")
+_TABLE_SEPARATOR_PATTERN = re.compile(
+    r"^\s*\|?\s*(?::?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$"
+)
 _MAX_REASONABLE_WHITESPACE_RATIO = 0.35
 _MAX_REASONABLE_SINGLE_TOKEN_RATIO = 0.35
 _EXCESS_SINGLE_TOKEN_PENALTY = 6
 _MATRA_DAMAGE_PENALTY = 8
+_OCR_TARGET_LONG_EDGE_PX = 1650
+_OCR_MAX_RENDER_ATTEMPTS = 4
+_OCR_RENDER_SCALE_STEP = 0.75
 # The rest of _markdown_quality_score's weights. These were inline literals in one
 # arithmetic expression alongside the two named above, which made the guard in
 # tests/test_tuning_constants.py cover half of one function's tuning surface --
@@ -121,7 +128,6 @@ class NepaliPdfConverter(DocumentConverter):
         stream_info: StreamInfo,
         **kwargs: Any,
     ) -> bool:
-        del kwargs
         ext = (stream_info.extension or "").lower()
         mime = (stream_info.mimetype or "").lower()
         if ext != ".pdf" and mime != "application/pdf":
@@ -136,6 +142,8 @@ class NepaliPdfConverter(DocumentConverter):
         # converter return an empty success. Reject encrypted input while probing
         # so that the actionable error reaches the caller.
         _raise_if_password_protected(raw)
+        pages = _validate_pages_spec(kwargs.get("pages"), raw)
+        _raise_if_unrecoverable_scan_without_ocr(raw, pages)
         return True
 
     def convert(
@@ -144,20 +152,22 @@ class NepaliPdfConverter(DocumentConverter):
         stream_info: StreamInfo,
         **kwargs: Any,
     ) -> DocumentConverterResult:
-        pages = kwargs.pop("pages", None)
+        pages_arg = kwargs.pop("pages", None)
         raw = file_stream.read()
         if not raw:
             raise ExtractionError(
                 "No extractable text found in PDF. Scanned or image-only PDFs are not supported."
             )
         _raise_if_password_protected(raw)
+        pages = _validate_pages_spec(pages_arg, raw)
+        _raise_if_unrecoverable_scan_without_ocr(raw, pages)
         if kwargs:
             logger.debug(
                 "PDF converter: ignoring unsupported convert kwargs: %s",
                 ", ".join(sorted(kwargs)),
             )
 
-        if isinstance(pages, str) and pages.strip():
+        if pages:
             raw = _slice_pdf_to_requested_pages(raw, pages)
 
         numeric_evidence = _try_collect_numeric_boundary_evidence(raw)
@@ -241,9 +251,14 @@ class NepaliPdfConverter(DocumentConverter):
                     )
                 )
             else:
-                logger.warning(
-                    "PDF converter: OCR appears necessary, but OCR is not configured. Set OPENAI_API_KEY or GEMINI_API_KEY, plus MARKITDOWN_OCR_MODEL, to enable markitdown-ocr."
-                )
+                if _ocr_is_configured():
+                    logger.warning(
+                        "PDF converter: OCR appears necessary, but the configured OCR service failed."
+                    )
+                else:
+                    logger.warning(
+                        "PDF converter: OCR appears necessary, but OCR is not configured. Set OPENAI_API_KEY or GEMINI_API_KEY, plus MARKITDOWN_OCR_MODEL, to enable markitdown-ocr."
+                    )
 
         if prefetched_likhit is not None:
             # Already extracted above (repair-font path); reuse it rather than
@@ -345,6 +360,68 @@ def _raise_if_password_protected(raw: bytes) -> None:
         raise ExtractionError("Password-protected PDFs are not supported")
 
 
+def _validate_pages_spec(pages: object, raw: bytes) -> str | None:
+    """Validate pages before MarkItDown's converter fallback can swallow errors."""
+
+    if pages is None:
+        return None
+    if isinstance(pages, bool) or not isinstance(pages, (str, int)):
+        raise ValidationError("pages must be an integer or a string like '5' or '2-4'")
+    if isinstance(pages, int) and not 1 <= pages <= 999_999_999:
+        raise ValidationError("integer pages must be between 1 and 999999999 inclusive")
+
+    spec = str(pages).strip()
+    if not spec:
+        return None
+
+    document = fitz.open(stream=raw, filetype="pdf")
+    try:
+        parse_page_range(spec, document.page_count)
+    finally:
+        document.close()
+    return spec
+
+
+def _ocr_is_configured() -> bool:
+    api_key, model, _base_url = _resolve_ocr_env()
+    return bool(api_key and model)
+
+
+def _raise_if_unrecoverable_scan_without_ocr(
+    raw: bytes,
+    pages: str | None,
+) -> None:
+    """Fail loudly when every requested page needs unavailable OCR."""
+
+    if _ocr_is_configured():
+        return
+
+    try:
+        document = fitz.open(stream=raw, filetype="pdf")
+    except Exception:  # noqa: BLE001 - malformed input is handled by conversion
+        return
+
+    try:
+        page_start, page_end = 0, document.page_count - 1
+        if pages:
+            page_start, page_end = parse_page_range(pages, document.page_count)
+        requested = range(page_start, page_end + 1)
+        needs_ocr = [
+            page_index + 1
+            for page_index in requested
+            if classify_ocr_page(document, page_index) is not None
+        ]
+        requested_count = page_end - page_start + 1
+    finally:
+        document.close()
+
+    if needs_ocr and len(needs_ocr) == requested_count:
+        raise ScannedPdfError(
+            "PDF has no recoverable text layer and OCR is not configured",
+            needs_ocr,
+        )
+
+
 def _try_collect_numeric_boundary_evidence(
     raw: bytes,
 ) -> NumericBoundaryEvidence:
@@ -406,30 +483,101 @@ def _run_ocr_pdf_converter(
 def _run_full_page_ocr(
     raw: bytes,
     ocr_service: LLMVisionOCRService,
-) -> DocumentConverterResult:
+) -> DocumentConverterResult | None:
     markdown_parts: list[str] = []
+    failures: list[tuple[int, str]] = []
+    succeeded = 0
     doc = fitz.open(stream=raw, filetype="pdf")
+    page_count = doc.page_count
 
     try:
-        for page_number in range(1, doc.page_count + 1):
+        for page_number in range(1, page_count + 1):
             page = doc[page_number - 1]
-            matrix = fitz.Matrix(300 / 72, 300 / 72)
-            pixmap = page.get_pixmap(matrix=matrix)
-            image_stream = io.BytesIO(pixmap.tobytes("png"))
-            image_stream.seek(0)
+            try:
+                rendered = _render_page_for_ocr(page)
+                if rendered is None:
+                    failures.append(
+                        (
+                            page_number,
+                            "page cannot be rendered within the image size limit",
+                        )
+                    )
+                    markdown_parts.extend(("", ""))
+                    continue
+                ocr_result = ocr_service.extract_text(io.BytesIO(rendered))
+            except Exception as exc:  # noqa: BLE001 - preserve other OCR pages
+                failures.append(
+                    (page_number, f"{type(exc).__name__}: {exc or '<no message>'}")
+                )
+                markdown_parts.extend(("", ""))
+                continue
 
-            ocr_result = ocr_service.extract_text(image_stream)
+            if ocr_result.error:
+                failures.append((page_number, ocr_result.error))
+                markdown_parts.extend(("", ""))
+                continue
+
             extracted_text = ocr_result.text.strip()
-            formatted_text = _format_full_page_ocr_text(extracted_text)
             if extracted_text:
-                markdown_parts.append(formatted_text)
+                succeeded += 1
+                markdown_parts.append(_format_full_page_ocr_text(extracted_text))
             else:
+                failures.append((page_number, "OCR returned no text"))
                 markdown_parts.append("")
             markdown_parts.append("")
     finally:
         doc.close()
 
+    if failures:
+        logger.warning(
+            "OCR failed on %d of %d page(s): %s",
+            len(failures),
+            page_count,
+            "; ".join(f"p{page}: {reason}" for page, reason in failures[:5]),
+        )
+    if succeeded == 0:
+        return None
     return DocumentConverterResult(markdown="\n".join(markdown_parts).strip())
+
+
+def _ocr_render_matrix(page: fitz.Page) -> fitz.Matrix:
+    """Bound OCR rendering by page pixels rather than physical DPI."""
+
+    long_edge = max(page.rect.width, page.rect.height)
+    if long_edge <= 0:
+        return fitz.Matrix(1, 1)
+    scale = min(_OCR_TARGET_LONG_EDGE_PX / long_edge, 300 / 72)
+    return fitz.Matrix(scale, scale)
+
+
+def _base64_encoded_size(raw_size: int) -> int:
+    return ((raw_size + 2) // 3) * 4
+
+
+def _render_page_for_ocr(page: fitz.Page) -> bytes | None:
+    """Render a PNG that stays below the providers' 5 MiB base64 limit."""
+
+    matrix = _ocr_render_matrix(page)
+    max_encoded_bytes = 5 * 1024 * 1024
+    for attempt in range(_OCR_MAX_RENDER_ATTEMPTS):
+        pixmap = page.get_pixmap(matrix=matrix)
+        png = pixmap.tobytes("png")
+        encoded_size = _base64_encoded_size(len(png))
+        if encoded_size <= max_encoded_bytes:
+            return png
+        if attempt == _OCR_MAX_RENDER_ATTEMPTS - 1:
+            break
+        matrix = fitz.Matrix(
+            matrix.a * _OCR_RENDER_SCALE_STEP,
+            matrix.d * _OCR_RENDER_SCALE_STEP,
+        )
+        logger.info(
+            "OCR: page %d render was %.2f MiB base64; retrying at scale %.3f",
+            page.number + 1,
+            encoded_size / (1024 * 1024),
+            matrix.a,
+        )
+    return None
 
 
 def _slice_pdf_to_requested_pages(raw: bytes, pages: str) -> bytes:
@@ -930,7 +1078,12 @@ def _markdown_quality_score(markdown: str) -> int:
     # Anchors are structural, not content. Scoring them would let the page
     # count sway which candidate conversion wins.
     markdown = strip_page_anchors(markdown)
-    tokens = _TOKEN_PATTERN.findall(markdown)
+    content_lines = [
+        line
+        for line in markdown.splitlines()
+        if not _TABLE_SEPARATOR_PATTERN.fullmatch(line)
+    ]
+    tokens = _TOKEN_PATTERN.findall("\n".join(content_lines).replace("|", " "))
     latin_tokens = [token for token in tokens if _LATIN_PATTERN.search(token)]
     suspicious_tokens = [
         token for token in latin_tokens if _SUSPICIOUS_LATIN_TOKEN_PATTERN.search(token)
@@ -962,11 +1115,10 @@ def _markdown_quality_score(markdown: str) -> int:
     # a candidate's *content* tokens are lone characters, so table syntax
     # belongs in neither the numerator nor the denominator. Pipe-heavy output is
     # still charged, by pipe_heavy_lines above -- the term about tables.
-    content_tokens = [token for token in tokens if token != "|"]
     single_token_excess = max(
         0,
-        sum(len(token) == 1 for token in content_tokens)
-        - int(len(content_tokens) * _MAX_REASONABLE_SINGLE_TOKEN_RATIO),
+        sum(len(token) == 1 for token in tokens)
+        - int(len(tokens) * _MAX_REASONABLE_SINGLE_TOKEN_RATIO),
     )
     matra_damage_count = (
         len(_DOUBLED_MATRA_PATTERN.findall(markdown))
