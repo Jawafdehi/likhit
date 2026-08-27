@@ -14,6 +14,7 @@ from markitdown import MarkItDown
 import pytest
 
 from likhit.converters.nepali_pdf import (
+    NEEDS_OCR_MARKER_PATTERN,
     _assemble_with_page_anchors,
     _markdown_quality_score,
 )
@@ -131,8 +132,7 @@ def test_paragraph_blocks_carry_the_page_they_came_from() -> None:
 def test_anchor_count_equals_the_pdf_page_count(sample: str) -> None:
     # The release gate: a transcript must account for every page of its source.
     path = ROOT / "samples" / sample
-    if not path.exists():
-        pytest.skip(f"{sample} not available")
+    assert path.exists()
     with fitz.open(path) as document:
         page_count = document.page_count
 
@@ -141,21 +141,28 @@ def test_anchor_count_equals_the_pdf_page_count(sample: str) -> None:
     assert anchors == list(range(1, page_count + 1))
 
 
-def test_an_image_dominant_pdf_falls_back_unanchored() -> None:
-    """Pin a known gap rather than leave it to be discovered downstream.
-
-    When likhit produces no usable text, the winning candidate is MarkItDown's
-    own PDF converter, which knows nothing about anchors. Such a transcript has
-    no per-page positions, so a merge cannot place page-keyed OCR into it and
-    must detect and report that instead of silently producing a whole-document
-    blob.
-    """
+def test_an_image_dominant_pdf_requires_ocr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An OCR-only document must not fall back to an unanchored junk transcript."""
 
     path = ROOT / "samples" / "nirnaya.pdf"
-    if not path.exists():
-        pytest.skip("nirnaya.pdf not available")
+    assert path.exists()
+    for name in (
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "MARKITDOWN_OCR_MODEL",
+        "OPENAI_MODEL",
+        "GEMINI_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
-    assert page_anchor_numbers(_convert(path)) == []
+    markdown = _convert(path)
+
+    marker = NEEDS_OCR_MARKER_PATTERN.search(markdown)
+    assert marker is not None
+    assert marker.groups() == ("1,2", "not-configured")
+    assert page_anchor_numbers(markdown) == [1, 2]
 
 
 def test_page_numbers_cover_a_suppressed_scanned_page(tmp_path: Path) -> None:

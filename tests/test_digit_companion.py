@@ -1,17 +1,14 @@
 """VOL-323: the digit-dominant legacy companion, and its digit row.
 
 The module docstring in ``digit_companion.py`` carries the measurements. These tests pin
-the behaviour, and they are written so that the ones which matter run WITHOUT a font on
+the behaviour, and they are written so that the default suite runs WITHOUT a font on
 the host: the decision is split out as
 :func:`~likhit.extractors.digit_companion.decide_from_plain_row_signatures`, and the
-pinned signature tables are themselves valid inputs to it. A test that needs a real font
-file is skipped when the font is absent, and a skipped test proves nothing.
+pinned signature tables are themselves valid inputs to it. Checks against the extracted
+font programs live in ``tests/manual/test_spins_faces.py``.
 """
 
 from __future__ import annotations
-
-import os
-import pathlib
 
 import pymupdf as fitz
 import pytest
@@ -32,11 +29,6 @@ from likhit.extractors.digit_companion import (
     digit_companion_enabled,
     glyphs_draw_devanagari_digits,
 )
-
-#: Env var pointing at a directory of extracted companion/prose faces, for the
-#: font-dependent tests. The faces themselves are run artifacts (VOL-317 run
-#: `c8a8e41c`), not repo fixtures, so they cannot be committed here.
-FACES_ENV = "LIKHIT_SPINS_FACES_DIR"
 
 ALL_TABLES = (
     ("family Devanagari", _FAMILY_DEVANAGARI_DIGITS),
@@ -147,6 +139,30 @@ def test_a_mostly_wrong_row_is_rejected_even_with_enough_glyphs() -> None:
 
     mixed = _bits(_FAMILY_DEVANAGARI_DIGITS)[:2] + _bits(_EXTERNAL_LATIN_DIGITS)[2:]
     assert decide_from_plain_row_signatures(mixed) is False
+
+
+@pytest.mark.parametrize(
+    ("table", "expected"),
+    [
+        (_FAMILY_DEVANAGARI_DIGITS, True),
+        (_EXTERNAL_LATIN_DIGITS, False),
+    ],
+)
+def test_font_program_wrapper_passes_rendered_signatures_to_the_decision(
+    monkeypatch: pytest.MonkeyPatch,
+    table: tuple[str, ...],
+    expected: bool,
+) -> None:
+    from likhit.extractors import digit_companion as module
+
+    signatures = _bits(table)
+    monkeypatch.setattr(
+        module,
+        "plain_row_signatures",
+        lambda _font_buffer: signatures,
+    )
+
+    assert glyphs_draw_devanagari_digits(b"synthetic-font") is expected
 
 
 # --- the transliteration ------------------------------------------------------ #
@@ -384,43 +400,6 @@ def test_the_detector_leaves_an_abstaining_face_alone(
     # assertions above are about the VERDICT and not about the fixture.
     fired = _detect_with_verdict(monkeypatch, "SomeUnroutedNumerals", verdict=True)
     assert fired, "the control face must fire, or the assertions above are vacuous"
-
-
-# --- font-dependent, skipped when the faces are absent ------------------------ #
-
-
-def _faces_dir() -> pathlib.Path | None:
-    raw = os.environ.get(FACES_ENV)
-    if not raw:
-        return None
-    path = pathlib.Path(raw)
-    return path if path.is_dir() else None
-
-
-@pytest.mark.parametrize(
-    ("filename", "expected"),
-    [
-        # The two page-verified companions, from different documents.
-        ("3653-Spins_EXT.ttf", True),
-        ("3097-SpinsEXT.ttf", True),
-        # The prose face of the same family: its plain row is CONSONANTS.
-        ("3653-Spins.ttf", False),
-        # A subset whose cmap is not unicode-addressable: no evidence either way.
-        ("11102-Spins_EXT.ttf", None),
-    ],
-)
-def test_the_extracted_faces_decide_as_read(
-    filename: str, expected: bool | None
-) -> None:
-    """End to end from a real font program, against VOL-317's page-verified reads."""
-
-    faces = _faces_dir()
-    if faces is None:
-        pytest.skip(f"set {FACES_ENV} to VOL-317's fonts-c8a8e41c directory")
-    path = faces / filename
-    if not path.exists():
-        pytest.skip(f"{filename} not present in {faces}")
-    assert glyphs_draw_devanagari_digits(path.read_bytes()) is expected
 
 
 # --- the wiring, which is where an inert fix hides ---------------------------- #

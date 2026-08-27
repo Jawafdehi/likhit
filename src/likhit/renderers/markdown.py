@@ -886,18 +886,68 @@ def _raw_table_row_lines(table: Table) -> list[tuple[int, list[str]]]:
                 if (row, col) not in anchored:
                     covered[row][col] = True
 
+    # PDF table detectors often model a visually wrapped header as several
+    # physical rows. A repeated record-key header distinguishes those rows from
+    # a data row that merely failed `_looks_like_data_key` (for example
+    # ``1 (a)``). Join only that confirmed header span column by column.
+    expanded = _expanded_grid(table)
+    title_rows = _title_row_count(expanded)
+    data_start = _data_start(expanded, title_rows)
+    joined_header_row: int | None = None
+    key_header_col = (
+        next(
+            (
+                col
+                for col, value in enumerate(expanded[title_rows])
+                if _is_record_key_header(value)
+            ),
+            None,
+        )
+        if title_rows < data_start
+        else None
+    )
+    if key_header_col is not None:
+        header_end = title_rows
+        while header_end < data_start and _is_record_key_header(
+            expanded[header_end][key_header_col]
+        ):
+            header_end += 1
+
+        for col in range(table.col_count):
+            parts: list[str] = []
+            for row in range(title_rows, header_end):
+                value = _clean_text(grid[row][col])
+                if value and value not in parts:
+                    parts.append(value)
+            grid[title_rows][col] = " ".join(parts)
+        for row in range(title_rows + 1, header_end):
+            grid[row] = ["" for _ in range(table.col_count)]
+        joined_header_row = title_rows
+
     rows: list[tuple[int, list[str]]] = []
     for row_index, row in enumerate(grid):
-        cell_lines = [
-            (
-                []
-                if covered[row_index][col_index]
-                else [
-                    _clean_text(part) for part in cell.splitlines() if _clean_text(part)
-                ]
-            )
-            for col_index, cell in enumerate(row)
-        ]
+        if row_index == joined_header_row:
+            cell_lines = [
+                (
+                    []
+                    if covered[row_index][col_index] or not _clean_text(cell)
+                    else [_clean_text(cell)]
+                )
+                for col_index, cell in enumerate(row)
+            ]
+        else:
+            cell_lines = [
+                (
+                    []
+                    if covered[row_index][col_index]
+                    else [
+                        _clean_text(part)
+                        for part in cell.splitlines()
+                        if _clean_text(part)
+                    ]
+                )
+                for col_index, cell in enumerate(row)
+            ]
         max_line_count = max(
             (len(parts) for parts in cell_lines),
             default=0,

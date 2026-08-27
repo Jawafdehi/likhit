@@ -113,6 +113,35 @@ def test_every_relative_markdown_link_resolves(doc: Path):
     assert missing == [], f"{_ids(doc)} links to paths that do not exist: {missing}"
 
 
+def _heading_anchors(markdown: str) -> set[str]:
+    anchors: set[str] = set()
+    for line in markdown.splitlines():
+        match = re.match(r"^#{1,6}\s+(.+?)\s*#*\s*$", line)
+        if match is None:
+            continue
+        heading = re.sub(r"<[^>]+>", "", match.group(1))
+        heading = re.sub(r"[^\w\s-]", "", heading.casefold())
+        anchors.add(re.sub(r"[\s-]+", "-", heading).strip("-"))
+    return anchors
+
+
+@pytest.mark.parametrize("doc", _DOCS, ids=_ids)
+def test_every_relative_markdown_anchor_resolves(doc: Path):
+    broken: list[str] = []
+    for target in _LINK.findall(doc.read_text(encoding="utf-8")):
+        path_text, separator, fragment = target.partition("#")
+        if not separator or not fragment:
+            continue
+        target_path = doc if not path_text else doc.parent / path_text
+        if target_path.suffix.lower() != ".md" or not target_path.exists():
+            continue
+        anchors = _heading_anchors(target_path.read_text(encoding="utf-8"))
+        if fragment.casefold() not in anchors:
+            broken.append(target)
+
+    assert broken == [], f"{_ids(doc)} links to headings that do not exist: {broken}"
+
+
 @pytest.mark.parametrize("doc", _DOCS, ids=_ids)
 def test_every_backticked_repo_path_resolves(doc: Path):
     """The half a link checker misses.

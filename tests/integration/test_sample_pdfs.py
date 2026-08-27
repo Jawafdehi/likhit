@@ -11,6 +11,8 @@ import unicodedata
 from markitdown import MarkItDown
 import pytest
 
+from likhit.converters.nepali_pdf import NEEDS_OCR_MARKER_PATTERN
+
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLES_DIR = ROOT / "samples"
 _REPLACEMENT_CHAR = "\ufffd"
@@ -32,8 +34,6 @@ class SamplePdfExpectation:
 @dataclass(frozen=True)
 class SampleCase:
     expectation: SamplePdfExpectation
-    known_broken: bool = False
-    xfail_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -169,57 +169,32 @@ STABLE_SAMPLE_CASES = (
             min_characters=1500,
         )
     ),
-)
-
-# Known-broken samples:
-# - should still convert to non-empty output unless otherwise noted
-# - are expected to fail one or more quality assertions until extraction improves
-# - should be moved into the stable set once all regression checks pass reliably
-KNOWN_BROKEN_SAMPLE_CASES = (
     SampleCase(
         expectation=SamplePdfExpectation(
             file_name="aarop-patra.pdf",
             required_markers=(
                 "श्री विशेष अदालत, काठमाडौं समक्ष पेस गरेको",
                 "आरोप-पत्र",
-                "मुद्दा: घुस ररसवत लिई दिई भ्रष्टाचार गरेको।",
+                "मुद्दा: घुस रिसवत लिई दिई भ्रष्टाचार गरेको।",
                 "NITC/G/NCB-7-074/75",
+                "पुर्याएको देखिन्छ",
             ),
             min_nonempty_lines=20,
             min_characters=5000,
-        ),
-        known_broken=True,
-        xfail_reason="Current accusation-letter extraction is readable but still not accurate enough end to end.",
+        )
     ),
     SampleCase(
         expectation=SamplePdfExpectation(
             file_name="my-table.pdf",
             required_markers=(
-                "गैरकानुनी लाभ वा हातनिोक्सानी गरी भ्रष्टाचार गरेका मुद्दा",
+                "2.८.२ गैरकानुनी लाभ वा हानि नोक्सानी गरी भ्रष्टाचार गरेका मुद्दा",
                 "उजुरीको व्यहोरा",
                 "अनुसन्धानबाट पुष्टि भएको व्यहोरा",
                 "प्रतिवादीको नाम, पद र कार्यालय",
             ),
             min_nonempty_lines=12,
             min_characters=1500,
-        ),
-        known_broken=True,
-        xfail_reason="Current table extraction for this annual-report slice still contains remapping errors.",
-    ),
-    SampleCase(
-        expectation=SamplePdfExpectation(
-            file_name="nirnaya.pdf",
-            required_markers=(
-                "नेपाल कानून पत्रिका",
-                "निर्णय नं.७९७३",
-                "सर्बोच्च अदालत विशेष इजलास",
-                "बिषयः– नेपालको अन्तरिम संविधान २०६३",
-            ),
-            min_nonempty_lines=20,
-            min_characters=1000,
-        ),
-        known_broken=True,
-        xfail_reason="Current extraction for this sample is still garbled and should fail until repaired.",
+        )
     ),
     SampleCase(
         expectation=SamplePdfExpectation(
@@ -232,15 +207,29 @@ KNOWN_BROKEN_SAMPLE_CASES = (
             ),
             min_nonempty_lines=10,
             min_characters=1000,
-        ),
-        known_broken=True,
-        xfail_reason="Current extraction still leaves this legacy-font table header partially garbled.",
+        )
     ),
 )
 
-ALL_SAMPLE_CASES = STABLE_SAMPLE_CASES + KNOWN_BROKEN_SAMPLE_CASES
+OCR_REQUIRED_SAMPLE_CASES = (
+    SampleCase(
+        expectation=SamplePdfExpectation(
+            file_name="nirnaya.pdf",
+            required_markers=(
+                "नेपाल कानून पत्रिका",
+                "निर्णय नं.७९७३",
+                "सर्बोच्च अदालत विशेष इजलास",
+                "बिषयः– नेपालको अन्तरिम संविधान २०६३",
+            ),
+            min_nonempty_lines=20,
+            min_characters=1000,
+        )
+    ),
+)
+
 ALL_EXPECTED_SAMPLE_FILES = sorted(
-    case.expectation.file_name for case in ALL_SAMPLE_CASES
+    case.expectation.file_name
+    for case in STABLE_SAMPLE_CASES + OCR_REQUIRED_SAMPLE_CASES
 )
 
 
@@ -271,20 +260,6 @@ def _convert_sample(case: SampleCase) -> ConvertedSample:
         raw_nonempty_lines=raw_nonempty_lines,
         replacement_char_count=raw_markdown.count(_REPLACEMENT_CHAR),
     )
-
-
-def _known_broken_params() -> list[pytest.ParameterSet]:
-    return [
-        pytest.param(
-            case,
-            id=_case_id(case),
-            marks=pytest.mark.xfail(
-                reason=case.xfail_reason or "Known broken sample",
-                strict=True,
-            ),
-        )
-        for case in KNOWN_BROKEN_SAMPLE_CASES
-    ]
 
 
 def _assert_sample_shape(sample: ConvertedSample) -> None:
@@ -351,23 +326,16 @@ class TestSamplePdfRegistry:
         sample_files = sorted(path.name for path in SAMPLES_DIR.glob("*.pdf"))
         assert sample_files == ALL_EXPECTED_SAMPLE_FILES
 
-    def test_known_broken_cases_have_reasons(self) -> None:
-        for case in KNOWN_BROKEN_SAMPLE_CASES:
-            assert case.xfail_reason and case.xfail_reason.strip(), (
-                f"Known-broken case is missing an xfail reason: "
-                f"{case.expectation.file_name}"
-            )
-
 
 class TestSamplePdfRegression:
     """Corpus-wide governance checks for the local sample PDF set."""
 
-    @pytest.mark.parametrize("case", ALL_SAMPLE_CASES, ids=_case_id)
+    @pytest.mark.parametrize("case", STABLE_SAMPLE_CASES, ids=_case_id)
     def test_conversion_smoke(self, case: SampleCase) -> None:
         sample = _convert_sample(case)
         assert sample.raw_markdown.strip(), _build_failure_context(sample)
 
-    @pytest.mark.parametrize("case", ALL_SAMPLE_CASES, ids=_case_id)
+    @pytest.mark.parametrize("case", STABLE_SAMPLE_CASES, ids=_case_id)
     def test_minimum_shape(self, case: SampleCase) -> None:
         sample = _convert_sample(case)
         _assert_sample_shape(sample)
@@ -387,7 +355,23 @@ class TestSamplePdfRegression:
         sample = _convert_sample(case)
         _assert_ordered_markers(sample)
 
-    @pytest.mark.parametrize("case", _known_broken_params())
-    def test_known_broken_quality_gaps_stay_visible(self, case: SampleCase) -> None:
-        sample = _convert_sample(case)
-        _assert_required_markers_present(sample)
+    def test_ocr_only_sample_is_explicit_without_configuration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for name in (
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "MARKITDOWN_OCR_MODEL",
+            "OPENAI_MODEL",
+            "GEMINI_MODEL",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        result = MarkItDown(enable_plugins=True).convert(
+            str(SAMPLES_DIR / "nirnaya.pdf")
+        )
+
+        marker = NEEDS_OCR_MARKER_PATTERN.search(result.markdown)
+        assert marker is not None
+        assert marker.groups() == ("1,2", "not-configured")
+        assert "t\\,&H" not in result.markdown

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from functools import lru_cache
 import io
-import logging
 from pathlib import Path
 import re
 import subprocess
@@ -157,11 +156,6 @@ def test_converter_escalates_bad_default_pdf_output_to_likhit(
     )
     monkeypatch.setattr(
         nepali_pdf_module,
-        "pdf_likely_needs_ocr",
-        lambda _raw: False,
-    )
-    monkeypatch.setattr(
-        nepali_pdf_module,
         "_run_default_pdf_converter",
         lambda raw, info: DocumentConverterResult(
             markdown=(
@@ -174,7 +168,10 @@ def test_converter_escalates_bad_default_pdf_output_to_likhit(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_convert_with_likhit",
-        lambda raw: (DocumentConverterResult(markdown="नेपाल सरकार"), []),
+        lambda raw, **_kwargs: (
+            DocumentConverterResult(markdown="नेपाल सरकार"),
+            [],
+        ),
     )
 
     with sample.open("rb") as stream:
@@ -200,11 +197,6 @@ def test_converter_escalates_cid_garbage_default_pdf_output_to_likhit(
     )
     monkeypatch.setattr(
         nepali_pdf_module,
-        "pdf_likely_needs_ocr",
-        lambda _raw: False,
-    )
-    monkeypatch.setattr(
-        nepali_pdf_module,
         "_run_default_pdf_converter",
         lambda raw, info: DocumentConverterResult(
             markdown="(cid:0)(cid:0)(cid:0) (cid:0)(cid:0)\n\n(cid:0)(cid:0)"
@@ -213,7 +205,10 @@ def test_converter_escalates_cid_garbage_default_pdf_output_to_likhit(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_convert_with_likhit",
-        lambda raw: (DocumentConverterResult(markdown="नेपाल सरकार"), []),
+        lambda raw, **_kwargs: (
+            DocumentConverterResult(markdown="नेपाल सरकार"),
+            [],
+        ),
     )
 
     with sample.open("rb") as stream:
@@ -230,7 +225,6 @@ def test_converter_prefers_ocr_for_image_dominant_bad_text_pdf(
     stream_info = SimpleNamespace(extension=".pdf", mimetype="application/pdf")
 
     import likhit.converters.nepali_pdf as nepali_pdf_module
-    from markitdown import DocumentConverterResult
 
     monkeypatch.setattr(
         nepali_pdf_module,
@@ -239,45 +233,82 @@ def test_converter_prefers_ocr_for_image_dominant_bad_text_pdf(
     )
     monkeypatch.setattr(
         nepali_pdf_module,
-        "pdf_likely_needs_ocr",
-        lambda _raw: True,
+        "classify_ocr_page",
+        lambda _document, _page_index: "image_only",
     )
     monkeypatch.setattr(
         nepali_pdf_module,
-        "_run_default_pdf_converter",
-        lambda raw, info: DocumentConverterResult(
-            markdown="t\\,&H\nuoo5 hrD SD\nI),lhlD UaXl"
+        "_build_ocr_service",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_run_page_ocr",
+        lambda _raw, _service, _pages: nepali_pdf_module._PageOcrResult(
+            {1: "ओसीआर नतिजा"},
+            (),
         ),
-    )
-    monkeypatch.setattr(
-        nepali_pdf_module,
-        "_run_ocr_pdf_converter",
-        lambda raw, info, **kwargs: DocumentConverterResult(markdown="ओसीआर नतिजा"),
-    )
-    monkeypatch.setattr(
-        nepali_pdf_module,
-        "_convert_with_likhit",
-        lambda raw: (DocumentConverterResult(markdown='t+ "Ut"U U^'), []),
     )
 
     with sample.open("rb") as stream:
         result = converter.convert(stream, stream_info)
 
-    assert result.markdown == "ओसीआर नतिजा"
+    assert "ओसीआर नतिजा" in result.markdown
+    assert "needs-ocr" not in result.markdown
+
+
+def test_converter_uses_standard_markitdown_llm_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sample = ROOT / "samples" / "pressrelease.pdf"
+    converter = NepaliPdfConverter()
+    stream_info = SimpleNamespace(extension=".pdf", mimetype="application/pdf")
+
+    import likhit.converters.nepali_pdf as nepali_pdf_module
+
+    client = object()
+    observed: list[tuple[object, str]] = []
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "classify_fonts_from_stream",
+        lambda _raw: {"Helvetica": "correct"},
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "classify_ocr_page",
+        lambda _document, _page_index: "image_only",
+    )
+
+    def fake_ocr(raw, service, pages):
+        observed.append((service.client, service.model))
+        return nepali_pdf_module._PageOcrResult({1: "ओसीआर नतिजा"}, ())
+
+    monkeypatch.setattr(nepali_pdf_module, "_run_page_ocr", fake_ocr)
+
+    with sample.open("rb") as stream:
+        result = converter.convert(
+            stream,
+            stream_info,
+            llm_client=client,
+            llm_model="vision-model",
+        )
+
+    assert observed == [(client, "vision-model")]
+    assert "ओसीआर नतिजा" in result.markdown
 
 
 def test_converter_forces_ocr_when_likhit_flags_dropped_pages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A repair-font doc where likhit dropped a scanned page (needs_ocr_pages=[2])
-    # must still run OCR even though pdf_likely_needs_ocr is False, so the dropped
-    # page's content is not silently lost.
+    # A repair-font doc where likhit dropped a scanned page must still run OCR,
+    # so the dropped page's content is not silently lost.
     sample = ROOT / "samples" / "pressrelease.pdf"
     converter = NepaliPdfConverter()
     stream_info = SimpleNamespace(extension=".pdf", mimetype="application/pdf")
 
     import likhit.converters.nepali_pdf as nepali_pdf_module
     from markitdown import DocumentConverterResult
+    from likhit.renderers.markdown import page_anchor
 
     ocr_calls: list[bool] = []
     monkeypatch.setattr(
@@ -287,43 +318,58 @@ def test_converter_forces_ocr_when_likhit_flags_dropped_pages(
     )
     monkeypatch.setattr(
         nepali_pdf_module,
-        "pdf_likely_needs_ocr",
-        lambda _raw: False,
+        "classify_ocr_page",
+        lambda _document, _page_index: "image_only",
     )
     monkeypatch.setattr(
         nepali_pdf_module,
-        "_run_default_pdf_converter",
-        lambda raw, info: DocumentConverterResult(markdown="t\\,&H default junk"),
+        "_build_ocr_service",
+        lambda **_kwargs: object(),
     )
     monkeypatch.setattr(
         nepali_pdf_module,
         "_try_convert_with_likhit",
-        lambda raw: (DocumentConverterResult(markdown="पहिलो पृष्ठ"), [2], None),
+        lambda raw, **_kwargs: (
+            DocumentConverterResult(markdown=f"{page_anchor(1)}\n\nपहिलो पृष्ठ"),
+            [1],
+            None,
+        ),
     )
 
-    def _fake_ocr(raw, info, **kwargs):
+    def _fake_ocr(raw, service, pages):
         ocr_calls.append(True)
-        return DocumentConverterResult(markdown="ओसीआर एनेक्स पृष्ठ नतिजा हो")
+        return nepali_pdf_module._PageOcrResult(
+            {1: "ओसीआर एनेक्स पृष्ठ नतिजा हो"},
+            (),
+        )
 
-    monkeypatch.setattr(nepali_pdf_module, "_run_ocr_pdf_converter", _fake_ocr)
+    monkeypatch.setattr(nepali_pdf_module, "_run_page_ocr", _fake_ocr)
 
     with sample.open("rb") as stream:
         result = converter.convert(stream, stream_info)
 
     assert ocr_calls, "OCR must run when likhit flags dropped pages"
-    assert result.markdown == "ओसीआर एनेक्स पृष्ठ नतिजा हो"
+    assert "पहिलो पृष्ठ" in result.markdown
+    assert "ओसीआर एनेक्स पृष्ठ नतिजा हो" in result.markdown
 
 
-def test_converter_logs_when_ocr_is_needed_but_not_configured(
+@pytest.mark.parametrize(
+    ("ocr_configured", "expected_reason"),
+    [
+        (False, "not-configured"),
+        (True, "ocr-failed"),
+    ],
+)
+def test_converter_marks_why_required_ocr_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+    ocr_configured: bool,
+    expected_reason: str,
 ) -> None:
     sample = ROOT / "samples" / "pressrelease.pdf"
     converter = NepaliPdfConverter()
     stream_info = SimpleNamespace(extension=".pdf", mimetype="application/pdf")
 
     import likhit.converters.nepali_pdf as nepali_pdf_module
-    from markitdown import DocumentConverterResult
 
     monkeypatch.setattr(
         nepali_pdf_module,
@@ -332,30 +378,30 @@ def test_converter_logs_when_ocr_is_needed_but_not_configured(
     )
     monkeypatch.setattr(
         nepali_pdf_module,
-        "pdf_likely_needs_ocr",
-        lambda _raw: True,
+        "classify_ocr_page",
+        lambda _document, _page_index: "image_only",
     )
     monkeypatch.setattr(
         nepali_pdf_module,
-        "_run_default_pdf_converter",
-        lambda raw, info: DocumentConverterResult(markdown="t\\,&H\nuoo5 hrD SD"),
+        "_build_ocr_service",
+        lambda **_kwargs: object() if ocr_configured else None,
     )
-    monkeypatch.setattr(
-        nepali_pdf_module,
-        "_run_ocr_pdf_converter",
-        lambda raw, info, **kwargs: None,
-    )
-    monkeypatch.setattr(
-        nepali_pdf_module,
-        "_try_convert_with_likhit",
-        lambda raw: (None, [], None),
-    )
+    if ocr_configured:
+        monkeypatch.setattr(
+            nepali_pdf_module,
+            "_run_page_ocr",
+            lambda _raw, _service, pages: nepali_pdf_module._PageOcrResult(
+                {},
+                tuple(pages),
+            ),
+        )
 
-    with caplog.at_level(logging.INFO):
-        with sample.open("rb") as stream:
-            converter.convert(stream, stream_info)
+    with sample.open("rb") as stream:
+        result = converter.convert(stream, stream_info)
 
-    assert "OCR appears necessary, but OCR is not configured" in caplog.text
+    marker = nepali_pdf_module.NEEDS_OCR_MARKER_PATTERN.search(result.markdown)
+    assert marker is not None
+    assert marker.group(2) == expected_reason
 
 
 def _content_lines(markdown: str) -> list[str]:
@@ -484,14 +530,9 @@ def test_converter_reorders_two_column_fragments_before_rendering(
     )
 
     monkeypatch.setattr(
-        nepali_pdf_module,
-        "pdf_likely_needs_ocr",
-        lambda _raw: False,
-    )
-    monkeypatch.setattr(
         nepali_pdf_module.FontBasedStrategy,
         "extract_text",
-        lambda self, path: raw_document,
+        lambda self, path, **_kwargs: raw_document,
     )
     monkeypatch.setattr(
         nepali_pdf_module,
@@ -514,13 +555,14 @@ def test_convert_renders_tables_as_raw_pipe_separated_rows() -> None:
 
     assert "तालिका २.१९" in markdown
     assert (
-        "| क्र.सं. | उजुरीको व्यहोरा |  |  | अनुसन्धानबाट पुष्टि भएको |  |  |  | "
-        "आयोगको निर्णय |  | प्रतिवादीको नाम, पद र कार्यालय |  |  | "
-        "भ्रष्टाचार निवारण ऐन, २०५९ |  |  |"
+        "| क्र.सं. | उजुरीको व्यहोरा |  |  | अनुसन्धानबाट पुष्टि भएको व्यहोरा |  |  |  | "
+        "आयोगको निर्णय मिति/आरोपपत्र दायर मिति/मुद्दा नं र प्रतिवादी सङ्ख्या |  | "
+        "प्रतिवादीको नाम, पद र कार्यालय |  |  | "
+        "भ्रष्टाचार निवारण ऐन, २०५९ बमोजिम कसुर/सजाय मागदाबी/बिगो |  |  |"
     ) in markdown
     assert (
         "|  |  |  |  | व्यहोरा |  |  |  |  |  |  |  |  | बमोजिम कसुर/सजाय |  |  |"
-    ) in markdown
+    ) not in markdown
     # Each cell here holds whole printed lines. This used to read
     # `| 1 |  | आन्तरिक |  | प्रतिवादीहरूको |  ...` with `मामिला` and `तथा` on the two
     # rows below, because PyMuPDF splits this table's lines into one fragment per
@@ -587,8 +629,7 @@ def test_convert_normalizes_replacement_char_bullets_in_two_column_output() -> N
 
 def test_convert_keeps_aarop_patra_title_lines_readable() -> None:
     sample = ROOT / "samples" / "aarop-patra.pdf"
-    if not sample.exists():
-        pytest.skip("aarop-patra sample not available")
+    assert sample.exists()
 
     # The asserted lines are the document's first four; see _convert_text.
     markdown = _convert_text(sample, pages="1")

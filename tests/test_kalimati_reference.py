@@ -1,15 +1,14 @@
 """Tests for the Kalimati outline reference table.
 
-The reference font is not vendored, so the test that re-derives
-:data:`likhit.extractors.kalimati_reference.OUTLINE_TO_UNICODE` from it is skipped
-unless ``LIKHIT_KALIMATI_REFERENCE_TTF`` points at a copy. Everything else runs
-unconditionally: the shipped table's own invariants, the lookup's behaviour
-against synthetic fonts, and the ``GSUB`` swap the table depends on.
+The reference font is not vendored, so provenance checks that re-derive
+:data:`likhit.extractors.kalimati_reference.OUTLINE_TO_UNICODE` live in
+``tests/manual/test_kalimati_reference.py``. This module runs unconditionally:
+the shipped table's own invariants, the lookup's behaviour against synthetic
+fonts, and the ``GSUB`` swap the table depends on.
 """
 
 from __future__ import annotations
 
-import os
 import re
 import tempfile
 import types
@@ -582,100 +581,3 @@ def test_reference_values_carry_reordering_markers(
     assert handed_out[5] == kalimati._PUA_REPH
     # A half-form is not a visual-order mark and must not be rewritten.
     assert handed_out[7] == "म्"
-
-
-# --------------------------------------------------------------------------
-# Provenance
-# --------------------------------------------------------------------------
-
-
-def _reference_font() -> TTFont | None:
-    raw = os.environ.get("LIKHIT_KALIMATI_REFERENCE_TTF")
-    if not raw:
-        return None
-    path = Path(raw)
-    if not path.is_file():
-        return None
-    return TTFont(path, lazy=False)
-
-
-@pytest.mark.skipif(
-    _reference_font() is None,
-    reason="set LIKHIT_KALIMATI_REFERENCE_TTF to the reference Kalimati TTF",
-)
-def test_table_re_derives_from_the_reference_font() -> None:
-    """The shipped table is exactly what the derivation produces. This is the recipe.
-
-    Seeded from Devanagari ``cmap`` entries only, then re-keyed from CID to
-    outline digest. An outline that two CIDs disagree about is dropped.
-    """
-
-    font = _reference_font()
-    assert font is not None
-    glyph_order = font.getGlyphOrder()
-    best_cmap = kalimati._safe_get_best_cmap(font)
-    devanagari = {
-        codepoint: name
-        for codepoint, name in best_cmap.items()
-        if 0x0900 <= codepoint <= 0x097F
-    }
-    assert devanagari, "the reference font must still have its own cmap"
-
-    name_to_unicode = {name: codepoint for codepoint, name in devanagari.items()}
-    gid_to_correct = {
-        gid: chr(name_to_unicode[name])
-        for gid, name in enumerate(glyph_order)
-        if name in name_to_unicode
-    }
-    gid_to_correct.update(
-        kalimati._infer_mark_variants(font, glyph_order, gid_to_correct)
-    )
-    derived = kalimati._analyze_gsub(font, glyph_order, gid_to_correct)
-    full = dict(derived)
-    full.update(gid_to_correct)
-
-    glyf = font["glyf"]
-
-    def is_below_form(glyph_name: str) -> bool:
-        """Drawn entirely below the baseline, so a below-form rather than a repha."""
-
-        glyph = glyf[glyph_name]
-        if glyph.numberOfContours == 0:
-            return False
-        glyph.recalcBounds(glyf)
-        return bool(glyph.yMax <= 0)
-
-    expected: dict[str, str] = {}
-    corrections: dict[str, tuple[str, str]] = {}
-    ambiguous: set[str] = set()
-    for gid, value in sorted(full.items()):
-        if gid >= len(glyph_order) or not value:
-            continue
-        digest = kalimati_reference.outline_digest(font, glyph_order[gid])
-        if digest is None:
-            continue
-        if value == kalimati._RA + kalimati._VIRAMA and is_below_form(glyph_order[gid]):
-            corrected = kalimati._VIRAMA + kalimati._RA
-            corrections[digest] = (value, corrected)
-            value = corrected
-        if digest in expected and expected[digest] != value:
-            ambiguous.add(digest)
-            continue
-        expected[digest] = value
-    for digest in ambiguous:
-        expected.pop(digest, None)
-
-    assert expected == kalimati_reference.OUTLINE_TO_UNICODE
-    assert corrections == kalimati_reference.BELOW_FORM_RA_CORRECTIONS
-
-
-@pytest.mark.skipif(
-    _reference_font() is None,
-    reason="set LIKHIT_KALIMATI_REFERENCE_TTF to the reference Kalimati TTF",
-)
-def test_reference_font_matches_the_declared_identity() -> None:
-    font = _reference_font()
-    assert font is not None
-    assert font["head"].unitsPerEm == kalimati_reference.REFERENCE_UNITS_PER_EM
-    assert font["maxp"].numGlyphs == kalimati_reference.REFERENCE_GLYPH_COUNT
-    assert "GSUB" in font, "the reference is only useful because it kept GSUB"

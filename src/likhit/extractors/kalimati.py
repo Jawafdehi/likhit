@@ -26,6 +26,7 @@ _PUA_IKAR = "\uf001"
 _VIRAMA = "\u094d"
 _RA = "\u0930"
 _IKAR = "\u093f"
+_BROKEN_PURYA_PATTERN = re.compile(r"(?<=पुर्) (?=य)")
 _NUKTA = "\u093c"
 _DEVANAGARI_PATTERN = re.compile(r"[\u0900-\u097F]")
 
@@ -863,7 +864,6 @@ def normalize_devanagari_spacing(text: str) -> str:
     index = 0
     while index < len(text):
         if text[index] == " ":
-            previous = result[-1] if result else None
             next_char = text[index + 1] if index + 1 < len(text) else None
             remove = False
             if next_char and (
@@ -871,12 +871,14 @@ def normalize_devanagari_spacing(text: str) -> str:
                 or next_char in {_PUA_REPH, _PUA_IKAR}
             ):
                 remove = True
-            if previous == _VIRAMA:
-                remove = True
             if remove:
                 index += 1
                 continue
         result.append(text[index])
         index += 1
 
-    return "".join(result)
+    normalized = "".join(result)
+    # PyMuPDF exposes this Kalimati glyph sequence with an internal space in
+    # forms of ``पुर्याउनु``. A blanket virama-space deletion also joins real
+    # word boundaries (``छन् तथा``), so repair only the measured lexical stem.
+    return _BROKEN_PURYA_PATTERN.sub("", normalized)

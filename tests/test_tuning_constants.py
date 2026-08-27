@@ -126,6 +126,40 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "and better than a glyph that did not decode at all. The ordering is "
         "asserted below, so the derivation is checked rather than merely stated",
     ),
+    (
+        "likhit/converters/nepali_pdf.py",
+        "_OCR_DEFAULT_DPI",
+    ): (
+        300,
+        "initial OCR resolution. Five of seven bundled sample first pages fit the "
+        "5 MiB encoded limit at 300 DPI; oversized renders shrink reactively, and "
+        "LIKHIT_OCR_DPI lets a provider impose a lower service-specific ceiling",
+    ),
+    (
+        "likhit/converters/nepali_pdf.py",
+        "_OCR_MAX_RENDER_PIXELS",
+    ): (
+        40_000_000,
+        "allocation guard for pathological media boxes. Forty million pixels "
+        "bounds an RGB pixmap near 120 MiB (RGBA near 160 MiB) while leaving every "
+        "bundled A3-or-smaller page untouched at 300 DPI",
+    ),
+    (
+        "likhit/converters/nepali_pdf.py",
+        "_OCR_MAX_RENDER_ATTEMPTS",
+    ): (
+        4,
+        "one initial render plus three reductions bounds render work while allowing "
+        "a highly incompressible page to fall to 42.2% of the initial dimensions",
+    ),
+    (
+        "likhit/converters/nepali_pdf.py",
+        "_OCR_RENDER_SCALE_STEP",
+    ): (
+        0.75,
+        "each oversized render loses one quarter of each dimension, nearly halving "
+        "the pixel count without an abrupt one-step loss of OCR legibility",
+    ),
     # The rest of _markdown_quality_score's weights. These were inline literals in
     # the same arithmetic expression as the two above, so this guard covered half of
     # one function's tuning surface. Measured before naming them: changing the

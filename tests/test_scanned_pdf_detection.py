@@ -4,7 +4,8 @@ These exercise the extraction fixes for Nepal Police CIB press releases: a scann
 raster carrying a non-embedded core-font "decoy" text layer must be routed to OCR
 (never emitted as garbage), while a genuinely mislabeled legacy font must still be
 rescued. Synthetic, PII-free PDFs stand in for the git-ignored CIB originals; the
-real ones are covered in ``tests/integration/test_cib_pdfs.py`` when present.
+real ones are covered by the explicit manual check
+``tests/manual/test_cib_pdfs.py``.
 """
 
 from __future__ import annotations

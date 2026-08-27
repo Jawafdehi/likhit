@@ -581,18 +581,17 @@ def test_converter_uses_successful_known_font_candidate_directly(
     )
     monkeypatch.setattr(
         nepali_pdf_module,
-        "pdf_likely_needs_ocr",
-        lambda _raw: False,
-    )
-    monkeypatch.setattr(
-        nepali_pdf_module,
         "_run_default_pdf_converter",
         lambda _raw, _info: pytest.fail("default extraction should not run"),
     )
     monkeypatch.setattr(
         nepali_pdf_module,
         "_try_convert_with_likhit",
-        lambda _raw: (DocumentConverterResult(markdown="geometry aware"), [], None),
+        lambda _raw, **_kwargs: (
+            DocumentConverterResult(markdown="geometry aware"),
+            [],
+            None,
+        ),
     )
 
     result = converter.convert(io.BytesIO(raw), stream_info)
@@ -624,7 +623,7 @@ def test_converter_repairs_unambiguous_numeric_merges_in_known_font_candidate(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_try_convert_with_likhit",
-        lambda _raw: (
+        lambda _raw, **_kwargs: (
             DocumentConverterResult(
                 markdown="267,000.00267,000.00\n267,000.00267,000.00"
             ),
@@ -652,11 +651,6 @@ def test_converter_repairs_unambiguous_default_candidate(
     )
     monkeypatch.setattr(
         nepali_pdf_module,
-        "pdf_likely_needs_ocr",
-        lambda _raw: False,
-    )
-    monkeypatch.setattr(
-        nepali_pdf_module,
         "_run_default_pdf_converter",
         lambda _raw, _info: DocumentConverterResult(markdown="123.45678.90"),
     )
@@ -669,13 +663,12 @@ def test_converter_repairs_unambiguous_default_candidate(
 def test_converter_repairs_a_prefetched_likhit_candidate_forced_to_ocr(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A likhit result kept as a candidate must be repaired like every other.
+    """A prefetched likhit result must be repaired before OCR is merged.
 
-    The repair-font path extracts likhit up front. When likhit also flags pages
-    needing OCR, its result is not returned directly but appended as a candidate,
-    and that append used to skip `_repair_result_numeric_boundaries` while still
-    flagging the candidate `geometry_aware=True` -- so selection, which puts
-    safety before score, shipped the unrepaired text.
+    The repair-font path extracts likhit up front. When preclassification also
+    finds a scanned page, that result becomes the safe born-digital base for OCR.
+    The numeric repair must still run before the converter returns it with an
+    in-band needs-OCR marker.
     """
     raw = _ruled_numeric_pdf("123.45", cuts=())
     converter = NepaliPdfConverter()
@@ -692,36 +685,30 @@ def test_converter_repairs_a_prefetched_likhit_candidate_forced_to_ocr(
         "classify_fonts_from_stream",
         lambda _stream: {"Preeti": "legacy_remap"},
     )
-    # A non-empty needs-OCR list is what diverts the result into `candidates`
-    # instead of the early return.
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "classify_ocr_page",
+        lambda _document, _page_index: "image_only",
+    )
     monkeypatch.setattr(
         nepali_pdf_module,
         "_try_convert_with_likhit",
-        lambda _raw: (
+        lambda _raw, **_kwargs: (
             DocumentConverterResult(markdown="बेरुजु रकम तालिका\n267,000.00267,000.00"),
-            [51],
+            [1],
             None,
         ),
     )
-    # OCR is unavailable, which is the real-world shape of this path: likhit's
-    # candidate is then the only alternative to the default. The default is given
-    # strictly less content so that likhit wins the comparison on score -- without
-    # that, reverting the fix would ship the default and the test would pass for
-    # the wrong reason instead of exposing the unrepaired figure.
     monkeypatch.setattr(
         nepali_pdf_module,
-        "_run_ocr_pdf_converter",
-        lambda _raw, _info, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        nepali_pdf_module,
-        "_run_default_pdf_converter",
-        lambda _raw, _info: DocumentConverterResult(markdown="बेरुजु रकम"),
+        "_build_ocr_service",
+        lambda **_kwargs: None,
     )
 
     result = converter.convert(io.BytesIO(raw), stream_info)
 
-    assert result.markdown == "बेरुजु रकम तालिका\n267,000.00 | 267,000.00"
+    assert "needs-ocr pages=1 reason=not-configured" in result.markdown
+    assert "बेरुजु रकम तालिका\n267,000.00 | 267,000.00" in result.markdown
 
 
 def test_converter_repairs_a_likhit_re_extraction_candidate(
@@ -756,11 +743,6 @@ def test_converter_repairs_a_likhit_re_extraction_candidate(
         "classify_fonts_from_stream",
         lambda _stream: {"Helvetica": "correct"},
     )
-    monkeypatch.setattr(
-        nepali_pdf_module,
-        "pdf_likely_needs_ocr",
-        lambda _raw: False,
-    )
     # The default keeps the ambiguous merge whatever the repair does, so it stays
     # the unsafe candidate and likhit's geometry-aware one wins on safety.
     monkeypatch.setattr(
@@ -773,7 +755,7 @@ def test_converter_repairs_a_likhit_re_extraction_candidate(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_try_convert_with_likhit",
-        lambda _raw: (
+        lambda _raw, **_kwargs: (
             DocumentConverterResult(markdown="merged 12500 ok\n267,000.00267,000.00"),
             [],
             None,
@@ -799,11 +781,6 @@ def test_converter_prefers_geometry_candidate_for_ambiguous_short_merge(
     )
     monkeypatch.setattr(
         nepali_pdf_module,
-        "pdf_likely_needs_ocr",
-        lambda _raw: False,
-    )
-    monkeypatch.setattr(
-        nepali_pdf_module,
         "_try_collect_numeric_boundary_evidence",
         lambda _raw: NumericBoundaryEvidence(
             tuple([_repair("12500", ("1", "2500"))]), frozenset()
@@ -819,7 +796,7 @@ def test_converter_prefers_geometry_candidate_for_ambiguous_short_merge(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_try_convert_with_likhit",
-        lambda _raw: (
+        lambda _raw, **_kwargs: (
             DocumentConverterResult(markdown="legitimate 12500\nmerged 1 | 2500"),
             [],
             None,
@@ -953,7 +930,6 @@ def test_converter_prefers_a_safe_candidate_over_a_higher_scoring_unsafe_one(
         "classify_fonts_from_stream",
         lambda _stream: {"Helvetica": "correct"},
     )
-    monkeypatch.setattr(nepali_pdf_module, "pdf_likely_needs_ocr", lambda _raw: False)
     monkeypatch.setattr(
         nepali_pdf_module,
         "_try_collect_numeric_boundary_evidence",
@@ -974,7 +950,11 @@ def test_converter_prefers_a_safe_candidate_over_a_higher_scoring_unsafe_one(
     monkeypatch.setattr(
         nepali_pdf_module,
         "_try_convert_with_likhit",
-        lambda _raw: (DocumentConverterResult(markdown="split 1 | 2500"), [], None),
+        lambda _raw, **_kwargs: (
+            DocumentConverterResult(markdown="split 1 | 2500"),
+            [],
+            None,
+        ),
     )
     scores = {"merged 12500 padding": 500, "split 1 | 2500": 10}
     monkeypatch.setattr(
