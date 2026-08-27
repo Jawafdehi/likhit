@@ -47,10 +47,21 @@ from likhit.extractors import font_based as fb
 # Distinct per axis, so no assertion in this file can pass because two axes happen to
 # hold the same number. Run `9c7a9a3b`'s first attempt at this measurement used a span
 # that scored 0.0 on every axis and therefore reported a missing axis as PRESENT.
+#
+# 🛑 `stranded` is 7, and it USED to be 0 with the comment "0 so the forgiveness clamp
+# cannot alias another axis". That had the mechanism exactly backwards: 0 is what CREATES
+# the alias. `-max(0 - _RANKING_STRANDED_FORGIVENESS, 0)` is 0, so with the ELIGIBLE
+# indicator adjacent at index 3 both removals reconstruct the shipped tuple,
+# `_derive_eligible_index` finds positions `[2, 3]` and its uniqueness assert fires AT
+# IMPORT. That turns a wrong `_MIXED_ELIGIBLE_INDEX` into a collection error that aborts
+# the whole session — pytest runs NO tests at all, and the second, independent detector in
+# `test_tuning_constants.py` never executes, so "two detectors" was true of the code and
+# false of any run you would actually do. A distinct non-zero value keeps the derivation
+# unique, so the same mistake now fails those two tests and runs the rest of the suite.
 _SENTINELS = {
     "hits": 11.0,
     "penalty": 13.0,
-    "stranded": 0.0,  # 0 so the forgiveness clamp cannot alias another axis
+    "stranded": 7.0,
     "figures": 19.0,
     "attested": 23.0,
     "ratio": 29.0,
@@ -355,36 +366,84 @@ class TestRankingKeyIsAnIndicator:
 class TestGateOffIsShipped:
     """The default must be indistinguishable from the chooser without this change.
 
-    🛑 **Stated against a COMPUTED reference, not the literal ``"Preeti"``.** Which map
-    the shipped chooser picks for `3719` is a property of the tree's other axes, and the
-    property under test is not: with the money-figure axis carried over from the corpus
-    line, pass 1 already repairs this document to ``PCS NEPALI``. Hardcoding the old
-    winner made four of these tests assert the absence of that axis.
+    🛑🛑 **These assert on `GATED_AGGREGATE`, NOT on `AGGREGATE_3719`, and that is the
+    whole point of the fixture choice.** Replacing the stale literal ``"Preeti"`` with a
+    computed `_shipped_choice()` was right about the stale value and wrong about the
+    fixture: with the money-figure axis, `3719` elects ``PCS NEPALI`` in **both** gate
+    states at **every** legal margin (measured M = 1, 2, 3, 5, 8, 99), so
+    ``choice.map_key == shipped.map_key`` is true there no matter what the gate does and
+    these tests could not fail.
+
+    That was demonstrated, not suspected. Mutating `choose_legacy_map_detailed` so an
+    explicit ``mixed_margin=None`` falls through to the environment -- precisely the bug
+    `test_an_explicit_none_overrides_a_set_environment` is named for -- **fails on a base
+    without the figures axis and SURVIVES on a 3719-based version of these tests.** A
+    computed reference removed the stale value and the discriminating power together.
+
+    Every assertion below runs over `GATE_SENSITIVE_CASES` -- **two** fixtures, at the
+    margins each is actually moved at: `GATED_AGGREGATE` at M=1 and
+    `URMILA_AGGREGATE_11154` at M=5. One fixture was not enough, because `GATED_AGGREGATE`
+    separates the states at M=1 only, and M=1 is `_MIXED_MARGIN_FLOOR` -- the very edge of
+    the legal range. `TestThreeSeventeenNineteenIsRepairedByTheAxis` below records why
+    `3719` cannot be either of them.
     """
 
     @staticmethod
-    def _shipped_choice():
+    def _shipped_choice(text):
         """The chooser without this change: the shipped key, no mixed term at all."""
 
         return fb._choose_legacy_map_ranked(
-            AGGREGATE_3719, fb._map_ranking_key, mixed_threshold=None
+            text, fb._map_ranking_key, mixed_threshold=None
         )
 
-    def test_env_unset_leaves_3719_on_the_shipped_map(self, monkeypatch):
+    def test_env_unset_leaves_the_span_on_the_shipped_map(self, monkeypatch):
         monkeypatch.delenv(fb._MIXED_MARGIN_ENV_VAR, raising=False)
-        choice = fb.choose_legacy_map_detailed(AGGREGATE_3719)
-        assert choice.map_key == self._shipped_choice().map_key
+        for text, margin in GATE_SENSITIVE_CASES:
+            choice = fb.choose_legacy_map_detailed(text)
+            assert choice.map_key == self._shipped_choice(text).map_key, (
+                f"gate-sensitive at M={margin}"
+            )
 
-    def test_explicit_none_leaves_3719_on_the_shipped_map(self):
-        choice = fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=None)
-        assert choice.map_key == self._shipped_choice().map_key
+    def test_explicit_none_leaves_the_span_on_the_shipped_map(self):
+        for text, margin in GATE_SENSITIVE_CASES:
+            choice = fb.choose_legacy_map_detailed(text, mixed_margin=None)
+            assert choice.map_key == self._shipped_choice(text).map_key, (
+                f"gate-sensitive at M={margin}"
+            )
 
     def test_an_explicit_none_overrides_a_set_environment(self, monkeypatch):
-        """A caller that means OFF must not be overridden by an env var."""
+        """A caller that means OFF must not be overridden by an env var.
 
-        monkeypatch.setenv(fb._MIXED_MARGIN_ENV_VAR, "5")
-        choice = fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=None)
-        assert choice.map_key == self._shipped_choice().map_key
+        🛑 The environment is set to the margin **this fixture is moved at**, not to a
+        fixed ``"5"``. A margin the fixture is insensitive to would leave the gated and
+        shipped winners equal, so a gate that wrongly honoured the environment would go
+        unnoticed -- which is exactly how this test came to assert nothing.
+        """
+
+        for text, margin in GATE_SENSITIVE_CASES:
+            monkeypatch.setenv(fb._MIXED_MARGIN_ENV_VAR, str(margin))
+            choice = fb.choose_legacy_map_detailed(text, mixed_margin=None)
+            assert choice.map_key == self._shipped_choice(text).map_key, (
+                f"an explicit None was overridden by {fb._MIXED_MARGIN_ENV_VAR}={margin}"
+            )
+
+    def test_both_gate_sensitive_cases_really_are_sensitive(self):
+        """The precondition every test in this class rests on, asserted not assumed.
+
+        If a fixture stops being moved by the gate at its paired margin, the three tests
+        above keep passing and stop testing anything -- silently. That is precisely what
+        happened when `AGGREGATE_3719` was used here and the money-figure axis started
+        repairing it in pass 1.
+        """
+
+        for text, margin in GATE_SENSITIVE_CASES:
+            shipped = self._shipped_choice(text)
+            gated = fb.choose_legacy_map_detailed(text, mixed_margin=margin)
+            assert shipped.map_key is not None and gated.map_key is not None
+            assert gated.map_key != shipped.map_key, (
+                f"the gate no longer moves this span at M={margin}, so the assertions "
+                f"in this class can no longer fail on it -- re-derive a live pair"
+            )
 
     def test_off_computes_no_mixed_term_at_all(self, monkeypatch):
         """⚠️ This assertion holds with the gate ON too, and that is now stated.
@@ -415,6 +474,47 @@ class TestGateOffIsShipped:
         gated = fb.choose_legacy_map_detailed(GATED_AGGREGATE, mixed_margin=1)
         assert shipped.map_key is not None and gated.map_key is not None
         assert gated.map_key != shipped.map_key
+
+
+class TestThreeSeventeenNineteenIsRepairedByTheAxis:
+    """Why `3719` can no longer be a gate-state fixture, asserted rather than assumed.
+
+    This is the fact the class above depends on, and leaving it implicit is what let three
+    tests go quietly vacuous: the money-figure axis repairs `3719` in **pass 1**, so the
+    gate has nothing left to do on it and every gate state agrees. Pinned here so that a
+    future reader who re-points a state-distinguishing assertion at this fixture gets a
+    failure from *this* test's name -- which says why -- instead of silent green.
+
+    The document is still repaired, which is the outcome that matters; it is the *gate*
+    that is idle, not the fix.
+    """
+
+    #: Every margin `_mixed_margin_setting` accepts that this file exercises, plus the
+    #: floor and an absurd upper value. `_MIXED_MARGIN_FLOOR` is 1, so 0 is not legal.
+    LEGAL_MARGINS = (1, 2, 3, 5, 8, 99)
+
+    def test_pass_one_already_elects_pcs_nepali_with_the_gate_off(self):
+        shipped = fb._choose_legacy_map_ranked(
+            AGGREGATE_3719, fb._map_ranking_key, mixed_threshold=None
+        )
+        assert shipped.map_key == "PCS NEPALI", (
+            "the figures axis is what repairs this document; if pass 1 no longer elects "
+            "PCS NEPALI the axis has stopped working and TestGateOnRepairs3719's "
+            "docstring is wrong too"
+        )
+
+    def test_no_legal_margin_makes_the_gate_change_this_span(self):
+        """Hence: no assertion of the form `off == shipped` can fail on this fixture."""
+
+        shipped = fb._choose_legacy_map_ranked(
+            AGGREGATE_3719, fb._map_ranking_key, mixed_threshold=None
+        )
+        for margin in self.LEGAL_MARGINS:
+            gated = fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=margin)
+            assert gated.map_key == shipped.map_key, (
+                f"M={margin} moves 3719, so it IS a usable gate-state fixture again -- "
+                f"re-read TestGateOffIsShipped's docstring, which says it is not"
+            )
 
 
 class TestGateOnRepairs3719:
@@ -625,6 +725,42 @@ HISTORICAL_DECIDED_THEN_ABSTAINED = (
 GATED_AGGREGATE = (
     " uf]=ef}=g=ldlt pkef]Qmf ;ldlt ;Demf}tf /sd -?=_ k]ZsL lbg'kg]{ -?=_ k]ZsL "
     "lbPsf] -?=_ a(L k]ZsL -?=_ cfg'kflts sL M "
+)
+
+#: A second span the gate MOVES, and the reason it is here is `GATED_AGGREGATE`'s one
+#: weakness: that fixture separates the gate states at **M=1 only** -- the value of
+#: `_MIXED_MARGIN_FLOOR`, the very edge of the legal range -- so on its own it left every
+#: gate-state assertion in this file resting on one fixture at one margin.
+#: `11154__...महालेखापरिक्षकको साठिऔँ वार्षिक प्रतिवेदन`, font `Urmila`, 211 characters:
+#: pass 1 decides `PCS NEPALI` and the gate moves it at **M = 1, 2, 3 and 5** (not 8, not
+#: 99), so it exercises the same assertions at a margin in the middle of the range.
+#:
+#: 🛑 **The move is in the WRONG direction, and that is recorded rather than hidden.** The
+#: gate takes this span from `PCS NEPALI` to `Preeti`, and the same is true of
+#: `4487__...बसबरिया गाउँपालिका`/`Spins` at M = 1, 2, 3, 5 and 8 -- which is VOL-89's
+#: ratio-mirage anchor, where the record establishes `PCS NEPALI` as CORRECT. So on the
+#: 503-document legacy sample the gate moves exactly 2 of 142 decision units and both
+#: moves make the document worse.
+#:
+#: ⚠️ **That is a PRE-EXISTING property of the gate, not of the money-figure axis**, and it
+#: was measured both ways: base `5f04b53` and the axis head produce byte-identical
+#: shipped-and-gated maps for both documents at M = 1, 2, 3, 5, 8, 99. It is latent
+#: because the gate ships OFF. It is used here purely for SENSITIVITY -- the property
+#: under test is "off is indistinguishable from shipped", which needs a fixture the gate
+#: can move and says nothing about which way it should move.
+URMILA_AGGREGATE_11154 = (
+    "n]vfk/LIf0ful/Psf lgsfosf]ljj/0fn]vfk/LIf0faf6b]lvPsf"
+    'a]?h"sf]l:yltn]vfk/LIf0faf6b]lvPsf] ;dli6utl:yltk|b]z dGqfnotyf'
+    "lgsfo:yfgLotxn]vfk/LIf0fk|ltj]bgsf]sfof{Gjogl:ylteljiodfug{'kg]{"
+    ";'wf/sfof{noultljlwcg';\"rLx?"
+)
+
+#: (fixture, margin) pairs on which the gate provably CHANGES the winner on this tree, so
+#: an "off equals shipped" assertion over them can actually fail. Both are needed: one is
+#: at the floor, one is mid-range.
+GATE_SENSITIVE_CASES = (
+    (GATED_AGGREGATE, 1),
+    (URMILA_AGGREGATE_11154, 5),
 )
 
 #: 🛑 The SECOND witness, and it is reachable at **M=0 only** -- a margin the entry point

@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import unicodedata
 from pathlib import Path
 
 import fitz
@@ -32,6 +33,9 @@ from likhit.extractors.font_based import (
     _IKAR_NASAL_WEIGHT,
     _IMPOSSIBLE_IKAR_NASAL_PATTERN,
     _is_probably_legacy_ascii,
+    _FIGURE_DIGIT_CLASS,
+    _FIGURE_DIGIT_PATTERN,
+    _FIGURE_SEPARATORS,
     _legacy_map_garble,
     _money_figure_count,
     _RANKING_GARBLE_FORGIVENESS,
@@ -1641,7 +1645,16 @@ def test_attested_words_decide_when_garble_and_stranding_tie() -> None:
         hits=3, penalty=0, devanagari=214, ratio=0.981651, stranded=0, attested=12
     )
     assert pcs["ratio"] > spins["ratio"], "ratio alone still favours the wrong map"
-    assert _map_ranking_key(spins)[:3] == _map_ranking_key(pcs)[:3], "tied above"
+    # Everything ABOVE `attested` must tie, or the conclusion below does not follow.
+    # ⚠️ This read `[:3]` and that stopped covering "above attested" the moment the
+    # figures axis was inserted at index 3: the two fixtures tie on it only because
+    # `_validity` defaults it to 0, so the slice silently stopped asserting what the
+    # message claims. Derived from the slot, so the next insertion cannot repeat it.
+    above_attested = _figures_slot() + 1
+    assert (
+        _map_ranking_key(spins)[:above_attested]
+        == _map_ranking_key(pcs)[:above_attested]
+    ), "tied above"
     assert _map_ranking_key(spins) > _map_ranking_key(pcs), "attested must decide"
 
 
@@ -1990,6 +2003,33 @@ def test_the_floor_still_matches_what_one_ikar_nasal_site_charges() -> None:
     assert charged == _IKAR_NASAL_WEIGHT == _RANKING_GARBLE_FORGIVENESS == 6
 
 
+def test_the_figure_classes_are_atomic() -> None:
+    """The guard `_FIGURE_DIGIT_CLASS`'s comment promises.
+
+    🛑 It promised it and did not have it: repo-wide the name occurred exactly ONCE, in
+    the comment citing it. The claim was true, which is why nothing was broken — but
+    citing a guard that does not exist is the failure this file family has been paying
+    for, and the unguarded mode here is the SILENT one (a widened class quietly counting
+    consonants as digits), not the loud `re.error`.
+
+    Two properties, because they fail differently. Atomicity is why the literal spelling
+    is safe at all: none of these characters has a canonical decomposition, unlike
+    U+0958 (`0915 093C`) or U+095F (`092F 093C`), whose decomposed form is what raised
+    `re.error` and stopped the module importing. The membership probe is the silent half
+    — it fails if the class ever widens to admit a letter.
+    """
+
+    # `-` is the range operator inside `_FIGURE_DIGIT_CLASS`, not a member of the class.
+    for char in set(_FIGURE_DIGIT_CLASS + _FIGURE_SEPARATORS) - {"-"}:
+        assert not unicodedata.decomposition(char), f"{char!r} decomposes"
+        assert unicodedata.normalize("NFD", char) == char, f"{char!r} is not NFD-stable"
+
+    probes = {chr(code) for code in range(0x0900, 0x0980)} | set("0123456789abc")
+    assert {char for char in probes if _FIGURE_DIGIT_PATTERN.match(char)} == set(
+        "०१२३४५६७८९0123456789"
+    ), "the digit class matches something other than the twenty digits"
+
+
 def test_a_money_figure_needs_structure_not_just_digits() -> None:
     # Four digits, or a separator with a digit on each side. The DEVANAGARI DANDA is a
     # decimal mark in this corpus, so `६१२०।००` is one figure, not two runs.
@@ -2083,7 +2123,14 @@ def test_the_numeric_axis_saves_an_amounts_column_attested_would_trade_away() ->
         hits=2, penalty=0, devanagari=346, ratio=0.91, stranded=1, attested=4, figures=1
     )
     # Everything above the new axis really is level, so the axis is what decides.
-    assert _map_ranking_key(himali)[:3] == _map_ranking_key(preeti)[:3], "tied above"
+    # Derived, not `[:3]`, and for this test's own thesis: insert an axis above `figures`
+    # on which these two differ in himali's favour and a hardcoded `[:3]` still passes,
+    # the main assertion still passes, and the test then reports that `figures` decides a
+    # pair it does not decide.
+    slot = _figures_slot()
+    assert _map_ranking_key(himali)[:slot] == _map_ranking_key(preeti)[:slot], (
+        "tied above"
+    )
     assert preeti["attested"] > himali["attested"], (
         "attested alone favours the wrong map"
     )
@@ -2096,19 +2143,31 @@ def test_the_numeric_axis_saves_an_amounts_column_attested_would_trade_away() ->
 
 
 def test_the_numeric_axis_cannot_disturb_3843_because_it_is_level_there() -> None:
-    """`3843`'s real numbers, and the one claim about them that holds on this root.
+    """`3843`'s real numbers, and the one claim about them that holds on every root.
 
     `3843__...Godawari finale`, font `Spins`, 1,340 characters -- VOL-226's repair, as
-    measured in run 71280cb8. The version of this test written for that run asserted
-    ``stranded`` decides it (0 against a floored 3) *above* the new axis. On the
-    ``ecd0e42`` lineage that is right, because ``_RANKING_GARBLE_FORGIVENESS`` (VOL-226)
-    levels the 6-point garble margin and lets the axes below the garble count decide.
-    **This root drops VOL-226**, so ``-penalty`` -- 0 against 6 -- decides at index 1 and
-    ``stranded`` is never reached; `Preeti` wins here and VOL-226's repair is simply not
-    present to protect. Measured at the composed v15 tip in run f7f64f0b: `3843/Spins`
-    resolves to `Preeti` with and without the axis alike.
+    measured in run 71280cb8.
 
-    What survives the base change is the claim this test is named for, and it survives
+    🛑 **This docstring was two roots out of date and contradicted the assertions below
+    it.** It said "this root drops VOL-226, so ``-penalty`` decides at index 1 and
+    ``stranded`` is never reached; `Preeti` wins here". All three are false on this base,
+    and the code comment fifteen lines down already said so. The stale paragraph was
+    written for an ``ecf857c`` root (`8b317ac`, *"make the figures-axis cases assert what
+    holds on an ecf857c root"*); the assertions were later rewritten for a root that HAS
+    the forgiveness and the prose was carried over unchanged.
+
+    Measured on this base:
+
+        spins  (3, 0,  0, 17, 44, -6, 0.98, 843)
+        preeti (3, 0, -3, 17, 40,  0, 0.98, 826)
+                   ^  ^ index 1 ties: `_RANKING_GARBLE_FORGIVENESS` is exactly 6 and
+                      levels the 6-point margin, so index 2 -- `stranded` -- decides,
+                      and the winner is **Spins**, not Preeti.
+
+    So on this root VOL-226's repair *is* present and `stranded` is what protects it,
+    which is the arrangement the axis must not disturb.
+
+    What survives every base change is the claim this test is named for, and it survives
     because it does not depend on which axis decides: the two candidates are **level on
     the new axis** (17 figures each), so the axis cannot move this document either way.
     The calibration claim itself -- that `figures` sits BELOW `stranded` -- is asserted
@@ -2218,11 +2277,21 @@ def test_the_numeric_axis_does_not_outrank_the_garble_axis() -> None:
 def test_a_bare_digit_count_would_pick_the_wrong_map_on_the_ratio_mirage_anchor() -> (
     None
 ):
-    # Why the axis requires STRUCTURE. `4487__...बसबरिया गाउँपालिका`, font `Spins`,
-    # 2,156 characters -- VOL-89's own ratio-mirage anchor, where `PCS NEPALI` is the
-    # right map. Measured in run 71280cb8: counting free-standing Devanagari numerals
-    # scores `Preeti` ABOVE `PCS NEPALI` there (that map gains loose numerals precisely
-    # because it is wrong), while the money-figure count is level -- 0 against 0.
+    # Why the axis requires STRUCTURE.
+    #
+    # ⚠️ The two strings below are ILLUSTRATIVE, hand-authored to have the shape the
+    # anchor has -- they are not the anchor. This comment used to open by citing
+    # `4487__...बसबरिया गाउँपालिका`, font `Spins`, 2,156 characters, "measured in run
+    # 71280cb8", which reads as though the assertions were made on that span. They are
+    # not, and the framing claimed more than they deliver.
+    #
+    # What the real anchor establishes, and where: on `4487` -- VOL-89's ratio-mirage
+    # anchor, where `PCS NEPALI` is the right map -- counting free-standing Devanagari
+    # numerals scores `Preeti` ABOVE `PCS NEPALI` (that map gains loose numerals
+    # precisely BECAUSE it is wrong), while the money-figure count is level at 0 against
+    # 0. That measurement lives in the run record and in the PR body's corpus sweep; the
+    # unit assertions here pin the RULE that makes it come out that way.
+    #
     # This test fails if the axis is ever loosened back to a plain digit count.
     right_map_text = "क) वित्तीय ९ विवरण"  # loose numeral, no figure
     wrong_map_text = "ख) ९ ८ ७ ६ राजस्व"  # more loose numerals, still no figure
