@@ -138,6 +138,22 @@ def test_the_guard_is_scoped_to_the_word_not_the_run(guard_on: None) -> None:
     assert convert("+kflnsf +vGg]") == "पालिका खन्ने"
 
 
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("{m", "m"),
+        (r"\f{k", "प"),
+        (r"\f{kf", "पा"),
+    ],
+)
+def test_the_guard_catches_orphans_at_both_exposure_boundaries(
+    guard_on: None, source: str, expected: str
+) -> None:
+    """Guard both the original input and a brace exposed by post-rule zero."""
+
+    assert legacy_maps.get_converter_for_map("Preeti")(source) == expected
+
+
 def test_the_guard_does_not_touch_sagarmathas_direct_repha(guard_on: None) -> None:
     """Sagarmatha emits repha from its character-map, before any post-rule.
 
@@ -155,27 +171,28 @@ def test_installing_the_guard_covers_every_shipped_map(guard_on: None) -> None:
     mapper = legacy_maps._get_mapper()
     for map_name, block in mapper.all_rules.items():
         post_rules = block["rules"]["post-rules"]
-        assert ["^\\{", ""] in [list(r) for r in post_rules], (
-            f"{map_name} was not guarded"
-        )
-        guard_at = [list(r) for r in post_rules].index(["^\\{", ""])
+        guards = [i for i, rule in enumerate(post_rules) if list(rule) == ["^\\{", ""]]
         converting = [i for i, r in enumerate(post_rules) if r[0] == "{"]
         relocating = [
             i
             for i, r in enumerate(post_rules)
             if "{" in r[0] and r[0] != "{" and list(r) != ["^\\{", ""]
         ]
-        # The guard is only meaningful ahead of the relocating rules.
-        assert guard_at < min(relocating), f"{map_name}: guard is not before relocation"
-        assert guard_at < min(converting), f"{map_name}: guard is not before conversion"
+        assert len(guards) == 2, f"{map_name}: expected both exposure guards"
+        assert guards[0] == 0, f"{map_name}: first guard must precede every post-rule"
+        assert guards[1] == min(relocating) - 1, (
+            f"{map_name}: second guard must immediately precede relocation"
+        )
+        assert guards[1] < min(converting), (
+            f"{map_name}: second guard is not before conversion"
+        )
 
 
-def test_the_guard_refuses_a_map_whose_rules_are_out_of_order() -> None:
-    """If upstream reorders the post-rules, position the guard on nothing.
+def test_the_guard_refuses_a_map_without_a_relocation_window() -> None:
+    """If upstream reorders the post-rules, install neither guard.
 
-    Refusing loudly is the only safe answer: a guard inserted after the relocating
-    rules would silently delete correct repha, which is the failure this whole
-    change exists to avoid.
+    Refusing loudly is the only safe answer: the second guard needs a relocation
+    boundary before conversion to distinguish an orphan from a correct repha.
     """
 
     class _FakeMapper:
@@ -190,7 +207,7 @@ def test_the_guard_refuses_a_map_whose_rules_are_out_of_order() -> None:
             }
 
     with pytest.raises(
-        ExtractionError, match="orphan-repha guard cannot be positioned"
+        ExtractionError, match="orphan-repha guard requires a relocation window"
     ):
         legacy_maps._install_orphan_repha_guard(_FakeMapper())
 

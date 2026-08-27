@@ -291,7 +291,10 @@ def _digit_dominant_doc(font_name: str) -> fitz.Document:
 
 
 def _detect_with_verdict(
-    monkeypatch: pytest.MonkeyPatch, font_name: str, verdict: bool | None
+    monkeypatch: pytest.MonkeyPatch,
+    font_name: str,
+    verdict: bool | None,
+    embedded_legacy_maps: dict[str, str] | None = None,
 ) -> frozenset[str]:
     """Run the real detector over `_digit_dominant_doc`, with condition 3 stubbed."""
 
@@ -314,7 +317,10 @@ def _detect_with_verdict(
         monkeypatch.setattr(
             module, "glyphs_draw_devanagari_digits", lambda _buf: verdict
         )
-        return module.detect_digit_companion_fonts(doc)
+        return module.detect_digit_companion_fonts(
+            doc,
+            embedded_legacy_maps=embedded_legacy_maps,
+        )
     finally:
         doc.close()
 
@@ -341,6 +347,20 @@ def test_the_detector_excludes_a_registry_named_face_even_when_its_glyphs_match(
     assert unrouted, (
         "the control face must be admitted, or the assertion above is vacuous"
     )
+
+
+def test_the_detector_excludes_an_embedded_name_routed_face(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    font_name = "SomeUnroutedNumerals"
+    routed = _detect_with_verdict(
+        monkeypatch,
+        font_name,
+        verdict=True,
+        embedded_legacy_maps={font_name: "FONTASY_HIMALI_TT"},
+    )
+    assert routed == frozenset()
+    assert _detect_with_verdict(monkeypatch, font_name, verdict=True)
 
 
 def test_the_detector_leaves_an_abstaining_face_alone(

@@ -225,6 +225,11 @@ def test_font_based_strategy_auto_detects_and_converts_legacy_fonts(
         "get_converter",
         lambda _font_name: lambda text: f"converted:{text}",
     )
+    monkeypatch.setattr(
+        font_based_module,
+        "detect_name_legacy_candidates",
+        lambda *_args: frozenset({"ABCDEF+Preeti"}),
+    )
 
     result = FontBasedStrategy().extract_text(str(source))
 
@@ -344,13 +349,18 @@ def _run_broken_cmap_table_flow(
     monkeypatch.setattr(
         font_based_module,
         "scan_pdf_fonts_by_page",
-        lambda _doc: {1: {"Kalimati": "broken_cmap"}},
+        lambda _doc, _embedded=None: {1: {"Kalimati": "broken_cmap"}},
     )
     monkeypatch.setattr(font_based_module, "scan_ocr_pages", lambda _doc: {})
     monkeypatch.setattr(
         font_based_module,
         "detect_content_legacy_fonts",
-        lambda _doc, _skip: {},
+        lambda _doc, _skip, _embedded=None: {},
+    )
+    monkeypatch.setattr(
+        font_based_module,
+        "detect_name_legacy_candidates",
+        lambda *_args: frozenset(),
     )
     monkeypatch.setattr(
         font_based_module,

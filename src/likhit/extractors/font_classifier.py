@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+from io import BytesIO
 
 import fitz
+from fontTools.ttLib import TTFont
 
 from likhit.pdf_page_analysis import analyze_text_quality, page_max_image_coverage
 
@@ -77,6 +79,117 @@ def classify_font(font_name: str, font_type: str) -> str:
             return "broken_cmap"
 
     return "correct"
+
+
+_EMBEDDED_NAME_IDS: tuple[int, ...] = (16, 1, 6, 4)
+
+
+def _embedded_name_candidates(font_bytes: bytes) -> list[tuple[int, str]]:
+    """Return usable embedded names in deterministic name-ID precedence."""
+
+    try:
+        font = TTFont(
+            BytesIO(font_bytes),
+            fontNumber=0,
+            lazy=True,
+            ignoreDecompileErrors=True,
+        )
+    except Exception:  # noqa: BLE001 - a broken embed is simply no evidence
+        return []
+    try:
+        records = font["name"].names
+    except Exception:  # noqa: BLE001 - a font may have no usable name table
+        return []
+
+    candidates: list[tuple[int, str]] = []
+    for record in records:
+        if record.nameID not in _EMBEDDED_NAME_IDS:
+            continue
+        try:
+            value = record.toUnicode()
+        except Exception:  # noqa: BLE001 - retain a byte-wise fallback
+            try:
+                value = record.string.decode("latin-1", "replace")
+            except Exception:  # noqa: BLE001
+                continue
+        value = (value or "").strip()
+        if value:
+            candidates.append((record.nameID, value))
+    candidates.sort(key=lambda pair: _EMBEDDED_NAME_IDS.index(pair[0]))
+    return candidates
+
+
+def resolve_embedded_legacy_maps(doc: fitz.Document) -> dict[str, str]:
+    """Resolve resource base names through each embedded font's own name table.
+
+    A document-wide binding cannot represent two identities for the same resource
+    base name, so conflicting embedded claims are logged and left unresolved.
+    """
+
+    resolved: dict[str, str] = {}
+    conflicted_bases: set[str] = set()
+    seen_xrefs: dict[int, str | None] = {}
+    for page_index in range(doc.page_count):
+        try:
+            fonts = doc[page_index].get_fonts(full=True)
+        except Exception:  # noqa: BLE001 - one malformed page is no evidence
+            continue
+        for font_info in fonts:
+            if len(font_info) < 4:
+                continue
+            xref, ext, base_font = font_info[0], font_info[1], font_info[3]
+            resource_name = str(base_font)
+            base = (
+                resource_name.split("+", 1)[-1]
+                if "+" in resource_name
+                else resource_name
+            )
+            if legacy_maps.is_legacy_font(resource_name):
+                continue
+            if ext in ("n/a", ""):
+                continue
+
+            if xref in seen_xrefs:
+                map_key = seen_xrefs[xref]
+            else:
+                map_key = None
+                try:
+                    extracted = doc.extract_font(xref, named=True)
+                except Exception:  # noqa: BLE001 - an unextractable embed is no evidence
+                    extracted = None
+                content = extracted.get("content") if extracted else None
+                if content:
+                    for name_id, value in _embedded_name_candidates(content):
+                        candidate = legacy_maps.match_legacy_map_name(value)
+                        if candidate is None:
+                            continue
+                        map_key = candidate
+                        logger.debug(
+                            "Font '%s' (xref %s) embedded nameID %s = '%s' -> %s",
+                            base,
+                            xref,
+                            name_id,
+                            value,
+                            candidate,
+                        )
+                        break
+                seen_xrefs[xref] = map_key
+            if map_key is None or base in conflicted_bases:
+                continue
+            previous = resolved.get(base)
+            if previous is None:
+                resolved[base] = map_key
+            elif previous != map_key:
+                logger.warning(
+                    "Font '%s' has conflicting embedded legacy identities %s and "
+                    "%s; declining its document-scoped binding",
+                    base,
+                    previous,
+                    map_key,
+                )
+                resolved.pop(base)
+                conflicted_bases.add(base)
+    return resolved
 
 
 def _core_font_family(base_font_name: str) -> str | None:
@@ -193,8 +306,11 @@ def scan_pdf_fonts(doc: fitz.Document) -> dict[str, str]:
     return font_strategies
 
 
-def scan_pdf_fonts_by_page(doc: fitz.Document) -> dict[int, dict[str, str]]:
-    """Scan PDF fonts page by page and keep the strongest strategy per base font."""
+def scan_pdf_fonts_by_page(
+    doc: fitz.Document,
+    embedded_legacy_maps: dict[str, str] | None = None,
+) -> dict[int, dict[str, str]]:
+    """Scan fonts by page, including document-scoped embedded-name bindings."""
 
     strategies_by_page: dict[int, dict[str, str]] = {}
 
@@ -205,6 +321,12 @@ def scan_pdf_fonts_by_page(doc: fitz.Document) -> dict[int, dict[str, str]]:
             _xref, _ext, font_type, name, _encoding = font_info[:5]
             base = name.split("+", 1)[-1] if "+" in name else name
             strategy = classify_font(name, font_type)
+            if (
+                strategy == "correct"
+                and embedded_legacy_maps
+                and base in embedded_legacy_maps
+            ):
+                strategy = "legacy_remap"
             current = page_strategies.get(base)
             if (
                 current is None

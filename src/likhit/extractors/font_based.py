@@ -9,7 +9,7 @@ import hashlib
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import fitz
 
@@ -22,6 +22,7 @@ from likhit.extractors.digit_companion import (
 from likhit.extractors.font_classifier import (
     SCANNED_DECOY_TEXT,
     classify_font,
+    resolve_embedded_legacy_maps,
     scan_ocr_pages,
     scan_pdf_fonts_by_page,
 )
@@ -37,6 +38,8 @@ from likhit.extractors.latin_structure import (
 from likhit.extractors.legacy_maps import (
     ALL_MAP_KEYS,
     ASCII_BRACKETED_NUMBER_RUN,
+    _ASCII_DIGITS,
+    _DEVANAGARI_DIGITS,
     _match_font,
     devanagarize_ascii_digits,
     get_converter,
@@ -75,6 +78,9 @@ _TEXT_DICT_FLAGS = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_USE_CID_FOR_UNKNOWN
 _CID_MARK_BASE = 0xF0000
 _MAX_MARKABLE_CID = 0xFFFD
 _MARKED_CID_PATTERN = re.compile(r"[\U000F0000-\U000FFFFD]")
+_WINANSI_BYTE_TO_CHAR = tuple(
+    bytes((code,)).decode("cp1252", errors="ignore") for code in range(0x100)
+)
 _PREFIX_IKAR_PATTERN = re.compile(r"(?:(?<=^)|(?<=[\s(]))ि(?=[\u0915-\u0939])")
 # The lookahead is the eleven vowel *matras* only. It deliberately excludes the three
 # nasal/visarga marks that used to be in this class -- anusvara U+0902, visarga
@@ -1954,6 +1960,8 @@ _CONTENT_LEGACY_MIN_HITS = 2
 _CONTENT_LEGACY_MAX_PENALTY_PER_DEVA = 0.05
 _CONTENT_LEGACY_MIN_DEVA_RATIO = 0.6
 _CONTENT_LEGACY_MIN_DEVA = 8
+_NAME_LEGACY_MIN_DIGIT_SHARE = 0.25
+_ASCII_LETTER_PATTERN = re.compile(r"[A-Za-z]")
 
 # Latin-side veto on the content-legacy remap (VOL-138). See
 # :func:`_reads_as_latin_text` for what each threshold is worth.
@@ -2440,7 +2448,7 @@ def _span_base_font(font_name: str) -> str:
 
 
 def unmark_cid_ascii(text: str) -> str:
-    """Undo CID marking where the CID is itself a printable-ASCII code.
+    """Undo CID marking for defined WinAnsi byte values.
 
     A legacy 8-bit face carries its keystrokes as byte values, so when the PDF
     gives no usable ToUnicode CMap the raw CIDs *are* those bytes -- and
@@ -2458,21 +2466,20 @@ def unmark_cid_ascii(text: str) -> str:
     Preeti reads as ``जनहितका लागि जवाफदेहिता, पारदर्शीता ...``, the OAG's own
     motto, at a garble penalty of 0.
 
-    Only codes in ``0x20..0x7E`` are unmarked. A marked CID outside that range is
-    not a legacy keystroke and keeps its mark, so the marked-CID census and the
-    broken-CMap path see exactly what they saw before. This is applied ONLY on the
-    legacy branches, never to text on its way to the reorder/broken-CMap path,
-    which needs the markers.
+    Codes below ``0x20``, above ``0xFF``, and CP1252's undefined byte slots keep
+    their marks. This is applied only on legacy branches, never on text headed to
+    the broken-CMap repair path.
     """
 
-    if _CID_MARK_BASE + 0x20 > 0x10FFFF:  # pragma: no cover - defensive
+    if _CID_MARK_BASE + 0xFF > 0x10FFFF:  # pragma: no cover - defensive
         return text
-    return "".join(
-        chr(code - _CID_MARK_BASE)
-        if 0x20 <= (code := ord(character)) - _CID_MARK_BASE < 0x7F
-        else character
-        for character in text
-    )
+
+    unmarked: list[str] = []
+    for character in text:
+        byte = ord(character) - _CID_MARK_BASE
+        decoded = _WINANSI_BYTE_TO_CHAR[byte] if 0x20 <= byte <= 0xFF else ""
+        unmarked.append(decoded or character)
+    return "".join(unmarked)
 
 
 def _is_probably_legacy_ascii(text: str) -> bool:
@@ -2715,6 +2722,58 @@ def _nepali_validity(text: str) -> dict[str, float]:
 def _passes_content_legacy_gate(validity: dict[str, float]) -> bool:
     return (
         validity["hits"] >= _CONTENT_LEGACY_MIN_HITS
+        and validity["devanagari"] >= _CONTENT_LEGACY_MIN_DEVA
+        and validity["ratio"] >= _CONTENT_LEGACY_MIN_DEVA_RATIO
+        and validity["penalty_per_deva"] <= _CONTENT_LEGACY_MAX_PENALTY_PER_DEVA
+    )
+
+
+def _map_transliterates_ascii_digits(converter: Callable[[str], str]) -> bool:
+    """Return whether every ASCII digit maps to one Devanagari digit."""
+
+    try:
+        return all(converter(digit) in _DEVANAGARI_DIGITS for digit in _ASCII_DIGITS)
+    except ExtractionError:
+        raise
+    except Exception:  # noqa: BLE001 - an undecodable map is not a digit map
+        return False
+
+
+def _is_digit_transliteration(
+    aggregate: str,
+    converter: Callable[[str], str],
+) -> bool:
+    """Identify a digit-dominant name-routed face whose map preserves digits."""
+
+    if _ASCII_LETTER_PATTERN.search(aggregate):
+        return False
+    digits = sum(character in _ASCII_DIGITS for character in aggregate)
+    return (
+        digits > 0
+        and digits / len(aggregate) >= _NAME_LEGACY_MIN_DIGIT_SHARE
+        and _map_transliterates_ascii_digits(converter)
+    )
+
+
+def _passes_name_legacy_gate(
+    validity: dict[str, float],
+    aggregate: str,
+    converter: Callable[[str], str],
+) -> bool:
+    """Apply the aggregate evidence gate to a single name-selected map."""
+
+    has_name_evidence = (
+        validity["hits"] >= _CONTENT_LEGACY_MIN_HITS
+        or _is_digit_transliteration(aggregate, converter)
+        or (
+            validity["penalty_per_deva"] == 0.0
+            and (
+                _map_transliterates_ascii_digits(converter) or validity["attested"] >= 1
+            )
+        )
+    )
+    return (
+        has_name_evidence
         and validity["devanagari"] >= _CONTENT_LEGACY_MIN_DEVA
         and validity["ratio"] >= _CONTENT_LEGACY_MIN_DEVA_RATIO
         and validity["penalty_per_deva"] <= _CONTENT_LEGACY_MAX_PENALTY_PER_DEVA
@@ -3478,9 +3537,38 @@ def decode_with_legacy_map(text: str, choice: LegacyMapChoice) -> str:
     )
 
 
+def _name_legacy_converter(
+    font_name: str,
+    embedded_legacy_maps: dict[str, str] | None,
+) -> Callable[[str], str] | None:
+    """Resolve the output converter used by the name-routed path."""
+
+    converter = get_converter(font_name)
+    if converter is not None or not embedded_legacy_maps:
+        return converter
+    map_key = embedded_legacy_maps.get(_span_base_font(font_name))
+    return get_output_converter_for_map(map_key) if map_key is not None else None
+
+
+def _decode_name_legacy_span(
+    text: str,
+    converter: Callable[[str], str],
+) -> tuple[str, bool]:
+    """Decode once and return whether both Latin certifiers veto that decode."""
+
+    source = unmark_cid_ascii(unlift_symbol_pua(text))
+    decoded = converter(source)
+    latin_veto = _reads_as_latin_words(source) and _reads_as_latin_text(
+        source,
+        decoded,
+    )
+    return decoded, latin_veto
+
+
 def detect_content_legacy_fonts(
     doc: fitz.Document,
     skip_pages: frozenset[int] = frozenset(),
+    embedded_legacy_maps: dict[str, str] | None = None,
 ) -> dict[str, LegacyMapChoice]:
     """Map base-font name -> the legacy-map choice for mislabeled legacy fonts.
 
@@ -3537,6 +3625,8 @@ def detect_content_legacy_fonts(
         # calls "correct".
         if classify_font(font_name, "") != "correct":
             continue
+        if embedded_legacy_maps and _span_base_font(font_name) in embedded_legacy_maps:
+            continue
         # Unmark before both the ASCII test and the map choice, so a face whose
         # keystrokes only survive as raw CIDs is judged on the same evidence as
         # one whose ToUnicode CMap happened to be usable. See
@@ -3548,6 +3638,40 @@ def detect_content_legacy_fonts(
         if choice.map_key is not None:
             content_maps[font_name] = choice
     return content_maps
+
+
+def detect_name_legacy_candidates(
+    doc: fitz.Document,
+    skip_pages: frozenset[int] = frozenset(),
+    embedded_legacy_maps: dict[str, str] | None = None,
+) -> frozenset[str]:
+    """Return name-routed fonts whose aggregate decode clears the evidence gate."""
+
+    text_by_font: dict[str, list[str]] = defaultdict(list)
+    for page_index in range(doc.page_count):
+        if (page_index + 1) in skip_pages:
+            continue
+        page_dict = get_cid_marked_page_dict(doc[page_index])
+        for block in page_dict["blocks"]:
+            for line in block.get("lines", []):
+                for span in line["spans"]:
+                    text_by_font[str(span["font"])].append(str(span["text"]))
+
+    confirmed: set[str] = set()
+    for font_name, parts in text_by_font.items():
+        converter = _name_legacy_converter(font_name, embedded_legacy_maps)
+        if converter is None:
+            continue
+        aggregate = unmark_cid_ascii(unlift_symbol_pua("".join(parts)))
+        try:
+            decoded = converter(aggregate)
+        except ExtractionError:
+            raise
+        except Exception:  # noqa: BLE001 - this font cannot be decoded
+            continue
+        if _passes_name_legacy_gate(_nepali_validity(decoded), aggregate, converter):
+            confirmed.add(font_name)
+    return frozenset(confirmed)
 
 
 #: Strategies :func:`classify_font` names that REWRITE the span's text. Both are decided
@@ -3593,6 +3717,7 @@ def detect_latin_acronym_survivors(
     doc: fitz.Document,
     content_legacy_maps: dict[str, LegacyMapChoice] | None,
     skip_pages: frozenset[int] = frozenset(),
+    embedded_legacy_maps: dict[str, str] | None = None,
 ) -> frozenset[str]:
     """Acronym-shaped tokens this document carries in text the remap leaves alone.
 
@@ -3735,6 +3860,11 @@ def detect_latin_acronym_survivors(
                     # decided per font NAME with no per-span veto, so such a span is
                     # always rewritten and can never be survivor evidence.
                     if _rewritten_outside_the_content_remap(font_name):
+                        continue
+                    if (
+                        embedded_legacy_maps
+                        and _span_base_font(font_name) in embedded_legacy_maps
+                    ):
                         continue
                     choice = content_legacy_maps.get(font_name)
                     rewritten = (
@@ -3928,6 +4058,8 @@ def _span_legacy_map_key(
     font_strategies: dict[str, str],
     content_legacy_maps: dict[str, LegacyMapChoice] | None,
     vetoed: bool,
+    embedded_legacy_maps: dict[str, str] | None = None,
+    name_legacy_confirmed: frozenset[str] | None = None,
 ) -> str | None:
     """The map key :meth:`FontBasedStrategy._convert_span_text` would decode this span with.
 
@@ -3954,7 +4086,20 @@ def _span_legacy_map_key(
         ):
             return content_choice.map_key
     if font_strategies.get(_span_base_font(font_name), "correct") == "legacy_remap":
-        return _match_font(font_name)
+        if name_legacy_confirmed is not None and font_name not in name_legacy_confirmed:
+            return None
+        map_key = _match_font(font_name)
+        if map_key is None and embedded_legacy_maps:
+            map_key = embedded_legacy_maps.get(_span_base_font(font_name))
+        if map_key is None:
+            return None
+        converter = _name_legacy_converter(font_name, embedded_legacy_maps)
+        if converter is None:
+            return None
+        _decoded, latin_veto = _decode_name_legacy_span(text, converter)
+        if latin_veto:
+            return None
+        return map_key
     return None
 
 
@@ -3963,6 +4108,8 @@ def _ascii_bracketed_run_exemptions(
     content_legacy_maps: dict[str, LegacyMapChoice] | None,
     latin_veto: list[bool],
     font_strategies: dict[str, str],
+    embedded_legacy_maps: dict[str, str] | None = None,
+    name_legacy_confirmed: frozenset[str] | None = None,
 ) -> list[tuple[tuple[int, int], ...]]:
     """Per span: which character ranges are an ASCII-bracketed number to exempt? (VOL-515)
 
@@ -4046,6 +4193,8 @@ def _ascii_bracketed_run_exemptions(
             font_strategies,
             content_legacy_maps,
             latin_veto[span_index],
+            embedded_legacy_maps,
+            name_legacy_confirmed,
         )
         for span_index, span in enumerate(spans)
     ]
@@ -4108,7 +4257,11 @@ class FontBasedStrategy(ExtractionStrategy):
             if pages:
                 page_start, page_end = parse_page_range(pages, doc.page_count)
 
-            font_strategies_by_page = scan_pdf_fonts_by_page(doc)
+            embedded_legacy_maps = resolve_embedded_legacy_maps(doc)
+            font_strategies_by_page = scan_pdf_fonts_by_page(
+                doc,
+                embedded_legacy_maps,
+            )
             has_broken_cmap = any(
                 strategy == "broken_cmap"
                 for page_strategies in font_strategies_by_page.values()
@@ -4132,11 +4285,24 @@ class FontBasedStrategy(ExtractionStrategy):
             skip_for_content = frozenset(ocr_pages) | frozenset(
                 page for page in range(1, doc.page_count + 1) if page not in in_range
             )
-            content_legacy_maps = detect_content_legacy_fonts(doc, skip_for_content)
+            content_legacy_maps = detect_content_legacy_fonts(
+                doc,
+                skip_for_content,
+                embedded_legacy_maps,
+            )
+            name_legacy_confirmed = detect_name_legacy_candidates(
+                doc,
+                skip_for_content,
+                embedded_legacy_maps,
+            )
             # VOL-323 decision (a). Scoped by the SAME skip set as the content-map
             # gate, for the same reason: text the caller never asked for must not be
             # able to decide how in-range text is converted.
-            digit_companion_fonts = detect_digit_companion_fonts(doc, skip_for_content)
+            digit_companion_fonts = detect_digit_companion_fonts(
+                doc,
+                skip_for_content,
+                embedded_legacy_maps,
+            )
             # VOL-180's third Latin veto reads document-scope evidence, so its
             # vocabulary is built once here and shared by every extraction pass
             # below -- including the broken-CMap repaired pass, which is the same
@@ -4146,6 +4312,7 @@ class FontBasedStrategy(ExtractionStrategy):
                 doc,
                 content_legacy_maps,
                 skip_for_content,
+                embedded_legacy_maps,
             )
 
             # On a broken-CMap PDF this document is extracted twice, before and
@@ -4171,6 +4338,8 @@ class FontBasedStrategy(ExtractionStrategy):
                 needs_reorder=False,
                 decoy_pages=decoy_pages,
                 content_legacy_maps=content_legacy_maps,
+                embedded_legacy_maps=embedded_legacy_maps,
+                name_legacy_confirmed=name_legacy_confirmed,
                 digit_companion_fonts=digit_companion_fonts,
                 acronym_survivors=acronym_survivors,
                 detect_tables=detect_tables,
@@ -4193,6 +4362,8 @@ class FontBasedStrategy(ExtractionStrategy):
                     needs_reorder=needs_reorder,
                     decoy_pages=decoy_pages,
                     content_legacy_maps=content_legacy_maps,
+                    embedded_legacy_maps=embedded_legacy_maps,
+                    name_legacy_confirmed=name_legacy_confirmed,
                     digit_companion_fonts=digit_companion_fonts,
                     acronym_survivors=acronym_survivors,
                 )
@@ -4209,6 +4380,8 @@ class FontBasedStrategy(ExtractionStrategy):
                         needs_reorder=False,
                         decoy_pages=decoy_pages,
                         content_legacy_maps=content_legacy_maps,
+                        embedded_legacy_maps=embedded_legacy_maps,
+                        name_legacy_confirmed=name_legacy_confirmed,
                         digit_companion_fonts=digit_companion_fonts,
                         acronym_survivors=acronym_survivors,
                     ).tables
@@ -4257,6 +4430,8 @@ class FontBasedStrategy(ExtractionStrategy):
         needs_reorder: bool,
         decoy_pages: frozenset[int] = frozenset(),
         content_legacy_maps: dict[str, LegacyMapChoice] | None = None,
+        embedded_legacy_maps: dict[str, str] | None = None,
+        name_legacy_confirmed: frozenset[str] | None = None,
         # VOL-323: threaded rather than re-detected, so every extraction pass over one
         # document -- including the broken-CMap repaired pass -- agrees about which fonts
         # are digit companions. Re-detecting per pass would let two passes of the same
@@ -4306,6 +4481,8 @@ class FontBasedStrategy(ExtractionStrategy):
                         content_legacy_maps,
                         latin_veto,
                         page_font_strategies,
+                        embedded_legacy_maps,
+                        name_legacy_confirmed,
                     )
                     for span_index, span in enumerate(spans):
                         text = self._convert_span_text(
@@ -4314,6 +4491,8 @@ class FontBasedStrategy(ExtractionStrategy):
                             page_font_strategies,
                             needs_reorder,
                             content_legacy_maps=content_legacy_maps,
+                            embedded_legacy_maps=embedded_legacy_maps,
+                            name_legacy_confirmed=name_legacy_confirmed,
                             digit_companion_fonts=digit_companion_fonts,
                             skip_content_legacy=latin_veto[span_index],
                             exempt_slices=bracket_exemptions[span_index],
@@ -4402,6 +4581,8 @@ class FontBasedStrategy(ExtractionStrategy):
         # Both, not either.
         content_legacy_maps: dict[str, LegacyMapChoice] | None = None,
         skip_content_legacy: bool = False,
+        embedded_legacy_maps: dict[str, str] | None = None,
+        name_legacy_confirmed: frozenset[str] | None = None,
         # VOL-323: full font names whose plain ASCII digit row draws `०-९` in their own
         # glyph program and which no map already handles. Keyed on the FULL name, like
         # `content_legacy_maps`, because the decision is per font resource.
@@ -4414,6 +4595,9 @@ class FontBasedStrategy(ExtractionStrategy):
         # reorder branch were calibrated on whole spans, so a segment must not be
         # allowed to answer them differently from the span it came from.
         decision_text: str | None = None,
+        # Precomputed only by the exemption splice, so every segment inherits the
+        # whole original span's name-path Latin decision.
+        skip_name_legacy: bool | None = None,
     ) -> str:
         if exempt_slices:
             return self._convert_span_exempting(
@@ -4424,6 +4608,8 @@ class FontBasedStrategy(ExtractionStrategy):
                 needs_reorder,
                 content_legacy_maps=content_legacy_maps,
                 skip_content_legacy=skip_content_legacy,
+                embedded_legacy_maps=embedded_legacy_maps,
+                name_legacy_confirmed=name_legacy_confirmed,
                 digit_companion_fonts=digit_companion_fonts,
             )
         decided_on = text if decision_text is None else decision_text
@@ -4492,12 +4678,12 @@ class FontBasedStrategy(ExtractionStrategy):
                 # happen to agree.
                 #
                 # The two unmarks differ in WIDTH and the narrow one runs first,
-                # which is the safe order: `unmark_cid_ascii` restores only CIDs in
-                # 0x20..0x7E, the range a legacy keystroke can occupy, while the
-                # veto's `unmark_cids` restores every mark. So nothing here can
-                # hand the DECODER a code point that is not a plausible keystroke,
-                # which is exactly what keeps the marked-CID census and the
-                # broken-CMap path seeing what they saw before.
+                # which is the safe order: `unmark_cid_ascii` restores defined
+                # WinAnsi bytes, while the veto's `unmark_cids` restores every
+                # mark. So nothing here can hand the DECODER a value outside the
+                # legacy maps' byte domain, which is exactly what keeps the
+                # marked-CID census and broken-CMap path seeing what they saw
+                # before.
                 unmarked = unmark_cid_ascii(text)
                 # Candidacy was decided per font over the whole document, so this
                 # span may be genuine Latin that merely shares the face. Leaving
@@ -4521,23 +4707,24 @@ class FontBasedStrategy(ExtractionStrategy):
                 return decode_with_legacy_map(unmarked, content_choice)
 
         if strategy == "legacy_remap":
-            converter = get_converter(font_name)
+            if (
+                name_legacy_confirmed is not None
+                and font_name not in name_legacy_confirmed
+            ):
+                return text
+            converter = _name_legacy_converter(font_name, embedded_legacy_maps)
             if converter is not None:
-                # VOL-704: un-lift first. A legacy font whose cmap is symbol-style
-                # ("ARAP 11") hands us byte + 0xF000 instead of the byte, so the
-                # converter would otherwise see private-use characters it has no
-                # entry for and pass the whole span through untouched -- which is
-                # exactly how 1,363 glyphs of Nepali text shipped as U+F0xx.
-                # A no-op for every legacy font likhit already handled, since
-                # those arrive as ASCII keystrokes.
-                #
-                # VOL-159: and unmark, because a name-registered face (Preeti,
-                # Himalb) whose CIDs were marked is routed correctly and would
-                # otherwise hand npttf2utf U+F0000+ code points it passes straight
-                # through. The two transforms are on DISJOINT ranges and compose
-                # in either order: un-lifting reads U+F020-F0FF, unmarking reads
-                # `_CID_MARK_BASE + 0x20..0x7E`. Whichever applies, the other is a
-                # no-op, so this is not a hidden ordering dependency.
+                if skip_name_legacy is None:
+                    decoded, latin_veto = _decode_name_legacy_span(
+                        decided_on,
+                        converter,
+                    )
+                    if latin_veto:
+                        return text
+                    if decided_on == text:
+                        return decoded
+                elif skip_name_legacy:
+                    return text
                 return converter(unmark_cid_ascii(unlift_symbol_pua(text)))
             return text
 
@@ -4567,6 +4754,8 @@ class FontBasedStrategy(ExtractionStrategy):
         needs_reorder: bool,
         content_legacy_maps: dict[str, LegacyMapChoice] | None,
         skip_content_legacy: bool,
+        embedded_legacy_maps: dict[str, str] | None = None,
+        name_legacy_confirmed: frozenset[str] | None = None,
         # 🛑 Forwarded, and it was NOT in VOL-515 as written -- VOL-323 landed after it
         # (#93) and ships ON by default. Without this, a digit-companion face carrying a
         # bracketed marker loses transliteration on every segment OUTSIDE the exempt
@@ -4603,6 +4792,15 @@ class FontBasedStrategy(ExtractionStrategy):
         (VOL-606 item A4).
         """
 
+        skip_name_legacy: bool | None = None
+        base = _span_base_font(font_name)
+        if font_strategies.get(base, "correct") == "legacy_remap" and (
+            name_legacy_confirmed is None or font_name in name_legacy_confirmed
+        ):
+            converter = _name_legacy_converter(font_name, embedded_legacy_maps)
+            if converter is not None:
+                _decoded, skip_name_legacy = _decode_name_legacy_span(text, converter)
+
         pieces: list[str] = []
         cursor = 0
         for start, end in exempt_slices:
@@ -4615,8 +4813,11 @@ class FontBasedStrategy(ExtractionStrategy):
                         needs_reorder,
                         content_legacy_maps=content_legacy_maps,
                         skip_content_legacy=skip_content_legacy,
+                        embedded_legacy_maps=embedded_legacy_maps,
+                        name_legacy_confirmed=name_legacy_confirmed,
                         digit_companion_fonts=digit_companion_fonts,
                         decision_text=text,
+                        skip_name_legacy=skip_name_legacy,
                     )
                 )
             pieces.append(devanagarize_ascii_digits(text[start:end]))
@@ -4630,8 +4831,11 @@ class FontBasedStrategy(ExtractionStrategy):
                     needs_reorder,
                     content_legacy_maps=content_legacy_maps,
                     skip_content_legacy=skip_content_legacy,
+                    embedded_legacy_maps=embedded_legacy_maps,
+                    name_legacy_confirmed=name_legacy_confirmed,
                     digit_companion_fonts=digit_companion_fonts,
                     decision_text=text,
+                    skip_name_legacy=skip_name_legacy,
                 )
             )
         return "".join(pieces)

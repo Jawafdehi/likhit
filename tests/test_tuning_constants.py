@@ -528,6 +528,17 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
     ): (8, "absolute floor, so a two-word span cannot clear the ratio on volume"),
     (
         "likhit/extractors/font_based.py",
+        "_NAME_LEGACY_MIN_DIGIT_SHARE",
+    ): (
+        0.25,
+        "minimum ASCII-digit share for the name-path digit disjunct. A corpus sweep "
+        "at a2fcf84 showed the initial 0.5 rejected 180 no-letter units carrying "
+        "50,887 correctly decoded Devanagari characters; 0.25 retains 99.7% of the "
+        "available Devanagari mass while requiring a quarter of the aggregate to be "
+        "digits",
+    ),
+    (
+        "likhit/extractors/font_based.py",
         "_RANKING_GARBLE_FORGIVENESS",
     ): (
         6,
