@@ -46,7 +46,7 @@ def detect_page_tables(
             index=index_offset + offset,
         )
         if table is not None and _is_accepted_table(table):
-            tables.append(table)
+            tables.append(replace(table, cells=_drop_frame_cells(table.cells)))
     return _drop_container_tables(tables)
 
 
@@ -125,7 +125,7 @@ def _build_table(
     return Table(
         row_count=fitz_table.row_count,
         col_count=fitz_table.col_count,
-        cells=_drop_frame_cells(cells),
+        cells=cells,
         caption=_extract_caption(fitz_table, page_fragments),
         index=index,
         regions=[
@@ -617,13 +617,21 @@ def _merge_table_pair(current: Table, next_table: Table) -> Table:
             )
         )
 
+    next_regions = [
+        replace(
+            region,
+            start_row=max(region.start_row - drop_count, 0) + row_offset,
+        )
+        for region in next_table.regions
+    ]
+
     return Table(
         row_count=current.row_count + max(next_table.row_count - drop_count, 0),
         col_count=current.col_count,
         cells=current.cells + next_cells,
         caption=current.caption or next_table.caption,
         index=current.index,
-        regions=current.regions + next_table.regions,
+        regions=current.regions + next_regions,
     )
 
 

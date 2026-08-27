@@ -869,11 +869,9 @@ def _looks_like_register_rows(parts: list[str]) -> bool:
     return any(re.search(r"[^\s0-9०-९,.।-]", line) for line in lines)
 
 
-def _render_raw_table_lines(
-    table: Table,
-    *,
-    include_caption: bool = True,
-) -> tuple[str, str | None]:
+def _raw_table_row_lines(table: Table) -> list[tuple[int, list[str]]]:
+    """Render each table row without losing its source row index."""
+
     grid = [["" for _ in range(table.col_count)] for _ in range(table.row_count)]
     covered = [[False for _ in range(table.col_count)] for _ in range(table.row_count)]
     # A malformed table can anchor one cell inside another's span. Blanking such
@@ -887,12 +885,8 @@ def _render_raw_table_lines(
             for col in range(cell.col, min(cell.col + cell.colspan, table.col_count)):
                 if (row, col) not in anchored:
                     covered[row][col] = True
-    lines: list[str] = []
 
-    if include_caption and table.caption:
-        lines.append(table.caption)
-        lines.append("")
-
+    rows: list[tuple[int, list[str]]] = []
     for row_index, row in enumerate(grid):
         cell_lines = [
             (
@@ -920,17 +914,83 @@ def _render_raw_table_lines(
             # way `_merge_continuation_rows` rejoins a continuation onto its anchor.
             values = [" ".join(parts) for parts in cell_lines]
             if any(values):
-                lines.append(f"| {' | '.join(values)} |")
+                rows.append((row_index, [f"| {' | '.join(values)} |"]))
             continue
+        row_lines: list[str] = []
         for line_index in range(max_line_count):
             values = [
                 parts[line_index] if line_index < len(parts) else ""
                 for parts in cell_lines
             ]
             if any(values):
-                lines.append(f"| {' | '.join(values)} |")
+                row_lines.append(f"| {' | '.join(values)} |")
+        if row_lines:
+            rows.append((row_index, row_lines))
+    return rows
+
+
+def _render_raw_table_lines(
+    table: Table,
+    *,
+    include_caption: bool = True,
+) -> tuple[str, str | None]:
+    lines: list[str] = []
+
+    if include_caption and table.caption:
+        lines.append(table.caption)
+        lines.append("")
+
+    for _row_index, row_lines in _raw_table_row_lines(table):
+        lines.extend(row_lines)
 
     return "\n".join(lines).strip(), None
+
+
+def _region_row_ranges(table: Table) -> list[tuple[int, int, int]]:
+    """Return ``(page, first row, end row)`` for every table region."""
+
+    regions = sorted(
+        table.regions,
+        key=lambda region: (region.start_row, region.page_number),
+    )
+    ranges: list[tuple[int, int, int]] = []
+    for index, region in enumerate(regions):
+        end_row = (
+            regions[index + 1].start_row
+            if index + 1 < len(regions)
+            else table.row_count
+        )
+        ranges.append(
+            (region.page_number, region.start_row, max(end_row, region.start_row))
+        )
+    return ranges
+
+
+def render_table_page_chunks(
+    table: Table,
+    *,
+    include_caption: bool = True,
+) -> list[tuple[int, str]]:
+    """Render one table chunk for each source page that contributed rows."""
+
+    ranges = _region_row_ranges(table)
+    if len(ranges) <= 1:
+        rendered, _key = _render_raw_table_lines(table, include_caption=include_caption)
+        return [(table.page_number, rendered)] if rendered.strip() else []
+
+    row_lines = _raw_table_row_lines(table)
+    chunks: list[tuple[int, str]] = []
+    for position, (page_number, first_row, end_row) in enumerate(ranges):
+        lines: list[str] = []
+        if position == 0 and include_caption and table.caption:
+            lines.extend((table.caption, ""))
+        for row_index, rendered_lines in row_lines:
+            if first_row <= row_index < end_row:
+                lines.extend(rendered_lines)
+        rendered = "\n".join(lines).strip()
+        if rendered:
+            chunks.append((page_number, rendered))
+    return chunks
 
 
 def _render_table(
@@ -976,6 +1036,11 @@ def render_table_preformatted_markdown(
     return f"```text\n{rendered}\n```"
 
 
+#: Maximum non-whitespace length for a line or wrapped run to be deleted as
+#: furniture. The block-level predicate remains unbounded so a header joined to
+#: body text still arms line-by-line recovery.
+FURNITURE_MAX_COMPACT_CHARS = 80
+
 #: The running header, with the space the PDF prints it with compacted away. Named
 #: rather than repeated because `strip_page_furniture_lines` has to reason about the
 #: same token to find a header that WRAPS, and two literals would drift apart.
@@ -1003,6 +1068,14 @@ def _looks_like_page_furniture(text: str) -> bool:
         or _RUNNING_HEADER in compact
         or (stripped.isdigit() and len(stripped) <= 3)
     )
+
+
+def _compact_is_within_furniture_bound(text: str) -> bool:
+    return len(re.sub(r"\s+", "", text)) <= FURNITURE_MAX_COMPACT_CHARS
+
+
+def _line_is_page_furniture(line: str) -> bool:
+    return _compact_is_within_furniture_bound(line) and _looks_like_page_furniture(line)
 
 
 def strip_page_furniture_lines(text: str) -> str:
@@ -1080,7 +1153,7 @@ def strip_page_furniture_lines(text: str) -> str:
     it can only ever return text that was about to be thrown away.
     """
     lines = text.splitlines()
-    drop = [_looks_like_page_furniture(line) for line in lines]
+    drop = [_line_is_page_furniture(line) for line in lines]
 
     # The wrapped-header run scan. Gated on the token being in the compacted block,
     # which is both the only way a wrap can exist and the cheap common-case exit --
@@ -1099,7 +1172,9 @@ def strip_page_furniture_lines(text: str) -> str:
             limit = min(first + _MAX_WRAPPED_HEADER_LINES, len(live))
             for last in range(first + 2, limit + 1):
                 run = "".join(lines[index] for index in live[first:last])
-                if _RUNNING_HEADER in re.sub(r"\s+", "", run):
+                if _compact_is_within_furniture_bound(
+                    run
+                ) and _RUNNING_HEADER in re.sub(r"\s+", "", run):
                     for index in live[first:last]:
                         drop[index] = True
                     break

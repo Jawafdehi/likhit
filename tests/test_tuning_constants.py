@@ -639,6 +639,18 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "unbounded O(n^2) pass over every block mentioning the header. Pinned at 2 "
         "the suite reddens, so the third line is load-bearing",
     ),
+    (
+        "likhit/renderers/markdown.py",
+        "FURNITURE_MAX_COMPACT_CHARS",
+    ): (
+        80,
+        "maximum compacted length a phrase-matching line or wrapped run may have "
+        "before it is preserved as body text. The measured fixtures separate at "
+        "line grain: the longest real running-header/footer line is 54 characters "
+        "and the body witness that mentions the same phrase is 100. At block grain "
+        "those classes overlap, so this bound must remain confined to lines and "
+        "wrapped runs",
+    ),
     # -- layout handlers ------------------------------------------------------ #
     (
         "likhit/handlers/structure_detection.py",

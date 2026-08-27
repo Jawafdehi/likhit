@@ -53,7 +53,11 @@ class Section:
 
 @dataclass(slots=True)
 class TableRegion:
-    """A per-page bounding box belonging to a table."""
+    """A per-page bounding box belonging to a table.
+
+    ``start_row`` records where this page's rows begin after continuation tables
+    are merged.
+    """
 
     page_number: int
     x0: float
@@ -61,6 +65,7 @@ class TableRegion:
     x1: float
     y1: float
     page_height: float = 0.0
+    start_row: int = 0
 
 
 @dataclass(slots=True)

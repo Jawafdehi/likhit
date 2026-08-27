@@ -295,6 +295,27 @@ class FakePage:
         return FakeFinder(self._tables)
 
 
+def test_table_is_accepted_before_duplicating_frame_cells_are_removed() -> None:
+    """A frame may supply the second populated row and column at acceptance time."""
+
+    framed = FakeFitzTable(
+        bbox=(0.0, 0.0, 100.0, 100.0),
+        rows=[
+            FakeRow([(0.0, 0.0, 100.0, 100.0), None]),
+            FakeRow([None, (50.0, 50.0, 100.0, 100.0)]),
+        ],
+        col_count=2,
+    )
+    fragments = [fragment("नेपाल", 60.0, 60.0, 90.0, 70.0)]
+
+    tables = detect_page_tables(FakePage([framed]), fragments)
+
+    assert len(tables) == 1
+    assert [(cell.row, cell.col, cell.text) for cell in tables[0].cells] == [
+        (1, 1, "नेपाल")
+    ]
+
+
 def test_detect_page_tables_recovers_the_register_through_the_public_path() -> None:
     # A 2x2 outer grid whose bottom-right cell swallowed the register. The whole
     # point is that the outer grid is *not* wrong -- it is coarse -- so the fix

@@ -60,8 +60,8 @@ from likhit.renderers.markdown import (
     _looks_like_page_furniture,
     _paragraph_ends_with_caption,
     _render_paragraph_markdown,
-    _render_table,
     page_anchor,
+    render_table_page_chunks,
     strip_page_anchors,
     strip_page_furniture_lines,
 )
@@ -132,6 +132,10 @@ class NepaliPdfConverter(DocumentConverter):
         if not raw:
             return False
 
+        # MarkItDown catches conversion exceptions and then lets its generic PDF
+        # converter return an empty success. Reject encrypted input while probing
+        # so that the actionable error reaches the caller.
+        _raise_if_password_protected(raw)
         return True
 
     def convert(
@@ -146,6 +150,7 @@ class NepaliPdfConverter(DocumentConverter):
             raise ExtractionError(
                 "No extractable text found in PDF. Scanned or image-only PDFs are not supported."
             )
+        _raise_if_password_protected(raw)
         if kwargs:
             logger.debug(
                 "PDF converter: ignoring unsupported convert kwargs: %s",
@@ -325,6 +330,19 @@ class NepaliPdfConverter(DocumentConverter):
             best_safe,
         )
         return _stamp_degraded(best_result, degraded_reason)
+
+
+def _raise_if_password_protected(raw: bytes) -> None:
+    try:
+        document = fitz.open(stream=raw, filetype="pdf")
+    except Exception:  # noqa: BLE001 - existing conversion reports malformed PDFs
+        return
+    try:
+        needs_password = bool(document.needs_pass)
+    finally:
+        document.close()
+    if needs_password:
+        raise ExtractionError("Password-protected PDFs are not supported")
 
 
 def _try_collect_numeric_boundary_evidence(
@@ -1056,12 +1074,24 @@ def _assemble_with_page_anchors(
     return "\n\n".join(chunks).strip()
 
 
+def _ordered_for_anchoring(parts: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    """Restore page order after a spanning table emits several page chunks."""
+
+    keyed: list[tuple[int, tuple[int, str]]] = []
+    last_page = 0
+    for part in parts:
+        if part[0]:
+            last_page = part[0]
+        keyed.append((last_page, part))
+    keyed.sort(key=lambda item: item[0])
+    return [part for _page, part in keyed]
+
+
 def _render_markdown_from_blocks(
     blocks: list[ParagraphBlock | TableBlock],
     page_numbers: Sequence[int] = (),
 ) -> str:
     rendered: list[tuple[int, str]] = []
-    previous_table_key: str | None = None
     for index, block in enumerate(blocks):
         page_number = _block_page_number(block)
         if isinstance(block, ParagraphBlock):
@@ -1090,7 +1120,6 @@ def _render_markdown_from_blocks(
                 if not text.strip():
                     continue
             rendered.append((page_number, _render_paragraph_markdown(text)))
-            previous_table_key = None
         elif isinstance(block, TableBlock):
             include_caption = True
             if (
@@ -1103,14 +1132,12 @@ def _render_markdown_from_blocks(
                 )
             ):
                 include_caption = False
-            rendered_table, previous_table_key = _render_table(
+            for table_page, chunk in render_table_page_chunks(
                 block.table,
                 include_caption=include_caption,
-                continuation_key=previous_table_key,
-            )
-            if rendered_table.strip():
-                rendered.append((page_number, f"```text\n{rendered_table}\n```"))
-    return _assemble_with_page_anchors(rendered, page_numbers)
+            ):
+                rendered.append((table_page, f"```text\n{chunk}\n```"))
+    return _assemble_with_page_anchors(_ordered_for_anchoring(rendered), page_numbers)
 
 
 def _render_two_column_markdown(
