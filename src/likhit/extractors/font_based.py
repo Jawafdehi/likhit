@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -60,7 +61,7 @@ from likhit.extractors.pua_maps import (
 from likhit.extractors.tables import detect_page_tables, merge_continuation_tables
 from likhit.models import Table
 
-PAGE_RANGE_PATTERN = re.compile(r"^\d{1,9}(?:-\d{1,9})?$")
+PAGE_RANGE_PATTERN = re.compile(r"^\d+(?:-\d+)?$")
 SPAN_GAP_THRESHOLD = 0.75
 # Zeroed ToUnicode maps otherwise collapse every unknown glyph to the same
 # replacement character. Raw CIDs keep those glyphs distinct for later repair.
@@ -425,25 +426,35 @@ _STRANDED_BRACKET_PATTERN = re.compile(
 def parse_page_range(spec: str, total_pages: int) -> tuple[int, int]:
     """Parse a 1-based inclusive page range to 0-based bounds."""
 
-    if not PAGE_RANGE_PATTERN.fullmatch(spec.strip()):
+    spec = spec.strip()
+    if not PAGE_RANGE_PATTERN.fullmatch(spec):
         raise ValidationError("Invalid page range format. Use format: '1-3' or '5'")
 
     if "-" in spec:
         start_text, end_text = spec.split("-", 1)
-        start = int(start_text)
-        end = int(end_text)
     else:
-        start = end = int(spec)
+        start_text = end_text = spec
 
-    if start < 1 or end < 1 or end < start:
+    # Compare decimal strings before converting them. This accepts useful
+    # clamped ranges such as ``1-1000000000`` and leading-zero spellings while
+    # avoiding Python's integer-string digit limit on adversarial input.
+    start_text = start_text.lstrip("0") or "0"
+    end_text = end_text.lstrip("0") or "0"
+
+    def decimal_greater(left: str, right: str) -> bool:
+        return len(left) > len(right) or (len(left) == len(right) and left > right)
+
+    if start_text == "0" or end_text == "0" or decimal_greater(start_text, end_text):
         raise ValidationError("Invalid page range format. Use format: '1-3' or '5'")
 
-    if start > total_pages:
+    total_text = str(max(total_pages, 0))
+    if decimal_greater(start_text, total_text):
         raise ValidationError(
             f"Requested page range starts beyond document length ({total_pages} pages)"
         )
 
-    end = min(end, total_pages)
+    start = int(start_text)
+    end = total_pages if decimal_greater(end_text, total_text) else int(end_text)
     return start - 1, end - 1
 
 
@@ -4227,8 +4238,18 @@ def _ascii_bracketed_run_exemptions(
 class FontBasedStrategy(ExtractionStrategy):
     """Extract text from Nepali PDFs using PyMuPDF blocks."""
 
-    def extract_text(self, file_path: str, pages: str | None = None) -> RawDocument:
-        return self._extract_raw_document(file_path, pages=pages)
+    def extract_text(
+        self,
+        file_path: str,
+        pages: str | None = None,
+        *,
+        _ocr_pages: Mapping[int, str] | None = None,
+    ) -> RawDocument:
+        return self._extract_raw_document(
+            file_path,
+            pages=pages,
+            _ocr_pages=_ocr_pages,
+        )
 
     def extract_tables(self, file_path: str) -> list[Table]:
         return self._extract_raw_document(file_path).tables
@@ -4237,6 +4258,8 @@ class FontBasedStrategy(ExtractionStrategy):
         self,
         file_path: str,
         pages: str | None = None,
+        *,
+        _ocr_pages: Mapping[int, str] | None = None,
     ) -> RawDocument:
         path = Path(file_path)
         if path.suffix.lower() != ".pdf":
@@ -4270,7 +4293,9 @@ class FontBasedStrategy(ExtractionStrategy):
 
             # Part A: pages that are a scanned raster (with or without a decoy
             # core-font text layer) carry no born-digital text and need OCR.
-            ocr_pages = scan_ocr_pages(doc)
+            ocr_pages = (
+                dict(_ocr_pages) if _ocr_pages is not None else scan_ocr_pages(doc)
+            )
             in_range = range(page_start + 1, page_end + 2)
             needs_ocr_pages = sorted(page for page in ocr_pages if page in in_range)
             decoy_pages = frozenset(

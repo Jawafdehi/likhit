@@ -23,36 +23,32 @@ _KNOWN_CIB_OCR_PAGES = {
 }
 
 
-def _required_fixture(name: str) -> Path:
-    path = CIB_DIR / name
-    assert path.is_file(), (
-        f"missing private CIB fixture {path}; install the complete local fixture "
-        "set before running tests/manual/test_cib_pdfs.py"
+def _required_cib_pdfs() -> list[Path]:
+    paths = sorted(CIB_DIR.glob("*.pdf"))
+    missing = sorted(set(_KNOWN_CIB_OCR_PAGES) - {path.name for path in paths})
+    assert not missing, (
+        f"missing private CIB fixtures in {CIB_DIR}: {missing}; install the "
+        "complete local fixture set before running tests/manual/test_cib_pdfs.py"
     )
-    return path
+    return paths
 
 
-@pytest.mark.parametrize("name", sorted(_KNOWN_CIB_OCR_PAGES))
-def test_cib_pdf_routes_to_ocr_and_never_emits_decoy(name: str) -> None:
-    pdf_path = _required_fixture(name)
-    try:
-        result = FontBasedStrategy().extract_text(str(pdf_path))
-    except ScannedPdfError as exc:
-        assert exc.needs_ocr_pages
-        return
+def test_every_cib_pdf_routes_to_ocr_or_returns_decoy_free_text() -> None:
+    for pdf_path in _required_cib_pdfs():
+        try:
+            result = FontBasedStrategy().extract_text(str(pdf_path))
+        except ScannedPdfError as exc:
+            assert exc.needs_ocr_pages, pdf_path.name
+            continue
 
-    for marker in _DECOY_MARKERS:
-        assert marker not in result.raw_text, f"{name}: leaked {marker!r}"
+        for marker in _DECOY_MARKERS:
+            assert marker not in result.raw_text, f"{pdf_path.name}: leaked {marker!r}"
 
 
-@pytest.mark.parametrize(
-    ("name", "expected_pages"),
-    sorted(_KNOWN_CIB_OCR_PAGES.items()),
-)
-def test_known_cib_originals_report_expected_ocr_pages(
-    name: str, expected_pages: list[int]
-) -> None:
-    with pytest.raises(ScannedPdfError) as exc_info:
-        FontBasedStrategy().extract_text(str(_required_fixture(name)))
+def test_known_cib_originals_report_expected_ocr_pages() -> None:
+    pdfs = {path.name: path for path in _required_cib_pdfs()}
+    for name, expected_pages in sorted(_KNOWN_CIB_OCR_PAGES.items()):
+        with pytest.raises(ScannedPdfError) as exc_info:
+            FontBasedStrategy().extract_text(str(pdfs[name]))
 
-    assert exc_info.value.needs_ocr_pages == expected_pages
+        assert exc_info.value.needs_ocr_pages == expected_pages

@@ -65,13 +65,16 @@ uv run pytest tests/manual/test_cib_pdfs.py
 uv run pytest tests/manual/test_spins_faces.py
 uv run pytest tests/manual/test_kalimati_reference.py
 uv run pytest tests/manual/test_lohit_reference.py
+uv run pytest tests/manual/test_ocr_samples.py
+uv run pytest tests/manual/test_resource_exhaustion.py
 ```
 
-Each command requires the environment variable named in its failure message. A missing
-prerequisite is a failure, not a skipped pass. CI downloads and verifies the Lohit
-reference font, then runs its manual module when that download succeeds. If you touch
-`lohit.py`, `kalimati_reference.py`, or the Spins digit companion, run the corresponding
-manual check with its real input.
+Each command names its required fixture or environment setting in the failure message.
+A missing prerequisite is a failure, not a skipped pass. The OCR sample check calls the
+configured provider and may incur API cost. CI collection-checks every manual module,
+then downloads and verifies the Lohit reference font and executes that module when the
+download succeeds. If you touch `lohit.py`, `kalimati_reference.py`, the Spins digit
+companion, OCR, or GSUB handling, run the corresponding manual check with its real input.
 
 ## Prove the test bites
 

@@ -70,6 +70,9 @@ jobs:
       - name: Type check (ty, advisory — does not fail the build)
         run: uv run ty check || true
 
+      - name: Validate manual check collection
+        run: uv run pytest -q --collect-only tests/manual
+
       # The Lohit table in src/likhit/extractors/lohit.py is derived from one
       # exact upstream build. tests/manual/test_lohit_reference.py can re-derive
       # it and check its GSUB provenance, but only with that font present. The

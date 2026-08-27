@@ -84,7 +84,7 @@ def _convert(raw: bytes) -> DocumentConverterResult:
 def _inject(monkeypatch, exc: BaseException) -> None:
     """Fail the extraction itself, leaving every other frame real."""
 
-    def boom(raw: bytes):
+    def boom(raw: bytes, **_kwargs):
         raise exc
 
     monkeypatch.setattr(nepali_pdf_module, "_convert_with_likhit", boom)
@@ -260,11 +260,11 @@ def test_a_transient_that_recovers_does_not_stamp_the_transcript(
     real = nepali_pdf_module._convert_with_likhit
     attempts: list[int] = []
 
-    def transient(raw: bytes):
+    def transient(raw: bytes, **kwargs):
         attempts.append(1)
         if len(attempts) == 1:
             raise MemoryError("transient: recovers on retry")
-        return real(raw)
+        return real(raw, **kwargs)
 
     monkeypatch.setattr(nepali_pdf_module, "_convert_with_likhit", transient)
     markdown = _convert(sample_pdf).markdown
@@ -288,43 +288,37 @@ def test_a_failure_on_both_attempts_still_stamps(monkeypatch, sample_pdf) -> Non
     assert DEGRADED_MARKER_PATTERN.search(_convert(sample_pdf).markdown) is not None
 
 
-def test_the_transcript_the_scorer_chose_is_also_stamped(
-    monkeypatch, sample_pdf
-) -> None:
-    """The second stamp site: the one reached when the scorer CHOSE between candidates.
-
-    `convert()` returns from two places -- the single-candidate shortcut and the
-    scored comparison -- and every other test here reaches only the first, because a
-    resource failure normally leaves the default extraction as the sole candidate.
-    Removing the stamp from the scored return therefore left the whole suite green
-    (measured: 99 passed / 1 xfailed), so a later refactor of that return could drop
-    the marker unnoticed. That is the exact channel this file exists to close.
-
-    The second site is reachable: a resource failure plus an OCR candidate gives two
-    candidates and a live reason. Asserting on the OCR text as well as the marker is
-    what pins the SCORED return rather than the shortcut -- if the shortcut ran, the
-    OCR candidate would not be in the output.
-    """
+def test_required_ocr_preserves_the_degraded_marker(monkeypatch, sample_pdf) -> None:
+    """Merging successful OCR must retain a resource-failure signal."""
 
     ocr_text = "ओसीआर पाठ " * 40
     _inject(monkeypatch, MemoryError("simulated double-buffering"))
-    monkeypatch.setattr(nepali_pdf_module, "pdf_likely_needs_ocr", lambda raw: True)
     monkeypatch.setattr(
         nepali_pdf_module,
-        "_run_ocr_pdf_converter",
-        lambda raw, stream_info, **kwargs: DocumentConverterResult(markdown=ocr_text),
+        "classify_ocr_page",
+        lambda _document, page_index: "image_only" if page_index == 0 else None,
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_build_ocr_service",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        nepali_pdf_module,
+        "_run_page_ocr",
+        lambda _raw, _service, _pages: nepali_pdf_module._PageOcrResult(
+            {1: ocr_text},
+            (),
+        ),
     )
 
     markdown = _convert(sample_pdf).markdown
 
     assert ocr_text.strip() in markdown, (
-        "the OCR candidate is absent, so the single-candidate shortcut ran and this "
-        "test proves nothing about the scored return"
+        "successful OCR was not merged into the degraded transcript"
     )
     match = DEGRADED_MARKER_PATTERN.search(markdown)
-    assert match is not None, (
-        "the scorer chose a candidate after a resource failure and returned it unmarked"
-    )
+    assert match is not None, "OCR merging discarded the resource-failure marker"
     assert match.group(1) == "MemoryError"
 
 

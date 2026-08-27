@@ -27,6 +27,7 @@ from likhit.extractors.digit_companion import (
     prefers_devanagari_over_latin,
     devanagarize_companion_digits,
     digit_companion_enabled,
+    glyphs_draw_devanagari_digits,
 )
 
 ALL_TABLES = (
@@ -138,6 +139,30 @@ def test_a_mostly_wrong_row_is_rejected_even_with_enough_glyphs() -> None:
 
     mixed = _bits(_FAMILY_DEVANAGARI_DIGITS)[:2] + _bits(_EXTERNAL_LATIN_DIGITS)[2:]
     assert decide_from_plain_row_signatures(mixed) is False
+
+
+@pytest.mark.parametrize(
+    ("table", "expected"),
+    [
+        (_FAMILY_DEVANAGARI_DIGITS, True),
+        (_EXTERNAL_LATIN_DIGITS, False),
+    ],
+)
+def test_font_program_wrapper_passes_rendered_signatures_to_the_decision(
+    monkeypatch: pytest.MonkeyPatch,
+    table: tuple[str, ...],
+    expected: bool,
+) -> None:
+    from likhit.extractors import digit_companion as module
+
+    signatures = _bits(table)
+    monkeypatch.setattr(
+        module,
+        "plain_row_signatures",
+        lambda _font_buffer: signatures,
+    )
+
+    assert glyphs_draw_devanagari_digits(b"synthetic-font") is expected
 
 
 # --- the transliteration ------------------------------------------------------ #

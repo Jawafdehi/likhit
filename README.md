@@ -246,7 +246,7 @@ uv run pre-commit install
 Run all tests:
 ```bash
 uv run pytest           # ~63s
-uv run pytest -n auto   # ~21s on 64 cores, ~31s on 4 — same 722 passed
+uv run pytest -n auto   # ~21s on 64 cores, ~31s on 4 — same results
 ```
 
 `-n auto` (pytest-xdist) is not in `addopts`, because worker startup is a net
@@ -264,11 +264,10 @@ reads adversarial input, and several classes of defect here are invisible to a s
 that merely passes — that file covers how to prove a test bites, and the
 library-specific traps a test can be blind to.
 
-Some tests skip on a clean checkout, and **not all of them are unavoidable** — several
-are opt-in glyph-mapping comparisons you can switch on with an environment variable, and
-they are the ones most likely to catch a mapping regression. The breakdown, and which
-variable turns which group on, is in
-[`docs/writing-tests.md`](docs/writing-tests.md#the-skips-are-three-different-things).
+The default suite is hermetic and should report executed tests only. Checks that need
+private PDFs, unvendored fonts, paid OCR, or an adversarial external fixture are explicit
+manual commands; their prerequisites and CI coverage are in
+[`docs/writing-tests.md`](docs/writing-tests.md#external-checks-are-manual-not-skipped).
 
 ### Gates
 

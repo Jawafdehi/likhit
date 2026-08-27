@@ -3,26 +3,33 @@
 Finding IDs reference the original breakpoint research.
 """
 
+import io
 import os
 import re
 import tempfile
-from typing import cast
 from pathlib import Path
+from typing import cast
+import zipfile
 
 import fitz
 import pytest
-from markitdown import MarkItDown
+from markitdown import MarkItDown, StreamInfo
 from markitdown_ocr import LLMVisionOCRService, OCRResult
 
 from likhit.converters.nepali_pdf import (
+    CONVERSION_ERROR_MARKER_PATTERN,
+    NEEDS_OCR_MARKER_PATTERN,
+    _OCR_MAX_RENDER_PIXELS,
     _base64_encoded_size,
     _ocr_render_matrix,
-    _raise_if_unrecoverable_scan_without_ocr,
+    _prepare_pdf,
     _render_page_for_ocr,
     _run_full_page_ocr,
 )
-from likhit.errors import ExtractionError, ScannedPdfError, ValidationError
+from likhit.extractors.font_based import FontBasedStrategy
 from likhit.extractors.kalimati import normalize_devanagari_spacing
+from likhit.save_cli import main as save_cli_main
+from tests.synthetic_pdfs import build_mixed_scan_and_text_pdf
 
 SAMPLES = Path(__file__).resolve().parents[1] / "samples"
 
@@ -48,9 +55,9 @@ def _clear_ocr_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestSilentMojibake:
-    """An OCR-only PDF must fail loudly when OCR is unavailable."""
+    """OCR-required pages must never return decoy text as successful content."""
 
-    def test_scan_preflight_stops_at_first_recoverable_page(
+    def test_page_classification_covers_mixed_documents_once(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         raw = _blank_pdf(page_count=200)
@@ -61,37 +68,142 @@ class TestSilentMojibake:
             return None if page_index == 1 else "image_only"
 
         monkeypatch.setattr(
-            "likhit.converters.nepali_pdf._ocr_is_configured",
-            lambda: False,
-        )
-        monkeypatch.setattr(
             "likhit.converters.nepali_pdf.classify_ocr_page",
             classify,
         )
 
-        _raise_if_unrecoverable_scan_without_ocr(raw, pages=None)
+        prepared = _prepare_pdf(raw, pages=None)
 
-        assert visited == [0, 1]
+        assert visited == list(range(200))
+        assert sorted(prepared.ocr_pages) == [1, *range(3, 201)]
 
-    def test_nirnaya_requires_ocr_instead_of_returning_latin_garbage(
+    def test_preclassified_pages_bypass_extractor_rescan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "likhit.extractors.font_based.scan_ocr_pages",
+            lambda _document: pytest.fail("preclassified pages were scanned again"),
+        )
+
+        result = FontBasedStrategy().extract_text(
+            str(SAMPLES / "Press Release.pdf"),
+            _ocr_pages={},
+        )
+
+        assert result.raw_text
+
+    def test_nirnaya_marks_required_pages_instead_of_returning_latin_garbage(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _clear_ocr_environment(monkeypatch)
 
-        with pytest.raises(ScannedPdfError, match="OCR is not configured") as exc_info:
-            _convert(SAMPLES / "nirnaya.pdf")
+        text = _convert(SAMPLES / "nirnaya.pdf")
 
-        assert exc_info.value.needs_ocr_pages
+        marker = NEEDS_OCR_MARKER_PATTERN.search(text)
+        assert marker is not None
+        assert marker.groups() == ("1,2", "not-configured")
+        assert "t\\,&H" not in text
+        assert "uoo5 hrD SD" not in text
 
     def test_requested_scan_page_reaches_the_caller_with_its_page_number(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _clear_ocr_environment(monkeypatch)
 
-        with pytest.raises(ScannedPdfError) as exc_info:
-            _convert(SAMPLES / "nirnaya.pdf", pages="1")
+        text = _convert(SAMPLES / "nirnaya.pdf", pages="2")
 
-        assert exc_info.value.needs_ocr_pages == [1]
+        marker = NEEDS_OCR_MARKER_PATTERN.search(text)
+        assert marker is not None
+        assert marker.groups() == ("2", "not-configured")
+
+    def test_mixed_document_keeps_text_and_marks_only_the_scan(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _clear_ocr_environment(monkeypatch)
+        path = tmp_path / "mixed.pdf"
+        path.write_bytes(build_mixed_scan_and_text_pdf())
+
+        text = _convert(path)
+
+        assert "ordinary born-digital paragraph" in text
+        assert "qt+:" not in text
+        marker = NEEDS_OCR_MARKER_PATTERN.search(text)
+        assert marker is not None
+        assert marker.groups() == ("1", "not-configured")
+
+    def test_scanned_member_does_not_abort_zip_siblings(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _clear_ocr_environment(monkeypatch)
+        archive = tmp_path / "documents.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.write(SAMPLES / "nirnaya.pdf", "nirnaya.pdf")
+            output.writestr("first.txt", "first sibling")
+            output.writestr("second.txt", "second sibling")
+
+        text = _convert(archive)
+
+        assert "first sibling" in text
+        assert "second sibling" in text
+        assert NEEDS_OCR_MARKER_PATTERN.search(text)
+
+    def test_scanned_input_does_not_abort_save_cli_batch(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _clear_ocr_environment(monkeypatch)
+        output = tmp_path / "markdown"
+
+        exit_code = save_cli_main(
+            [
+                str(SAMPLES / "nirnaya.pdf"),
+                str(SAMPLES / "table.pdf"),
+                "--out-dir",
+                str(output),
+            ]
+        )
+
+        assert exit_code == 0
+        assert NEEDS_OCR_MARKER_PATTERN.search(
+            (output / "nirnaya.md").read_text(encoding="utf-8")
+        )
+        assert "आयोगको निर्णय मिति" in (output / "table.md").read_text(encoding="utf-8")
+
+    def test_configured_but_failing_ocr_never_restores_decoy_junk(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _clear_ocr_environment(monkeypatch)
+
+        class FailingCompletions:
+            def create(self, **_kwargs: object) -> object:
+                raise ConnectionError("provider unavailable")
+
+        class Chat:
+            completions = FailingCompletions()
+
+        class Client:
+            chat = Chat()
+
+        text = (
+            MarkItDown(
+                enable_plugins=True,
+                llm_client=Client(),
+                llm_model="unreachable-model",
+            )
+            .convert(str(SAMPLES / "nirnaya.pdf"))
+            .markdown
+        )
+
+        marker = NEEDS_OCR_MARKER_PATTERN.search(text)
+        assert marker is not None
+        assert marker.groups() == ("1,2", "ocr-failed")
+        assert "t\\,&H" not in text
 
 
 # ── P0: 300 DPI hardcoded causes OCR to always exceed API limits ──
@@ -121,10 +233,35 @@ class TestOCRImageSize:
         page = doc.new_page(width=14_400, height=14_400)
         try:
             matrix = _ocr_render_matrix(page)
-            assert page.rect.width * matrix.a <= 1650
-            assert page.rect.height * matrix.d <= 1650
+            rendered_pixels = page.rect.width * matrix.a * page.rect.height * matrix.d
+            assert rendered_pixels <= _OCR_MAX_RENDER_PIXELS
         finally:
             doc.close()
+
+    def test_ordinary_page_starts_at_300_dpi(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("LIKHIT_OCR_DPI", raising=False)
+        doc = fitz.open(SAMPLES / "Press Release.pdf")
+        try:
+            matrix = _ocr_render_matrix(doc[0])
+        finally:
+            doc.close()
+
+        assert matrix.a == pytest.approx(300 / 72)
+        assert matrix.d == pytest.approx(300 / 72)
+
+    def test_configured_dpi_is_applied_before_adaptive_shrinking(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LIKHIT_OCR_DPI", "150")
+        doc = fitz.open(SAMPLES / "Press Release.pdf")
+        try:
+            matrix = _ocr_render_matrix(doc[0])
+        finally:
+            doc.close()
+
+        assert matrix.a == pytest.approx(150 / 72)
 
     def test_total_ocr_failure_returns_no_candidate(self) -> None:
         raw = _blank_pdf(page_count=2)
@@ -157,7 +294,10 @@ class TestOCRImageSize:
         )
 
         assert result is not None
-        assert result.markdown == "सफल पाठ"
+        marker = NEEDS_OCR_MARKER_PATTERN.search(result.markdown)
+        assert marker is not None
+        assert marker.groups() == ("1", "ocr-failed")
+        assert "सफल पाठ" in result.markdown
 
 
 class _StubOCRService:
@@ -182,26 +322,31 @@ def _blank_pdf(page_count: int) -> bytes:
 
 
 class TestPagesValidation:
-    """Invalid page specs should error, not silently return the whole doc."""
+    """Invalid page specs must return an explicit error, never whole-doc text."""
 
     @pytest.mark.parametrize("pages_spec", ["abc", "0", "-1", "3-1", "999"])
-    def test_invalid_pages_should_raise(self, pages_spec: str) -> None:
-        with pytest.raises(ValidationError):
-            _convert(SAMPLES / "Press Release.pdf", pages=pages_spec)
+    def test_invalid_pages_are_marked(self, pages_spec: str) -> None:
+        text = _convert(SAMPLES / "Press Release.pdf", pages=pages_spec)
 
-    @pytest.mark.parametrize("pages_spec", ["1000000000", "1-1000000000"])
-    def test_page_numbers_are_length_bounded(self, pages_spec: str) -> None:
-        with pytest.raises(ValidationError, match="Invalid page range format"):
-            _convert(SAMPLES / "Press Release.pdf", pages=pages_spec)
+        assert CONVERSION_ERROR_MARKER_PATTERN.search(text)
+        assert "अख्तियार दुरुपयोग" not in text
 
-    def test_out_of_range_pages_raises(self) -> None:
-        with pytest.raises(ValidationError, match="starts beyond document length"):
-            _convert(SAMPLES / "Press Release.pdf", pages="5")
+    def test_huge_range_end_is_clamped(self) -> None:
+        assert _convert(
+            SAMPLES / "Press Release.pdf", pages="1-1000000000"
+        ) == _convert(SAMPLES / "Press Release.pdf")
+
+    def test_leading_zero_page_is_accepted(self) -> None:
+        assert _convert(SAMPLES / "Press Release.pdf", pages="0000000001") == _convert(
+            SAMPLES / "Press Release.pdf", pages="1"
+        )
 
     @pytest.mark.parametrize("pages", [True, 1.5, [1], (1,), b"1"])
-    def test_non_string_non_integer_pages_raise(self, pages: object) -> None:
-        with pytest.raises(ValidationError, match="pages must be"):
-            _convert(SAMPLES / "Press Release.pdf", pages=pages)
+    def test_non_string_non_integer_pages_are_marked(self, pages: object) -> None:
+        text = _convert(SAMPLES / "Press Release.pdf", pages=pages)
+
+        assert CONVERSION_ERROR_MARKER_PATTERN.search(text)
+        assert "अख्तियार दुरुपयोग" not in text
 
     def test_integer_page_is_accepted(self) -> None:
         assert _convert(SAMPLES / "Press Release.pdf", pages=1) == _convert(
@@ -209,8 +354,24 @@ class TestPagesValidation:
         )
 
     def test_enormous_integer_page_raises_validation_error(self) -> None:
-        with pytest.raises(ValidationError, match="integer pages must be"):
-            _convert(SAMPLES / "Press Release.pdf", pages=10**5000)
+        text = _convert(SAMPLES / "Press Release.pdf", pages=10**5000)
+
+        assert CONVERSION_ERROR_MARKER_PATTERN.search(text)
+        assert "starts beyond document length" in text
+
+    def test_page_validation_defers_malformed_pdf_handling(self) -> None:
+        raw = b"%PDF-1.4\nthis is not a pdf at all\n%%EOF\n"
+
+        result = MarkItDown(enable_plugins=True).convert_stream(
+            io.BytesIO(raw),
+            stream_info=StreamInfo(
+                extension=".pdf",
+                mimetype="application/pdf",
+            ),
+            pages="1",
+        )
+
+        assert result.markdown == ""
 
 
 # ── P0: ValueError in Kalimati repair silently drops all content ──
@@ -219,10 +380,6 @@ class TestPagesValidation:
 class TestContentDrop:
     """A recoverable error in repair must not discard the entire extraction."""
 
-    @pytest.mark.skipif(
-        not (SAMPLES / "aarop-patra.pdf").exists(),
-        reason="fixture missing",
-    )
     def test_aarop_patra_truncated_does_not_silently_drop_content(self):
         """F4: Truncating a PDF to 90% should produce partial content or error,
         not silently return empty text for the portion that survived."""
@@ -269,6 +426,8 @@ class TestDevanagariSpacing:
             ("छन् तथा", "छन् तथा"),
             ("क् ख", "क् ख"),
             ("क्", "क्"),
+            ("पुर् याएको", "पुर्याएको"),
+            ("नपुर् याई", "नपुर्याई"),
         ],
     )
     def test_virama_space_is_preserved(self, text: str, expected: str) -> None:
@@ -302,8 +461,8 @@ class TestTableContentDrop:
 class TestPasswordProtected:
     """Encrypted PDFs should error, not return empty success."""
 
-    def test_encrypted_pdf_raises(self):
-        """F9: A password-protected PDF must raise, not return empty."""
+    def test_encrypted_pdf_returns_an_explicit_error(self):
+        """F9: A password-protected PDF must not return empty success."""
         # Create a password-protected PDF
         doc = fitz.open()
         page = doc.new_page()
@@ -317,12 +476,14 @@ class TestPasswordProtected:
             f.write(encrypted)
             f.flush()
             try:
-                with pytest.raises(
-                    ExtractionError, match="Password-protected PDFs are not supported"
-                ):
-                    _convert(f.name)
+                text = _convert(f.name)
             finally:
                 os.unlink(f.name)
+
+        marker = CONVERSION_ERROR_MARKER_PATTERN.search(text)
+        assert marker is not None
+        assert marker.group(1) == "password-protected"
+        assert "Secret content" not in text
 
 
 # ── P1: Legacy .doc paragraph boundaries discarded ──
@@ -331,16 +492,6 @@ class TestPasswordProtected:
 class TestLegacyDoc:
     """Legacy .doc conversion must preserve paragraph structure."""
 
-    @pytest.mark.skipif(
-        not (
-            Path(__file__).resolve().parents[1]
-            / "tests"
-            / "integration"
-            / "test_data"
-            / "ciaa_legacy_sample.doc"
-        ).exists(),
-        reason="fixture missing",
-    )
     def test_doc_preserves_paragraphs(self):
         """F10: A .doc with multiple paragraphs should not collapse to one."""
         doc_path = (

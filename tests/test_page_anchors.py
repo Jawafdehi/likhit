@@ -14,10 +14,10 @@ from markitdown import MarkItDown
 import pytest
 
 from likhit.converters.nepali_pdf import (
+    NEEDS_OCR_MARKER_PATTERN,
     _assemble_with_page_anchors,
     _markdown_quality_score,
 )
-from likhit.errors import ScannedPdfError
 from likhit.extractors.base import TextFragment
 import likhit.extractors.font_based as font_based_module
 from likhit.extractors.font_based import FontBasedStrategy
@@ -132,8 +132,7 @@ def test_paragraph_blocks_carry_the_page_they_came_from() -> None:
 def test_anchor_count_equals_the_pdf_page_count(sample: str) -> None:
     # The release gate: a transcript must account for every page of its source.
     path = ROOT / "samples" / sample
-    if not path.exists():
-        pytest.skip(f"{sample} not available")
+    assert path.exists()
     with fitz.open(path) as document:
         page_count = document.page_count
 
@@ -158,10 +157,12 @@ def test_an_image_dominant_pdf_requires_ocr(
     ):
         monkeypatch.delenv(name, raising=False)
 
-    with pytest.raises(ScannedPdfError) as exc_info:
-        _convert(path)
+    markdown = _convert(path)
 
-    assert exc_info.value.needs_ocr_pages == [1, 2]
+    marker = NEEDS_OCR_MARKER_PATTERN.search(markdown)
+    assert marker is not None
+    assert marker.groups() == ("1,2", "not-configured")
+    assert page_anchor_numbers(markdown) == [1, 2]
 
 
 def test_page_numbers_cover_a_suppressed_scanned_page(tmp_path: Path) -> None:

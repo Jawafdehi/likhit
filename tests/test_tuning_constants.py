@@ -128,12 +128,21 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
     ),
     (
         "likhit/converters/nepali_pdf.py",
-        "_OCR_TARGET_LONG_EDGE_PX",
+        "_OCR_DEFAULT_DPI",
     ): (
-        1650,
-        "largest round long-edge target that leaves the nirnaya.pdf regression "
-        "comfortably below the providers' 5 MiB base64 payload limit: measured "
-        "3.81 MiB at 1650 pixels, while 2000 pixels produces 5.53 MiB",
+        300,
+        "initial OCR resolution. Five of seven bundled sample first pages fit the "
+        "5 MiB encoded limit at 300 DPI; oversized renders shrink reactively, and "
+        "LIKHIT_OCR_DPI lets a provider impose a lower service-specific ceiling",
+    ),
+    (
+        "likhit/converters/nepali_pdf.py",
+        "_OCR_MAX_RENDER_PIXELS",
+    ): (
+        40_000_000,
+        "allocation guard for pathological media boxes. Forty million pixels "
+        "bounds an RGB pixmap near 120 MiB (RGBA near 160 MiB) while leaving every "
+        "bundled A3-or-smaller page untouched at 300 DPI",
     ),
     (
         "likhit/converters/nepali_pdf.py",

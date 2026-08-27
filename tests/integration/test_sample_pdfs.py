@@ -11,7 +11,7 @@ import unicodedata
 from markitdown import MarkItDown
 import pytest
 
-from likhit.errors import ScannedPdfError
+from likhit.converters.nepali_pdf import NEEDS_OCR_MARKER_PATTERN
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLES_DIR = ROOT / "samples"
@@ -177,6 +177,7 @@ STABLE_SAMPLE_CASES = (
                 "आरोप-पत्र",
                 "मुद्दा: घुस रिसवत लिई दिई भ्रष्टाचार गरेको।",
                 "NITC/G/NCB-7-074/75",
+                "पुर्याएको देखिन्छ",
             ),
             min_nonempty_lines=20,
             min_characters=5000,
@@ -188,7 +189,7 @@ STABLE_SAMPLE_CASES = (
             required_markers=(
                 "2.८.२ गैरकानुनी लाभ वा हानि नोक्सानी गरी भ्रष्टाचार गरेका मुद्दा",
                 "उजुरीको व्यहोरा",
-                "अनुसन्धानबाट पुष्टि भएको",
+                "अनुसन्धानबाट पुष्टि भएको व्यहोरा",
                 "प्रतिवादीको नाम, पद र कार्यालय",
             ),
             min_nonempty_lines=12,
@@ -199,9 +200,9 @@ STABLE_SAMPLE_CASES = (
         expectation=SamplePdfExpectation(
             file_name="table.pdf",
             required_markers=(
-                "आयोगको निर्णय",
+                "आयोगको निर्णय मिति",
                 "आरोपपत्र दायर मिति",
-                "राष्ट्रसेवक प्रतिवादीको नाम, पद र",
+                "राष्ट्रसेवक प्रतिवादीको नाम, पद र कार्यालय",
                 "बिगो (रु.)",
             ),
             min_nonempty_lines=10,
@@ -210,8 +211,25 @@ STABLE_SAMPLE_CASES = (
     ),
 )
 
+OCR_REQUIRED_SAMPLE_CASES = (
+    SampleCase(
+        expectation=SamplePdfExpectation(
+            file_name="nirnaya.pdf",
+            required_markers=(
+                "नेपाल कानून पत्रिका",
+                "निर्णय नं.७९७३",
+                "सर्बोच्च अदालत विशेष इजलास",
+                "बिषयः– नेपालको अन्तरिम संविधान २०६३",
+            ),
+            min_nonempty_lines=20,
+            min_characters=1000,
+        )
+    ),
+)
+
 ALL_EXPECTED_SAMPLE_FILES = sorted(
-    [case.expectation.file_name for case in STABLE_SAMPLE_CASES] + ["nirnaya.pdf"]
+    case.expectation.file_name
+    for case in STABLE_SAMPLE_CASES + OCR_REQUIRED_SAMPLE_CASES
 )
 
 
@@ -337,7 +355,7 @@ class TestSamplePdfRegression:
         sample = _convert_sample(case)
         _assert_ordered_markers(sample)
 
-    def test_ocr_only_sample_fails_loudly_without_configuration(
+    def test_ocr_only_sample_is_explicit_without_configuration(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         for name in (
@@ -349,7 +367,11 @@ class TestSamplePdfRegression:
         ):
             monkeypatch.delenv(name, raising=False)
 
-        with pytest.raises(ScannedPdfError, match="OCR is not configured") as exc_info:
-            MarkItDown(enable_plugins=True).convert(str(SAMPLES_DIR / "nirnaya.pdf"))
+        result = MarkItDown(enable_plugins=True).convert(
+            str(SAMPLES_DIR / "nirnaya.pdf")
+        )
 
-        assert exc_info.value.needs_ocr_pages
+        marker = NEEDS_OCR_MARKER_PATTERN.search(result.markdown)
+        assert marker is not None
+        assert marker.groups() == ("1,2", "not-configured")
+        assert "t\\,&H" not in result.markdown

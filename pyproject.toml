@@ -147,10 +147,21 @@ dev = [
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# External provenance and private-fixture checks are opt-in. Passing their path
-# explicitly overrides norecursedirs, so `pytest tests/manual/test_*.py` runs
-# them while the default suite reports only executed outcomes.
-norecursedirs = ["manual"]
+# External provenance and private-fixture checks are opt-in. Setting this key
+# replaces pytest's defaults, so keep those exclusions alongside ``manual``.
+# Passing a manual path explicitly still overrides the recursion exclusion.
+norecursedirs = [
+    "*.egg",
+    ".*",
+    "_darcs",
+    "build",
+    "CVS",
+    "dist",
+    "node_modules",
+    "venv",
+    "{arch}",
+    "manual",
+]
 
 # ---------------------------------------------------------------------------
 # ruff — the lint AND format gate. CI runs `uv run ruff check .` plus
