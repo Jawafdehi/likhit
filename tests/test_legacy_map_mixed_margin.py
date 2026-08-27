@@ -44,6 +44,58 @@ import pytest
 from likhit.errors import ExtractionError, ValidationError
 from likhit.extractors import font_based as fb
 
+# Distinct per axis, so no assertion in this file can pass because two axes happen to
+# hold the same number. Run `9c7a9a3b`'s first attempt at this measurement used a span
+# that scored 0.0 on every axis and therefore reported a missing axis as PRESENT.
+_SENTINELS = {
+    "hits": 11.0,
+    "penalty": 13.0,
+    "stranded": 0.0,  # 0 so the forgiveness clamp cannot alias another axis
+    "figures": 19.0,
+    "attested": 23.0,
+    "ratio": 29.0,
+    "devanagari": 31.0,
+    "mixed": 0.0,
+}
+
+
+def _derive_eligible_index() -> int:
+    """Where the indicator sits, DERIVED from the two keys rather than hardcoded.
+
+    Adding an axis above the indicator shifts its position. A hardcoded index would
+    then silently move every positional assertion in this file onto the wrong axis --
+    which is exactly the class of failure `9c7a9a3b` measured in the production code,
+    and exactly what carrying the `figures` axis over from the corpus line did here:
+    the indicator moved from index 3 to index 4.
+    """
+
+    shipped = fb._map_ranking_key(_SENTINELS)
+    gated = fb._map_ranking_key_margin_gated(threshold=-1.0)(_SENTINELS)
+    assert len(gated) == len(shipped) + 1, (shipped, gated)
+    positions = [
+        index
+        for index in range(len(gated))
+        if gated[:index] + gated[index + 1 :] == shipped
+    ]
+    assert len(positions) == 1, f"indicator position is not unique: {positions}"
+    return positions[0]
+
+
+#: Derived, and asserted to agree with the production constant below, so the two cannot
+#: drift apart silently.
+_ELIGIBLE_INDEX = _derive_eligible_index()
+
+
+def test_the_derived_indicator_index_is_the_production_constant() -> None:
+    """The derivation and `_MIXED_ELIGIBLE_INDEX` must agree.
+
+    Either alone is a single point of failure: the constant can be edited without moving
+    the splice, and the derivation can only see the shape the splice produces. Asserting
+    them equal is what makes the rest of this file's positional assertions trustworthy.
+    """
+
+    assert _ELIGIBLE_INDEX == fb._MIXED_ELIGIBLE_INDEX
+
 
 # The real ``Felix Titling`` aggregate from
 # ``3719__1613986243Humla Sarkegad Gaupalika207475.pdf`` -- 30 spans on page 21,
@@ -193,11 +245,15 @@ class TestRankingKeyIsAnIndicator:
     """The inserted term promotes the eligible SET; it does not order within it."""
 
     @staticmethod
-    def _validity(mixed, attested, penalty=0.0, ikar_nasal=0.0):
+    def _validity(mixed, attested, penalty=0.0, ikar_nasal=0.0, figures=0.0):
         return {
             "hits": 3.0,
             "penalty": float(penalty),
             "stranded": 0.0,
+            # Defaults to 0 so these fixtures tie on it and reach the axis they assert.
+            # It sits immediately ABOVE the spliced indicator, so a nonzero default here
+            # would mask the very ordering `_MIXED_ELIGIBLE_INDEX` exists to pin.
+            "figures": float(figures),
             "attested": float(attested),
             "ratio": 0.99,
             "devanagari": 100.0,
@@ -225,15 +281,24 @@ class TestRankingKeyIsAnIndicator:
         """The silent case: no candidate can be eligible, so shipped order holds."""
 
         key = fb._map_ranking_key_margin_gated(threshold=-3.0)
-        assert key(self._validity(mixed=0, attested=5))[3] == 0.0
-        assert key(self._validity(mixed=99, attested=5))[3] == 0.0
+        assert key(self._validity(mixed=0, attested=5))[_ELIGIBLE_INDEX] == 0.0
+        assert key(self._validity(mixed=99, attested=5))[_ELIGIBLE_INDEX] == 0.0
 
-    def test_the_term_sits_above_attested_and_below_stranded(self):
+    def test_the_term_sits_below_figures_and_above_attested(self):
+        """The position, stated against the axes either side of it.
+
+        ⚠️ Below `figures`, not below `stranded`: carrying the corpus line's money-figure
+        axis inserted a term at index 3 and pushed the indicator to 4. Left above
+        `figures`, enabling the gate would OUTRANK the figure axis rather than refine the
+        pass beneath it -- run `9c7a9a3b` measured that exact composition reverting all
+        six figures repairs, `3719` among them.
+        """
+
         key = fb._map_ranking_key_margin_gated(threshold=0.0)
-        got = key(self._validity(mixed=0, attested=7))
-        assert got[2] == 0.0  # -max(stranded - forgiveness, 0)
-        assert got[3] == 1.0  # the eligibility indicator
-        assert got[4] == 7.0  # attested, demoted one position
+        got = key(self._validity(mixed=0, attested=7, figures=4))
+        assert got[_ELIGIBLE_INDEX - 1] == 4.0  # figures, immediately above
+        assert got[_ELIGIBLE_INDEX] == 1.0  # the eligibility indicator
+        assert got[_ELIGIBLE_INDEX + 1] == 7.0  # attested, immediately below
 
     def test_the_gated_key_is_the_ungated_key_with_one_term_spliced_in(self):
         """🛑 The anti-drift pin, and it is not hypothetical.
@@ -288,23 +353,38 @@ class TestRankingKeyIsAnIndicator:
 
 
 class TestGateOffIsShipped:
-    """The default must be indistinguishable from the chooser without this change."""
+    """The default must be indistinguishable from the chooser without this change.
+
+    🛑 **Stated against a COMPUTED reference, not the literal ``"Preeti"``.** Which map
+    the shipped chooser picks for `3719` is a property of the tree's other axes, and the
+    property under test is not: with the money-figure axis carried over from the corpus
+    line, pass 1 already repairs this document to ``PCS NEPALI``. Hardcoding the old
+    winner made four of these tests assert the absence of that axis.
+    """
+
+    @staticmethod
+    def _shipped_choice():
+        """The chooser without this change: the shipped key, no mixed term at all."""
+
+        return fb._choose_legacy_map_ranked(
+            AGGREGATE_3719, fb._map_ranking_key, mixed_threshold=None
+        )
 
     def test_env_unset_leaves_3719_on_the_shipped_map(self, monkeypatch):
         monkeypatch.delenv(fb._MIXED_MARGIN_ENV_VAR, raising=False)
         choice = fb.choose_legacy_map_detailed(AGGREGATE_3719)
-        assert choice.map_key == "Preeti"
+        assert choice.map_key == self._shipped_choice().map_key
 
     def test_explicit_none_leaves_3719_on_the_shipped_map(self):
         choice = fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=None)
-        assert choice.map_key == "Preeti"
+        assert choice.map_key == self._shipped_choice().map_key
 
     def test_an_explicit_none_overrides_a_set_environment(self, monkeypatch):
         """A caller that means OFF must not be overridden by an env var."""
 
         monkeypatch.setenv(fb._MIXED_MARGIN_ENV_VAR, "5")
         choice = fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=None)
-        assert choice.map_key == "Preeti"
+        assert choice.map_key == self._shipped_choice().map_key
 
     def test_off_computes_no_mixed_term_at_all(self, monkeypatch):
         """⚠️ This assertion holds with the gate ON too, and that is now stated.
@@ -322,15 +402,42 @@ class TestGateOffIsShipped:
         monkeypatch.delenv(fb._MIXED_MARGIN_ENV_VAR, raising=False)
         choice = fb.choose_legacy_map_detailed(AGGREGATE_3719)
         assert "mixed" not in (choice.validity or {})
-        # The state-distinguishing assertion: OFF leaves the shipped winner in place.
-        assert choice.map_key == "Preeti"
-        assert (
-            fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=5).map_key
-            == "PCS NEPALI"
+
+        # The state-distinguishing assertion, MOVED OFF 3719 and onto a fixture where
+        # the two states still differ. It used to read `Preeti` OFF / `PCS NEPALI` ON,
+        # and on a tree carrying the money-figure axis both are `PCS NEPALI` -- pass 1
+        # repairs the document, so 3719 can no longer tell the states apart. Keeping the
+        # old pair here would have looked like coverage and asserted nothing.
+        # `GATED_AGGREGATE` at M=1 is a measured winner change on this tree.
+        shipped = fb._choose_legacy_map_ranked(
+            GATED_AGGREGATE, fb._map_ranking_key, mixed_threshold=None
         )
+        gated = fb.choose_legacy_map_detailed(GATED_AGGREGATE, mixed_margin=1)
+        assert shipped.map_key is not None and gated.map_key is not None
+        assert gated.map_key != shipped.map_key
 
 
 class TestGateOnRepairs3719:
+    """3719 must read ``PCS NEPALI`` when the gate is on -- however it gets there.
+
+    ⚠️ **On a tree carrying the money-figure axis these pass without the gate doing any
+    of the work.** Pass 1 already decides ``PCS NEPALI``, so the threshold is `0 - M` and
+    the gate is silent. That is not a weaker result -- the document is repaired either
+    way -- but it means these tests do not, on such a tree, demonstrate the gate.
+    `TestTheGatedKeyCannotDriftFromTheShipped` is what protects them there, and
+    `test_off_computes_no_mixed_term_at_all` carries the state-distinguishing assertion
+    on a fixture that still distinguishes.
+
+    Two of these asserted the intermediate quantity `13` and the literal ``"Preeti"``;
+    each is a property of the pre-axis pass-1 winner, not of the gate.
+    """
+
+    @staticmethod
+    def _mixed_of(choice):
+        return fb._mixed_letter_digit_count(
+            fb.get_converter_for_map(choice.map_key)(AGGREGATE_3719)
+        )
+
     def test_margin_five_restores_pcs_nepali(self):
         choice = fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=5)
         assert choice.map_key == "PCS NEPALI"
@@ -338,13 +445,11 @@ class TestGateOnRepairs3719:
     def test_the_repair_removes_every_mixed_token(self):
         shipped = fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=None)
         gated = fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=5)
-        shipped_mixed = fb._mixed_letter_digit_count(
-            fb.get_converter_for_map(shipped.map_key)(AGGREGATE_3719)
-        )
-        gated_mixed = fb._mixed_letter_digit_count(
-            fb.get_converter_for_map(gated.map_key)(AGGREGATE_3719)
-        )
-        assert (shipped_mixed, gated_mixed) == (13, 0)
+        # The invariant is directional, and it is the whole point of the issue: the
+        # gated reading carries NO transposed letter/digit tokens, and can never carry
+        # more than the shipped one.
+        assert self._mixed_of(gated) == 0
+        assert self._mixed_of(gated) <= self._mixed_of(shipped)
 
     def test_the_environment_variable_is_an_equivalent_route(self, monkeypatch):
         monkeypatch.setenv(fb._MIXED_MARGIN_ENV_VAR, "5")
@@ -359,11 +464,16 @@ class TestGateOnRepairs3719:
         assert "\u0917\u094b\u096d\u0940" not in reading  # go-7-i
 
     def test_a_margin_wider_than_the_advantage_stays_silent(self):
-        """M must exceed the advantage to bite; 13 -> 0 is an advantage of 13."""
+        """A margin no advantage can clear must leave the shipped decision alone.
 
+        Stated as a comparison rather than as the literal ``"Preeti"``: which map that
+        is depends on the tree's other axes, and the property does not.
+        """
+
+        shipped = fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=None)
         assert (
             fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=99).map_key
-            == "Preeti"
+            == shipped.map_key
         )
 
 
@@ -449,15 +559,34 @@ class TestGateCannotManufactureADecision:
         assert passes == [None], f"expected one shipped pass only, got {passes}"
 
     def test_two_passes_when_the_shipped_chooser_decides(self, monkeypatch):
-        """Positive control for the counter above: on 3719 the gate really does re-rank."""
+        """Positive control for the counter above: on 3719 a second pass really runs.
+
+        The threshold is DERIVED, not the literal `8.0`. It is
+        `mixed(pass-1 winner) - margin`, so it is a property of who pass 1 picked: `8.0`
+        when that was `Preeti` at mixed 13, and `-5.0` on a tree whose money-figure axis
+        already repairs the document to `PCS NEPALI` at mixed 0. What this test is for is
+        that pass 2 runs at all when pass 1 decides, which both cases show.
+        """
+
+        # Derived BEFORE the counter is installed: `_count_passes` patches
+        # `_choose_legacy_map_ranked`, so deriving the threshold afterwards would append a
+        # third pass of the test's own making and the assertion would chase its own tail.
+        shipped = fb._choose_legacy_map_ranked(
+            AGGREGATE_3719, fb._map_ranking_key, mixed_threshold=None
+        )
+        expected = float(
+            fb._mixed_letter_digit_count(
+                fb.get_converter_for_map(shipped.map_key)(AGGREGATE_3719)
+            )
+            - 5
+        )
 
         passes = self._count_passes(monkeypatch)
         assert (
             fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=5).map_key
             == "PCS NEPALI"
         )
-        # Pass 1 shipped (None), pass 2 gated at mixed(winner) - margin = 13 - 5.
-        assert passes == [None, 8.0], f"expected [None, 8.0], got {passes}"
+        assert passes == [None, expected], f"expected [None, {expected}], got {passes}"
 
 
 # ------------------------------------------------- decided -> abstain, the other way
@@ -611,13 +740,91 @@ def test_the_fallback_does_not_suppress_a_legitimate_winner_change(monkeypatch) 
 
     monkeypatch.delenv(fb._MIXED_MARGIN_ENV_VAR, raising=False)
 
-    text = AGGREGATE_3719
+    # 🛑 `GATED_AGGREGATE` at M=1, not `AGGREGATE_3719` at M=5. 3719 was the measured
+    # winner-change case before the money-figure axis was carried over from the corpus
+    # line; that axis repairs it in PASS 1, so the gate is correctly silent there and
+    # this control would fail for the right reason while proving nothing. Re-pointed at a
+    # fixture on which the gate still changes a winner on this tree -- measured, `Preeti`
+    # -> `PCS NEPALI` -- so the control keeps its teeth instead of being relaxed away.
+    text = GATED_AGGREGATE
     shipped = fb._choose_legacy_map_ranked(
         text, fb._map_ranking_key, mixed_threshold=None
     )
-    gated = fb.choose_legacy_map_detailed(text, mixed_margin=5)
+    gated = fb.choose_legacy_map_detailed(text, mixed_margin=1)
     assert shipped.map_key is not None and gated.map_key is not None
     assert gated.map_key != shipped.map_key, (
         "this fixture is the measured winner-change case; if the gate no longer moves "
         "it, the fallback has made the gate inert"
     )
+
+
+class TestTheGatedKeyCannotDriftFromTheShipped:
+    """The regression run `9c7a9a3b` measured, pinned as a RELATIONSHIP between the
+    two keys rather than as either key's contents -- so it keeps biting as axes are
+    added.
+
+    History, because it is the reason these tests exist. The gate's pass-2 key was
+    written as a hand copy of the shipped tuple when that tuple had six elements.
+    Inserting the money-figure axis at index 3 then collided with the copy's ``ELIGIBLE``
+    at that index -- so pass 2 OVERWROTE the figures slot, and because
+    :func:`choose_legacy_map_detailed` returns pass 2 on every deciding unit, enabling the
+    gate deleted the figures axis corpus-wide. Cherry-picking the two changes together
+    auto-merges CLEAN, so nothing warned. Measured footprint: all six figures repairs
+    reverted, including `3719`, the document the gate exists to repair.
+
+    Upstream has since removed the hand copy -- :func:`_map_ranking_key_margin_gated`
+    splices into the ungated key instead of restating it -- which kills that specific
+    mechanism. These tests stay because the *index* is still a separate constant from the
+    axis order it has to track, and this is what fails if the two drift again.
+    """
+
+    @staticmethod
+    def _validity(**overrides):
+        return {**_SENTINELS, **overrides}
+
+    def test_the_gated_key_is_the_shipped_key_plus_exactly_one_element(self):
+        """Delete the indicator and what is left must be the shipped tuple EXACTLY.
+
+        This is the drift detector: it fails the moment an axis exists in the shipped
+        key and not in the gated one, whatever that axis is and wherever it sits.
+        """
+
+        for mixed, threshold in ((0.0, 5.0), (9.0, -1.0), (3.0, 3.0), (7.0, 0.0)):
+            validity = self._validity(mixed=mixed)
+            shipped = fb._map_ranking_key(validity)
+            gated = fb._map_ranking_key_margin_gated(threshold=threshold)(validity)
+            stripped = gated[:_ELIGIBLE_INDEX] + gated[_ELIGIBLE_INDEX + 1 :]
+            assert stripped == shipped, f"mixed={mixed} threshold={threshold}"
+
+    def test_every_shipped_axis_survives_into_the_gated_key(self):
+        """Axis by axis, by VALUE, so a vanished axis cannot hide behind a zero."""
+
+        gated = fb._map_ranking_key_margin_gated(threshold=-1.0)(dict(_SENTINELS))
+        for axis, value in _SENTINELS.items():
+            if axis in {"mixed", "stranded", "penalty"}:
+                continue  # `mixed` is not an axis; `stranded`/`penalty` enter signed
+            assert value in gated, f"{axis} ({value}) is missing from the gated key"
+
+    def test_the_silent_case_leaves_the_shipped_decision_alone_end_to_end(self):
+        """The invariant the docstring claimed and the joint tip violated.
+
+        On a tree carrying ``figures``, `3719`'s span is already repaired by that axis,
+        so pass 1 wins with mixed 0 and the threshold `0 - 5` makes every candidate
+        ineligible -- the silent case. The gate must then return pass 1's decision. On
+        the pre-fix joint tip it returned ``Preeti``, re-damaging the document.
+        """
+
+        shipped = fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=None)
+        silent = fb.choose_legacy_map_detailed(AGGREGATE_3719, mixed_margin=5)
+        assert silent.map_key == shipped.map_key
+
+    def test_a_constant_indicator_cannot_reorder_candidates(self):
+        """Why the silent case holds by construction and not by inspection."""
+
+        key = fb._map_ranking_key_margin_gated(threshold=-1.0)
+        weak = self._validity(figures=1.0, attested=1.0)
+        strong = self._validity(figures=9.0, attested=1.0)
+        assert key(weak)[_ELIGIBLE_INDEX] == key(strong)[_ELIGIBLE_INDEX] == 0.0
+        assert (key(strong) > key(weak)) == (
+            fb._map_ranking_key(strong) > fb._map_ranking_key(weak)
+        )

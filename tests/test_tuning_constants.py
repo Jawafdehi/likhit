@@ -317,13 +317,15 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "likhit/extractors/font_based.py",
         "_MIXED_ELIGIBLE_INDEX",
     ): (
-        3,
+        4,
         "where the ELIGIBLE indicator is spliced into _map_ranking_key's tuple: below "
-        "the stranded tell, above attested. NOT a tuning value -- it is a structural "
+        "the money-figure axis, above attested. NOT a tuning value -- it is a structural "
         "index, and it is named because the gated key DERIVES from the ungated one "
         "instead of restating its axes. The restated copy diverged once already (it "
         "kept charging an ikar+nasal site the ungated key forgives), so a bare 3 in "
-        "that slice is what a later axis insertion would move silently",
+        "that slice is what a later axis insertion would move silently -- and it did: "
+        "this was 3 until the figures axis was carried over from the corpus line and "
+        "took index 3, which is why the two changes are one unit",
     ),
     # -- ranking forgiveness ---------------------------------------------------- #
     #

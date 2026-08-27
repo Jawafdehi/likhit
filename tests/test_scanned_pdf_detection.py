@@ -33,6 +33,7 @@ from likhit.extractors.font_based import (
     _IMPOSSIBLE_IKAR_NASAL_PATTERN,
     _is_probably_legacy_ascii,
     _legacy_map_garble,
+    _money_figure_count,
     _RANKING_GARBLE_FORGIVENESS,
     _map_ranking_key,
     _nepali_validity,
@@ -1073,6 +1074,7 @@ def _validity(
     ratio: float,
     stranded: int = 0,
     ikar_nasal: int = 0,
+    figures: int = 0,
     attested: int = 0,
 ) -> dict[str, float]:
     """A validity dict as `_nepali_validity` would return it, for ranking tests.
@@ -1083,8 +1085,9 @@ def _validity(
     the key strictly: a validity dict built without it is a bug, not a dict to be
     tolerated with `.get`.
 
-    `attested` defaults to 0 for the same reason: the tests below are about the axes
-    above it, so they must tie on it and reach the axis they actually assert (VOL-185).
+    `attested` and `figures` default to 0 for the same reason: the tests below are about
+    the axes above them, so they must tie on both and reach the axis they actually assert
+    (VOL-185, and VOL-67 for `figures`).
     """
 
     return {
@@ -1095,8 +1098,44 @@ def _validity(
         "devanagari": devanagari,
         "ratio": ratio,
         "stranded": stranded,
+        "figures": figures,
         "attested": attested,
     }
+
+
+def _figures_slot() -> int:
+    """Where `figures` sits in :func:`_map_ranking_key`'s tuple, located by construction.
+
+    Derived rather than hard-coded so that it follows the axis if the order changes: two
+    dicts identical but for `figures` can differ in exactly one position, and that is the
+    slot. A hard-coded index is how the margin gate's hand-copy came to overwrite this
+    very axis (run 9c7a9a3b) -- see
+    :func:`likhit.extractors.font_based._map_ranking_key_margin_gated`.
+    """
+
+    low = _map_ranking_key(
+        _validity(hits=1, penalty=0, devanagari=10, ratio=0.9, figures=0)
+    )
+    high = _map_ranking_key(
+        _validity(hits=1, penalty=0, devanagari=10, ratio=0.9, figures=1)
+    )
+    differing = [i for i, (a, b) in enumerate(zip(low, high, strict=True)) if a != b]
+    assert len(differing) == 1, (
+        f"the figures axis must occupy exactly one slot; differing slots: {differing}. "
+        "An empty list means the axis is not in the ranking tuple at all."
+    )
+    return differing[0]
+
+
+def _drop_figures_slot(key: tuple[float, ...]) -> tuple[float, ...]:
+    """`key` as it would read if the figures axis had never been added.
+
+    Used as a bite-proof: a test that claims the axis decides something must FAIL when
+    the axis is removed, or it is not testing the axis at all.
+    """
+
+    slot = _figures_slot()
+    return key[:slot] + key[slot + 1 :]
 
 
 def test_equal_garble_counts_do_not_decide_however_they_normalise() -> None:
@@ -1949,3 +1988,247 @@ def test_the_floor_still_matches_what_one_ikar_nasal_site_charges() -> None:
     assert len(_IMPOSSIBLE_IKAR_NASAL_PATTERN.findall(one_site)) == 1
     charged = _text_quality_penalty(one_site) - _text_quality_penalty("")
     assert charged == _IKAR_NASAL_WEIGHT == _RANKING_GARBLE_FORGIVENESS == 6
+
+
+def test_a_money_figure_needs_structure_not_just_digits() -> None:
+    # Four digits, or a separator with a digit on each side. The DEVANAGARI DANDA is a
+    # decimal mark in this corpus, so `६१२०।००` is one figure, not two runs.
+    assert _money_figure_count("६१२०।००") == 1
+    assert _money_figure_count("93083.32") == 1
+    assert _money_figure_count("५१९७९९६।००") == 1
+    # A lone numeral is not a figure, however Devanagari it is.
+    assert _money_figure_count("९") == 0
+    assert _money_figure_count("क ९ ख") == 0
+    # ...and neither are numerals loose among punctuation, which is what the WRONG map
+    # leaves behind on an amounts column.
+    assert _money_figure_count("।।     ण्  ण्, , ,    ।") == 0
+
+
+def test_5143_is_decided_by_the_numeric_axis_on_the_converged_root() -> None:
+    """`5143`'s real numbers, and which axis decides them is a property of the ROOT.
+
+    `5143__...हलेसी तुवाचुङ नगरपालिका`, font `LiberationSerif-Bold`, 614 characters, as
+    measured in run 71280cb8: `hits` ties 2-2, `stranded` floors 1 to 0, `attested` is
+    4 against 3 for `Preeti` -- and `penalty` is **0 against 6**.
+
+    🛑 **This test has now been true three different ways, and the root is why.** Run
+    71280cb8 asserted everything above the axis was level and the axis decided. On the
+    `ecf857c` root, which has no `_RANKING_GARBLE_FORGIVENESS`, the raw `-penalty`
+    separates them at index 1 and the axis is never consulted -- so the assertion was
+    rewritten to say penalty decides. This root is neither: it carries upstream's VOL-226
+    forgiveness AND the corpus line's figures axis, and `_RANKING_GARBLE_FORGIVENESS` is
+    exactly 6, so it levels precisely this 6-point margin and hands the decision to
+    `figures`.
+
+    Measured on this tree rather than asserted from either history:
+
+        himali (2, 0, 0, 12, 3,  0, 0.89, 256)
+        preeti (2, 0, 0,  1, 4, -6, 0.91, 346)
+
+    First difference at index 3, the figures slot. **Neither line reached this outcome
+    alone**: upstream without the axis ranks `attested` 4 > 3 and picks the wrong map,
+    and the corpus line without the forgiveness never consults the axis. The bite-proof
+    below is the whole point -- drop the slot and the winner flips.
+    """
+
+    himali = _validity(
+        hits=2,
+        penalty=0,
+        devanagari=256,
+        ratio=0.89,
+        stranded=0,
+        attested=3,
+        figures=12,
+    )
+    preeti = _validity(
+        hits=2, penalty=6, devanagari=346, ratio=0.91, stranded=1, attested=4, figures=1
+    )
+    slot = _figures_slot()
+    # Everything above the axis is level: `hits` ties, the 6-point garble margin is
+    # levelled by the forgiveness, and `stranded` 1 floors to 0.
+    assert _map_ranking_key(himali)[:slot] == _map_ranking_key(preeti)[:slot], (
+        "every axis above `figures` must tie, or this fixture is not testing the axis"
+    )
+    assert _map_ranking_key(himali) > _map_ranking_key(preeti), (
+        "the right map wins, and on this root it wins ON the figures axis"
+    )
+    # The bite-proof: remove the axis and `attested` 4 > 3 hands it to the wrong map.
+    assert not (
+        _drop_figures_slot(_map_ranking_key(himali))
+        > _drop_figures_slot(_map_ranking_key(preeti))
+    ), (
+        "without the figures axis `attested` picks Preeti; that is the axis's credit here"
+    )
+
+
+def test_the_numeric_axis_saves_an_amounts_column_attested_would_trade_away() -> None:
+    """The axis's own claim, on a fixture that really is level above it (VOL-394).
+
+    Same shape as `5143` -- an amounts column the wrong map reads as consonants, and an
+    `attested` that favours the wrong map by one word-form -- but with the garble margin
+    levelled, which is the condition under which this axis is supposed to be the decider.
+    Ranking-key units only; no base-dependent constant is reachable from here.
+    """
+
+    himali = _validity(
+        hits=2,
+        penalty=0,
+        devanagari=256,
+        ratio=0.89,
+        stranded=0,
+        attested=3,
+        figures=12,
+    )
+    preeti = _validity(
+        hits=2, penalty=0, devanagari=346, ratio=0.91, stranded=1, attested=4, figures=1
+    )
+    # Everything above the new axis really is level, so the axis is what decides.
+    assert _map_ranking_key(himali)[:3] == _map_ranking_key(preeti)[:3], "tied above"
+    assert preeti["attested"] > himali["attested"], (
+        "attested alone favours the wrong map"
+    )
+    assert _map_ranking_key(himali) > _map_ranking_key(preeti), "figures must decide"
+    # The bite-proof: with the figures slot removed, `attested` carries the span to the
+    # wrong map. Without this the test would still pass if the axis were deleted.
+    assert _drop_figures_slot(_map_ranking_key(preeti)) > _drop_figures_slot(
+        _map_ranking_key(himali)
+    ), "the axis must be what flips it, not something else in the tuple"
+
+
+def test_the_numeric_axis_cannot_disturb_3843_because_it_is_level_there() -> None:
+    """`3843`'s real numbers, and the one claim about them that holds on this root.
+
+    `3843__...Godawari finale`, font `Spins`, 1,340 characters -- VOL-226's repair, as
+    measured in run 71280cb8. The version of this test written for that run asserted
+    ``stranded`` decides it (0 against a floored 3) *above* the new axis. On the
+    ``ecd0e42`` lineage that is right, because ``_RANKING_GARBLE_FORGIVENESS`` (VOL-226)
+    levels the 6-point garble margin and lets the axes below the garble count decide.
+    **This root drops VOL-226**, so ``-penalty`` -- 0 against 6 -- decides at index 1 and
+    ``stranded`` is never reached; `Preeti` wins here and VOL-226's repair is simply not
+    present to protect. Measured at the composed v15 tip in run f7f64f0b: `3843/Spins`
+    resolves to `Preeti` with and without the axis alike.
+
+    What survives the base change is the claim this test is named for, and it survives
+    because it does not depend on which axis decides: the two candidates are **level on
+    the new axis** (17 figures each), so the axis cannot move this document either way.
+    The calibration claim itself -- that `figures` sits BELOW `stranded` -- is asserted
+    below on a fixture where `stranded` really is the decider.
+    """
+
+    spins = _validity(
+        hits=3,
+        penalty=6,
+        devanagari=843,
+        ratio=0.98,
+        stranded=0,
+        attested=44,
+        figures=17,
+    )
+    preeti = _validity(
+        hits=3,
+        penalty=0,
+        devanagari=826,
+        ratio=0.98,
+        stranded=4,
+        attested=40,
+        figures=17,
+    )
+    assert spins["figures"] == preeti["figures"], "level on the new axis"
+    # Level on the axis means the axis is not what decides, whichever way the rest goes:
+    # removing the figures slot leaves the ordering exactly as it was.
+    ordering_with = _map_ranking_key(spins) > _map_ranking_key(preeti)
+    ordering_without = _drop_figures_slot(_map_ranking_key(spins)) > _drop_figures_slot(
+        _map_ranking_key(preeti)
+    )
+    assert ordering_with == ordering_without, "the axis must not move 3843 either way"
+    # And on THIS root it is `stranded`, not `penalty`, that settles it: the 6-point
+    # garble margin is exactly `_RANKING_GARBLE_FORGIVENESS`, so index 1 ties at 0 and the
+    # stranded tell decides at index 2 -- measured (3, 0, 0, ...) against (3, 0, -3, ...).
+    # That IS the VOL-226 calibration doing its job; on a root without the forgiveness the
+    # same fixture is settled by `penalty` one axis earlier.
+    assert _map_ranking_key(spins)[1] == _map_ranking_key(preeti)[1], (
+        "the forgiveness must level this margin, or `stranded` is never reached"
+    )
+    assert _map_ranking_key(spins)[2] > _map_ranking_key(preeti)[2], "stranded decides"
+
+
+def test_the_numeric_axis_sits_below_the_stranded_calibration() -> None:
+    """`figures` must not be able to overrule `stranded` (VOL-185 / VOL-226 calibration).
+
+    The pair is level on every axis above `stranded` -- which on this root means `penalty`
+    too, or `penalty` would decide first and this test would assert nothing.
+    """
+
+    spins = _validity(
+        hits=3,
+        penalty=0,
+        devanagari=843,
+        ratio=0.98,
+        stranded=0,
+        attested=44,
+        figures=17,
+    )
+    preeti = _validity(
+        hits=3,
+        penalty=0,
+        devanagari=826,
+        ratio=0.98,
+        stranded=4,
+        attested=40,
+        figures=17,
+    )
+    assert _map_ranking_key(spins)[:2] == _map_ranking_key(preeti)[:2], "level above"
+    assert _map_ranking_key(spins) > _map_ranking_key(preeti), "stranded decides"
+    # Give the wrong map every figure there is: it still must not overrule `stranded`.
+    preeti_all_figures = dict(preeti, figures=999)
+    assert _map_ranking_key(spins) > _map_ranking_key(preeti_all_figures), (
+        "figures must sit BELOW stranded"
+    )
+    # The bite-proof for the calibration: `stranded` is genuinely the decider here, so
+    # with the figures slot dropped the ordering is unchanged.
+    assert _drop_figures_slot(_map_ranking_key(spins)) > _drop_figures_slot(
+        _map_ranking_key(preeti_all_figures)
+    ), "stranded, not figures, is what decides this pair"
+
+
+def test_the_numeric_axis_does_not_outrank_the_garble_axis() -> None:
+    # Same containment as `attested` and `ratio`: on `4487__...बसबरिया गाउँपालिका` the
+    # wrong map carries 48 penalty points, and no count of figures may buy that back.
+    garbled = _validity(
+        hits=2,
+        penalty=48,
+        devanagari=655,
+        ratio=0.688,
+        stranded=0,
+        attested=2,
+        figures=99,
+    )
+    clean = _validity(
+        hits=2,
+        penalty=0,
+        devanagari=658,
+        ratio=0.679,
+        stranded=0,
+        attested=2,
+        figures=0,
+    )
+    assert _map_ranking_key(clean) > _map_ranking_key(garbled), "penalty outranks it"
+
+
+def test_a_bare_digit_count_would_pick_the_wrong_map_on_the_ratio_mirage_anchor() -> (
+    None
+):
+    # Why the axis requires STRUCTURE. `4487__...बसबरिया गाउँपालिका`, font `Spins`,
+    # 2,156 characters -- VOL-89's own ratio-mirage anchor, where `PCS NEPALI` is the
+    # right map. Measured in run 71280cb8: counting free-standing Devanagari numerals
+    # scores `Preeti` ABOVE `PCS NEPALI` there (that map gains loose numerals precisely
+    # because it is wrong), while the money-figure count is level -- 0 against 0.
+    # This test fails if the axis is ever loosened back to a plain digit count.
+    right_map_text = "क) वित्तीय ९ विवरण"  # loose numeral, no figure
+    wrong_map_text = "ख) ९ ८ ७ ६ राजस्व"  # more loose numerals, still no figure
+    assert (
+        _money_figure_count(right_map_text) == _money_figure_count(wrong_map_text) == 0
+    )
+    # The structural definition cannot be gamed by numeral volume alone.
+    assert _money_figure_count("९ ८ ७ ६ ५ ४ ३ २ १") == 0
+    assert _money_figure_count("९८७६।५४") == 1
