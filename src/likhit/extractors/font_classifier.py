@@ -22,6 +22,34 @@ logger = logging.getLogger(__name__)
 # PDF's own CMap (see kalimati.fix_kalimati_cmap), so a document carrying one of
 # these fonts with a correct CMap is left byte-identical -- it just pays for the
 # second extraction pass.
+#
+# ⚠️ Adding a family here is not free even given that gating, because the repair can
+# also *refuse* a document (see kalimati._INCIDENTAL_FACE_GLYPH_SHARE), so each one is
+# added on its own and measured over its whole affected population rather than a
+# sample. What bounds the risk empirically: `kalimati` already fires on 4,879 corpus
+# documents of which 4,502 audit `clean`, and they stay clean.
+#
+# NOT here, and each one measured rather than assumed. Adding a family is a TRADE in
+# every case tried so far: the reconstruction maps enough glyphs to repair matras and
+# not enough to place the repha, so `matra_damage` improves while `repha_loss` degrades.
+# The document verdict is its worst axis, so the trade reads as a clean win in the
+# verdict counts -- measure both axes, and measure content, not verdicts.
+#
+#   kokila  -- 64 no-gate documents, all measured. 28 verdicts better, 0 worse, and
+#              repha-free canonical words +85.4% (7,746 -> 14,361). But four of them
+#              (5471, 5487, 5492, 5493) lose CORRECTLY SPELLED words: `आर्थिक` 49 -> 2
+#              and 62 -> 5. Those four are separated from the other 60 by their base
+#              repha count (2,566-2,912 vs 93-344) -- their CMap already worked and the
+#              repair overwrites it, keeping neither the repha nor the consonant.
+#              Landable behind a refusal guard for that case: decline the
+#              reconstruction when the document's existing output already yields
+#              well-formed repha, which is the shape `kalimati._INCIDENTAL_FACE_GLYPH_SHARE`
+#              already has and is not firing on these four. Note the repair carries
+#              Kokila-specific corroboration-gated logic that is unreachable without
+#              this entry, so the guard is what unlocks it.
+#   mangal  -- 424 no-gate documents (294 clean); same trade shape, and its outline-keyed
+#              reference table is 74 of 492 mappings, which is the trade's cause.
+#   nirmala -- 75 documents, 1 garbled.  arial unicode -- 100, 0 garbled.  utsaah -- 5.
 _KNOWN_BROKEN_CMAP = {"kalimati", "lohit"}
 
 # Page-level OCR markers. A "scanned_decoy_text" page is a full-page raster whose
