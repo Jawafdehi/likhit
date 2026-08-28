@@ -74,7 +74,13 @@ class _FakeDoc:
 
 def _patched(pdf_map: dict[int, str], correction: dict[int, str]) -> dict[int, str]:
     doc = _FakeDoc(pdf_map)
-    kalimati._patch_single_cmap(doc, 1, correction)  # type: ignore[arg-type]
+    kalimati._patch_single_cmap(  # type: ignore[arg-type]
+        doc,
+        1,
+        correction,
+        font_name="Kalimati",
+        allow_gid_exceptions=True,
+    )
     assert doc.written is not None, "_patch_single_cmap wrote no CMap at all"
     return kalimati._parse_tounicode_cmap(doc.written)
 

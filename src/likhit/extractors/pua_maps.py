@@ -172,6 +172,16 @@ def _base_font_name(font_name: str) -> str:
 _FONT_NAME_BOUNDARY = frozenset("- ")
 
 
+def _font_name_matches_family(font_name: str, family: str) -> bool:
+    """Whether ``font_name`` names ``family`` at a real font-name boundary."""
+
+    base = _base_font_name(font_name)
+    family = family.casefold()
+    return base == family or (
+        base.startswith(family) and base[len(family)] in _FONT_NAME_BOUNDARY
+    )
+
+
 def pua_table_for_font(font_name: str) -> dict[int, str] | None:
     """The PUA table for ``font_name``, or ``None`` if it is not a symbol font.
 

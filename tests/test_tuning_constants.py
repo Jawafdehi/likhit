@@ -732,6 +732,69 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "MiB. A bound only needs to stop an unbounded corpus run, so anything well "
         "above the per-document count does the same work",
     ),
+    # -- carried with the v18 extractor line ---------------------------------- #
+    #
+    # Six constants that exist only in the carried Kalimati/Kokila contextual
+    # broken-CMap work, so upstream's table could not have listed them. The AST
+    # scan is what requires them: an unregistered module-level constant is a number
+    # a reviewer can change and see green.
+    #
+    # The 15 OAG-line pins that stood here on the v18 branch are NOT carried --
+    # upstream registered all of them itself (its table holds 79 pins against the
+    # branch's 62), so re-adding them would duplicate keys.
+    (
+        "likhit/extractors/font_based.py",
+        "_CONTEXTUAL_MARKER_MAX_GAP",
+    ): (
+        2.0,
+        "points: admits the measured two-point Kalimati span split while a larger "
+        "visual gap remains a word boundary",
+    ),
+    (
+        "likhit/extractors/kalimati.py",
+        "_CONTEXTUAL_NE_GID",
+    ): (
+        566,
+        "the measured Kalimati glyph whose authored CMap says ने while the embedded "
+        "font map says bare e-matra; only its र् context proves the consonant",
+    ),
+    (
+        "likhit/extractors/kalimati.py",
+        "_INCIDENTAL_FACE_GLYPH_SHARE",
+    ): (
+        0.005,
+        "the share of drawn glyphs below which an unrepairable named Kalimati/Lohit "
+        "face is incidental and refusing the document costs more than it protects. "
+        "Measured over the 18 OAG documents the refusal withholds, the two "
+        "populations are four orders of magnitude apart: document 11113 -- set in "
+        "Preeti, declaring a Kalimati face that draws ONE glyph of 433,222 -- sits "
+        "at 0.0002%, and the next-smallest genuine offender at 10.04%. This floor "
+        "is ~20x clear of each, so it is not fitted to either",
+    ),
+    (
+        "likhit/extractors/kalimati.py",
+        "_KOKILA_HALF_SA_GID",
+    ): (
+        214,
+        "the measured Kokila half-sa glyph: 13 affected identity-mapped faces say थ, "
+        "corroborated as स् by their own font map or another Kokila face in the PDF",
+    ),
+    (
+        "likhit/extractors/kalimati.py",
+        "_KOKILA_HALF_THA_GID",
+    ): (
+        195,
+        "the measured Kokila half-tha glyph: PDF 5604 authors bare virama while "
+        "the target program's exact GID-195 outline digest proves the measured half-tha",
+    ),
+    (
+        "likhit/extractors/kalimati.py",
+        "_KOKILA_YA_GID",
+    ): (
+        94,
+        "the measured following-ya glyph: PDF 5604 authors र् while the embedded "
+        "Kokila map proves य, completing the GID-195 fingerprint",
+    ),
     (
         "likhit/extractors/digit_companion.py",
         "_RENDER_PT",
