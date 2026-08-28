@@ -426,7 +426,7 @@ def test_the_two_repaired_patterns_kept_their_exact_meaning():
     at any value.
     """
 
-    from likhit.converters.nepali_pdf import _ORPHAN_MATRA_PATTERN
+    from likhit.devanagari import ORPHAN_MATRA_PATTERN as _ORPHAN_MATRA_PATTERN
     from likhit.extractors.font_based import _INVALID_SIGN_PATTERN
 
     block = [chr(c) for c in range(0x0900, 0x0980)]
