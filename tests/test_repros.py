@@ -428,6 +428,19 @@ class TestDevanagariSpacing:
             ("क्", "क्"),
             ("पुर् याएको", "पुर्याएको"),
             ("नपुर् याई", "नपुर्याई"),
+            # The nya conjunct, carried from the v18 extractor line. That line got
+            # these by deleting EVERY space after a virama, which is what joins the
+            # preserved cases above; these are here so the narrower rule that
+            # replaced it is pinned by its own cases and not only through the two
+            # cross-span Kokila tests in test_font_based.py that first caught it.
+            ("सञ् चालन", "सञ्चालन"),
+            ("पञ् चायत", "पञ्चायत"),
+            ("अञ् चल", "अञ्चल"),
+            # ...and only before a consonant. Nya + virama before a digit or a
+            # danda is not a broken conjunct, so the space stays. Without this the
+            # rule could be widened to any following character and still look green.
+            ("सञ् २०८०", "सञ् २०८०"),
+            ("ञ् ।", "ञ् ।"),
         ],
     )
     def test_virama_space_is_preserved(self, text: str, expected: str) -> None:
