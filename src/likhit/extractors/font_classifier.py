@@ -192,6 +192,94 @@ def resolve_embedded_legacy_maps(doc: fitz.Document) -> dict[str, str]:
     return resolved
 
 
+def _embedded_broken_cmap_family(font_bytes: bytes) -> str | None:
+    """The :data:`_KNOWN_BROKEN_CMAP` family this embed's own name table claims."""
+
+    for _name_id, value in _embedded_name_candidates(font_bytes):
+        lowered = value.lower()
+        for family in _KNOWN_BROKEN_CMAP:
+            if family in lowered:
+                return family
+    return None
+
+
+def resolve_embedded_broken_cmap(doc: fitz.Document) -> dict[str, str]:
+    """Resource base names whose EMBEDDED name table claims a broken-CMap family.
+
+    :func:`classify_font` can only read the PDF *resource* name, and a producer is
+    free to make that name say nothing: a document may embed Kalimati as
+    ``CIDFont+F2``. The resource name is not the font's identity -- the embedded
+    ``name`` table is -- so the family match is repeated against it here, exactly as
+    :func:`resolve_embedded_legacy_maps` already does for the legacy registry.
+
+    Measured over the 97 documents the published v1.3 audit fails on ``repha_loss``:
+    only 7 trip the resource-name gate, while **71 embed a Kalimati face under a name
+    that does not say so**. Those 71 never reached ``fix_kalimati_cmap`` at all,
+    because :func:`~likhit.nepali_pdf_repair.extract_repaired_text_blocks` gates the
+    whole repair on some font classifying ``broken_cmap``.
+
+    Naming a font here still only *attempts* the repair, as the module comment on
+    :data:`_KNOWN_BROKEN_CMAP` says: the rewrite is gated on the reconstructed
+    mapping disagreeing with the PDF's own CMap, so a document whose CMap is fine is
+    left byte-identical and merely pays for a second extraction pass.
+
+    Returns ``{resource base name: family}``. Only fonts that classify ``correct``
+    are probed -- a font already routed to ``legacy_remap`` must not be downgraded,
+    and one already ``broken_cmap`` needs no further evidence.
+    """
+
+    resolved: dict[str, str] = {}
+    seen_xrefs: dict[int, str | None] = {}
+    for page_index in range(doc.page_count):
+        try:
+            fonts = doc[page_index].get_fonts(full=True)
+        except Exception:  # noqa: BLE001 - one malformed page is no evidence
+            continue
+        for font_info in fonts:
+            if len(font_info) < 4:
+                continue
+            xref, ext, font_type, resource_name = (
+                font_info[0],
+                font_info[1],
+                font_info[2],
+                str(font_info[3]),
+            )
+            base = (
+                resource_name.split("+", 1)[-1]
+                if "+" in resource_name
+                else resource_name
+            )
+            if base in resolved:
+                continue
+            if classify_font(resource_name, font_type) != "correct":
+                continue
+            if ext in ("n/a", ""):
+                # No embedded program, so no name table to ask. A bare core font
+                # is never one of these families.
+                continue
+
+            if xref in seen_xrefs:
+                family = seen_xrefs[xref]
+            else:
+                try:
+                    extracted = doc.extract_font(xref, named=True)
+                except Exception:  # noqa: BLE001 - an unextractable embed is no evidence
+                    extracted = None
+                content = extracted.get("content") if extracted else None
+                family = _embedded_broken_cmap_family(content) if content else None
+                seen_xrefs[xref] = family
+            if family is None:
+                continue
+            resolved[base] = family
+            logger.debug(
+                "Font '%s' (xref %s) embeds a %s face -> broken_cmap",
+                base,
+                xref,
+                family,
+            )
+    return resolved
+
+
 def _core_font_family(base_font_name: str) -> str | None:
     """Return the core-font family for a ``/BaseFont`` name, else ``None``."""
 
@@ -287,8 +375,22 @@ def scan_ocr_pages(doc: fitz.Document) -> dict[int, str]:
     return ocr_pages
 
 
-def scan_pdf_fonts(doc: fitz.Document) -> dict[str, str]:
-    """Scan all PDF fonts and return a strategy per unique base font name."""
+def scan_pdf_fonts(
+    doc: fitz.Document,
+    embedded_broken_cmap: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Scan all PDF fonts and return a strategy per unique base font name.
+
+    The embedded-name binding is resolved here when the caller does not supply one,
+    because this function's result is what
+    :func:`~likhit.nepali_pdf_repair.extract_repaired_text_blocks` gates the entire
+    CMap repair on. Leaving it to the caller made the resource name the whole
+    identity, which silently withheld the repair from every document that embeds a
+    broken-CMap face under a name that does not say so.
+    """
+
+    if embedded_broken_cmap is None:
+        embedded_broken_cmap = resolve_embedded_broken_cmap(doc)
 
     font_strategies: dict[str, str] = {}
 
@@ -300,6 +402,8 @@ def scan_pdf_fonts(doc: fitz.Document) -> dict[str, str]:
             if base in font_strategies:
                 continue
             strategy = classify_font(name, font_type)
+            if strategy == "correct" and base in embedded_broken_cmap:
+                strategy = "broken_cmap"
             font_strategies[base] = strategy
             logger.debug("Font '%s' (type=%s) -> %s", base, font_type, strategy)
 
@@ -309,8 +413,12 @@ def scan_pdf_fonts(doc: fitz.Document) -> dict[str, str]:
 def scan_pdf_fonts_by_page(
     doc: fitz.Document,
     embedded_legacy_maps: dict[str, str] | None = None,
+    embedded_broken_cmap: dict[str, str] | None = None,
 ) -> dict[int, dict[str, str]]:
     """Scan fonts by page, including document-scoped embedded-name bindings."""
+
+    if embedded_broken_cmap is None:
+        embedded_broken_cmap = resolve_embedded_broken_cmap(doc)
 
     strategies_by_page: dict[int, dict[str, str]] = {}
 
@@ -326,7 +434,13 @@ def scan_pdf_fonts_by_page(
                 and embedded_legacy_maps
                 and base in embedded_legacy_maps
             ):
+                # The legacy registry wins: it is the higher-priority strategy, and
+                # a font it claims decodes by keystroke map rather than by CMap
+                # repair. Only a font it does NOT claim falls through to the
+                # broken-CMap binding below.
                 strategy = "legacy_remap"
+            elif strategy == "correct" and base in embedded_broken_cmap:
+                strategy = "broken_cmap"
             current = page_strategies.get(base)
             if (
                 current is None
