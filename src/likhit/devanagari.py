@@ -46,3 +46,22 @@ ORPHAN_MATRA_PATTERN = re.compile(
     r"(?<![\u0915-\u0939\u0958-\u095f\u094d\u093c])[\u093e-\u094c]"
 )
 VIRAMA_MATRA_PATTERN = re.compile(r"्[ा-ौ]")
+
+# --- digit classes ---------------------------------------------------------------------- #
+#
+# Used by `likhit.privacy`'s identifier and figure patterns. They live here rather than in
+# that subpackage because both redaction passes and the PII scanner wanted the same two
+# fragments, and each had defined its own copy -- along with a dead `XLAT` translation table
+# duplicated in two more modules and used by neither.
+#
+# ⚠️ These stay LITERAL, unlike `ORPHAN_MATRA_PATTERN` above, and that difference is
+# checked rather than remembered: U+0966-U+096F (the Devanagari digits) and U+0964 (the
+# danda) have no canonical decomposition, so the hazard described above cannot reach them.
+# `test_the_shared_classes_are_atomic` asserts it.
+
+#: The Devanagari digits, as a character-class range fragment.
+DEVANAGARI_DIGITS = "०-९"
+
+#: Devanagari and ASCII digits together. This corpus mixes them inside a single amounts
+#: column, so an identifier or figure pattern that admits only one script misses real spans.
+ANY_DIGITS = f"0-9{DEVANAGARI_DIGITS}"

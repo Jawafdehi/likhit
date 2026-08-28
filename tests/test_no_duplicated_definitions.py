@@ -39,7 +39,20 @@ SRC_ROOT = pathlib.Path(likhit.__file__).parent
 
 # Names that are *supposed* to appear in many modules. These are per-module by
 # definition, so counting them as duplication would be noise that hides the real thing.
-BY_DESIGN = frozenset({"__all__", "logger"})
+#
+# `main` joined this set when the package gained a second and third console script
+# (`likhit-audit`, `likhit-redact` alongside `likhit-save`). It is the conventional entry
+# point name and `[project.scripts]` points at it, so renaming one to satisfy this scan
+# would be the tail wagging the dog. Note what that costs: this scan can no longer catch a
+# genuine duplicate named `main`. That is acceptable because `main` is by convention a thin
+# argparse shim over library code and is never the shared logic this guard exists to
+# protect -- and the three here were each checked to be exactly that before it was added.
+#
+# ⚠️ The parser builders were NOT added. Three modules each wanted `build_parser`, which is
+# the same argument -- but a distinct name per command costs nothing and keeps `grep` useful,
+# so they are `build_audit_parser` / `build_redact_parser` / `build_parser` instead. Widening
+# this set is the last resort, not the first.
+BY_DESIGN = frozenset({"__all__", "logger", "main"})
 
 # Duplicated CONSTANTS that are accepted, each with why it is not merged. Every one is
 # also asserted byte-equal by shape below, so accepting a duplicate is not the same as
@@ -90,7 +103,14 @@ def _module_level_definitions() -> dict[tuple[str, str], list[tuple[str, ast.AST
         rel = str(path.relative_to(SRC_ROOT))
         for node in ast.parse(path.read_text(encoding="utf-8")).body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                found[("func", node.name)].append((rel, node))
+                # ⚠️ BY_DESIGN applies here too, and it did not until a second console
+                # script arrived. The set's own comment says "names that are supposed to
+                # appear in many modules", but it was consulted only on the constant
+                # branch -- so adding `main` to it looked like it worked and changed
+                # nothing. Honouring it on both branches is what makes the set mean what
+                # it says.
+                if node.name not in BY_DESIGN:
+                    found[("func", node.name)].append((rel, node))
             elif isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name) and target.id not in BY_DESIGN:

@@ -327,6 +327,76 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "this was 3 until the figures axis was carried over from the corpus line and "
         "took index 3, which is why the two changes are one unit",
     ),
+    # -- quality audit: axes ---------------------------------------------------- #
+    #
+    # Every derivation below is the one recorded at the constant's definition when this
+    # tooling lived in an untracked corpus directory. Registering them here is what this
+    # guard is for: an unpinned number is one nobody can safely change.
+    (
+        "likhit/quality/axes.py",
+        "MERGE_MIN_DIGITS",
+    ): (
+        15,
+        "digits a token needs before `numeric_damage` will consider it a merged cell. "
+        "NOT evidence by itself -- the rule alone ran at precision 0.142 over the "
+        "14,891 flagged runs the geometry oracle checked, 12,540 of which were single "
+        "cells. It bounds the candidates to the population that oracle has measured",
+    ),
+    (
+        "likhit/quality/axes.py",
+        "REPHA_CORRUPT_FLOOR",
+    ): (
+        12,
+        "minimum corrupt-form length before a repha-loss hit counts. Calibrated on all "
+        "6,223 v13 transcripts: 96.4% of hits carry the corrupt form as the token "
+        "prefix, and the one clear corpus-wide false positive is `उपदेश्य` matching "
+        "`पदेश` in 6 occurrences",
+    ),
+    # -- quality audit: page refusal (opt-in axis) ------------------------------- #
+    (
+        "likhit/quality/page_refusal.py",
+        "PLACEHOLDER_CELL_SHARE_FLOOR",
+    ): (
+        0.25,
+        "share of a page's table DATA cells that must be placeholders before the page "
+        "is a refusal. A measured GAP, not a tuned value: 0.4444 for the one refusal "
+        "page against 0.0000 for every other staged page carrying a table",
+    ),
+    (
+        "likhit/quality/page_refusal.py",
+        "MIN_DATA_CELLS",
+    ): (
+        4,
+        "below this many data cells the share is not a measurement at all -- a 2-cell "
+        "table with one placeholder scores 0.5 and means nothing",
+    ),
+    (
+        "likhit/quality/page_refusal.py",
+        "PLACEHOLDER_PROSE_PER_KCHAR",
+    ): (
+        5.0,
+        "for a page with no table: placeholder occurrences per 1,000 characters. "
+        "`11356` p5 is at 17.75; the highest non-refusal staged page is 0.304, so this "
+        "sits inside an empty gap",
+    ),
+    (
+        "likhit/quality/page_refusal.py",
+        "MIN_PROSE_PLACEHOLDERS",
+    ): (
+        3,
+        "the absolute floor beside PLACEHOLDER_PROSE_PER_KCHAR. A rate alone would let "
+        "a very short page qualify on one hit",
+    ),
+    (
+        "likhit/quality/page_refusal.py",
+        "PLACEHOLDER_CELL_DOMINANCE",
+    ): (
+        0.5,
+        "how much of a cell the bracketed placeholder must occupy. Separates the two "
+        "populations with NO overlap: all four placeholder cells of `11356` p5 score "
+        "1.000 because the cell IS the placeholder, and all 15 false-positive cells "
+        "score 0.000 with no bracket at any offset. The midpoint of an empty gap",
+    ),
     # -- ranking forgiveness ---------------------------------------------------- #
     #
     # Each term forgives ONE occurrence before the tell counts, because each fires at a

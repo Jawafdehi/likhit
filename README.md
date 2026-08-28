@@ -4,6 +4,8 @@
 
 It extends [MarkItDown](https://github.com/microsoft/markitdown) with Nepal-specific PDF repair, layout-aware Markdown assembly, optional OCR fallback for image-dominant PDFs, and legacy `.doc` support. For PDFs, `likhit` now evaluates multiple extraction paths and returns the best result instead of relying on a single fixed pipeline.
 
+It also ships two things that work on transcripts *after* extraction: a **quality audit** that scores a document on independent damage axes, and **personal-data detection and redaction**. Both are pure-Python and importable on their own — see [Transcript quality](#transcript-quality) and [Personal data](#personal-data).
+
 Owned and maintained by [Jawafdehi](https://jawafdehi.org/).
 
 ## Installation
@@ -11,6 +13,21 @@ Owned and maintained by [Jawafdehi](https://jawafdehi.org/).
 ```bash
 pip install likhit
 ```
+
+Two extras name the post-extraction feature sets:
+
+```bash
+pip install "likhit[quality]"   # the transcript quality audit
+pip install "likhit[privacy]"   # personal-data detection and redaction
+```
+
+> **These extras currently install nothing extra.** Both feature sets are pure-stdlib, so
+> there is no dependency for an extra to gate, and an extra cannot withhold modules from a
+> wheel — `likhit.quality` and `likhit.privacy` are importable after a plain
+> `pip install likhit`, and `likhit-audit` / `likhit-redact` are always on your PATH. The
+> extras exist to *name* the separable surfaces, so a downstream requirements file can
+> record which part of this package it depends on, and to reserve the name for the first
+> real optional dependency.
 
 ## Project Links
 
@@ -79,6 +96,67 @@ Extract only one page or a page range from a PDF:
 likhit-save path/to/nepali-document.pdf --pages 5 --out page-5.md
 likhit-save path/to/nepali-document.pdf --pages 2-4 --out pages-2-4.md
 ```
+
+## Transcript quality
+
+A whole-document Devanagari ratio is not enough to tell a good transcript from a bad one: a
+legacy-Kalimati report recovered by this package scored `0.977` while its first line was
+untranslated legacy bytes. `likhit.quality` scores a transcript on independent axes —
+legacy-ASCII leakage, mojibake, repha loss, numeric damage, structure, repetition, spacing
+and matra damage — and **the worst axis wins**, because averaging lets seven clean axes bury
+an eighth that is making a positive claim about damage.
+
+```python
+from likhit.quality import audit_text
+
+result = audit_text(markdown)
+result["verdict"]            # "clean" | "suspect" | "garbled"
+result["failing"]            # the axes that are not clean, worst first
+result["checks"]["spacing"]  # that axis's verdict and its evidence
+```
+
+`audit_text` is pure — text in, verdicts out, no filesystem and no assumptions about how your
+corpus is laid out. For a directory, `audit_tree` walks it and takes an optional `enrich`
+callback so you can join your own metadata onto each row.
+
+```bash
+likhit-audit path/to/markdown --out report.json --workers 8
+```
+
+The command **exits non-zero on a tree it cannot evaluate** — missing, not a directory, or
+holding no `*.md`. That guard is the point: `rglob` raises nothing for any of those, so
+without it an audit of a mistyped path writes a report of zero records and exits 0, which is
+indistinguishable from a clean corpus.
+
+## Personal data
+
+`likhit.privacy` separates finding personal data from removing it, and removes a deliberately
+narrower set than it finds.
+
+```python
+from likhit.privacy import scan_text, redact_inline_text
+
+high_precision, name_shaped = scan_text(markdown)   # counts and shapes, never a match
+redacted, journal, counters = redact_inline_text(markdown)
+```
+
+`scan_text` **never returns matched text**, so a report of what a corpus contains can be
+published beside the corpus. Redaction is anchored on the *label* and replaces only the
+value, so a bare digit run can never match and a financial table cannot be touched.
+
+```bash
+likhit-redact scan   path/to/markdown --out pii-report.json
+likhit-redact redact path/to/markdown --out-tree staged --journal journal.json
+```
+
+Redaction is **never in place**: it reads a tree and writes a staging copy, and refuses if the
+destination exists or is the source. Documents with nothing to redact are copied
+byte-for-byte rather than rewritten, and the journal records value *shapes* — lengths, digit
+counts, separator presence — never a matched digit.
+
+Scope is narrow on purpose: citizenship numbers and dates of birth. Mobile numbers, personal
+PANs and email addresses are *detected and disclosed* rather than removed, because their
+adjudication left undecided cases and over-redaction costs more than it saves.
 
 ### What likhit does
 
@@ -221,6 +299,9 @@ The high-level PDF pipeline is:
   - `docx_based.py`: legacy DOC text extraction
 - `src/likhit/handlers/`: structure-aware handlers and detection logic
 - `src/likhit/renderers/`: Markdown rendering
+- `src/likhit/devanagari.py`: Devanagari character classes and matra-damage patterns shared across the package
+- `src/likhit/quality/`: transcript quality axes, tree walker and `likhit-audit`
+- `src/likhit/privacy/`: personal-data signals, redaction passes, placeholder vocabulary and `likhit-redact`
 - `tests/`: conversion, extraction, and plugin coverage
   - `tests/integration/`: end-to-end integration tests 
   - `tests/integration/test_data/`: committed test fixtures (PDF, DOCX, DOC samples)
