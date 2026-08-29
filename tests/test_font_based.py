@@ -1909,12 +1909,53 @@ def test_mixed_kokila_status_resolves_at_every_span_split(
 def test_cross_span_kokila_deferral_preserves_an_authored_word_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The plain space in ``कारोबारको स्थिति`` survives the deferred reorder.
+
+    🛑 This expected `सञ्चालन` -- joined -- until review showed what that join costs. The
+    deferral flag is decided once per line, so asserting the join here also asserted it for
+    every markerless span on any deferred line, and `test_..._does_not_join_a_post_virama`
+    below is what that looked like in shipped output. The space after `सञ्` now survives too:
+    keeping a visibly split word is cheaper than joining two real ones, and no local rule
+    tells the two apart.
+    """
+
     left = "सञ् चालन कारोबारको " + kalimati_module._PUA_IKAR
     right = kalimati_module._PUA_KOKILA_HALF_SA + "थ" + kalimati_module._PUA_IKAR + "त"
 
     assert _extract_kokila_line(monkeypatch, (left, right)) == (
-        "सञ्चालन कारोबारको स्थिति"
+        "सञ् चालन कारोबारको स्थिति"
     )
+
+
+@pytest.mark.parametrize(
+    "left",
+    ["छन् तथा", "सम्वत् २०७४", "एवम् अन्य", "गर्नुपर्ने छन् तथा भएका"],
+)
+def test_a_deferred_line_does_not_join_a_post_virama_boundary_in_another_span(
+    monkeypatch: pytest.MonkeyPatch,
+    left: str,
+) -> None:
+    """🛑 The negative control the deferral tests lacked, and the reason it was missing.
+
+    `defer_kokila_reorder` had **zero references in tests/**. The one test whose name
+    promised this property, `test_joined_reorder_keeps_a_real_space_after_virama`, is built
+    without a Kokila marker on the line, so it exercised the *undeferred* path and the
+    deferred path had no coverage at all.
+
+    Each case here carries no marker of its own and is never split. The marker sits in the
+    neighbouring span, which is what used to switch a post-virama deletion on for this one --
+    so `छन् तथा` shipped as `छन्तथा`. The control below is the same span on an undeferred
+    line: if a future change makes these two disagree again, both fail together.
+    """
+
+    right = kalimati_module._PUA_KOKILA_HALF_SA + "थ" + kalimati_module._PUA_IKAR + "त"
+    deferred = _extract_kokila_line(
+        monkeypatch,
+        (left + " " + kalimati_module._PUA_IKAR, right),
+    )
+
+    assert deferred == left + " स्थिति"
+    assert _extract_kokila_line(monkeypatch, (left,)) == left
 
 
 @pytest.mark.parametrize("split", range(1, 5))

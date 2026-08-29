@@ -315,13 +315,28 @@ def _convert_span_text(
             [(text, font_name)]
         )
         text = protected_texts[0]
-        if not defer_contextual_reorder:
+        # 🛑 Order matters here and only one order is right per branch, which review caught
+        # after this ran normalize AFTER reorder in both.
+        #
+        # Undeferred, upstream's order is required: normalize closes the gap in
+        # `क ⟨reph⟩ख` so the reorder that follows can attach the reph to its base, giving
+        # `र्कख`. Reversed, the reph resolves where it stands and the space survives it,
+        # shipping `क र्ख` -- an unattached reph, on a reachable input. Measured against
+        # upstream on all three of `क ⟨reph⟩ख`, `क ⟨ikar⟩ख` and `कार ⟨reph⟩`.
+        #
+        # Deferred, there is no reorder to feed: it is skipped entirely so the whole line's
+        # markers can resolve together at assembly. Normalizing is still wanted, with the
+        # marker spaces protected, because those spaces are what assembly reads.
+        if defer_contextual_reorder:
+            if strategy == "broken_cmap":
+                text = normalize_devanagari_spacing(
+                    text,
+                    preserve_marker_spaces=True,
+                )
+        else:
+            if strategy == "broken_cmap":
+                text = normalize_devanagari_spacing(text)
             text = reorder_devanagari(text, resolve_contextual=False)
-        if strategy == "broken_cmap":
-            text = normalize_devanagari_spacing(
-                text,
-                preserve_marker_spaces=defer_contextual_reorder,
-            )
         text = _restore_protected_context_markers(text, protected_markers)
     return text
 

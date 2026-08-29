@@ -1686,6 +1686,15 @@ def _merge_tables_from_fragment_variants(
     if not tables or not _tables_contain_malformed_conjunct_ra(tables):
         return merge_continuation_tables(tables)
 
+    # ⚠️ Costed rather than assumed cheap, because this is a THIRD full table-detection pass
+    # over every page and the comment above measures detection at 67-87% of extraction wall
+    # time -- the reason the first pass skips it at all.
+    #
+    # What bounds it is the guard immediately above, not the work below: detection runs only
+    # for documents whose primary pass already shows malformed conjunct-ra, which is a few
+    # hundred of the ~6,200 corpus documents. On those it roughly doubles extraction; on the
+    # rest it costs one predicate over the tables already in hand. Widening that guard is
+    # therefore a performance change, not just a coverage one.
     candidate_tables = _detect_tables_from_fragments(
         doc,
         fragments,
