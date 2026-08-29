@@ -45,6 +45,37 @@ _EQUIVALENT_CHARACTER_PATTERNS = {
     "9": "[9९]",
     ".": r"[.।]",
 }
+#: What a recovered boundary is written as when the text it sits in cannot become a
+#: Markdown table cell: a pipe, which says "these were separate cells".
+CELL_BOUNDARY_SEPARATOR = " | "
+#: ...and what it is written as when the text CAN become one. A bare `|` inside a cell
+#: is a cell delimiter, so writing one there states a column the table does not have:
+#: `renderers/markdown.py::_raw_table_row_lines` renders every row of a table from the
+#: same `col_count` columns and does NOT escape a pipe already in the cell text, so the
+#: row comes out one cell wider than its own table and every later cell in that row
+#: shifts. `tables._join_visual_line` already refuses `|` for exactly this reason.
+#:
+#: MEASURED, counting rows whose cell count is off the modal width of their own table
+#: block. The grid width is a property of the detected table, so it is taken from an arm
+#: with NO numeric repair and held constant across arms -- recomputing it per arm lets it
+#: move with the defect. 17 documents, 20,721 rendered table rows:
+#:
+#:     no repair at all           2 rows off the grid   119 runs >= 15 digits
+#:     Markdown repair only     698                      56
+#:     line repair only         955                      50
+#:     both, with a pipe        983                      45
+#:     both, with a space        48                      45
+#:
+#: 981 of 20,721 rows (4.7%) were pushed off their grid by the pipe; a space leaves 48,
+#: all of them from `_repair_pipe_lines_by_digit_signature`, which legitimately writes
+#: one. The repair's purpose is untouched -- the >=15-digit runs the numeric axis counts
+#: stay at 45, and the digit count is identical -- because a space un-glues the figures
+#: just as well.
+#:
+#: Not confined to documents the audit flags: on 24 documents that ship `clean` on
+#: `numeric_damage`, 13,067 table rows, the pipe leaves 25 rows off their block's modal
+#: width and a space leaves 2.
+INLINE_BOUNDARY_SEPARATOR = " "
 _ADVANCE_OUTLIER_EM = 0.10
 _BBOX_GAP_OUTLIER_EM = 0.20
 _MIN_RULE_HEIGHT = 4.0
@@ -56,7 +87,12 @@ _MAX_PARTITION_SEGMENTS = 12
 
 @dataclass(frozen=True)
 class NumericBoundaryRepair:
-    """One geometry-proven numeric run and its original cell values."""
+    """One geometry-proven numeric run and its original cell values.
+
+    `block_number` and `line_number` locate the line in the extraction this repair was
+    measured on and are diagnostic only. They are NOT how a caller finds the line again
+    -- see :func:`group_repairs_by_line` and :data:`line_origin`.
+    """
 
     page_number: int
     block_number: int
@@ -66,10 +102,14 @@ class NumericBoundaryRepair:
     parts: tuple[str, ...]
     line_text: str
     occurrence_index: int = 0
+    #: Top-left corner of the line's glyph boxes, `(min y0, min x0)` rounded to 0.1pt.
+    #: This is the key a caller looks the repair up by, because it survives a second
+    #: extraction of the same page and an enumeration index does not.
+    line_origin: tuple[float, float] = (0.0, 0.0)
 
     @property
     def repaired_text(self) -> str:
-        return " | ".join(self.parts)
+        return CELL_BOUNDARY_SEPARATOR.join(self.parts)
 
 
 @dataclass(frozen=True)
@@ -182,6 +222,7 @@ def collect_page_numeric_boundary_evidence(
     run_positions: dict[str, set[tuple[int, int, int]]] = defaultdict(set)
     for block_number, line_number, characters in lines:
         line_text = "".join(character.text for character in characters)
+        origin = line_origin_key(character.bbox for character in characters)
         for run_start, run_end in _maximal_numeric_runs(characters):
             run_text = "".join(
                 character.text for character in characters[run_start:run_end]
@@ -219,6 +260,7 @@ def collect_page_numeric_boundary_evidence(
                 block_number=block_number,
                 line_number=line_number,
                 line_text=line_text,
+                line_origin=origin,
             )
         )
         repairs.extend(
@@ -228,6 +270,7 @@ def collect_page_numeric_boundary_evidence(
                 block_number=block_number,
                 line_number=line_number,
                 line_text=line_text,
+                line_origin=origin,
             )
         )
 
@@ -267,7 +310,14 @@ def apply_line_numeric_boundary_repairs(
     text: str,
     repairs: Iterable[NumericBoundaryRepair],
 ) -> str:
-    """Apply occurrence-scoped repairs to one extracted PDF line."""
+    """Apply occurrence-scoped repairs to one extracted PDF line.
+
+    The boundary is written as a space, not as a pipe. This text is a PDF line, and a
+    PDF line becomes a Markdown table CELL through the fragment the caller builds from
+    it (`tables.detect_page_tables` is passed those fragments), so a pipe written here
+    ends up inside a cell -- where it is a cell delimiter that the renderer does not
+    escape. See :data:`INLINE_BOUNDARY_SEPARATOR` for the measurement.
+    """
 
     repaired = text
     ordered = sorted(
@@ -286,23 +336,79 @@ def apply_line_numeric_boundary_repairs(
             # confidently wrong one.
             continue
         match = matches[repair.occurrence_index]
-        replacement = _split_matched_text(match.group(), repair.parts)
+        replacement = _split_matched_text(
+            match.group(),
+            repair.parts,
+            separator=INLINE_BOUNDARY_SEPARATOR,
+        )
         repaired = repaired[: match.start()] + replacement + repaired[match.end() :]
     return repaired
 
 
+#: Precision the line origin is rounded to before it is used as a key. 0.1pt is finer
+#: than any inter-line or inter-column gap in this corpus and coarser than the float
+#: noise between two extractions of the same page.
+_LINE_ORIGIN_PRECISION = 1
+
+
+def line_origin_key(
+    boxes: Iterable[tuple[float, float, float, float]],
+) -> tuple[float, float]:
+    """The key a line is indexed by: `(min y0, min x0)` over ALL its glyph boxes.
+
+    Callers must pass every box on the line, including ones whose text they are about to
+    discard -- dropping the empty ones first moves the minimum and the key stops
+    matching. Measured over the 1,843 repairs the 102 `numeric_damage` documents produce:
+    resolved 1,843/1,843 including all boxes, 1,379/1,843 excluding the empty ones.
+    """
+
+    ys: list[float] = []
+    xs: list[float] = []
+    for box in boxes:
+        xs.append(float(box[0]))
+        ys.append(float(box[1]))
+    if not ys:
+        return (0.0, 0.0)
+    return (
+        round(min(ys), _LINE_ORIGIN_PRECISION),
+        round(min(xs), _LINE_ORIGIN_PRECISION),
+    )
+
+
 def group_repairs_by_line(
     repairs: Iterable[NumericBoundaryRepair],
-) -> dict[tuple[int, int, int], list[NumericBoundaryRepair]]:
-    """Index repairs by 1-based page, block, and line."""
+) -> dict[tuple[int, float, float], list[NumericBoundaryRepair]]:
+    """Index repairs by 1-based page and the line's glyph-box origin.
 
-    grouped: dict[tuple[int, int, int], list[NumericBoundaryRepair]] = defaultdict(list)
+    NOT by `(page, block, line)`, which is what this did and is the reason the repairs
+    were computed and then thrown away. The block and line numbers are `enumerate()`
+    indices over `page.get_text("rawdict", flags=TEXT_PRESERVE_WHITESPACE)`, while both
+    callers enumerate `font_based.get_cid_marked_page_dict(page)` -- and that function
+    re-extracts the page with `TEXT_USE_CID_FOR_UNKNOWN_UNICODE` whenever any glyph
+    decodes to U+FFFD. The second extraction re-blocks the page, so every index after the
+    first regrouped block is shifted and the lookup lands on a different line or on none.
+    Measured on document 11724 page 7: 38 blocks plain, 39 with the CID flag, diverging
+    at block 4.
+
+    The geometry does not move -- `get_cid_marked_page_dict`'s own docstring records that
+    glyph boxes survive the regrouping, which is why it pairs the two extractions by box.
+    Measured over the 1,843 line-applicable repairs the 102 published `numeric_damage`
+    documents produce, counting a key as resolved only when the line it names actually
+    contains the merged text:
+
+        (block, line) enumeration index   1,669 / 1,843   90.6%
+        (min y0,)                         1,829 / 1,843   99.2%, 14 ambiguous
+        (min y0, min x0)                  1,843 / 1,843  100.0%, 0 ambiguous
+
+    A rounded float pair is only safe as a key because both sides round the same MuPDF
+    box; the 100% above is the evidence, not the reasoning.
+    """
+
+    grouped: dict[tuple[int, float, float], list[NumericBoundaryRepair]] = defaultdict(
+        list
+    )
     for repair in repairs:
-        grouped[
-            repair.page_number,
-            repair.block_number,
-            repair.line_number,
-        ].append(repair)
+        grouped[repair.page_number, *repair.line_origin].append(repair)
     return dict(grouped)
 
 
@@ -310,7 +416,7 @@ def collect_page_repairs_by_line(
     page: object,
     *,
     page_number: int,
-) -> dict[tuple[int, int, int], list[NumericBoundaryRepair]]:
+) -> dict[tuple[int, float, float], list[NumericBoundaryRepair]]:
     """Collect and index one page's repairs, degrading to none on failure.
 
     Both extraction entry points call this rather than pairing the collector
@@ -383,10 +489,7 @@ def repair_markdown_numeric_boundaries(
                 continue
         else:
             pattern = _complete_numeric_run_pattern(merged_text)
-        repaired = pattern.sub(
-            lambda match: _split_matched_text(match.group(), parts),
-            repaired,
-        )
+        repaired = _substitute_per_line(pattern, repaired, parts)
         signature = _digit_signature(merged_text)
         if len(signature) >= 8 and len(signature_partitions[signature]) == 1:
             repaired = _repair_pipe_lines_by_digit_signature(
@@ -395,6 +498,36 @@ def repair_markdown_numeric_boundaries(
                 parts,
             )
     return repaired
+
+
+def _substitute_per_line(
+    pattern: re.Pattern[str],
+    markdown: str,
+    parts: tuple[str, ...],
+) -> str:
+    """Substitute line by line so the separator can depend on the line.
+
+    Equivalent to one whole-string `pattern.sub` outside table rows: every pattern
+    :func:`_complete_numeric_run_pattern` builds is made of digit and numeric-punctuation
+    classes and per-character escapes, so no match can span a newline.
+    """
+
+    lines = markdown.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        separator = (
+            INLINE_BOUNDARY_SEPARATOR
+            if _is_markdown_table_row(line)
+            else CELL_BOUNDARY_SEPARATOR
+        )
+        lines[index] = pattern.sub(
+            lambda match, separator=separator: _split_matched_text(
+                match.group(),
+                parts,
+                separator=separator,
+            ),
+            line,
+        )
+    return "".join(lines)
 
 
 def _safe_plausible_global_repair(parts: tuple[str, ...]) -> bool:
@@ -749,7 +882,25 @@ def _select_minimal_rule_cuts(
     rule_cuts: set[int],
     preferred_runs: set[tuple[int, int]],
 ) -> set[int]:
-    """Discard neighboring false rules when one valid partition is unique."""
+    """Discard neighboring false rules when one valid partition is unique.
+
+    A candidate partition is valid when every part is both a complete amount and a
+    plausible single value. That is STRICTER than the `_looks_like_plausible_single_number`
+    test :func:`_repairs_for_contiguous_runs` applies when it decides whether to emit, and
+    deliberately so -- narrowing a run discards evidence, while emitting only spends it.
+
+    This used to require every part to match `_DECIMAL_AMOUNT_PATTERN`,
+    `^[0-9][0-9,]*\\.[0-9]{1,2}$`, which insists on a decimal point. An OAG beruju column
+    is Indian-grouped integers, so no partition validated, no run was ever narrowed, and
+    the spurious cut then took the correct one down with it. Traced on document 11754
+    page 8: the run `३२,१०,६५,४९४७,३९,५२,३८८` has rule cuts at 12 and 21, under the
+    decimal-only predicate 0 minimal partitions exist and the emitter rejects
+    `['३२,१०,६५,४९४', '७,३९,५२,३', '८८']` whole; under this predicate there is exactly
+    one, `(12,)` -> `['३२,१०,६५,४९४', '७,३९,५२,३८८']`.
+
+    The uniqueness requirement below is what keeps the wider predicate safe: a run that
+    can be partitioned two ways is still left alone.
+    """
 
     cuts_by_run: dict[tuple[int, int], set[int]] = defaultdict(set)
     for cut in rule_cuts:
@@ -776,7 +927,7 @@ def _select_minimal_rule_cuts(
                     for part_start, part_end in zip(boundaries, boundaries[1:])
                 ]
                 if all(
-                    _DECIMAL_AMOUNT_PATTERN.fullmatch(_canonical_numeric_text(part))
+                    _looks_like_complete_amount(part)
                     and _looks_like_plausible_single_number(part)
                     for part in parts
                 ):
@@ -862,6 +1013,7 @@ def _repairs_for_contiguous_runs(
     block_number: int,
     line_number: int,
     line_text: str,
+    line_origin: tuple[float, float],
 ) -> list[NumericBoundaryRepair]:
     if not cuts:
         return []
@@ -899,6 +1051,7 @@ def _repairs_for_contiguous_runs(
                 parts=tuple(parts),
                 line_text=line_text,
                 occurrence_index=_occurrence_index(line_text, merged_text, start),
+                line_origin=line_origin,
             )
         )
     return repairs
@@ -911,6 +1064,7 @@ def _repairs_for_decimal_whitespace(
     block_number: int,
     line_number: int,
     line_text: str,
+    line_origin: tuple[float, float],
 ) -> list[NumericBoundaryRepair]:
     repairs: list[NumericBoundaryRepair] = []
     index = 0
@@ -958,6 +1112,7 @@ def _repairs_for_decimal_whitespace(
                 parts=(left, right),
                 line_text=line_text,
                 occurrence_index=0,
+                line_origin=line_origin,
             )
         )
     return repairs
@@ -981,6 +1136,36 @@ def _occurrence_index(line_text: str, text: str, start_index: int) -> int:
         1
         for match in re.finditer(re.escape(text), line_text)
         if match.start() < start_index
+    )
+
+
+def _looks_like_complete_amount(text: str) -> bool:
+    """A value a money column can hold as ONE cell: decimal or integer, grouped or not.
+
+    Narrower than :func:`_looks_like_plausible_single_number` on purpose. That predicate
+    also accepts a serial (`12.`) and a dotted reference (`4.1.4`), and a dotted reference
+    swallows a genuine merge: on `123.45678.9099.10` with rule cuts at 6 and 12 it accepts
+    `678.9099.10`, so the one-cut partition validates first and the correct cut at 12 is
+    discarded. Measured -- it took
+    `test_collects_multiple_boundaries_inside_one_pdf_span` from three parts to two.
+
+    Wider than `_DECIMAL_AMOUNT_PATTERN`, which is what this replaced: that insists on a
+    decimal point, and an OAG beruju column is Indian-grouped integers.
+
+    The caller keeps asking BOTH this and `_looks_like_plausible_single_number`, and the
+    conjunction is not redundant -- it is why the old predicate worked at all. `0358,500.00`
+    matches `_DECIMAL_AMOUNT_PATTERN` (its `[0-9,]*` does not care that `0358` is a
+    four-digit group) and fails every grouping rule, so only the intersection rejects it.
+    Measured: dropping the second half re-partitions `358,500.00358,500.00` at 9 instead of
+    at 10.
+    """
+
+    canonical = _canonical_numeric_text(text)
+    return bool(
+        _DECIMAL_AMOUNT_PATTERN.fullmatch(canonical)
+        or _PLAIN_NUMBER_PATTERN.fullmatch(canonical)
+        or _INDIAN_GROUPED_NUMBER_PATTERN.fullmatch(canonical)
+        or _WESTERN_GROUPED_NUMBER_PATTERN.fullmatch(canonical)
     )
 
 
@@ -1069,9 +1254,17 @@ def _complete_numeric_run_pattern(text: str) -> re.Pattern[str]:
     )
 
 
+def _is_markdown_table_row(line: str) -> bool:
+    """Is this line a rendered Markdown table row, where a `|` is a cell delimiter?"""
+
+    return line.lstrip().startswith("|")
+
+
 def _split_matched_text(
     matched_text: str,
     parts: tuple[str, ...],
+    *,
+    separator: str = CELL_BOUNDARY_SEPARATOR,
 ) -> str:
     split_parts: list[str] = []
     offset = 0
@@ -1079,7 +1272,7 @@ def _split_matched_text(
         end = offset + len(part)
         split_parts.append(matched_text[offset:end])
         offset = end
-    return " | ".join(split_parts)
+    return separator.join(split_parts)
 
 
 def _render_parts_with_matched_digits(
@@ -1088,6 +1281,17 @@ def _render_parts_with_matched_digits(
     *,
     use_danda: bool,
 ) -> str:
+    """Re-render a run that already spans cell delimiters, keeping them.
+
+    Deliberately joins with a pipe even inside a table row, unlike
+    :func:`_split_matched_text`: this is only reached from
+    :func:`_repair_pipe_lines_by_digit_signature`, whose pattern matches ACROSS existing
+    `|` and whitespace, so the run it replaces already occupied several cells. Writing a
+    space here would collapse them into one and destroy the column structure -- measured
+    by `test_markdown_repair_recovers_values_from_misaligned_table_columns`, where the
+    repair takes a 6-cell row to the correct 5.
+    """
+
     matched_digits = iter(
         character for character in matched_text if character in _DIGITS
     )
@@ -1102,7 +1306,7 @@ def _render_parts_with_matched_digits(
             else:
                 rendered.append(character)
         rendered_parts.append("".join(rendered))
-    return " | ".join(rendered_parts)
+    return CELL_BOUNDARY_SEPARATOR.join(rendered_parts)
 
 
 def _unique_text_repairs(
