@@ -6,16 +6,23 @@ five dependent vowel signs from glyph *metrics*. That guess used to overwrite th
 own `/ToUnicode` value even when the authored value was a repha, which on OAG documents
 5471/5487/5492/5493 destroyed correctly spelled words -- `आर्थिक` 49/52/56/62 -> 2/2/2/5.
 
-Both halves of the rule are load-bearing and each has its own measured population:
+All three conditions are load-bearing, and each was added because dropping it regressed
+a measured population:
 
   * the CATEGORY test -- a bare vowel sign, never a consonant-bearing value. On the 64
     no-gate Kokila documents the consonant class is 111 GIDs / 13,354 drawn glyphs and
     carries the repair's whole gain; the vowel-sign class is 12 GIDs / 1,106.
-  * the PROVENANCE test -- a metric guess, never an exact reading. On the 55-document
-    gated sample, where the repair already ran and helped, 17 GIDs / 7,432 drawn glyphs
-    carry the vowel-sign shape and NOT ONE is a guess (15 from exact outline digests,
-    2 from the font's own cmap). Declining those cost 68 canonical repha words and moved
-    a document from clean to suspect, which is how the provenance condition was found.
+  * the PROVENANCE test -- a metric guess, never an exact reading of the embedded
+    program. Declining exact readings as well cost 68 canonical repha words on the
+    55-document gated sample and moved document 4070 from clean to suspect.
+  * the FACE test -- an unrouted face only. Provenance alone still declined on Kalimati
+    GID 466/467, 7,180 drawn glyphs over 15 gated documents, where the guess is right
+    and the authored value wrong: document 5403 lost `आर्थिक` 51 -> 6 and `निर्माण`
+    66 -> 3. Same failure mode this guard exists to prevent, mirrored.
+
+⚠️ No threshold separates these populations and none is used. Their well-formedness
+rates overlap completely -- the authored repha lands on a consonant 0.399 of the time on
+5471, where declining is right, and 1.000 of the time on 4070, where it is wrong.
 
 Every repha here is an explicit code-point literal rather than `_RA + _VIRAMA`. A
 computed reference would move with the module: rebind `_RA` and both guard and test
@@ -100,13 +107,13 @@ def test_an_exact_vowel_sign_reading_is_believed_and_a_guessed_one_is_not() -> N
     correction_map = {10: IKAR, 11: IKAR}
 
     exact_only = kalimati._decline_authored_repha_rewrites(
-        pdf_map, correction_map, guessed=frozenset()
+        pdf_map, correction_map, font_name="Mangal", guessed=frozenset()
     )
     ten_guessed = kalimati._decline_authored_repha_rewrites(
-        pdf_map, correction_map, guessed={10}
+        pdf_map, correction_map, font_name="Mangal", guessed={10}
     )
     both_guessed = kalimati._decline_authored_repha_rewrites(
-        pdf_map, correction_map, guessed={10, 11}
+        pdf_map, correction_map, font_name="Mangal", guessed={10, 11}
     )
 
     assert exact_only == {10: IKAR, 11: IKAR}
@@ -119,7 +126,7 @@ def test_declining_drops_only_the_offending_entry() -> None:
     correction_map = {10: IKAR, 11: YA, 12: EKAR, 13: SHA, 99: IKAR}
 
     kept = kalimati._decline_authored_repha_rewrites(
-        pdf_map, correction_map, guessed=set(correction_map)
+        pdf_map, correction_map, font_name="Mangal", guessed=set(correction_map)
     )
 
     assert kept == {11: YA, 12: EKAR, 13: SHA, 99: IKAR}
@@ -129,7 +136,7 @@ def test_a_gid_the_pdf_never_authored_is_always_filled() -> None:
     """A fill cannot discard anything, so the guard must not touch one."""
 
     kept = kalimati._decline_authored_repha_rewrites(
-        {}, {7: IKAR, 8: UKAR}, guessed={7, 8}
+        {}, {7: IKAR, 8: UKAR}, font_name="Mangal", guessed={7, 8}
     )
 
     assert kept == {7: IKAR, 8: UKAR}
@@ -139,7 +146,10 @@ def test_a_map_with_nothing_to_decline_is_returned_unchanged() -> None:
     correction_map = {1: YA, 2: KA, 3: IKAR}
 
     kept = kalimati._decline_authored_repha_rewrites(
-        {1: REPHA, 3: KA}, correction_map, guessed=set(correction_map)
+        {1: REPHA, 3: KA},
+        correction_map,
+        font_name="Mangal",
+        guessed=set(correction_map),
     )
 
     assert kept is correction_map
@@ -153,11 +163,12 @@ def test_an_exempt_gid_keeps_its_reconstruction() -> None:
     guessed = set(correction_map)
 
     guarded = kalimati._decline_authored_repha_rewrites(
-        pdf_map, correction_map, guessed=guessed
+        pdf_map, correction_map, font_name="Mangal", guessed=guessed
     )
     exempted = kalimati._decline_authored_repha_rewrites(
         pdf_map,
         correction_map,
+        font_name="Mangal",
         guessed=guessed,
         exempt=kalimati._KOKILA_DISPLACEMENT_GIDS,
     )
@@ -214,7 +225,10 @@ def test_a_declined_gid_keeps_the_authored_value_in_the_patched_cmap(
         FakeDoc(),
         10,
         kalimati._decline_authored_repha_rewrites(
-            pdf_map, {10: IKAR, 11: YA, 12: SHA}, guessed={10, 11, 12}
+            pdf_map,
+            {10: IKAR, 11: YA, 12: SHA},
+            font_name="Mangal",
+            guessed={10, 11, 12},
         ),
     )
 
@@ -352,15 +366,20 @@ def test_a_non_kokila_face_gets_no_exemption(
     assert captured == [{83: "त", 301: YA}]
 
 
-def test_the_simple_font_path_is_guarded_too(
+def test_the_simple_font_path_declines_nothing_because_its_faces_are_routed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A named TrueType face takes a different branch and must not be left unguarded.
+    """The wiring is there; the face condition makes it inert, and that is correct.
 
-    `fix_kalimati_cmap` admits a non-Type0 font only when it is a named repair face, so
-    this branch is the one that runs on the published Kalimati/Lohit population -- the
-    largest group the guard can affect. It reaches `_patch_single_cmap` by its own call,
-    not through `to_unicode_maps`, so the guard has to be wired there separately.
+    `fix_kalimati_cmap` admits a non-Type0 font only when `_is_named_repair_font` accepts
+    it, and every family that predicate accepts is routed -- so on this branch
+    `_face_reconstruction_is_unvalidated` is always False and nothing is ever declined.
+    This is the published Kalimati/Lohit population, and it is exactly the population the
+    face condition exists to leave alone: declining there destroyed `आर्थिक` 51 -> 6 and
+    `निर्माण` 66 -> 3 on OAG document 5403.
+
+    The call is still wired, so the branch is covered the moment that admission gate
+    widens; this test pins that it is currently a no-op rather than silently broken.
     """
 
     captured: list[dict[int, str]] = []
@@ -417,7 +436,8 @@ def test_the_simple_font_path_is_guarded_too(
 
     kalimati.fix_kalimati_cmap(FakeDoc())  # type: ignore[arg-type]
 
-    assert captured == [{11: YA, 12: SHA}]
+    # GID 10 keeps its guessed `ि` because Kalimati is a routed face.
+    assert captured == [{10: IKAR, 11: YA, 12: SHA}]
 
 
 def test_simple_font_translation_re_expresses_provenance_in_character_codes(
@@ -471,3 +491,60 @@ def test_simple_font_translation_re_expresses_provenance_in_character_codes(
     assert translated == {65: IKAR, 66: YA, 67: SHA}
     # GID 0 -> code 65 and GID 2 -> code 67 were the guesses.
     assert kalimati._reconstruction_guesses(translated) == {65, 67}
+
+
+@pytest.mark.parametrize(
+    ("font_name", "unvalidated"),
+    [
+        # Faces `fix_kalimati_cmap` rewrites but was never measured against. These are
+        # where every recovered word came from.
+        ("Mangal", True),
+        ("Mangal-Bold", True),
+        ("Mangal,Bold", True),
+        ("Arial Unicode MS", True),
+        ("ArialUnicodeMS", True),
+        ("NirmalaUI", True),
+        # Routed families: the repair carries a reference table and measured GID space
+        # for these, and declining their guesses destroys correct words.
+        ("Kalimati", False),
+        ("Kalimati-Bold", False),
+        ("Lohit-Devanagari", False),
+        # Family boundary, so a longer name that merely contains one is NOT routed.
+        ("NotKalimati", True),
+        ("KalimatiExtra", True),
+        ("LohitExtra", True),
+    ],
+)
+def test_only_an_unrouted_face_is_unvalidated(
+    font_name: str, unvalidated: bool
+) -> None:
+    assert kalimati._face_reconstruction_is_unvalidated(font_name) is unvalidated
+
+
+def test_every_routed_family_is_treated_as_validated() -> None:
+    """The coupling, asserted rather than left implicit.
+
+    The guard's scope is the COMPLEMENT of `_KNOWN_BROKEN_CMAP`, so routing a family
+    turns the guard off for it. Stating it as an invariant means the day `mangal` is
+    added, whoever adds it sees that documents 5471/5487/5492/5493 stop being protected.
+    """
+
+    for family in kalimati._KNOWN_BROKEN_CMAP:
+        assert kalimati._face_reconstruction_is_unvalidated(family) is False
+
+
+def test_a_routed_face_keeps_every_guessed_rewrite() -> None:
+    """Same inputs, two faces, opposite outcomes -- the whole point of the condition."""
+
+    pdf_map = {466: REPHA}
+    correction_map = {466: IKAR}
+
+    unrouted = kalimati._decline_authored_repha_rewrites(
+        pdf_map, correction_map, font_name="Mangal", guessed={466}
+    )
+    routed = kalimati._decline_authored_repha_rewrites(
+        pdf_map, correction_map, font_name="Kalimati", guessed={466}
+    )
+
+    assert unrouted == {}
+    assert routed is correction_map

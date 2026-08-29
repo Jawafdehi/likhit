@@ -13,6 +13,7 @@ from typing import Optional
 import fitz
 
 from likhit.errors import ExtractionError
+from likhit.extractors.font_classifier import _KNOWN_BROKEN_CMAP
 from likhit.extractors.kalimati_reference import (
     in_line_ra_cids,
     kalimati_reference_map,
@@ -1153,39 +1154,75 @@ def _rewrite_discards_authored_repha(pdf_value: str, correct_value: str) -> bool
     )
 
 
+def _face_reconstruction_is_unvalidated(font_name: str) -> bool:
+    """Whether this repair has no measured evidence about ``font_name``'s face.
+
+    ``font_classifier._KNOWN_BROKEN_CMAP`` is this module's statement of which families
+    it was built and measured for: each carries an outline-keyed reference table,
+    per-face corroboration logic and a measured GID space, and each was added on its own
+    against its whole affected population. But :func:`fix_kalimati_cmap` does not
+    restrict itself to those families -- once a document opens the gate it rewrites
+    *every* Type0 CMap in it that clears a generic three-difference floor, including
+    faces nobody measured. This says which those are.
+
+    ⚠️ **This couples the guard's scope to the routed set, and the coupling has teeth.**
+    Routing a family here turns the guard OFF for it. That is the intended reading --
+    routing a family is a claim to have evidence about it -- but it means adding
+    ``mangal`` would stop protecting documents 5471/5487/5492/5493 unless the same change
+    completes Mangal's outline reference table, which is what would give GID 876's
+    neighbour a real value and remove the need for the guard there at all.
+    """
+
+    return not any(
+        _font_name_matches_family(font_name, family) for family in _KNOWN_BROKEN_CMAP
+    )
+
+
 def _decline_authored_repha_rewrites(
     pdf_map: dict[int, str],
     correction_map: dict[int, str],
     *,
+    font_name: str,
     guessed: Container[int],
     exempt: Container[int] = frozenset(),
 ) -> dict[int, str]:
     """Drop GUESSED reconstruction entries that would discard an authored repha.
 
-    Two conditions, each with its own measured population, and both are needed.
+    Three conditions, each with its own measured population, and all three are needed.
 
     The first is the category test in :func:`_rewrite_discards_authored_repha`: only a
     bare-vowel-sign claim over an authored ``र्`` is a candidate at all, never the
     consonant-bearing rewrite that carries the repair's gain.
 
-    The second is ``guessed`` -- provenance, and it is what stops this being a
-    regression. :func:`_infer_mark_variants` matches glyph *metrics* against five
-    candidate vowel signs, so its answer is evidence about a shape; the font's own
-    ``cmap``, its ``GSUB`` and the outline-digest reference table are exact, and an
-    exact reading of the embedded program IS evidence against the authored table. The
-    two populations separate cleanly on this and on nothing else:
+    The second is ``guessed`` -- provenance. :func:`_infer_mark_variants` matches glyph
+    *metrics* against five candidate vowel signs, so its answer is evidence about a
+    shape; the font's own ``cmap``, its ``GSUB`` and the outline-digest reference table
+    are exact readings of the embedded program, and an exact reading IS evidence against
+    the authored table. Declining exact readings as well cost 68 canonical repha words
+    on the 55-document gated sample, added 97 corrupt forms and 9
+    ``malformed_conjunct_ra``, and moved document 4070 from ``clean`` to ``suspect``.
 
-      * 64 no-gate Kokila documents: 11 GIDs / 1,070 drawn glyphs are metric guesses,
-        8 GIDs / 1,067 of them on documents 5471/5487/5492/5493, where declining
-        restores ``आर्थिक`` to 49/52/56/62 from 2/2/2/5. One further GID / 36 glyphs
-        comes from the font's own cmap and is left alone.
-      * 55-document gated sample, where the repair already ran and helped: 17 GIDs /
-        7,432 drawn glyphs carry the identical shape and **not one is a guess** --
-        15 GIDs / 4,751 come from exact outline digests and 2 GIDs / 2,681 from the
-        font's own cmap. Declining those anyway cost 68 canonical repha words, added
-        97 corrupt forms and 9 ``malformed_conjunct_ra``, and moved one document from
-        ``clean`` to ``suspect``. With the provenance condition the same sample is
-        byte-identical to the unguarded run on all 55.
+    The third is ``font_name``, and it is the one that keeps this from being a
+    regression of the very defect it fixes. Provenance alone still declines on faces the
+    repair *was* measured against, and there the guess is right and the authored value
+    wrong. Measured, guessed-vowel-over-authored-repha rewrites split by face with no
+    overlap at all:
+
+      * **unvalidated faces** -- Mangal GID 876 and Arial Unicode MS GID 7414. On the 64
+        no-gate Kokila documents this is 2,098 drawn glyphs, 2,094 of them on
+        5471/5487/5492/5493, where declining restores ``आर्थिक`` to 49/52/56/62 from
+        2/2/2/5 and takes ``repha_loss`` back to ``clean`` on all four.
+      * **routed faces** -- Kalimati GID 466/467. On the 55-document gated sample this
+        is 7,180 drawn glyphs over 15 documents, and declining there DESTROYS correct
+        words: document 5403 loses ``आर्थिक`` 51 -> 6 and ``निर्माण`` 66 -> 3. Same
+        failure mode this guard exists to prevent, mirrored.
+
+    So the boundary is drawn where the evidence is, and it is drawn on the face rather
+    than on a threshold: nothing here separates the two populations by magnitude. Their
+    well-formedness rates overlap completely -- the authored repha lands on a consonant
+    0.399 of the time on 5471, where declining is right, and 1.000 of the time on 4070,
+    where it is wrong -- so "decline when the existing text is already well-formed",
+    which is the shape this guard was asked for, does not work and is not what it does.
 
     Dropping the entry rather than skipping it inside :func:`_patch_single_cmap` is
     what keeps the authored value: a GID absent from the correction map is left at
@@ -1216,6 +1253,8 @@ def _decline_authored_repha_rewrites(
     forfeit the whole 64-document gain.
     """
 
+    if not _face_reconstruction_is_unvalidated(font_name):
+        return correction_map
     declined = {
         gid
         for gid, correct_value in correction_map.items()
@@ -1412,7 +1451,7 @@ def _is_generic_type0_font_name(font_name: str) -> bool:
 def _font_owner_family(font_name: str) -> str:
     """Stable ownership class used before selecting a shared-CMap representative."""
 
-    for family in ("kalimati", "lohit", "kokila"):
+    for family in sorted(_KNOWN_BROKEN_CMAP | {"kokila"}):
         if _font_name_matches_family(font_name, family):
             return family
     if _is_generic_type0_font_name(font_name):
@@ -1630,12 +1669,19 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
                     unrepaired_named_fonts.add(font_name)
                 continue
 
+            # Currently unreachable: the collection loop admits a non-Type0 font only
+            # when `_is_named_repair_font` accepts it, and every family that predicate
+            # accepts is routed, so `_face_reconstruction_is_unvalidated` is False here.
+            # Wired anyway, because it becomes reachable the moment that admission gate
+            # widens, and "every path that rewrites a CMap is guarded" is easier to hold
+            # than to re-derive.
             _patch_single_cmap(
                 doc,
                 to_unicode_xref,
                 _decline_authored_repha_rewrites(
                     pdf_map,
                     correction_map,
+                    font_name=font_name,
                     guessed=_reconstruction_guesses(correction_map),
                 ),
             )
@@ -1788,6 +1834,7 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
             _decline_authored_repha_rewrites(
                 pdf_maps[to_unicode_xref],
                 correction_map,
+                font_name=font_names[type0_xref],
                 guessed=metric_guessed.get(to_unicode_xref, frozenset()),
                 exempt=proven_repha_rewrites.get(to_unicode_xref, frozenset()),
             ),
