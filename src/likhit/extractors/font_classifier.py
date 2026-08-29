@@ -29,11 +29,13 @@ logger = logging.getLogger(__name__)
 # sample. What bounds the risk empirically: `kalimati` already fires on 4,879 corpus
 # documents of which 4,502 audit `clean`, and they stay clean.
 #
-# NOT here, and each one measured rather than assumed. Adding a family is a TRADE in
-# every case tried so far: the reconstruction maps enough glyphs to repair matras and
-# not enough to place the repha, so `matra_damage` improves while `repha_loss` degrades.
-# The document verdict is its worst axis, so the trade reads as a clean win in the
-# verdict counts -- measure both axes, and measure content, not verdicts.
+# NOT here, and each one measured rather than assumed. Adding a family has been a TRADE
+# in every case tried WITHOUT a reference table for it: the reconstruction maps enough
+# glyphs to repair matras and not enough to place the repha, so `matra_damage` improves
+# while `repha_loss` degrades. The document verdict is its worst axis, so the trade reads
+# as a clean win in the verdict counts -- measure both axes, and measure content, not
+# verdicts. `mangal` below is the case where the reference table was completed and the
+# trade went away, which localises the cause: incompleteness, not the routing.
 #
 #   kokila  -- 64 no-gate documents, all measured. 28 verdicts better, 0 worse, and
 #              repha-free canonical words +85.4% (7,746 -> 14,361). But four of them
@@ -47,8 +49,28 @@ logger = logging.getLogger(__name__)
 #              already has and is not firing on these four. Note the repair carries
 #              Kokila-specific corroboration-gated logic that is unreachable without
 #              this entry, so the guard is what unlocks it.
-#   mangal  -- 424 no-gate documents (294 clean); same trade shape, and its outline-keyed
-#              reference table is 74 of 492 mappings, which is the trade's cause.
+#   mangal  -- 2,874 documents carry a Mangal face by its OWN name table; 425 of them
+#              carry no Kalimati or Lohit at all, so nothing opens the gate for them
+#              (295 clean, 96 suspect, 34 garbled -- and those 34 are the entire
+#              matra-garbled cohort). Its outline-keyed reference table now exists:
+#              `mangal_reference.OUTLINE_TO_UNICODE`, 962 corroborated outlines,
+#              answering 98.2% of the glyph instances Mangal draws corpus-wide.
+#              Measured over ALL 425 on the bare extractor probe, routing this family
+#              WITH that table gives 74 verdicts better and 0 worse, `matra_damage`
+#              +80/-0, `repha_loss` +19/-0, `repha_corrupt` 9,482 -> 61, and +98,918
+#              Devanagari characters. WITHOUT it -- the one-line fix this entry used to
+#              describe -- the same population gives +78/-0 on matra but -20 on repha,
+#              doubles `repha_corrupt` to 18,346 and LOSES 20,915 Devanagari characters.
+#              At document grain the one-line fix takes 0 of the 34 garbled to clean;
+#              with the table 32 of 34 reach clean and none stays garbled.
+#              STILL NOT ROUTED, for one measured reason rather than a general one: a
+#              document whose CMap carries a COMPENSATING SWAP, where correcting one
+#              half of the pair and not the other is worse than correcting neither. Over
+#              2,874 documents that costs 173 canonical-word occurrences against 123,571
+#              gained, and every loss is a CID outside its own subset's glyph range, so
+#              no table can reach it -- that is what a refusal guard is for. Route this
+#              family once the guard lands, and re-measure rather than trusting this
+#              comment. Record: work/2026-08-29-v19-mangal-table/_recon/measurements/.
 #   nirmala -- 75 documents, 1 garbled.  arial unicode -- 100, 0 garbled.  utsaah -- 5.
 _KNOWN_BROKEN_CMAP = {"kalimati", "lohit"}
 
