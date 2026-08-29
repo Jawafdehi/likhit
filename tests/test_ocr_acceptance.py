@@ -9,8 +9,9 @@ Nepali audit report.
 
 The negative cases are the point, not decoration. The published corpus contains
 18 documents with zero Devanagari characters, 13 of them scoring `clean`, and one
-60-page English publication delivered entirely by OCR. A fix that drops English
-is a worse defect than the one it replaces.
+English publication, `11353`, delivered entirely by OCR -- all 20 of its pages
+carry zero Devanagari. A fix that drops English is a worse defect than the one it
+replaces.
 """
 
 from typing import cast

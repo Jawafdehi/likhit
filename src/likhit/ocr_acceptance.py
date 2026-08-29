@@ -19,10 +19,16 @@ corpus genuinely contains English: 18 of its 6,234 published documents hold zero
 Devanagari characters and 13 of those score `clean` -- English translations and
 executive summaries the Auditor General publishes himself. One document,
 `11353__82M-NRA_REPORT_2020_Summarized`, is an English publication delivered
-entirely by OCR: 60 of its pages carry no Devanagari at all and 116,250
-characters of legitimate content. A shape-only test ("too little Devanagari to
+entirely by OCR: ALL 20 of its pages carry zero Devanagari, and their 38,586
+characters are the whole document. A shape-only test ("too little Devanagari to
 be a transcription") deletes all of it. So low Devanagari is *necessary* and not
 sufficient: the page must also SAY that it was not transcribed.
+
+(That figure was first written here as "60 pages / 116,250 characters", which was
+OCR *rows* and their summed lengths -- three shards re-emitted the same 20 pages,
+so it triple-counted. 20 pages is the distinct-page count and 38,586 the sum over
+distinct pages. The conclusion is unchanged and in fact sharper: it is not part of
+a document, it is the entire document.)
 
 FOUR LEGS, because a decline has four observed shapes. A, B and C are ported from
 the OAG corpus tooling's `ocr_refusal.py`, where each threshold was placed against
