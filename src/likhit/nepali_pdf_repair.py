@@ -10,7 +10,15 @@ import fitz
 
 from likhit.errors import ExtractionError, ValidationError
 from likhit.extractors.base import TextFragment
-from likhit.extractors.font_based import get_cid_marked_page_dict, unmark_cid_ascii
+from likhit.extractors.font_based import (
+    _contains_scoped_private_use_marker,
+    _has_scoped_context_marker,
+    _protect_unscoped_context_markers,
+    _restore_protected_context_markers,
+    get_cid_marked_page_dict,
+    join_spans_with_layout,
+    unmark_cid_ascii,
+)
 from likhit.extractors.font_classifier import scan_pdf_fonts
 from likhit.extractors.kalimati import (
     fix_kalimati_cmap,
@@ -166,19 +174,28 @@ def _extract_fragments_and_tables(
         )
         page_dict = get_cid_marked_page_dict(page)
         lines_by_key: dict[
-            tuple[int, int], list[tuple[float, float, float, float, str]]
+            tuple[int, int], list[tuple[float, float, float, float, str, str]]
         ] = defaultdict(list)
 
         for block_number, block in enumerate(page_dict["blocks"]):
             if "lines" not in block:
                 continue
             for line_number, line in enumerate(block["lines"]):
-                for span in line["spans"]:
+                spans = list(line["spans"])
+                defer_contextual_reorder = any(
+                    _has_scoped_context_marker(
+                        str(span["text"]),
+                        str(span["font"]),
+                    )
+                    for span in spans
+                )
+                for span in spans:
                     text = _convert_span_text(
                         str(span["text"]),
                         str(span["font"]),
                         font_strategies,
                         needs_reorder=needs_reorder,
+                        defer_contextual_reorder=defer_contextual_reorder,
                     )
                     if not text.strip():
                         continue
@@ -190,6 +207,7 @@ def _extract_fragments_and_tables(
                             float(x1),
                             float(y1),
                             text,
+                            str(span["font"]),
                         )
                     )
 
@@ -203,7 +221,24 @@ def _extract_fragments_and_tables(
             ),
         ):
             ordered_words = sorted(line_words, key=lambda piece: piece[0])
-            line_text = "".join(piece[4] for piece in ordered_words)
+            protected_texts, protected_markers = _protect_unscoped_context_markers(
+                [(piece[4], piece[5]) for piece in ordered_words]
+            )
+            positioned_words = [
+                (piece[0], piece[1], piece[2], piece[3], protected_text)
+                for piece, protected_text in zip(
+                    ordered_words,
+                    protected_texts,
+                    strict=True,
+                )
+            ]
+            line_text = join_spans_with_layout(positioned_words)
+            if needs_reorder:
+                line_text = reorder_devanagari(line_text)
+            line_text = _restore_protected_context_markers(
+                line_text,
+                protected_markers,
+            )
             line_text = apply_line_numeric_boundary_repairs(
                 line_text,
                 numeric_repairs.get(
@@ -251,6 +286,7 @@ def _convert_span_text(
     font_strategies: dict[str, str],
     *,
     needs_reorder: bool,
+    defer_contextual_reorder: bool = False,
 ) -> str:
     base = font_name.split("+", 1)[-1] if "+" in font_name else font_name
     strategy = font_strategies.get(base, "correct")
@@ -271,9 +307,37 @@ def _convert_span_text(
     if is_symbol_pua_font(font_name):
         return remap_symbol_pua(text, font_name)
 
-    if strategy == "broken_cmap" and needs_reorder:
-        text = normalize_devanagari_spacing(text)
-        text = reorder_devanagari(text)
+    if needs_reorder and (
+        strategy == "broken_cmap"
+        or _contains_scoped_private_use_marker(text, font_name)
+    ):
+        protected_texts, protected_markers = _protect_unscoped_context_markers(
+            [(text, font_name)]
+        )
+        text = protected_texts[0]
+        # 🛑 Order matters here and only one order is right per branch, which review caught
+        # after this ran normalize AFTER reorder in both.
+        #
+        # Undeferred, upstream's order is required: normalize closes the gap in
+        # `क ⟨reph⟩ख` so the reorder that follows can attach the reph to its base, giving
+        # `र्कख`. Reversed, the reph resolves where it stands and the space survives it,
+        # shipping `क र्ख` -- an unattached reph, on a reachable input. Measured against
+        # upstream on all three of `क ⟨reph⟩ख`, `क ⟨ikar⟩ख` and `कार ⟨reph⟩`.
+        #
+        # Deferred, there is no reorder to feed: it is skipped entirely so the whole line's
+        # markers can resolve together at assembly. Normalizing is still wanted, with the
+        # marker spaces protected, because those spaces are what assembly reads.
+        if defer_contextual_reorder:
+            if strategy == "broken_cmap":
+                text = normalize_devanagari_spacing(
+                    text,
+                    preserve_marker_spaces=True,
+                )
+        else:
+            if strategy == "broken_cmap":
+                text = normalize_devanagari_spacing(text)
+            text = reorder_devanagari(text, resolve_contextual=False)
+        text = _restore_protected_context_markers(text, protected_markers)
     return text
 
 

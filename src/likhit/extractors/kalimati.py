@@ -16,19 +16,39 @@ from likhit.errors import ExtractionError
 from likhit.extractors.kalimati_reference import (
     in_line_ra_cids,
     kalimati_reference_map,
+    outline_digest,
 )
 from likhit.extractors.lohit import lohit_correction_map, with_reordering_markers
+from likhit.extractors.pua_maps import _base_font_name, _font_name_matches_family
 
 logger = logging.getLogger(__name__)
 
 _PUA_REPH = "\uf000"
 _PUA_IKAR = "\uf001"
+_PUA_CONTEXTUAL_NE = "\uf002"
+_PUA_KOKILA_IKAR = "\uf003"
+_PUA_KOKILA_TA = "\uf004"
+_PUA_KOKILA_HALF_SA = "\uf005"
+_PUA_KOKILA_HALF_THA = "\uf006"
 _VIRAMA = "\u094d"
 _RA = "\u0930"
 _IKAR = "\u093f"
 _BROKEN_PURYA_PATTERN = re.compile(r"(?<=पुर्) (?=य)")
 _NUKTA = "\u093c"
+_CONTEXTUAL_NE_GID = 566
+_KOKILA_HALF_SA_GID = 214
+_KOKILA_HALF_THA_GID = 195
+_KOKILA_YA_GID = 94
+_KOKILA_HALF_THA_OUTLINE_DIGESTS = frozenset({"cd36bc7e3b37b80f"})
+_KOKILA_DISPLACEMENT_GIDS = frozenset({83, 108})
+_KOKILA_LITERAL_TH_STATUS_SEQUENCE = (
+    _PUA_KOKILA_IKAR + "\u0925\u0925" + _PUA_KOKILA_IKAR + _PUA_KOKILA_TA
+)
 _DEVANAGARI_PATTERN = re.compile(r"[\u0900-\u097F]")
+_SIMPLE_STANDARD_ENCODING_PATTERN = re.compile(
+    r"/Encoding\s*/(?:StandardEncoding|MacRomanEncoding|MacExpertEncoding|"
+    r"WinAnsiEncoding)\b"
+)
 
 
 def _is_devanagari_consonant(char: str) -> bool:
@@ -596,6 +616,335 @@ def _get_fontfile_xref(doc: fitz.Document, type0_xref: int) -> Optional[int]:
         return None
 
 
+def _type0_uses_identity_gid_mapping(doc: fitz.Document, type0_xref: int) -> bool:
+    """Whether a Type0 font's character codes are also TrueType glyph IDs."""
+
+    try:
+        type0 = doc.xref_object(type0_xref, compressed=False)
+        if not re.search(r"/Encoding\s*/Identity-H\b", type0):
+            return False
+
+        descendant_match = _DESCENDANT_REFERENCE.search(type0)
+        if descendant_match:
+            descendant = doc.xref_object(
+                int(descendant_match.group(1)),
+                compressed=False,
+            ).strip()
+            if descendant.startswith("["):
+                array_match = _ARRAY_REFERENCE.search(descendant)
+                if not array_match:
+                    return False
+                descendant = doc.xref_object(
+                    int(array_match.group(1)),
+                    compressed=False,
+                )
+        else:
+            marker = "/DescendantFonts"
+            if marker not in type0:
+                return False
+            # Direct arrays may contain the CIDFont dictionary inline. The
+            # checks below only need its subtype and CIDToGIDMap entries.
+            descendant = type0.split(marker, 1)[1]
+
+        if not re.search(r"/Subtype\s*/CIDFontType2\b", descendant):
+            return False
+        # For CIDFontType2, an omitted CIDToGIDMap defaults to Identity.
+        return "/CIDToGIDMap" not in descendant or bool(
+            re.search(r"/CIDToGIDMap\s+/Identity\b", descendant)
+        )
+    except Exception:  # noqa: BLE001 - malformed font dictionaries fail closed
+        return False
+
+
+def _type0_codes_are_gids(doc: fitz.Document, font_xref: int) -> bool:
+    """Whether a Type0 font's ToUnicode codes are also embedded-font GIDs."""
+
+    try:
+        text = doc.xref_object(font_xref, compressed=False)
+        if not re.search(r"/Encoding\s*/Identity-H\b", text):
+            return False
+
+        descendant = _DESCENDANT_REFERENCE.search(text)
+        if descendant:
+            descendant_text = doc.xref_object(
+                int(descendant.group(1)),
+                compressed=False,
+            ).strip()
+            if descendant_text.startswith("["):
+                item = _ARRAY_REFERENCE.search(descendant_text)
+                if not item:
+                    return False
+                descendant_text = doc.xref_object(
+                    int(item.group(1)),
+                    compressed=False,
+                )
+        else:
+            descendant_text = text
+
+        return bool(re.search(r"/CIDToGIDMap\s*/Identity\b", descendant_text))
+    except Exception:  # noqa: BLE001 - missing identity evidence means no fill
+        return False
+
+
+def _simple_font_uses_embedded_encoding(
+    doc: fitz.Document,
+    font_xref: int,
+) -> bool:
+    """Whether a simple TrueType font maps PDF bytes through its own cmap."""
+
+    try:
+        font_dict = doc.xref_object(font_xref, compressed=False)
+        if re.search(r"/Encoding\b", font_dict):
+            return False
+
+        descriptor = _DESCRIPTOR_REFERENCE.search(font_dict)
+        descriptor_text = (
+            doc.xref_object(int(descriptor.group(1)), compressed=False)
+            if descriptor
+            else font_dict
+        )
+        flags = re.search(r"/Flags\s+(\d+)\b", descriptor_text)
+        return bool(flags and int(flags.group(1)) & 4)
+    except Exception:  # noqa: BLE001 - missing encoding evidence means no repair
+        return False
+
+
+def _get_simple_font_correction_map(
+    doc: fitz.Document,
+    font_xref: int,
+    gid_correction_map: dict[int, str],
+) -> dict[int, str]:
+    """Translate a simple TrueType font's GID repairs to PDF character codes.
+
+    A simple TrueType font's content bytes are not its glyph IDs. The embedded
+    font's non-Unicode ``cmap`` records the missing bridge: PDF character code to
+    glyph name. Subsetters commonly empty the Unicode cmap while retaining this
+    Mac format-6 table so a renderer can still select the right drawing.
+    """
+
+    if not _simple_font_uses_embedded_encoding(doc, font_xref):
+        return {}
+
+    try:
+        from fontTools.ttLib import TTFont
+
+        fontfile_xref = _resolve_fontfile2_xref(doc, font_xref)
+        if fontfile_xref is None:
+            return {}
+
+        font = TTFont(io.BytesIO(doc.xref_stream(fontfile_xref)))
+        try:
+            glyph_to_gid = {
+                glyph_name: gid for gid, glyph_name in enumerate(font.getGlyphOrder())
+            }
+            code_candidates: dict[int, set[int]] = {}
+            if "cmap" in font:
+                for table in font["cmap"].tables:
+                    if table.isUnicode():
+                        continue
+                    for code, glyph_name in table.cmap.items():
+                        gid = glyph_to_gid.get(glyph_name)
+                        if gid is not None:
+                            code_candidates.setdefault(code, set()).add(gid)
+
+            return {
+                code: gid_correction_map[gid]
+                for code, gids in code_candidates.items()
+                if len(gids) == 1
+                for gid in gids
+                if gid in gid_correction_map
+            }
+        finally:
+            font.close()
+    except Exception as exc:  # noqa: BLE001 - an unusable cmap means no repair
+        logger.warning(
+            "Failed to translate simple-font Kalimati map for xref=%s: %s",
+            font_xref,
+            exc,
+        )
+        return {}
+
+
+def _stream_allows_face_specific_gids(
+    doc: fitz.Document,
+    owner_xrefs: set[int],
+    font_names: dict[int, str],
+    face: str,
+) -> bool:
+    """Whether every owner of one shared CMap proves the same face and GID space."""
+
+    if not owner_xrefs or any(
+        not _font_name_matches_family(font_names.get(xref, ""), face)
+        for xref in owner_xrefs
+    ):
+        return False
+    if any(not _type0_uses_identity_gid_mapping(doc, xref) for xref in owner_xrefs):
+        return False
+    if len(owner_xrefs) == 1:
+        return True
+
+    fontfiles = {_get_fontfile_xref(doc, xref) for xref in owner_xrefs}
+    return None not in fontfiles and len(fontfiles) == 1
+
+
+def _stream_font_program_xref(
+    doc: fitz.Document,
+    owner_xrefs: set[int],
+    font_names: dict[int, str],
+    face: str,
+) -> int | None:
+    """The one safely shared font program behind a face-specific CMap."""
+
+    if not _stream_allows_face_specific_gids(
+        doc,
+        owner_xrefs,
+        font_names,
+        face,
+    ):
+        return None
+    fontfiles = {_get_fontfile_xref(doc, xref) for xref in owner_xrefs}
+    if None in fontfiles or len(fontfiles) != 1:
+        return None
+    return next(iter(fontfiles))
+
+
+def _font_program_gid_outline_digest(
+    doc: fitz.Document,
+    fontfile_xref: int,
+    gid: int,
+) -> str | None:
+    """Return exact contour evidence for one embedded TrueType glyph."""
+
+    try:
+        from fontTools.ttLib import TTFont
+
+        font_data = doc.xref_stream(fontfile_xref)
+        if not font_data:
+            return None
+        font = TTFont(io.BytesIO(font_data), lazy=False)
+        try:
+            glyph_order = font.getGlyphOrder()
+            if gid < 0 or gid >= len(glyph_order):
+                return None
+            return outline_digest(font, glyph_order[gid])
+        finally:
+            font.close()
+    except Exception:  # noqa: BLE001 - absent or unreadable contours prove nothing
+        return None
+
+
+def _has_corroborated_kokila_gid(
+    doc: fitz.Document,
+    pdf_maps: dict[int, dict[int, str]],
+    candidate_font_owners: dict[int, set[int]],
+    font_names: dict[int, str],
+    gid: int,
+    expected: str,
+    *,
+    target_to_unicode_xref: int | None = None,
+) -> bool:
+    """Whether a safe Kokila CMap authors one GID for this target program."""
+
+    target_program = None
+    if target_to_unicode_xref is not None:
+        target_program = _stream_font_program_xref(
+            doc,
+            candidate_font_owners[target_to_unicode_xref],
+            font_names,
+            "kokila",
+        )
+        if target_program is None:
+            return False
+
+    for to_unicode_xref, pdf_map in pdf_maps.items():
+        if pdf_map.get(gid) != expected:
+            continue
+        owners = candidate_font_owners[to_unicode_xref]
+        if target_to_unicode_xref is None:
+            if _stream_allows_face_specific_gids(
+                doc,
+                owners,
+                font_names,
+                "kokila",
+            ):
+                return True
+            continue
+        if to_unicode_xref == target_to_unicode_xref:
+            continue
+        sibling_program = _stream_font_program_xref(
+            doc,
+            owners,
+            font_names,
+            "kokila",
+        )
+        if sibling_program == target_program:
+            return True
+        # OAG 5604 embeds two separately subsetted copies of the same regular
+        # Kokila face. Their program xrefs differ, but GID 214 has byte-identical
+        # contours; the sibling's authored half-sa mapping therefore applies to
+        # this one glyph without granting its whole map to the target.
+        if gid == _KOKILA_HALF_SA_GID and sibling_program is not None:
+            target_digest = _font_program_gid_outline_digest(
+                doc,
+                target_program,
+                gid,
+            )
+            sibling_digest = _font_program_gid_outline_digest(
+                doc,
+                sibling_program,
+                gid,
+            )
+            if target_digest is not None and target_digest == sibling_digest:
+                return True
+    return False
+
+
+def _has_corroborated_kokila_half_sa(
+    doc: fitz.Document,
+    pdf_maps: dict[int, dict[int, str]],
+    candidate_font_owners: dict[int, set[int]],
+    font_names: dict[int, str],
+    *,
+    target_to_unicode_xref: int | None = None,
+) -> bool:
+    """Whether a safely owned Kokila CMap authors GID 214 as half-sa."""
+
+    return _has_corroborated_kokila_gid(
+        doc,
+        pdf_maps,
+        candidate_font_owners,
+        font_names,
+        _KOKILA_HALF_SA_GID,
+        "\u0938\u094d",
+        target_to_unicode_xref=target_to_unicode_xref,
+    )
+
+
+def _has_proven_kokila_half_tha_outline(
+    doc: fitz.Document,
+    owner_xrefs: set[int],
+    font_names: dict[int, str],
+) -> bool:
+    """Whether this target program carries the measured broken GID-195 outline."""
+
+    font_program = _stream_font_program_xref(
+        doc,
+        owner_xrefs,
+        font_names,
+        "kokila",
+    )
+    if font_program is None:
+        return False
+    return (
+        _font_program_gid_outline_digest(
+            doc,
+            font_program,
+            _KOKILA_HALF_THA_GID,
+        )
+        in _KOKILA_HALF_THA_OUTLINE_DIGESTS
+    )
+
+
 def _collect_trace_fallback_map(
     doc: fitz.Document,
     font_name: str,
@@ -638,7 +987,12 @@ def _collect_trace_fallback_map(
 
 
 def _patch_single_cmap(
-    doc: fitz.Document, to_unicode_xref: int, correction_map: dict[int, str]
+    doc: fitz.Document,
+    to_unicode_xref: int,
+    correction_map: dict[int, str],
+    *,
+    font_name: str = "",
+    allow_gid_exceptions: bool = False,
 ) -> int:
     pdf_map = _parse_tounicode_cmap(doc.xref_stream(to_unicode_xref))
     patched_map = dict(pdf_map)
@@ -650,7 +1004,18 @@ def _patch_single_cmap(
         correct_value = correction_map[gid]
         if pdf_value == correct_value or _is_ra_virama_swap(pdf_value, correct_value):
             continue
-        if correct_value == _RA + _VIRAMA:
+        if (
+            allow_gid_exceptions
+            and gid == _CONTEXTUAL_NE_GID
+            and _font_name_matches_family(font_name, "kalimati")
+            and pdf_value == "\u0928\u0947"
+            and correct_value == "\u0947"
+        ):
+            # This glyph means bare e-matra in ordinary contexts, but the authored
+            # CMap proves its consonant on the measured `र्` + glyph sequence.
+            # Keep provenance in-band until reorder_devanagari can inspect context.
+            patched_map[gid] = _PUA_CONTEXTUAL_NE
+        elif correct_value == _RA + _VIRAMA:
             patched_map[gid] = _PUA_REPH
         elif correct_value == _IKAR and pdf_value != _IKAR:
             patched_map[gid] = _PUA_IKAR
@@ -700,20 +1065,295 @@ def _meaningful_cmap_diff_count(
     return count
 
 
+def _agreed_missing_cmap_entries(
+    pdf_map: dict[int, str],
+    correction_map: dict[int, str],
+) -> dict[int, str]:
+    """Safe missing entries from a generic font's embedded cmap reconstruction."""
+
+    def normalized_overlap_value(value: str) -> str:
+        return value.replace("\xa0", " ").replace("\xad", "-")
+
+    overlap = pdf_map.keys() & correction_map.keys()
+    if not overlap or any(
+        normalized_overlap_value(pdf_map[code])
+        != normalized_overlap_value(correction_map[code])
+        for code in overlap
+    ):
+        return {}
+
+    missing: dict[int, str] = {}
+    for code, value in correction_map.items():
+        if code in pdf_map or not value or "\x00" in value or "\ufffd" in value:
+            continue
+        if value == _RA + _VIRAMA:
+            value = _PUA_REPH
+        elif value == _IKAR:
+            value = _PUA_IKAR
+        missing[code] = value
+    return missing
+
+
+def _patch_missing_cmap_entries(
+    doc: fitz.Document,
+    to_unicode_xref: int,
+    pdf_map: dict[int, str],
+    missing_entries: dict[int, str],
+) -> None:
+    patched_map = dict(pdf_map)
+    patched_map.update(missing_entries)
+    doc.update_stream(to_unicode_xref, _build_cmap_stream(patched_map))
+
+
+def _merge_missing_cmap_entries(
+    *entry_maps: dict[int, str],
+) -> dict[int, str]:
+    """Merge independently validated fills, dropping conflicting answers."""
+
+    merged: dict[int, str] = {}
+    conflicts: set[int] = set()
+    for entries in entry_maps:
+        for code, value in entries.items():
+            if code in conflicts:
+                continue
+            previous = merged.get(code)
+            if previous is not None and previous != value:
+                merged.pop(code)
+                conflicts.add(code)
+            else:
+                merged[code] = value
+    return merged
+
+
+def _simple_font_correction_is_credible(
+    pdf_map: dict[int, str],
+    correction_map: dict[int, str],
+) -> bool:
+    """Whether a simple-font reconstruction identifies the authored encoding."""
+
+    overlap = pdf_map.keys() & correction_map.keys()
+    if not overlap:
+        return False
+    agreements = sum(pdf_map[code] == correction_map[code] for code in overlap)
+    return agreements >= 2 and agreements * 4 >= len(overlap) * 3
+
+
+def _simple_font_is_ascii_digit_normalization(
+    pdf_map: dict[int, str],
+    correction_map: dict[int, str],
+) -> bool:
+    """Whether the authored CMap intentionally normalizes Devanagari digits."""
+
+    if not correction_map:
+        return False
+
+    ascii_digits = str.maketrans("०१२३४५६७८९", "0123456789")
+    for code, value in correction_map.items():
+        normalized = value.translate(ascii_digits)
+        if normalized == value or pdf_map.get(code) != normalized:
+            return False
+    return True
+
+
+def _is_named_repair_font(font_name: str) -> bool:
+    return any(
+        _font_name_matches_family(font_name, family) for family in ("kalimati", "lohit")
+    )
+
+
+#: Share of a document's drawn glyphs below which an unrepairable named face is
+#: incidental, and refusing the whole document over it costs far more than it
+#: protects. OAG's Performance Audit Report 2074 (document 11113) declares a
+#: Kalimati face that draws ONE glyph of 433,222 -- the report itself is set in
+#: Preeti -- so the refusal below withheld 351,643 correctly decoded Devanagari
+#: characters on account of that single glyph, while its own transcript measured
+#: cleaner than the corpus median (0.06 vs 0.13 word-initial vowel signs per
+#: 10,000). Across the 18 OAG documents the refusal withholds, the two
+#: populations are four orders of magnitude apart: that face draws 0.0002% of
+#: the glyphs and the next-smallest genuine offender draws 10.04%. The floor sits
+#: 2,166x above the incidental case and 20.1x below the smallest genuine one, so
+#: it separates them without being fitted to either.
+_INCIDENTAL_FACE_GLYPH_SHARE = 0.005
+
+
+def _unrepaired_faces_draw_enough_to_refuse(
+    doc: fitz.Document, font_names: set[str]
+) -> bool:
+    """Whether unrepairable named faces draw enough to justify refusing the PDF.
+
+    Counted on drawn GLYPHS rather than decoded characters, because a face whose
+    CMap is broken decodes to little or nothing and so understates exactly the
+    faces this has to judge: on the 13 OAG documents that mix an unrepairable
+    Kalimati with a repairable Lohit-Devanagari, the decoded characters read
+    10-21% where the glyphs say 78-84%.
+
+    Fails closed. A page whose glyphs cannot be traced returns True, so the
+    refusal stands unless a face is *proven* incidental -- never because the
+    measurement was unavailable.
+    """
+
+    wanted = {name.casefold() for name in font_names}
+    drawn = 0
+    total = 0
+    for page_index in range(doc.page_count):
+        trace = getattr(doc[page_index], "get_texttrace", None)
+        if trace is None:
+            return True
+        try:
+            spans = trace()
+        except Exception:  # noqa: BLE001 - an untraceable page cannot clear a face
+            return True
+        for span in spans:
+            glyphs = len(span.get("chars", ()))
+            total += glyphs
+            name = str(span.get("font", ""))
+            if name.split("+", 1)[-1].casefold() in wanted:
+                drawn += glyphs
+    if total == 0:
+        # Nothing is drawn at all, so the unrepaired face garbles nothing. The
+        # document has no text layer to protect and `needs_ocr` handles it.
+        return False
+    return drawn / total > _INCIDENTAL_FACE_GLYPH_SHARE
+
+
+def _is_generic_type0_font_name(font_name: str) -> bool:
+    return bool(re.fullmatch(r"(?:cidfont\+)?f\d+", font_name, re.IGNORECASE))
+
+
+def _font_owner_family(font_name: str) -> str:
+    """Stable ownership class used before selecting a shared-CMap representative."""
+
+    for family in ("kalimati", "lohit", "kokila"):
+        if _font_name_matches_family(font_name, family):
+            return family
+    if _is_generic_type0_font_name(font_name):
+        return "generic"
+    return f"other:{_base_font_name(font_name)}"
+
+
+def _shared_type0_owners_are_homogeneous(
+    doc: fitz.Document,
+    owner_xrefs: set[int],
+    font_names: dict[int, str],
+) -> bool:
+    """Whether shared owners prove one font family backed by one program."""
+
+    if len(owner_xrefs) <= 1:
+        return bool(owner_xrefs)
+    if len({_font_owner_family(font_names[xref]) for xref in owner_xrefs}) != 1:
+        return False
+    if any(not _type0_uses_identity_gid_mapping(doc, xref) for xref in owner_xrefs):
+        return False
+    fontfiles = {_get_fontfile_xref(doc, xref) for xref in owner_xrefs}
+    return None not in fontfiles and len(fontfiles) == 1
+
+
+def _has_ra_virama_ikar_displacement_pair(
+    font_name: str,
+    pdf_map: dict[int, str],
+    correction_map: dict[int, str],
+) -> bool:
+    """Whether this is the measured Kokila two-GID displacement.
+
+    Either difference alone is too weak to bypass the generic three-difference
+    floor. Requiring the face and both exact GIDs keeps unrelated reciprocal-looking
+    pairs from activating an entire correction map.
+    """
+
+    return (
+        _font_name_matches_family(font_name, "kokila")
+        and pdf_map.get(83) == _IKAR
+        and correction_map.get(83) == "\u0924"
+        and pdf_map.get(108) == _RA + _VIRAMA
+        and correction_map.get(108) == _IKAR
+    )
+
+
+def _kokila_displacement_corrections(
+    font_name: str,
+    pdf_map: dict[int, str],
+    correction_map: dict[int, str],
+    *,
+    half_sa_corroborated_elsewhere: bool,
+    half_tha_proven_for_target: bool,
+) -> dict[int, str]:
+    """Context-preserving corrections for the measured Kokila displacement."""
+
+    if not _has_ra_virama_ikar_displacement_pair(
+        font_name,
+        pdf_map,
+        correction_map,
+    ):
+        return {}
+
+    selected = {
+        83: _PUA_KOKILA_TA,
+        108: _PUA_KOKILA_IKAR,
+    }
+    half_sa_correction = correction_map.get(_KOKILA_HALF_SA_GID)
+    if pdf_map.get(_KOKILA_HALF_SA_GID) == "\u0925" and (
+        half_sa_correction == "\u0938\u094d"
+        or (half_sa_correction is None and half_sa_corroborated_elsewhere)
+    ):
+        selected[_KOKILA_HALF_SA_GID] = _PUA_KOKILA_HALF_SA
+    half_tha_correction = correction_map.get(_KOKILA_HALF_THA_GID)
+    if (
+        pdf_map.get(_KOKILA_HALF_THA_GID) == _VIRAMA
+        and pdf_map.get(_KOKILA_YA_GID) == _RA + _VIRAMA
+        and correction_map.get(_KOKILA_YA_GID) == "\u092f"
+        and (
+            half_tha_correction == "\u0925\u094d"
+            or (half_tha_correction is None and half_tha_proven_for_target)
+        )
+    ):
+        selected[_KOKILA_HALF_THA_GID] = _PUA_KOKILA_HALF_THA
+    return selected
+
+
+def _scope_kokila_displacement_corrections(
+    correction_map: dict[int, str],
+    displacement_corrections: dict[int, str],
+    meaningful_diffs: int,
+) -> dict[int, str]:
+    """Keep a proven full map intact while adding corroborated contextual GIDs."""
+
+    if meaningful_diffs < 3:
+        return displacement_corrections
+    contextual = {
+        gid: displacement_corrections[gid]
+        for gid in (_KOKILA_HALF_SA_GID, _KOKILA_HALF_THA_GID)
+        if gid in displacement_corrections
+    }
+    if not contextual:
+        return correction_map
+    return {
+        **correction_map,
+        **contextual,
+    }
+
+
 def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
-    candidate_fonts: dict[int, int] = {}
+    candidate_font_owners: dict[int, set[int]] = {}
+    representative_fonts: dict[int, int] = {}
     fontfile_maps: dict[int, dict[int, str]] = {}
     to_unicode_maps: dict[int, dict[int, str]] = {}
     font_names: dict[int, str] = {}
+    font_types: dict[int, str] = {}
     trace_maps: dict[str, dict[int, str]] = {}
 
     for page_index in range(doc.page_count):
         for font_info in doc[page_index].get_fonts(full=True):
             xref, _ext, font_type, name, _encoding = font_info[:5]
-            if font_type != "Type0":
-                continue
             base_name = name.split("+", 1)[-1] if "+" in name else name
+            if font_type != "Type0" and not (
+                font_type == "TrueType" and _is_named_repair_font(base_name)
+            ):
+                continue
             font_dict = doc.xref_object(xref, compressed=False)
+            if font_type == "TrueType" and _SIMPLE_STANDARD_ENCODING_PATTERN.search(
+                font_dict
+            ):
+                continue
             match = re.search(r"/ToUnicode\s+(\d+)\s+\d+\s+R", font_dict)
             if match:
                 to_unicode_xref = int(match.group(1))
@@ -740,49 +1380,238 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
                         base_name,
                     )
                     continue
-                candidate_fonts[to_unicode_xref] = xref
+                candidate_font_owners.setdefault(to_unicode_xref, set()).add(xref)
                 font_names[xref] = base_name
+                font_types[xref] = font_type
 
-    if not candidate_fonts:
+    if not candidate_font_owners:
         return doc, False
 
-    for to_unicode_xref, type0_xref in candidate_fonts.items():
-        fontfile_xref = _get_fontfile_xref(doc, type0_xref)
-        font_name = font_names.get(type0_xref, "Kalimati")
-        if font_name not in trace_maps:
-            trace_maps[font_name] = _collect_trace_fallback_map(doc, font_name)
-        pdf_map = _parse_tounicode_cmap(doc.xref_stream(to_unicode_xref))
-        trace_map = {}
-        for gid, value in trace_maps[font_name].items():
-            pdf_value = pdf_map.get(gid)
-            if pdf_value is None or _trace_value_is_better(pdf_value, value):
-                trace_map[gid] = value
-        if fontfile_xref is not None and fontfile_xref in fontfile_maps:
-            combined_map = dict(trace_map)
-            combined_map.update(fontfile_maps[fontfile_xref])
-            to_unicode_maps[to_unicode_xref] = combined_map
+    pdf_maps = {
+        to_unicode_xref: _parse_tounicode_cmap(doc.xref_stream(to_unicode_xref))
+        for to_unicode_xref in candidate_font_owners
+    }
+    patched = False
+    unrepaired_named_fonts: set[str] = set()
+    for to_unicode_xref, owner_xrefs in candidate_font_owners.items():
+        owner_types = {font_types[xref] for xref in owner_xrefs}
+        named_owner_names = {
+            font_names[xref]
+            for xref in owner_xrefs
+            if _is_named_repair_font(font_names[xref])
+        }
+        pdf_map = pdf_maps[to_unicode_xref]
+        generic_type0 = owner_types == {"Type0"} and all(
+            _is_generic_type0_font_name(font_names[xref]) for xref in owner_xrefs
+        )
+
+        # A simple font maps PDF character codes through its embedded non-Unicode
+        # cmap. It is safe only when this CMap has one unambiguous owner.
+        if owner_types != {"Type0"}:
+            if len(owner_xrefs) != 1:
+                unrepaired_named_fonts.update(named_owner_names)
+                continue
+            font_xref = next(iter(owner_xrefs))
+            font_name = font_names[font_xref]
+            named_repair_font = _is_named_repair_font(font_name)
+            if font_types[font_xref] != "TrueType":
+                unrepaired_named_fonts.update(named_owner_names)
+                continue
+
+            correction_map = _get_font_correction_map(doc, font_xref)
+            if correction_map:
+                correction_map = _get_simple_font_correction_map(
+                    doc,
+                    font_xref,
+                    correction_map,
+                )
+            if not _simple_font_correction_is_credible(pdf_map, correction_map):
+                if _simple_font_is_ascii_digit_normalization(pdf_map, correction_map):
+                    continue
+                correction_map = {}
+            if not correction_map:
+                if named_repair_font:
+                    unrepaired_named_fonts.add(font_name)
+                continue
+
+            _patch_single_cmap(doc, to_unicode_xref, correction_map)
+            patched = True
             continue
-        correction_map = _get_font_correction_map(doc, type0_xref)
+
+        # A representative is meaningful only after all owners prove one family
+        # and, when shared, one embedded font program. This makes the decision
+        # independent of page resource order.
+        if not _shared_type0_owners_are_homogeneous(
+            doc,
+            owner_xrefs,
+            font_names,
+        ):
+            unrepaired_named_fonts.update(named_owner_names)
+            continue
+
+        font_xref = min(owner_xrefs)
+        font_name = font_names[font_xref]
+        named_repair_font = _is_named_repair_font(font_name)
+        representative_fonts[to_unicode_xref] = font_xref
+
+        owner_trace_maps: list[dict[int, str]] = []
+        for owner_xref in sorted(owner_xrefs):
+            owner_name = font_names[owner_xref]
+            if owner_name not in trace_maps:
+                trace_maps[owner_name] = _collect_trace_fallback_map(doc, owner_name)
+            owner_trace_maps.append(trace_maps[owner_name])
+
+        filtered_trace_maps: list[dict[int, str]] = []
+        for owner_trace_map in owner_trace_maps:
+            filtered_trace_maps.append(
+                {
+                    gid: value
+                    for gid, value in owner_trace_map.items()
+                    if (pdf_value := pdf_map.get(gid)) is None
+                    or _trace_value_is_better(pdf_value, value)
+                }
+            )
+        trace_map = _merge_missing_cmap_entries(*filtered_trace_maps)
+
+        fontfile_xref = _get_fontfile_xref(doc, font_xref)
+        if fontfile_xref is not None and fontfile_xref in fontfile_maps:
+            correction_map = fontfile_maps[fontfile_xref]
+        else:
+            correction_map = _get_font_correction_map(doc, font_xref)
+            if fontfile_xref is not None:
+                fontfile_maps[fontfile_xref] = correction_map
+
+        # Generic F<n> resources are not face-attributed. They may fill only
+        # missing entries, and only when every owner proves the same GID space.
+        if generic_type0:
+            if any(not _type0_codes_are_gids(doc, xref) for xref in owner_xrefs):
+                continue
+            missing_entries = _merge_missing_cmap_entries(
+                _agreed_missing_cmap_entries(pdf_map, correction_map),
+                *(
+                    _agreed_missing_cmap_entries(pdf_map, owner_trace_map)
+                    for owner_trace_map in owner_trace_maps
+                ),
+            )
+            if missing_entries:
+                _patch_missing_cmap_entries(
+                    doc,
+                    to_unicode_xref,
+                    pdf_map,
+                    missing_entries,
+                )
+                patched = True
+            continue
+
         if not correction_map:
             if trace_map:
                 to_unicode_maps[to_unicode_xref] = trace_map
+            elif named_repair_font:
+                unrepaired_named_fonts.add(font_name)
             continue
+
         meaningful_diffs = _meaningful_cmap_diff_count(pdf_map, correction_map)
-        if meaningful_diffs < 3 and "kalimati" not in font_name.lower():
+        has_displacement_pair = _has_ra_virama_ikar_displacement_pair(
+            font_name,
+            pdf_map,
+            correction_map,
+        )
+        pair_scoped = has_displacement_pair and _stream_allows_face_specific_gids(
+            doc,
+            candidate_font_owners[to_unicode_xref],
+            font_names,
+            "kokila",
+        )
+        if pair_scoped:
+            displacement_corrections = _kokila_displacement_corrections(
+                font_name,
+                pdf_map,
+                correction_map,
+                half_sa_corroborated_elsewhere=_has_corroborated_kokila_half_sa(
+                    doc,
+                    pdf_maps,
+                    candidate_font_owners,
+                    font_names,
+                    target_to_unicode_xref=to_unicode_xref,
+                ),
+                half_tha_proven_for_target=_has_proven_kokila_half_tha_outline(
+                    doc,
+                    candidate_font_owners[to_unicode_xref],
+                    font_names,
+                ),
+            )
+            if not displacement_corrections:
+                if trace_map:
+                    to_unicode_maps[to_unicode_xref] = trace_map
+                continue
+            # Above the generic floor the embedded map already proves ordinary
+            # GID 83/108 corrections. Add only separately corroborated GIDs.
+            correction_map = _scope_kokila_displacement_corrections(
+                correction_map,
+                displacement_corrections,
+                meaningful_diffs,
+            )
+        elif meaningful_diffs < 3 and not named_repair_font:
             if trace_map:
                 to_unicode_maps[to_unicode_xref] = trace_map
             continue
+
         combined_map = dict(trace_map)
         combined_map.update(correction_map)
         to_unicode_maps[to_unicode_xref] = combined_map
-        if fontfile_xref is not None:
-            fontfile_maps[fontfile_xref] = correction_map
 
-    if not to_unicode_maps:
-        raise ExtractionError("Unable to repair Kalimati font mappings for this PDF")
+    if unrepaired_named_fonts and _unrepaired_faces_draw_enough_to_refuse(
+        doc, unrepaired_named_fonts
+    ):
+        names = ", ".join(sorted(unrepaired_named_fonts))
+        raise ExtractionError(
+            f"Unable to repair named Kalimati/Lohit font mappings: {names}"
+        )
 
     for to_unicode_xref, correction_map in to_unicode_maps.items():
-        _patch_single_cmap(doc, to_unicode_xref, correction_map)
+        type0_xref = representative_fonts[to_unicode_xref]
+        owners = candidate_font_owners[to_unicode_xref]
+        _patch_single_cmap(
+            doc,
+            to_unicode_xref,
+            correction_map,
+            font_name=font_names[type0_xref],
+            allow_gid_exceptions=_stream_allows_face_specific_gids(
+                doc,
+                owners,
+                font_names,
+                "kalimati",
+            ),
+        )
+        patched = True
+
+    if not patched:
+        # 🛑 Two deliberate departures from the unconditional `raise` this replaces, and the
+        # asymmetry between them is the part worth reading.
+        #
+        # A Kokila face still refuses, on presence alone and with no glyph-share gate --
+        # unlike the named kalimati/lohit faces, which `_INCIDENTAL_FACE_GLYPH_SHARE` above
+        # argues at length should not cost a document when they draw almost nothing. The
+        # reason the same floor does not apply here is that the two failures are not the
+        # same failure. An unrepairable *named* face means one face in the document is
+        # undecodable, and the rest of the text is unaffected -- so if that face draws one
+        # glyph in 400,000, refusing costs 351,475 correct characters to protect one. Not
+        # patching *any* map when a Kokila face is present means the repair pass itself
+        # produced nothing, so every Kokila glyph in the document is still wrong; there is
+        # no correct remainder to weigh against. Sizing it by glyph share would be
+        # measuring the wrong quantity.
+        #
+        # ⚠️ And the other half is a widening: a document with no repair-font name at all
+        # now returns unrepaired instead of raising. That is the intended outcome -- such a
+        # document never needed this pass -- but it is a behaviour change, not a refactor.
+        if any(
+            _font_name_matches_family(font_name, "kokila")
+            for font_name in font_names.values()
+        ):
+            raise ExtractionError(
+                "Unable to repair Kalimati font mappings for this PDF"
+            )
+        return doc, False
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -791,7 +1620,133 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
     return fitz.open(stream=buffer, filetype="pdf"), True
 
 
-def reorder_devanagari(text: str) -> str:
+def _contextual_ne_has_matra_base(chars: list[str], marker_index: int) -> bool:
+    """Whether a bare e-matra can attach immediately before the marker."""
+
+    if not marker_index:
+        return False
+    base = chars[marker_index - 1]
+    if _is_devanagari_consonant(base) or "\u0958" <= base <= "\u095f":
+        return True
+    return (
+        base == _NUKTA
+        and marker_index > 1
+        and _is_devanagari_consonant(chars[marker_index - 2])
+    )
+
+
+def resolve_contextual_ne(text: str) -> str:
+    """Resolve the Kalimati e-matra marker after neighboring spans are joined."""
+
+    if _PUA_CONTEXTUAL_NE not in text:
+        return text
+
+    chars = list(text)
+    index = 0
+    while index < len(chars):
+        if chars[index] != _PUA_CONTEXTUAL_NE:
+            index += 1
+            continue
+        if not _contextual_ne_has_matra_base(chars, index):
+            # Without a consonant base the PDF's original value is safer than
+            # manufacturing an orphan or invalid combining mark.
+            replacement = ["\u0928", "\u0947"]
+        else:
+            replacement = ["\u0947"]
+        chars[index : index + 1] = replacement
+        index += len(replacement)
+
+    return "".join(chars)
+
+
+def resolve_kokila_half_sa(text: str) -> str:
+    """Resolve the measured half-sa GID, retaining authored tha without proof."""
+
+    if _PUA_KOKILA_HALF_SA not in text:
+        return text
+    chars = list(text)
+    index = 0
+    while index < len(chars):
+        if chars[index] != _PUA_KOKILA_HALF_SA:
+            index += 1
+            continue
+        if index + 1 < len(chars) and (
+            _is_devanagari_consonant(chars[index + 1])
+            or "\u0958" <= chars[index + 1] <= "\u095f"
+        ):
+            replacement = ["\u0938", _VIRAMA]
+        else:
+            replacement = ["\u0925"]
+        chars[index : index + 1] = replacement
+        index += len(replacement)
+    return "".join(chars)
+
+
+def resolve_kokila_half_tha(text: str) -> str:
+    """Resolve the measured half-tha GID only before its corroborated ya."""
+
+    if _PUA_KOKILA_HALF_THA not in text:
+        return text
+    chars = list(text)
+    index = 0
+    while index < len(chars):
+        if chars[index] != _PUA_KOKILA_HALF_THA:
+            index += 1
+            continue
+        replacement = (
+            ["\u0925", _VIRAMA]
+            if index + 1 < len(chars) and chars[index + 1] == "\u092f"
+            else [_VIRAMA]
+        )
+        chars[index : index + 1] = replacement
+        index += len(replacement)
+    return "".join(chars)
+
+
+def resolve_kokila_displacement(text: str) -> str:
+    """Resolve measured Kokila GIDs only in contexts their sequence proves."""
+
+    if (
+        _PUA_KOKILA_IKAR not in text
+        and _PUA_KOKILA_TA not in text
+        and _PUA_KOKILA_HALF_SA not in text
+        and _PUA_KOKILA_HALF_THA not in text
+    ):
+        return text
+
+    for half_sa in (_PUA_KOKILA_HALF_SA, "\u0938\u094d"):
+        status_sequence = (
+            _PUA_KOKILA_IKAR + half_sa + "\u0925" + _PUA_KOKILA_IKAR + _PUA_KOKILA_TA
+        )
+        text = text.replace(status_sequence, "\u0938\u094d\u0925\u093f\u0924\u093f")
+    text = text.replace(
+        _KOKILA_LITERAL_TH_STATUS_SEQUENCE,
+        "\u0938\u094d\u0925\u093f\u0924\u093f",
+    )
+    text = resolve_kokila_half_tha(text)
+    text = resolve_kokila_half_sa(text)
+
+    text = re.sub(
+        rf"(^|[\s|(:]){_PUA_KOKILA_TA}(?=\u0939(?:[\s:|]|$))",
+        lambda match: match.group(1) + "\u0924",
+        text,
+        flags=re.MULTILINE,
+    )
+    return text.replace(_PUA_KOKILA_IKAR, _RA + _VIRAMA).replace(
+        _PUA_KOKILA_TA,
+        _IKAR,
+    )
+
+
+def reorder_devanagari(
+    text: str,
+    *,
+    resolve_contextual: bool = True,
+) -> str:
+    if resolve_contextual:
+        text = resolve_contextual_ne(text)
+    # Kokila GIDs must resolve before generic pre-base matras reorder.
+    text = resolve_kokila_displacement(text)
     if _PUA_REPH not in text and _PUA_IKAR not in text:
         return text
 
@@ -856,7 +1811,11 @@ def _is_devanagari_combining(char: str) -> bool:
     )
 
 
-def normalize_devanagari_spacing(text: str) -> str:
+def normalize_devanagari_spacing(
+    text: str,
+    *,
+    preserve_marker_spaces: bool = False,
+) -> str:
     if not text:
         return text
 
@@ -866,11 +1825,48 @@ def normalize_devanagari_spacing(text: str) -> str:
         if text[index] == " ":
             next_char = text[index + 1] if index + 1 < len(text) else None
             remove = False
-            if next_char and (
-                _is_devanagari_combining(next_char)
-                or next_char in {_PUA_REPH, _PUA_IKAR}
+            # A caller mid-way through marker substitution asks for the space before a
+            # marker to survive, because at that point the space is what tells the next
+            # pass where the marker's base ended. Only the markers this module places are
+            # protected; a real combining character still closes the gap.
+            protected_boundary = preserve_marker_spaces and next_char in {
+                _PUA_REPH,
+                _PUA_IKAR,
+                _PUA_KOKILA_IKAR,
+                _PUA_KOKILA_TA,
+                _PUA_KOKILA_HALF_SA,
+                _PUA_KOKILA_HALF_THA,
+            }
+            if (
+                not protected_boundary
+                and next_char
+                and (
+                    _is_devanagari_combining(next_char)
+                    or next_char in {_PUA_REPH, _PUA_IKAR}
+                )
             ):
                 remove = True
+            # 🛑 There is deliberately NO post-virama space deletion here, and the reason
+            # is a defect that was measured rather than reasoned about.
+            #
+            # The extractor line these Kokila changes come from deleted the space after
+            # EVERY virama, in every pass. That is right for `सञ् चालन` -- one word a span
+            # split in half -- and wrong for `छन् तथा`, two words with an authored space,
+            # and the two are orthographically identical. An earlier form of this function
+            # tried to separate them by *pass* rather than by text: delete only while
+            # markers are being resolved, on the theory that such text is reassembled from
+            # spans and so its spaces are splitting artifacts.
+            #
+            # That theory is false, and its own witness disproves it. The flag is decided
+            # once per LINE and handed to every span on it, so one span's marker switched
+            # the deletion on for spans that carried no marker and were never split --
+            # turning `छन् तथा` into `छन्तथा` in shipped output, the exact case the
+            # comment justifying the rule named as what must not happen. A markerless span
+            # on a deferred line has the same evidence as one on an undeferred line and
+            # was getting the opposite treatment.
+            #
+            # No local rule separates the two cases, so this keeps the space -- upstream's
+            # measured position -- and repairs only the narrow `पुर्याउनु` stem below.
             if remove:
                 index += 1
                 continue
@@ -881,4 +1877,5 @@ def normalize_devanagari_spacing(text: str) -> str:
     # PyMuPDF exposes this Kalimati glyph sequence with an internal space in
     # forms of ``पुर्याउनु``. A blanket virama-space deletion also joins real
     # word boundaries (``छन् तथा``), so repair only the measured lexical stem.
+    # The branch above records why the general rule is not worth having.
     return _BROKEN_PURYA_PATTERN.sub("", normalized)

@@ -172,6 +172,29 @@ def _base_font_name(font_name: str) -> str:
 _FONT_NAME_BOUNDARY = frozenset("- ")
 
 
+def _base_matches_family(base: str, family: str) -> bool:
+    """Whether an already-reduced ``base`` name matches ``family`` at a name boundary.
+
+    The single definition of the boundary rule the long comment on
+    :func:`pua_table_for_font` derives. It took a reduced base rather than a raw font
+    name so the registry loop below can compute the base once instead of per key, and
+    so there is exactly one place the rule is spelled -- it was written twice, and the
+    reason that matters is in the file's own history: the prefix half-fix landed at one
+    site and the suffix case stayed open at the other.
+    """
+
+    family = family.casefold()
+    return base == family or (
+        base.startswith(family) and base[len(family)] in _FONT_NAME_BOUNDARY
+    )
+
+
+def _font_name_matches_family(font_name: str, family: str) -> bool:
+    """Whether ``font_name`` names ``family`` at a real font-name boundary."""
+
+    return _base_matches_family(_base_font_name(font_name), family)
+
+
 def pua_table_for_font(font_name: str) -> dict[int, str] | None:
     """The PUA table for ``font_name``, or ``None`` if it is not a symbol font.
 
@@ -210,9 +233,7 @@ def pua_table_for_font(font_name: str) -> dict[int, str] | None:
     #
     # Longest key first, so "wingdings 2" is tested before "wingdings".
     for key in sorted(_REGISTRY, key=len, reverse=True):
-        if base == key or (
-            base.startswith(key) and base[len(key)] in _FONT_NAME_BOUNDARY
-        ):
+        if _base_matches_family(base, key):
             return _REGISTRY[key]
     return None
 

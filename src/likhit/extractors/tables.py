@@ -66,6 +66,55 @@ def merge_continuation_tables(tables: list[Table]) -> list[Table]:
     return merged
 
 
+def merge_continuation_table_variants(
+    primary_tables: list[Table],
+    variant_tables: list[Table],
+) -> list[Table]:
+    """Merge text variants using only the primary tables' continuation decisions."""
+
+    if len(primary_tables) != len(variant_tables):
+        raise ValueError("table variant count does not match primary table count")
+
+    pairs = sorted(
+        zip(primary_tables, variant_tables, strict=True),
+        key=lambda pair: (pair[0].page_number, pair[0].index),
+    )
+    merged_primary: list[Table] = []
+    merged_variants: list[Table] = []
+    for primary, variant in pairs:
+        if not _same_table_structure(primary, variant):
+            raise ValueError("table variant changes primary table structure")
+
+        if merged_primary and _should_merge_tables(merged_primary[-1], primary):
+            drop_count = _shared_header_prefix(merged_primary[-1], primary)
+            merged_primary[-1] = _merge_table_pair_with_drop_count(
+                merged_primary[-1],
+                primary,
+                drop_count,
+            )
+            merged_variants[-1] = _merge_table_pair_with_drop_count(
+                merged_variants[-1],
+                variant,
+                drop_count,
+            )
+            continue
+
+        merged_primary.append(primary)
+        merged_variants.append(variant)
+    return merged_variants
+
+
+def _same_table_structure(primary: Table, variant: Table) -> bool:
+    return (
+        primary.row_count == variant.row_count
+        and primary.col_count == variant.col_count
+        and primary.index == variant.index
+        and primary.regions == variant.regions
+        and [(cell.row, cell.col, cell.rowspan, cell.colspan) for cell in primary.cells]
+        == [(cell.row, cell.col, cell.rowspan, cell.colspan) for cell in variant.cells]
+    )
+
+
 def _build_table(
     fitz_table: object,
     page_fragments: list[TextFragment],
@@ -601,6 +650,14 @@ def _should_merge_tables(current: Table, next_table: Table) -> bool:
 
 def _merge_table_pair(current: Table, next_table: Table) -> Table:
     drop_count = _shared_header_prefix(current, next_table)
+    return _merge_table_pair_with_drop_count(current, next_table, drop_count)
+
+
+def _merge_table_pair_with_drop_count(
+    current: Table,
+    next_table: Table,
+    drop_count: int,
+) -> Table:
     next_cells = []
     row_offset = current.row_count
 
