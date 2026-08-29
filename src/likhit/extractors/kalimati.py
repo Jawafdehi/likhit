@@ -1181,8 +1181,8 @@ def _rewrite_discards_authored_repha(pdf_value: str, correct_value: str) -> bool
     when a face it *cannot repair at all* draws more than an incidental share of it.
     That decision is keyed on :func:`_is_named_repair_font` -- which matches only
     ``kalimati`` and ``lohit`` -- and is reached only when the correction map came back
-    empty. Neither holds for the case here: the faces are Mangal and Kokila, their
-    correction maps are large, and the repair runs. The two mechanisms answer different
+    empty. Neither holds for the case here: the faces are Mangal and Arial Unicode MS,
+    their correction maps are large, and the repair runs. The two mechanisms answer different
     questions and are deliberately kept apart.
     """
 
