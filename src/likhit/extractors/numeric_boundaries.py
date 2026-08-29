@@ -401,7 +401,7 @@ def collect_page_repairs_by_line(
     page: object,
     *,
     page_number: int,
-) -> dict[tuple[int, int, int], list[NumericBoundaryRepair]]:
+) -> dict[tuple[int, float, float], list[NumericBoundaryRepair]]:
     """Collect and index one page's repairs, degrading to none on failure.
 
     Both extraction entry points call this rather than pairing the collector
