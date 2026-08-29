@@ -1053,6 +1053,101 @@ def _patch_single_cmap(
     return corrections
 
 
+def _rewrite_discards_authored_repha(pdf_value: str, correct_value: str) -> bool:
+    """True when a reconstruction re-identifies an authored repha as a bare mark.
+
+    A repha (``र`` + virama) is a member of a consonant cluster; a dependent vowel
+    sign is not. No shaping makes one glyph both, so a reconstruction offering a bare
+    vowel sign for a glyph whose ``/ToUnicode`` says ``र्`` is not correcting that
+    mapping -- it is claiming a different glyph identity, with the PDF's own authored
+    value as the only direct evidence about the text either way. This predicate says
+    when that has happened, so :func:`_decline_authored_repha_rewrites` can keep the
+    authored value.
+
+    ⚠️ A repha rewritten to something *containing a consonant* is the opposite case
+    and is deliberately NOT matched. That is the known displaced-CMap shape this
+    module exists to repair: the PDF says ``र्`` where the embedded program says
+    ``य``/``ष``/``च`` because the authored table is shifted, and the reconstruction is
+    right. Measured over the 64-document no-gate Kokila population, the two classes do
+    not overlap at all -- 111 GIDs / 13,354 drawn glyphs rewrite an authored ``र्`` to
+    a value carrying a consonant, and 12 GIDs / 1,106 drawn glyphs rewrite one to a
+    bare vowel sign. Only the second class is declined here, so nothing that carries
+    the repair's measured gain is touched.
+
+    The vowel-sign test is exactly :func:`_is_devanagari_matra` and is not widened to
+    anusvara, candrabindu or nukta: :func:`_infer_mark_variants`, which produces every
+    value this predicate has been observed to decline, can only ever emit one of five
+    dependent vowel signs (``ि``, ``ु``, ``ू``, ``े``, ``ै``), all inside that range.
+    Widening past the measured population would be speculation.
+
+    What this is NOT: :data:`_INCIDENTAL_FACE_GLYPH_SHARE` refuses a whole *document*
+    when a face it *cannot repair at all* draws more than an incidental share of it.
+    That decision is keyed on :func:`_is_named_repair_font` -- which matches only
+    ``kalimati`` and ``lohit`` -- and is reached only when the correction map came back
+    empty. Neither holds for the case here: the faces are Mangal and Kokila, their
+    correction maps are large, and the repair runs. The two mechanisms answer different
+    questions and are deliberately kept apart.
+    """
+
+    if _RA + _VIRAMA not in pdf_value or _RA + _VIRAMA in correct_value:
+        return False
+    return bool(correct_value) and all(
+        _is_devanagari_matra(char) for char in correct_value
+    )
+
+
+def _decline_authored_repha_rewrites(
+    pdf_map: dict[int, str],
+    correction_map: dict[int, str],
+    *,
+    exempt: Container[int] = frozenset(),
+) -> dict[int, str]:
+    """Drop reconstruction entries that would discard an authored repha.
+
+    Dropping the entry rather than skipping it inside :func:`_patch_single_cmap` is
+    what keeps the authored value: a GID absent from the correction map is left at
+    whatever the PDF's CMap already said, and the fill loop there only writes GIDs the
+    PDF has no entry for. It also leaves :func:`_meaningful_cmap_diff_count` reading
+    the *unfiltered* reconstruction, which is correct -- that count answers "does the
+    embedded program disagree with the authored table", which is still true of a
+    disagreement this declines to act on, and the Kokila displacement fingerprint is
+    built on one such disagreement (GID 108, authored ``र्``, program ``ि``).
+
+    ``exempt`` carries GIDs whose repha rewrite is separately proven, so the guard
+    defers to evidence rather than overriding it. The one caller passes
+    :data:`_KOKILA_DISPLACEMENT_GIDS` for a face-scoped, corroborated displacement
+    pair; without that, this guard would silently disable the measured GID 83/108
+    repair on the documents where the embedded map proves it outright.
+
+    Scope is per GID inside a per-face reconstruction, which is what the code
+    structure and the measurement both ask for. The correction map is built and cached
+    per embedded font program (``fontfile_maps``) and applied per ``/ToUnicode``
+    stream, so a face is the coarsest unit that has a reconstruction at all -- and on
+    the four documents where this bites, the harmful rewrites are 8 GIDs out of 141
+    the same faces rewrite correctly. Declining the face would forfeit the matra
+    repair that takes all four from ``garbled`` to ``suspect``
+    (``malformed_conjunct_ra`` 183/233/230/318 -> 0); declining the document would
+    forfeit the whole 64-document gain.
+    """
+
+    declined = {
+        gid
+        for gid, correct_value in correction_map.items()
+        if gid not in exempt
+        and gid in pdf_map
+        and _rewrite_discards_authored_repha(pdf_map[gid], correct_value)
+    }
+    if not declined:
+        return correction_map
+    logger.debug(
+        "Declining %d reconstruction entr%s that would discard an authored repha: %s",
+        len(declined),
+        "y" if len(declined) == 1 else "ies",
+        sorted(declined),
+    )
+    return {gid: value for gid, value in correction_map.items() if gid not in declined}
+
+
 def _meaningful_cmap_diff_count(
     pdf_map: dict[int, str],
     correction_map: dict[int, str],
@@ -1400,6 +1495,10 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
     }
     patched = False
     unrepaired_named_fonts: set[str] = set()
+    #: Per CMap, the GIDs whose repha rewrite is separately proven and so exempt from
+    #: `_decline_authored_repha_rewrites`. Only the corroborated Kokila displacement
+    #: pair earns an entry.
+    proven_repha_rewrites: dict[int, frozenset[int]] = {}
     for to_unicode_xref, owner_xrefs in candidate_font_owners.items():
         owner_types = {font_types[xref] for xref in owner_xrefs}
         named_owner_names = {
@@ -1441,7 +1540,11 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
                     unrepaired_named_fonts.add(font_name)
                 continue
 
-            _patch_single_cmap(doc, to_unicode_xref, correction_map)
+            _patch_single_cmap(
+                doc,
+                to_unicode_xref,
+                _decline_authored_repha_rewrites(pdf_map, correction_map),
+            )
             patched = True
             continue
 
@@ -1530,6 +1633,10 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
             "kokila",
         )
         if pair_scoped:
+            # Corroborated per face before it is applied, so it outranks the generic
+            # repha guard below. Only the pair is exempt; the rest of a Kokila
+            # reconstruction is guarded like any other.
+            proven_repha_rewrites[to_unicode_xref] = _KOKILA_DISPLACEMENT_GIDS
             displacement_corrections = _kokila_displacement_corrections(
                 font_name,
                 pdf_map,
@@ -1581,7 +1688,11 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
         _patch_single_cmap(
             doc,
             to_unicode_xref,
-            correction_map,
+            _decline_authored_repha_rewrites(
+                pdf_maps[to_unicode_xref],
+                correction_map,
+                exempt=proven_repha_rewrites.get(to_unicode_xref, frozenset()),
+            ),
             font_name=font_names[type0_xref],
             allow_gid_exceptions=_stream_allows_face_specific_gids(
                 doc,
