@@ -71,10 +71,15 @@ The bar, applied by `_recon/scripts/emit_module.py::ships` at generation time:
 
 * at least **2** independent font programs derive the entry, and
 * at least **one** of the four signals speaks for it, and
-* a ``kalimati`` contradiction is a veto unless ``words`` supports the Mangal
-  reading.
+* a ``kalimati`` contradiction is a veto, UNLESS its entry there is
+  ``(inferred)`` -- a metric match rather than a reading of any font table, and
+  so weaker evidence than a GSUB derivation from two or more subsets -- and this
+  reading carries positive external evidence of its own (``words`` or
+  ``tounicode``). Measured: 8 outlines are contradicted and never supported, 6 of
+  them by an ``(inferred)`` Kalimati entry and 2 by a ``(gsub)`` one; the two
+  ``(gsub)`` ones do not ship.
 
-Of 1137 candidate outlines, **961** clear the bar and 176 do not. Signal coverage over the shipped entries: cmap 209, tounicode 477, kalimati 930, words 276.
+Of 1137 candidate outlines, **962** clear the bar and 175 do not. Signal coverage over the shipped entries: cmap 209, tounicode 478, kalimati 930, words 276.
 
 Entries that fail the bar are recorded in
 :data:`UNCORROBORATED_OUTLINE_TO_UNICODE`, which nothing reads. They are kept so
@@ -122,14 +127,19 @@ from __future__ import annotations
 from collections.abc import Container
 from typing import Any
 
-from likhit.extractors.kalimati_reference import outline_digest
-
-# The em square every entry was measured at. A digest is taken over raw
-# font-unit coordinates, so it is only comparable here. Refusing anything else
-# states the precondition instead of leaving it to the fact that a rescaled
-# outline happens not to collide -- and the corpus does carry Mangal embeds at
-# 1000 units per em, so this is a real gate, not a theoretical one.
-REFERENCE_UNITS_PER_EM = 2048
+# Both imports are deliberate rather than duplicated. ``outline_digest`` is the
+# function this table's keys were computed with, and a second copy that silently
+# drifted would invalidate every lookup here. ``_has_reference_units_per_em`` is
+# the precondition of that same digest -- it is taken over RAW font-unit
+# coordinates, so it means nothing at another em square -- which makes it a
+# property of the digest, not of either table. The corpus does carry Mangal
+# embeds at 1000 units per em, so that check is a live gate, not a theoretical
+# one. ``kalimati_reference.REFERENCE_UNITS_PER_EM`` (2048) is therefore the em
+# square of this table too.
+from likhit.extractors.kalimati_reference import (  # noqa: PLC2701
+    _has_reference_units_per_em,
+    outline_digest,
+)
 
 #: ``{outline digest: Unicode}``, ordered by the glyph id the outline was
 #: first seen at so the table reads roughly in glyph order. Each comment
@@ -939,6 +949,7 @@ OUTLINE_TO_UNICODE: dict[str, str] = {
     "2cd5c45178e15f86": "\u0908\u0902",  # gid 579 (gsub) -> ईं  devanagari letter ii + devanagari sign anusvara  [progs 18, docs 18; kalimati 18]
     "a3acb35594d265ca": "\u0908\u0902",  # gid 579 (gsub) -> ईं  devanagari letter ii + devanagari sign anusvara  [progs 101, docs 107; tounicode 20, kalimati 101]
     "aa9c5d4deddc68f9": "\u0908\u0902",  # gid 579 (gsub) -> ईं  devanagari letter ii + devanagari sign anusvara  [progs 38, docs 38; tounicode 5, kalimati 38]
+    "1fa2d68e09a57536": "\u0947\u0901",  # gid 580 (gsub) -> ेँ  devanagari vowel sign e + devanagari sign candrabindu  [progs 222, docs 230; tounicode 4]
     "b150a655d56a32c5": "\u0947\u0902",  # gid 581 (gsub) -> ें  devanagari vowel sign e + devanagari sign anusvara  [progs 282, docs 278; tounicode 23]
     "6be8d0aab27b3297": "\u0948\u0901",  # gid 582 (gsub) -> ैँ  devanagari vowel sign ai + devanagari sign candrabindu  [progs 64, docs 79; tounicode 6]
     "8c06671b78bbb79d": "\u0948\u0901",  # gid 582 (gsub) -> ैँ  devanagari vowel sign ai + devanagari sign candrabindu  [progs 191, docs 202; tounicode 8]
@@ -1241,15 +1252,14 @@ UNCORROBORATED_OUTLINE_TO_UNICODE: dict[str, str] = {
     "b1d33f83913115ad": "\u0945",  # gid 557 -> ॅ  devanagari vowel sign candra e  [only 1 program]
     "bce5753474b7c546": "\u0947\u0930\u094d",  # gid 566 -> ेर्  devanagari vowel sign e + devanagari letter ra + devanagari sign virama  [no independent signal]
     "216749f7c5057742": "\u0948\u0930\u094d",  # gid 567 -> ैर्  devanagari vowel sign ai + devanagari letter ra + devanagari sign virama  [no independent signal]
-    "1fa2d68e09a57536": "\u0947\u0901",  # gid 580 -> ेँ  devanagari vowel sign e + devanagari sign candrabindu  [kalimati contradicts x222, no word evidence]
     "70014c094cc98fa8": "\u0947\u0901",  # gid 580 -> ेँ  devanagari vowel sign e + devanagari sign candrabindu  [no independent signal]
     "8518a517dc44587a": "\u0947\u0902",  # gid 581 -> ें  devanagari vowel sign e + devanagari sign anusvara  [no independent signal]
     "2f7fdf40de99a018": "\u0930\u094d\u0902",  # gid 589 -> र्ं  devanagari letter ra + devanagari sign virama + devanagari sign anusvara  [no independent signal]
-    "12b7fd1223bacd3f": "\u0947\u0930\u094d\u0901",  # gid 590 -> ेर्ँ  devanagari vowel sign e + devanagari letter ra + devanagari sign virama + devanagari sign candrabindu  [no independent signal; kalimati contradicts x98, no word evidence]
-    "9659da5d19209f1e": "\u0947\u0930\u094d\u0901",  # gid 590 -> ेर्ँ  devanagari vowel sign e + devanagari letter ra + devanagari sign virama + devanagari sign candrabindu  [no independent signal; kalimati contradicts x45, no word evidence]
-    "00c6083998f7769f": "\u0947\u0930\u094d\u0902",  # gid 591 -> ेर्ं  devanagari vowel sign e + devanagari letter ra + devanagari sign virama + devanagari sign anusvara  [no independent signal; kalimati contradicts x47, no word evidence]
-    "2860e23de38357dd": "\u0948\u0901",  # gid 592 -> ैँ  devanagari vowel sign ai + devanagari sign candrabindu  [no independent signal; kalimati contradicts x61, no word evidence]
-    "4228815d4827110e": "\u0948\u0901",  # gid 592 -> ैँ  devanagari vowel sign ai + devanagari sign candrabindu  [no independent signal; kalimati contradicts x190, no word evidence]
+    "12b7fd1223bacd3f": "\u0947\u0930\u094d\u0901",  # gid 590 -> ेर्ँ  devanagari vowel sign e + devanagari letter ra + devanagari sign virama + devanagari sign candrabindu  [no independent signal; kalimati (inferred) contradicts x98]
+    "9659da5d19209f1e": "\u0947\u0930\u094d\u0901",  # gid 590 -> ेर्ँ  devanagari vowel sign e + devanagari letter ra + devanagari sign virama + devanagari sign candrabindu  [no independent signal; kalimati (inferred) contradicts x45]
+    "00c6083998f7769f": "\u0947\u0930\u094d\u0902",  # gid 591 -> ेर्ं  devanagari vowel sign e + devanagari letter ra + devanagari sign virama + devanagari sign anusvara  [no independent signal; kalimati (inferred) contradicts x47]
+    "2860e23de38357dd": "\u0948\u0901",  # gid 592 -> ैँ  devanagari vowel sign ai + devanagari sign candrabindu  [no independent signal; kalimati (gsub) contradicts x61]
+    "4228815d4827110e": "\u0948\u0901",  # gid 592 -> ैँ  devanagari vowel sign ai + devanagari sign candrabindu  [no independent signal; kalimati (gsub) contradicts x190]
     "0f93558760ac4a70": "\u0948\u0902",  # gid 593 -> ैं  devanagari vowel sign ai + devanagari sign anusvara  [no independent signal]
     "6ae864dc9b409353": "\u0948\u0902",  # gid 593 -> ैं  devanagari vowel sign ai + devanagari sign anusvara  [no independent signal]
     "e873cbad0e46e78e": "\u091b\u093c\u094d",  # gid 625 -> छ़्  devanagari letter cha + devanagari sign nukta + devanagari sign virama  [only 1 program]
@@ -1292,6 +1302,10 @@ UNCORROBORATED_OUTLINE_TO_UNICODE: dict[str, str] = {
 #: ``R2-uniqueness`` the losing reading duplicates a value the same subsets
 #:                   already assign to a different glyph. A font does not
 #:                   draw one character twice in one weight.
+#:
+#: Only outlines that SHIP appear here. A conflict that was resolved and then
+#: failed the corroboration bar is in UNCORROBORATED_OUTLINE_TO_UNICODE
+#: instead, so this dict and OUTLINE_TO_UNICODE cannot disagree.
 RESOLVED_CONFLICTS: dict[str, str] = {
     "0a1363790098ce9d": "R1-nfc-cmap",  # -> क़  devanagari letter qa
     "221f33b3ebb31f1a": "R1-nfc-cmap",  # -> ऱ  devanagari letter rra
@@ -1302,8 +1316,6 @@ RESOLVED_CONFLICTS: dict[str, str] = {
     "8295bfe0c0cf4961": "R1-nfc-cmap",  # -> ग़  devanagari letter ghha
     "84d35ad2bdef3ac1": "R1-nfc-cmap",  # -> ड़  devanagari letter dddha
     "9794768a70b71452": "R1-nfc-cmap",  # -> ऩ  devanagari letter nnna
-    "f2eade20f600a272": "R1-nfc-cmap",  # -> ज़  devanagari letter za
-    "12b7fd1223bacd3f": "R2-uniqueness",  # -> ेर्ँ  devanagari vowel sign e + devanagari letter ra + devanagari sign virama + devanagari sign candrabindu
     "64549121d399cc0f": "R2-uniqueness",  # -> ्र  devanagari sign virama + devanagari letter ra
 }
 
@@ -1320,13 +1332,6 @@ IN_LINE_RA_DIGESTS: frozenset[str] = frozenset(
         "b9d361527566df9e",  # gid 226 र्  y 384..1320, advance 640
     }
 )
-
-
-def _has_reference_units_per_em(font: Any) -> bool:
-    try:
-        return bool(font["head"].unitsPerEm == REFERENCE_UNITS_PER_EM)
-    except Exception:  # noqa: BLE001 - unreadable head means unknown geometry
-        return False
 
 
 def mangal_reference_map(
