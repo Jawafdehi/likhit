@@ -31,6 +31,9 @@ from likhit.extractors.font_based import (
     _text_quality_penalty,
     _duplicate_consonant_count,
     _DUPLICATE_CONSONANT_PATTERN,
+    _DOUBLED_CONSONANT_LEXEMES,
+    _CID_MARK_BASE,
+    unmark_cid_ascii,
     join_spans_with_layout,
     join_words_with_spacing,
     normalize_extracted_word,
@@ -47,9 +50,15 @@ from likhit.extractors.font_based import (
     _unmappable_runs,
     _recover_or_mark_unmappable_span,
 )
+from likhit.extractors.pua_maps import (
+    SYMBOL_PUA_LIFT,
+    SYMBOL_PUA_RANGE,
+    unlift_symbol_pua,
+)
 from likhit.extractors.kalimati import (
     _get_font_correction_map,
     _get_fontfile_xref,
+    _get_simple_font_correction_map,
     _resolve_fontfile2_xref,
 )
 from likhit.handlers.single_column_notice import SingleColumnNoticeHandler
@@ -612,6 +621,460 @@ def test_get_font_correction_map_returns_empty_when_font_has_no_cmap(
     assert "Failed to build Kalimati correction map" not in caplog.text
 
 
+def test_simple_truetype_corrections_are_translated_from_gids_to_pdf_codes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCmapTable:
+        cmap = {65: "glyph7", 66: "glyph8"}
+
+        def isUnicode(self) -> bool:
+            return False
+
+    class FakeFont:
+        def getGlyphOrder(self) -> list[str]:
+            return [".notdef"] + [f"glyph{gid}" for gid in range(1, 9)]
+
+        def __contains__(self, key: str) -> bool:
+            return key == "cmap"
+
+        def __getitem__(self, key: str) -> object:
+            assert key == "cmap"
+            return types.SimpleNamespace(tables=[FakeCmapTable()])
+
+        def close(self) -> None:
+            return None
+
+    doc = _FontObjectDoc(
+        {
+            1: "<< /FontDescriptor 2 0 R >>",
+            2: "<< /Flags 4 /FontFile2 3 0 R >>",
+        }
+    )
+    monkeypatch.setattr(
+        "fontTools.ttLib.TTFont",
+        lambda _stream: FakeFont(),
+    )
+
+    result = _get_simple_font_correction_map(
+        doc,  # type: ignore[arg-type]
+        1,
+        {7: "क्ष", 8: "त्र", 99: "unused"},
+    )
+
+    assert result == {65: "क्ष", 66: "त्र"}
+
+
+@pytest.mark.parametrize(
+    ("font_object", "descriptor"),
+    [
+        (
+            "<< /Encoding /WinAnsiEncoding /FontDescriptor 2 0 R >>",
+            "<< /Flags 4 /FontFile2 3 0 R >>",
+        ),
+        (
+            "<< /FontDescriptor 2 0 R >>",
+            "<< /Flags 32 /FontFile2 3 0 R >>",
+        ),
+    ],
+)
+def test_simple_truetype_corrections_require_an_embedded_symbolic_encoding(
+    monkeypatch: pytest.MonkeyPatch,
+    font_object: str,
+    descriptor: str,
+) -> None:
+    doc = _FontObjectDoc({1: font_object, 2: descriptor})
+    monkeypatch.setattr(
+        "fontTools.ttLib.TTFont",
+        lambda _stream: pytest.fail("an unsupported encoding must not open the font"),
+    )
+
+    result = _get_simple_font_correction_map(
+        doc,  # type: ignore[arg-type]
+        1,
+        {7: "क्ष"},
+    )
+
+    assert result == {}
+
+
+def test_generic_type0_fill_requires_identity_codes_and_gids() -> None:
+    identity = _FontObjectDoc(
+        {
+            1: (
+                "<< /Encoding /Identity-H /DescendantFonts "
+                "[ << /CIDToGIDMap /Identity >> ] >>"
+            )
+        }
+    )
+    remapped = _FontObjectDoc(
+        {
+            1: (
+                "<< /Encoding /Identity-H /DescendantFonts "
+                "[ << /CIDToGIDMap 2 0 R >> ] >>"
+            )
+        }
+    )
+
+    assert kalimati_module._type0_codes_are_gids(identity, 1)  # type: ignore[arg-type]
+    assert not kalimati_module._type0_codes_are_gids(remapped, 1)  # type: ignore[arg-type]
+
+
+def test_generic_type0_fill_preserves_authored_entries_and_rejects_nul() -> None:
+    authored = {1: "क", 4: "authored", 7: " ", 8: "-"}
+    reconstructed = {
+        1: "क",
+        2: "ख",
+        3: "\x00",
+        4: "authored",
+        5: "ि",
+        6: "र्",
+        7: "\xa0",
+        8: "\xad",
+    }
+
+    assert kalimati_module._agreed_missing_cmap_entries(
+        authored,
+        reconstructed,
+    ) == {
+        2: "ख",
+        5: kalimati_module._PUA_IKAR,
+        6: kalimati_module._PUA_REPH,
+    }
+
+
+def test_generic_type0_overlap_disagreement_blocks_every_fill() -> None:
+    authored = {1: "क"}
+    reconstructed = {1: "ग", 2: "ख"}
+
+    assert kalimati_module._agreed_missing_cmap_entries(authored, reconstructed) == {}
+
+
+def test_generic_type0_fill_drops_conflicting_reconstruction_sources() -> None:
+    assert kalimati_module._merge_missing_cmap_entries(
+        {2: "ख", 3: "ग"},
+        {2: "ख", 3: "घ", 4: "ङ"},
+    ) == {2: "ख", 4: "ङ"}
+
+
+def test_simple_truetype_repair_requires_strong_authored_overlap_agreement() -> None:
+    assert kalimati_module._simple_font_correction_is_credible(
+        {1: "क", 2: "ख", 3: "ग", 4: "broken"},
+        {1: "क", 2: "ख", 3: "ग", 4: "घ"},
+    )
+    assert not kalimati_module._simple_font_correction_is_credible(
+        {1: "1", 2: "2", 3: "3"},
+        {1: "१", 2: "२", 3: "३"},
+    )
+
+
+def test_named_simple_truetype_ascii_digit_normalization_is_already_usable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePage:
+        def get_fonts(self, full: bool = True) -> list[tuple[object, ...]]:
+            del full
+            return [(11, "ttf", "TrueType", "ABCDEF+Kalimati", "BuiltIn")]
+
+    class FakeDoc:
+        page_count = 1
+
+        def __getitem__(self, index: int) -> FakePage:
+            assert index == 0
+            return FakePage()
+
+        def xref_object(self, xref: int, compressed: bool = False) -> str:
+            del compressed
+            assert xref == 11
+            return "<< /ToUnicode 12 0 R >>"
+
+        def xref_stream(self, xref: int) -> bytes:
+            assert xref == 12
+            return b"unused"
+
+        def xref_is_stream(self, xref: int) -> bool:
+            assert xref == 12
+            return True
+
+    source = FakeDoc()
+    monkeypatch.setattr(
+        kalimati_module,
+        "_parse_tounicode_cmap",
+        lambda cmap_bytes: {33: "5", 34: "0"},
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_get_font_correction_map",
+        lambda doc, xref: {7: "५", 8: "०"},
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_get_simple_font_correction_map",
+        lambda doc, xref, correction_map: {
+            33: correction_map[7],
+            34: correction_map[8],
+        },
+    )
+
+    repaired_doc, needs_reorder = kalimati_module.fix_kalimati_cmap(source)  # type: ignore[arg-type]
+
+    assert repaired_doc is source
+    assert needs_reorder is False
+
+
+def test_fix_kalimati_cmap_repairs_a_simple_truetype_kalimati_font(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patched_maps: list[tuple[int, dict[int, str]]] = []
+
+    class FakePage:
+        def get_fonts(self, full: bool = True) -> list[tuple[object, ...]]:
+            del full
+            return [(11, "ttf", "TrueType", "ABCDEF+Kalimati", "WinAnsiEncoding")]
+
+    class FakeDoc:
+        page_count = 1
+
+        def __getitem__(self, index: int) -> FakePage:
+            assert index == 0
+            return FakePage()
+
+        def xref_object(self, xref: int, compressed: bool = False) -> str:
+            del compressed
+            assert xref == 11
+            return "<< /ToUnicode 12 0 R >>"
+
+        def xref_stream(self, xref: int) -> bytes:
+            assert xref == 12
+            return b"unused"
+
+        def xref_is_stream(self, xref: int) -> bool:
+            assert xref == 12
+            return True
+
+        def save(self, buffer) -> None:
+            buffer.write(b"%PDF-1.4")
+
+        def close(self) -> None:
+            return None
+
+    reopened_doc = object()
+    monkeypatch.setattr(
+        kalimati_module,
+        "_parse_tounicode_cmap",
+        lambda cmap_bytes: {65: "क", 66: "ख", 67: "ग", 68: "broken"},
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_get_font_correction_map",
+        lambda doc, xref: {7: "क", 8: "ख", 9: "ग", 10: "क्ष"},
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_get_simple_font_correction_map",
+        lambda doc, xref, correction_map: {
+            65: correction_map[7],
+            66: correction_map[8],
+            67: correction_map[9],
+            68: correction_map[10],
+        },
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_patch_single_cmap",
+        lambda doc, to_unicode_xref, correction_map: patched_maps.append(
+            (to_unicode_xref, dict(correction_map))
+        ),
+    )
+    monkeypatch.setattr(
+        kalimati_module.fitz,
+        "open",
+        lambda *args, **kwargs: reopened_doc,
+    )
+
+    repaired_doc, needs_reorder = kalimati_module.fix_kalimati_cmap(FakeDoc())  # type: ignore[arg-type]
+
+    assert repaired_doc is reopened_doc
+    assert needs_reorder is True
+    assert patched_maps == [(12, {65: "क", 66: "ख", 67: "ग", 68: "क्ष"})]
+
+
+def test_unrepairable_generic_type0_font_is_not_an_extraction_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePage:
+        def get_fonts(self, full: bool = True) -> list[tuple[object, ...]]:
+            del full
+            return [(11, "ttf", "Type0", "CIDFont+F1", "Identity-H")]
+
+    class FakeDoc:
+        page_count = 1
+
+        def __getitem__(self, index: int) -> FakePage:
+            assert index == 0
+            return FakePage()
+
+        def xref_object(self, xref: int, compressed: bool = False) -> str:
+            del compressed
+            assert xref == 11
+            return (
+                "<< /Encoding /Identity-H /DescendantFonts "
+                "[ << /CIDToGIDMap /Identity >> ] /ToUnicode 12 0 R >>"
+            )
+
+        def xref_stream(self, xref: int) -> bytes:
+            assert xref == 12
+            return b"unused"
+
+        def xref_is_stream(self, xref: int) -> bool:
+            assert xref == 12
+            return True
+
+    source = FakeDoc()
+    monkeypatch.setattr(
+        kalimati_module,
+        "_parse_tounicode_cmap",
+        lambda cmap_bytes: {1: "authored"},
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_get_font_correction_map",
+        lambda doc, xref: {},
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_collect_trace_fallback_map",
+        lambda doc, font_name: {},
+    )
+
+    repaired_doc, needs_reorder = kalimati_module.fix_kalimati_cmap(source)  # type: ignore[arg-type]
+
+    assert repaired_doc is source
+    assert needs_reorder is False
+
+
+@pytest.mark.parametrize(
+    ("font_type", "font_name"),
+    [
+        ("Type0", "ABCDEF+Kalimati"),
+        ("Type0", "ABCDEF+Lohit-Devanagari"),
+        ("TrueType", "ABCDEF+Kalimati"),
+    ],
+)
+def test_unrepairable_named_font_remains_an_extraction_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    font_type: str,
+    font_name: str,
+) -> None:
+    class FakePage:
+        def get_fonts(self, full: bool = True) -> list[tuple[object, ...]]:
+            del full
+            return [(11, "ttf", font_type, font_name, "Identity-H")]
+
+    class FakeDoc:
+        page_count = 1
+
+        def __getitem__(self, index: int) -> FakePage:
+            assert index == 0
+            return FakePage()
+
+        def xref_object(self, xref: int, compressed: bool = False) -> str:
+            del compressed
+            assert xref == 11
+            return "<< /ToUnicode 12 0 R >>"
+
+        def xref_stream(self, xref: int) -> bytes:
+            assert xref == 12
+            return b"unused"
+
+        def xref_is_stream(self, xref: int) -> bool:
+            assert xref == 12
+            return True
+
+    monkeypatch.setattr(
+        kalimati_module,
+        "_parse_tounicode_cmap",
+        lambda cmap_bytes: {1: "authored"},
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_get_font_correction_map",
+        lambda doc, xref: {},
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_collect_trace_fallback_map",
+        lambda doc, name: {},
+    )
+
+    with pytest.raises(ExtractionError, match="Unable to repair named"):
+        kalimati_module.fix_kalimati_cmap(FakeDoc())  # type: ignore[arg-type]
+
+
+def test_a_generic_fill_cannot_mask_an_unrepairable_named_font(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patched: list[tuple[int, dict[int, str]]] = []
+
+    class FakePage:
+        def get_fonts(self, full: bool = True) -> list[tuple[object, ...]]:
+            del full
+            return [
+                (11, "ttf", "Type0", "ABCDEF+Kalimati", "Identity-H"),
+                (21, "ttf", "Type0", "CIDFont+F1", "Identity-H"),
+            ]
+
+    class FakeDoc:
+        page_count = 1
+
+        def __getitem__(self, index: int) -> FakePage:
+            assert index == 0
+            return FakePage()
+
+        def xref_object(self, xref: int, compressed: bool = False) -> str:
+            del compressed
+            return {
+                11: "<< /ToUnicode 12 0 R >>",
+                21: (
+                    "<< /Encoding /Identity-H /DescendantFonts "
+                    "[ << /CIDToGIDMap /Identity >> ] /ToUnicode 22 0 R >>"
+                ),
+            }[xref]
+
+        def xref_stream(self, xref: int) -> bytes:
+            return {12: b"named", 22: b"generic"}[xref]
+
+        def xref_is_stream(self, xref: int) -> bool:
+            return xref in {12, 22}
+
+    monkeypatch.setattr(
+        kalimati_module,
+        "_parse_tounicode_cmap",
+        lambda cmap_bytes: {1: "authored"} if cmap_bytes == b"named" else {1: "क"},
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_get_font_correction_map",
+        lambda doc, xref: {} if xref == 11 else {1: "क", 2: "ख"},
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_collect_trace_fallback_map",
+        lambda doc, name: {},
+    )
+    monkeypatch.setattr(
+        kalimati_module,
+        "_patch_missing_cmap_entries",
+        lambda doc, to_unicode_xref, pdf_map, missing: patched.append(
+            (to_unicode_xref, dict(missing))
+        ),
+    )
+
+    with pytest.raises(ExtractionError, match="Unable to repair named"):
+        kalimati_module.fix_kalimati_cmap(FakeDoc())  # type: ignore[arg-type]
+
+    assert patched == [(22, {2: "ख"})]
+
+
 def test_fix_kalimati_cmap_uses_trace_fallback_when_font_map_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -668,8 +1131,8 @@ def test_fix_kalimati_cmap_uses_trace_fallback_when_font_map_is_unavailable(
     monkeypatch.setattr(
         kalimati_module,
         "_patch_single_cmap",
-        lambda doc, to_unicode_xref, correction_map: patched_maps.append(
-            (to_unicode_xref, dict(correction_map))
+        lambda doc, to_unicode_xref, correction_map, *, font_name, allow_gid_exceptions: (
+            patched_maps.append((to_unicode_xref, dict(correction_map)))
         ),
     )
     monkeypatch.setattr(
@@ -758,8 +1221,8 @@ def test_a_non_stream_tounicode_font_is_skipped_not_fatal(
     monkeypatch.setattr(
         kalimati_module,
         "_patch_single_cmap",
-        lambda doc, to_unicode_xref, correction_map: patched_maps.append(
-            (to_unicode_xref, dict(correction_map))
+        lambda doc, to_unicode_xref, correction_map, *, font_name, allow_gid_exceptions: (
+            patched_maps.append((to_unicode_xref, dict(correction_map)))
         ),
     )
     monkeypatch.setattr(
@@ -2389,3 +2852,301 @@ def test_the_exemption_splice_decides_the_latin_veto_on_the_span_not_the_segment
     assert _convert_line_without_key(spans, maps) == (
         "जनहितका लागि अबल ७४ढ२ण् जवाफदेहिता पारदर्शीता विषय व्यक्तिगत अध्यक्ष"
     )
+
+    lexeme = _DOUBLED_CONSONANT_LEXEMES[1]
+    damage = "गग"
+
+    # The premise: each part scores what it should on its own, or this proves nothing.
+    assert _duplicate_consonant_count(lexeme) == 0
+    assert _duplicate_consonant_count(damage) == 1
+
+    assert _duplicate_consonant_count(lexeme + damage) == 1
+    # And the lexeme is still excused when it is the only thing there.
+    assert _duplicate_consonant_count(lexeme + lexeme) == 0
+
+
+def test_unlift_and_unmark_commute_because_their_ranges_are_disjoint() -> None:
+    """Both legacy decode paths apply BOTH transforms, so the order must not matter.
+
+    `_convert_span_text` composes them as `unlift_symbol_pua(unmark_cid_ascii(text))`
+    on the content branch and on the name branch, and a comment there asserts the
+    composition order is not load-bearing. That is a claim about behaviour, so it is
+    checked here rather than left in prose.
+
+    Why it holds: the two transforms read DISJOINT input ranges and neither writes
+    into the other's. CID marking lives at `_CID_MARK_BASE + cid` = U+F0020-U+F007E
+    (plane 15); the symbol-cmap lift lives at U+F020-U+F0FF (BMP). The magnitudes are
+    a factor of 16 apart and easy to misread as the same range -- `0xF020` against
+    `0xF0020` -- which is exactly why this is asserted and not eyeballed. Both
+    transforms also emit only characters at or below U+00FF, i.e. below both input
+    ranges, so neither can feed the other.
+    """
+
+    lo, hi = SYMBOL_PUA_RANGE
+    marked_lo, marked_hi = _CID_MARK_BASE + 0x20, _CID_MARK_BASE + 0x7E
+    # The premise, asserted so a future move of either constant fails here rather
+    # than silently making the composition order matter.
+    assert hi < marked_lo or marked_hi < lo, (
+        "ranges overlap: order becomes load-bearing"
+    )
+    assert SYMBOL_PUA_LIFT == 0xF000
+
+    # A span carrying BOTH shapes at once: a lifted keystroke run and marked CIDs.
+    lifted = "".join(chr(SYMBOL_PUA_LIFT + ord(char)) for char in "kflnsf")
+    marked = "".join(chr(_CID_MARK_BASE + ord(char)) for char in "kl/R5]b")
+    span = f"{lifted} {marked}"
+
+    forward = unlift_symbol_pua(unmark_cid_ascii(span))
+    reverse = unmark_cid_ascii(unlift_symbol_pua(span))
+    assert forward == reverse == "kflnsf kl/R5]b"
+
+    # And each transform really is a no-op on the other's input, which is the property
+    # the commutation rests on -- without these two the equality above could hold
+    # because both transforms did nothing at all.
+    assert unmark_cid_ascii(lifted) == lifted
+    assert unlift_symbol_pua(marked) == marked
+
+
+def _unrepairable_named_font_doc(
+    trace: list[list[dict[str, object]]],
+    font_name: str = "ABCDEF+Kalimati",
+    font_type: str = "Type0",
+) -> object:
+    """A PDF whose only candidate face is a named one nothing can repair.
+
+    `trace` supplies one `get_texttrace()` result per page, so a test states how
+    much of the document the unrepairable face actually draws. Two pages cannot
+    be measured, and they are distinct cases: `None` models a page with no
+    `get_texttrace` at all, and `"raise"` a page whose trace fails when called.
+    """
+
+    class UntraceablePage:
+        """A page with no `get_texttrace` AT ALL.
+
+        Not one that returns an empty trace -- that is a measurement, and means
+        "draws no glyphs". This models the absence of one, so the test exercises
+        the missing-attribute path rather than an exception raised inside it.
+        """
+
+        def get_fonts(self, full: bool = True) -> list[tuple[object, ...]]:
+            del full
+            return [(11, "ttf", font_type, font_name, "Identity-H")]
+
+    class FakePage(UntraceablePage):
+        def __init__(self, spans: list[dict[str, object]]) -> None:
+            self._spans = spans
+
+        def get_texttrace(self) -> list[dict[str, object]]:
+            return self._spans
+
+    class FailingTracePage(UntraceablePage):
+        """A page that HAS `get_texttrace` and whose trace fails when called.
+
+        MuPDF raises on a malformed content stream, which is a different path
+        from a page that never offered a trace.
+        """
+
+        def get_texttrace(self) -> list[dict[str, object]]:
+            raise RuntimeError("cannot interpret contents")
+
+    class FakeDoc:
+        page_count = len(trace)
+
+        def __getitem__(self, index: int) -> UntraceablePage:
+            spans = trace[index]
+            if spans is None:
+                return UntraceablePage()
+            if spans == "raise":
+                return FailingTracePage()
+            return FakePage(spans)
+
+        def xref_object(self, xref: int, compressed: bool = False) -> str:
+            del compressed
+            assert xref == 11
+            return "<< /ToUnicode 12 0 R >>"
+
+        def xref_stream(self, xref: int) -> bytes:
+            assert xref == 12
+            return b"unused"
+
+        def xref_is_stream(self, xref: int) -> bool:
+            assert xref == 12
+            return True
+
+    return FakeDoc()
+
+
+def _traced_span(font: str, glyphs: int) -> dict[str, object]:
+    return {"font": font, "chars": tuple(range(glyphs))}
+
+
+@pytest.fixture
+def _nothing_repairs_the_named_font(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        kalimati_module, "_parse_tounicode_cmap", lambda cmap_bytes: {1: "authored"}
+    )
+    monkeypatch.setattr(
+        kalimati_module, "_get_font_correction_map", lambda doc, xref: {}
+    )
+    monkeypatch.setattr(
+        kalimati_module, "_collect_trace_fallback_map", lambda doc, name: {}
+    )
+
+
+def test_an_incidental_unrepairable_named_font_does_not_lose_the_document(
+    _nothing_repairs_the_named_font: None,
+) -> None:
+    """OAG 11113: one Kalimati glyph must not cost 433,221 Preeti ones.
+
+    The report is set in Preeti and merely declares a Kalimati face. Refusing it
+    discarded 351,643 correctly decoded Devanagari characters -- a transcript
+    that measured cleaner than the corpus median -- so the face has to draw
+    enough of the page to matter before the whole document is given up.
+    """
+
+    source = _unrepairable_named_font_doc(
+        [[_traced_span("GHIJKL+Preeti", 433_221), _traced_span("ABCDEF+Kalimati", 1)]]
+    )
+
+    repaired_doc, needs_reorder = kalimati_module.fix_kalimati_cmap(source)  # type: ignore[arg-type]
+
+    assert repaired_doc is source
+    assert needs_reorder is False
+
+
+def test_a_dominant_unrepairable_named_font_still_loses_the_document(
+    _nothing_repairs_the_named_font: None,
+) -> None:
+    """The four OAG documents whose Kalimati face draws ~99% must stay refused.
+
+    This is the case the refusal exists for, and it must survive by measuring the
+    share rather than by the measurement being unavailable -- so the page here
+    does supply a trace.
+    """
+
+    source = _unrepairable_named_font_doc(
+        [[_traced_span("ABCDEF+Kalimati", 63_182), _traced_span("MNOPQR+Cambria", 722)]]
+    )
+
+    with pytest.raises(ExtractionError, match="Unable to repair named"):
+        kalimati_module.fix_kalimati_cmap(source)  # type: ignore[arg-type]
+
+
+def test_a_partially_unrepairable_named_font_still_loses_the_document(
+    _nothing_repairs_the_named_font: None,
+) -> None:
+    """The 13 mixed OAG documents: 10-21% of the glyphs is material, not incidental."""
+
+    source = _unrepairable_named_font_doc(
+        [
+            [
+                _traced_span("ABCDEF+Kalimati", 8_265),
+                _traced_span("STUVWX+Lohit-Devanagari", 45_586),
+                _traced_span("MNOPQR+LiberationSerif", 15_336),
+            ]
+        ]
+    )
+
+    with pytest.raises(ExtractionError, match="Unable to repair named"):
+        kalimati_module.fix_kalimati_cmap(source)  # type: ignore[arg-type]
+
+
+def test_an_untraceable_page_keeps_the_refusal(
+    _nothing_repairs_the_named_font: None,
+) -> None:
+    """Fail closed: a face is cleared only when proven incidental, never by default."""
+
+    source = _unrepairable_named_font_doc([None])
+
+    with pytest.raises(ExtractionError, match="Unable to repair named"):
+        kalimati_module.fix_kalimati_cmap(source)  # type: ignore[arg-type]
+
+
+def test_a_page_whose_trace_raises_keeps_the_refusal(
+    _nothing_repairs_the_named_font: None,
+) -> None:
+    """A trace that fails is an absent measurement, not a measurement of zero."""
+
+    source = _unrepairable_named_font_doc(["raise"])
+
+    with pytest.raises(ExtractionError, match="Unable to repair named"):
+        kalimati_module.fix_kalimati_cmap(source)  # type: ignore[arg-type]
+
+
+def test_one_untraceable_page_among_many_keeps_the_refusal(
+    _nothing_repairs_the_named_font: None,
+) -> None:
+    """A document is only as measurable as its least measurable page."""
+
+    source = _unrepairable_named_font_doc(
+        [
+            [
+                _traced_span("GHIJKL+Preeti", 100_000),
+                _traced_span("ABCDEF+Kalimati", 1),
+            ],
+            None,
+        ]
+    )
+
+    with pytest.raises(ExtractionError, match="Unable to repair named"):
+        kalimati_module.fix_kalimati_cmap(source)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("kalimati_glyphs", "other_glyphs", "refused"),
+    [
+        (5, 995, False),  # exactly at the floor: 0.5% is not above it
+        (6, 994, True),  # the first share above the floor refuses
+        (1, 999_999, False),
+    ],
+)
+def test_the_refusal_floor_is_a_share_of_the_drawn_glyphs(
+    _nothing_repairs_the_named_font: None,
+    kalimati_glyphs: int,
+    other_glyphs: int,
+    refused: bool,
+) -> None:
+    source = _unrepairable_named_font_doc(
+        [
+            [
+                _traced_span("ABCDEF+Kalimati", kalimati_glyphs),
+                _traced_span("GHIJKL+Preeti", other_glyphs),
+            ]
+        ]
+    )
+
+    if refused:
+        with pytest.raises(ExtractionError, match="Unable to repair named"):
+            kalimati_module.fix_kalimati_cmap(source)  # type: ignore[arg-type]
+    else:
+        repaired_doc, _ = kalimati_module.fix_kalimati_cmap(source)  # type: ignore[arg-type]
+        assert repaired_doc is source
+
+
+def test_the_share_counts_glyphs_across_every_page_not_just_the_first(
+    _nothing_repairs_the_named_font: None,
+) -> None:
+    """A face absent from page 1 and dominant on page 2 is not incidental."""
+
+    source = _unrepairable_named_font_doc(
+        [
+            [_traced_span("GHIJKL+Preeti", 1_000)],
+            [_traced_span("ABCDEF+Kalimati", 1_000)],
+        ]
+    )
+
+    with pytest.raises(ExtractionError, match="Unable to repair named"):
+        kalimati_module.fix_kalimati_cmap(source)  # type: ignore[arg-type]
+
+
+def test_a_document_that_draws_no_glyphs_is_not_refused(
+    _nothing_repairs_the_named_font: None,
+) -> None:
+    """With nothing drawn there is no garble to suppress; `needs_ocr` owns this."""
+
+    source = _unrepairable_named_font_doc([[]])
+
+    repaired_doc, needs_reorder = kalimati_module.fix_kalimati_cmap(source)  # type: ignore[arg-type]
+
+    assert repaired_doc is source
+    assert needs_reorder is False

@@ -892,6 +892,56 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "is not evidence of anything, and the two shares above are ratios that a tiny "
         "denominator makes meaningless",
     ),
+    # -- Kokila / Kalimati faces whose embedded CMap contradicts what they draw --- #
+    #
+    # Every GID here is a specific glyph in a specific measured face, so the derivation
+    # names the document that proves it. They are identities, not thresholds: there is no
+    # range to widen, and changing one means the glyph was misidentified.
+    (
+        "likhit/extractors/kalimati.py",
+        "_CONTEXTUAL_NE_GID",
+    ): (
+        566,
+        "the measured Kalimati glyph whose authored CMap says ने while the embedded "
+        "font map says bare e-matra; only its र् context proves the consonant",
+    ),
+    (
+        "likhit/extractors/kalimati.py",
+        "_KOKILA_HALF_SA_GID",
+    ): (
+        214,
+        "the measured Kokila half-sa glyph: 13 affected identity-mapped faces say थ, "
+        "corroborated as स् by their own font map or another Kokila face in the PDF",
+    ),
+    (
+        "likhit/extractors/kalimati.py",
+        "_KOKILA_HALF_THA_GID",
+    ): (
+        195,
+        "the measured Kokila half-tha glyph: PDF 5604 authors bare virama while "
+        "the target program's exact GID-195 outline digest proves the measured half-tha",
+    ),
+    (
+        "likhit/extractors/kalimati.py",
+        "_KOKILA_YA_GID",
+    ): (
+        94,
+        "the measured following-ya glyph: PDF 5604 authors र् while the embedded "
+        "Kokila map proves य, completing the GID-195 fingerprint",
+    ),
+    (
+        "likhit/extractors/kalimati.py",
+        "_INCIDENTAL_FACE_GLYPH_SHARE",
+    ): (
+        0.005,
+        "the share of drawn glyphs below which an unrepairable named Kalimati/Lohit "
+        "face is incidental and refusing the document costs more than it protects. "
+        "Measured over the 18 OAG documents the refusal withholds, the two "
+        "populations are four orders of magnitude apart: document 11113 -- set in "
+        "Preeti, declaring a Kalimati face that draws ONE glyph of 433,222 -- sits "
+        "at 0.0002%, and the next-smallest genuine offender at 10.04%. This floor "
+        "is ~20x clear of each, so it is not fitted to either",
+    ),
 }
 
 
