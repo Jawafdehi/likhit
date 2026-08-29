@@ -320,17 +320,23 @@ def _run_fix(
     return captured
 
 
-def test_a_proven_pair_survives_while_an_unrelated_guess_is_declined(
+def test_a_kokila_face_declines_nothing_now_that_the_family_is_routed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The whole-map branch of the Kokila displacement, guarded.
+    """The whole-map branch of the Kokila displacement, with the guard inert on it.
 
     With three meaningful diffs and no corroborated 214/195,
     `_scope_kokila_displacement_corrections` hands the *full* embedded map through, so
-    GID 108's authored `र्` is rewritten to a bare `ि` on purpose -- that pair is
-    corroborated per face. GID 300 carries the identical shape from a metric guess with
-    no corroboration behind it and must be declined; GID 301 carries it from an exact
-    reading and must not.
+    GID 108's authored `र्` is rewritten to a bare `ि` on purpose. GIDs 300 and 301 carry
+    the identical shape, 300 from a metric guess -- and none of them is declined, because
+    `kokila` is routed and so `_face_reconstruction_is_unvalidated` is False here.
+
+    That makes `_decline_authored_repha_rewrites`'s `exempt` argument unreachable in
+    production: the displacement pair requires a Kokila face, and a Kokila face is never
+    guarded. The parameter is retained and pinned at unit level by
+    `test_an_exempt_gid_keeps_its_reconstruction`, because it becomes load-bearing again
+    the moment the pair check is widened to another family or `kokila` is unrouted. This
+    test is what says the production path is currently a no-op rather than broken.
     """
 
     captured = _run_fix(
@@ -340,13 +346,18 @@ def test_a_proven_pair_survives_while_an_unrelated_guess_is_declined(
         reconstruction({83: "त", 108: IKAR, 300: IKAR, 301: IKAR}, {108, 300}),
     )
 
-    assert captured == [{83: "त", 108: IKAR, 301: IKAR}]
+    assert captured == [{83: "त", 108: IKAR, 300: IKAR, 301: IKAR}]
 
 
-def test_a_non_kokila_face_gets_no_exemption(
+def test_an_unrouted_face_declines_the_same_pair_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The exemption is face-scoped, so the same GID pair on Mangal is guarded."""
+    """The same GID pair on Mangal IS guarded, and gets no exemption.
+
+    `pair_scoped` needs a Kokila face, so on Mangal no exemption is installed and the
+    generic guard decides: GID 108 and GID 300 are guessed vowel-sign claims over an
+    authored `र्` and go; GID 301's consonant-bearing rewrite stays.
+    """
 
     class FakePage:
         def get_fonts(self, full: bool = True) -> list[tuple[object, ...]]:

@@ -29,28 +29,43 @@ logger = logging.getLogger(__name__)
 # sample. What bounds the risk empirically: `kalimati` already fires on 4,879 corpus
 # documents of which 4,502 audit `clean`, and they stay clean.
 #
-# NOT here, and each one measured rather than assumed. Adding a family is a TRADE in
-# every case tried so far: the reconstruction maps enough glyphs to repair matras and
-# not enough to place the repha, so `matra_damage` improves while `repha_loss` degrades.
-# The document verdict is its worst axis, so the trade reads as a clean win in the
-# verdict counts -- measure both axes, and measure content, not verdicts.
+# ⚠️⚠️ This set ALSO scopes a refusal. `kalimati._face_reconstruction_is_unvalidated`
+# reads it, and the authored-repha guard applies only to faces NOT named here -- so
+# routing a family turns that guard OFF for it. `kokila` below was landable only because
+# the guard protects the MANGAL faces those documents also carry, and adding `mangal`
+# would remove that protection unless the same change completes Mangal's outline
+# reference table. Read `kalimati._decline_authored_repha_rewrites` before adding one.
 #
-#   kokila  -- 64 no-gate documents, all measured. 28 verdicts better, 0 worse, and
-#              repha-free canonical words +85.4% (7,746 -> 14,361). But four of them
-#              (5471, 5487, 5492, 5493) lose CORRECTLY SPELLED words: `आर्थिक` 49 -> 2
-#              and 62 -> 5. Those four are separated from the other 60 by their base
-#              repha count (2,566-2,912 vs 93-344) -- their CMap already worked and the
-#              repair overwrites it, keeping neither the repha nor the consonant.
-#              Landable behind a refusal guard for that case: decline the
-#              reconstruction when the document's existing output already yields
-#              well-formed repha, which is the shape `kalimati._INCIDENTAL_FACE_GLYPH_SHARE`
-#              already has and is not firing on these four. Note the repair carries
-#              Kokila-specific corroboration-gated logic that is unreachable without
-#              this entry, so the guard is what unlocks it.
+#   kokila  -- ROUTED. 64 no-gate documents, all of them measured against f7dd065 on the
+#              bare extractor probe: 28 verdicts better, 0 worse; `matra_damage` 29
+#              better and 0 worse (33 -> 24 non-clean, `malformed_conjunct_ra`
+#              1,327 -> 10); canonical repha words 34,300 -> 34,411. On the 55-document
+#              stratified sample of the 1,861 documents where the repair already ran,
+#              verdicts and every axis are 0 better / 0 worse and canonical is +43, with
+#              2 of 55 transcripts differing at all.
+#              It only became landable behind that guard. Unguarded, four documents
+#              (5471, 5487, 5492, 5493) lost CORRECTLY SPELLED words -- `आर्थिक`
+#              49/52/56/62 -> 2/2/2/5 -- because the repair rewrites their MANGAL CMaps,
+#              not their Kokila ones, and a metric guess overwrote an authored `र्`. With
+#              the guard all four are restored to 49/52/56/62 and `repha_loss` is `clean`
+#              on all four, while the matra gain is untouched.
+#              Two things earlier records said about this that MEASUREMENT REFUTED:
+#              the four are NOT separated from the other 60 by base repha count -- that
+#              count runs 93-5,392 over the 64 and the four sit at 2,566-2,912, inside
+#              the bulk; and `_INCIDENTAL_FACE_GLYPH_SHARE` is not "the same shape", it
+#              refuses a whole document over an *unrepairable named* face and cannot
+#              reach this case at all.
+#              The repair's Kokila corroboration logic (`_has_corroborated_kokila_half_sa`,
+#              `_has_proven_kokila_half_tha_outline`, `_kokila_displacement_corrections`)
+#              is unreachable without this entry.
 #   mangal  -- 424 no-gate documents (294 clean); same trade shape, and its outline-keyed
-#              reference table is 74 of 492 mappings, which is the trade's cause.
+#              reference table is 74 of 492 mappings, which is the trade's cause. Note
+#              the repair ALREADY rewrites Mangal CMaps in any document that opens the
+#              gate for another family -- that is where kokila's whole measured harm came
+#              from -- so routing it changes when the reconstruction is attempted, not
+#              whether Mangal is ever touched.
 #   nirmala -- 75 documents, 1 garbled.  arial unicode -- 100, 0 garbled.  utsaah -- 5.
-_KNOWN_BROKEN_CMAP = {"kalimati", "lohit"}
+_KNOWN_BROKEN_CMAP = {"kalimati", "lohit", "kokila"}
 
 # Page-level OCR markers. A "scanned_decoy_text" page is a full-page raster whose
 # only text layer is non-embedded core-font garbage (see cib-press-release

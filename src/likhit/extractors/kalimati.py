@@ -1233,10 +1233,16 @@ def _decline_authored_repha_rewrites(
     disagreement this declines to act on, and the Kokila displacement fingerprint is
     built on one such disagreement (GID 108, authored ``र्``, program ``ि``).
 
-    ``exempt`` carries GIDs whose repha rewrite is separately proven, so the guard
-    defers to evidence rather than overriding it. The one caller passes
-    :data:`_KOKILA_DISPLACEMENT_GIDS` for a face-scoped, corroborated displacement
-    pair; without that, this guard could disable the measured GID 83/108 repair.
+    ``exempt`` carries GIDs whose repha rewrite is separately proven, so the guard defers
+    to evidence rather than overriding it. The one caller passes
+    :data:`_KOKILA_DISPLACEMENT_GIDS` for a face-scoped, corroborated displacement pair.
+    ⚠️ That path is currently **inert**: the pair fingerprint requires a Kokila face and
+    ``kokila`` is routed, so the face condition already returns the map untouched. It is
+    retained rather than deleted because it becomes load-bearing the moment the pair check
+    is widened to another family or ``kokila`` is unrouted, and because a guard silently
+    overriding corroborated evidence is the failure it prevents.
+    ``tests/test_authored_repha_guard.py`` pins both halves -- the parameter's behaviour
+    at unit level, and the production path's current no-op.
 
     ``guessed`` is a required keyword rather than defaulted empty on purpose: a caller
     that forgot it would silently turn the guard off, which is exactly the failure this
@@ -1451,7 +1457,7 @@ def _is_generic_type0_font_name(font_name: str) -> bool:
 def _font_owner_family(font_name: str) -> str:
     """Stable ownership class used before selecting a shared-CMap representative."""
 
-    for family in sorted(_KNOWN_BROKEN_CMAP | {"kokila"}):
+    for family in sorted(_KNOWN_BROKEN_CMAP):
         if _font_name_matches_family(font_name, family):
             return family
     if _is_generic_type0_font_name(font_name):
@@ -1777,8 +1783,9 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
         )
         if pair_scoped:
             # Corroborated per face before it is applied, so it outranks the generic
-            # repha guard below. Only the pair is exempt; the rest of a Kokila
-            # reconstruction is guarded like any other.
+            # repha guard below. Inert while `kokila` is routed -- the guard's face
+            # condition already spares a Kokila reconstruction entirely -- and kept for
+            # the case where that stops being true.
             proven_repha_rewrites[to_unicode_xref] = _KOKILA_DISPLACEMENT_GIDS
             displacement_corrections = _kokila_displacement_corrections(
                 font_name,
