@@ -892,6 +892,14 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "is not evidence of anything, and the two shares above are ratios that a tiny "
         "denominator makes meaningless",
     ),
+    (
+        "likhit/extractors/font_based.py",
+        "_CONTEXTUAL_MARKER_MAX_GAP",
+    ): (
+        2.0,
+        "points: admits the measured two-point Kalimati span split while a larger "
+        "visual gap remains a word boundary",
+    ),
     # -- Kokila / Kalimati faces whose embedded CMap contradicts what they draw --- #
     #
     # Every GID here is a specific glyph in a specific measured face, so the derivation

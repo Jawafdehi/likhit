@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+from dataclasses import replace
 from pathlib import Path
 import sys
 import threading
@@ -26,8 +27,12 @@ from likhit.extractors.font_based import (
     _to_dict_shape,
     _choose_fragment_text,
     _has_severe_noise,
+    _is_corroborated_conjunct_ra_repair,
     _is_garbled_orphan,
+    _merge_corroborated_conjunct_ra_tokens,
     _merge_fragment_variants,
+    _merge_malformed_table_variants,
+    _tables_contain_malformed_conjunct_ra,
     _text_quality_penalty,
     _duplicate_consonant_count,
     _DUPLICATE_CONSONANT_PATTERN,
@@ -62,7 +67,7 @@ from likhit.extractors.kalimati import (
     _resolve_fontfile2_xref,
 )
 from likhit.handlers.single_column_notice import SingleColumnNoticeHandler
-from likhit.models import Table
+from likhit.models import Table, TableCell, TableRegion
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -335,7 +340,14 @@ def _run_broken_cmap_table_flow(
     tmp_path: Path,
     *,
     repaired_has_tables: bool,
-) -> tuple[list[tuple[object, bool]], RawDocument, Table, Table]:
+    malformed_tables: bool = True,
+) -> tuple[
+    list[tuple[object, bool, bool]],
+    list[tuple[object, list[str]]],
+    RawDocument,
+    Table,
+    Table,
+]:
     source = tmp_path / "broken-cmap.pdf"
     source.write_bytes(b"%PDF-1.4")
 
@@ -350,9 +362,30 @@ def _run_broken_cmap_table_flow(
     repaired_doc = FakeDoc()
     opened_docs = iter([original_doc, repaired_source])
 
-    original_table = Table(row_count=2, col_count=2, cells=[])
-    repaired_table = Table(row_count=3, col_count=2, cells=[])
-    calls: list[tuple[object, bool]] = []
+    table_text = "श्रर्ी सफा" if malformed_tables else "श्री सफा"
+    candidate_table_text = "श्री बिग्रिएको" if malformed_tables else "श्री सफा"
+    original_table = Table(
+        row_count=2,
+        col_count=2,
+        cells=[TableCell(row=0, col=0, text=table_text)],
+    )
+    repaired_table = Table(
+        row_count=3,
+        col_count=2,
+        cells=[TableCell(row=0, col=0, text=table_text)],
+    )
+    original_candidate_table = Table(
+        row_count=2,
+        col_count=2,
+        cells=[TableCell(row=0, col=0, text=candidate_table_text)],
+    )
+    repaired_candidate_table = Table(
+        row_count=3,
+        col_count=2,
+        cells=[TableCell(row=0, col=0, text=candidate_table_text)],
+    )
+    calls: list[tuple[object, bool, bool]] = []
+    table_calls: list[tuple[object, list[str]]] = []
 
     monkeypatch.setattr(font_based_module.fitz, "open", lambda _: next(opened_docs))
     monkeypatch.setattr(
@@ -385,18 +418,42 @@ def _run_broken_cmap_table_flow(
     ) -> RawDocument:
         del self, font_strategies_by_page
         detect_tables = bool(kwargs.get("detect_tables", True))
-        calls.append((doc, detect_tables))
-        if doc is original_doc:
-            tables = [original_table] if detect_tables else []
-        else:
-            assert doc is repaired_doc
-            tables = [repaired_table] if repaired_has_tables else []
-        fragment = TextFragment("परीक्षण", 1, 10.0, 20.0, 70.0, 35.0)
+        merge_tables = bool(kwargs.get("merge_tables", True))
+        calls.append((doc, detect_tables, merge_tables))
+        assert doc is original_doc or doc is repaired_doc
+        fragments = [
+            TextFragment(
+                "� सही" if doc is original_doc else "ठीक �",
+                1,
+                10.0,
+                20.0,
+                70.0,
+                35.0,
+                block_number=1,
+                line_number=1,
+            ),
+            TextFragment(
+                "सञ् चाल" if doc is original_doc else "सञ्चाल",
+                1,
+                10.0,
+                40.0,
+                70.0,
+                55.0,
+                block_number=2,
+                line_number=1,
+            ),
+        ]
         return RawDocument(
-            paragraphs=[fragment.text],
-            raw_text=fragment.text,
-            fragments=[fragment],
-            tables=tables,
+            paragraphs=[fragment.text for fragment in fragments],
+            raw_text="\n\n".join(fragment.text for fragment in fragments),
+            fragments=fragments,
+            tables=(
+                [original_table]
+                if doc is original_doc and detect_tables
+                else [repaired_table]
+                if repaired_has_tables and detect_tables
+                else []
+            ),
         )
 
     monkeypatch.setattr(
@@ -405,34 +462,122 @@ def _run_broken_cmap_table_flow(
         fake_extract_from_document,
     )
 
-    result = FontBasedStrategy().extract_text(str(source))
-    return calls, result, original_table, repaired_table
+    def fake_detect_tables_from_fragments(
+        doc: object,
+        fragments: list[TextFragment],
+        *,
+        page_start: int,
+        page_end: int,
+    ) -> list[Table]:
+        assert (page_start, page_end) == (0, 0)
+        table_calls.append((doc, [fragment.text for fragment in fragments]))
+        if doc is repaired_doc:
+            return [repaired_candidate_table] if repaired_has_tables else []
+        assert doc is original_doc
+        return [original_candidate_table]
 
-
-def test_broken_cmap_skips_unrepaired_table_detection_when_repair_finds_tables(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    calls, result, _original_table, repaired_table = _run_broken_cmap_table_flow(
-        monkeypatch,
-        tmp_path,
-        repaired_has_tables=True,
+    monkeypatch.setattr(
+        font_based_module,
+        "_detect_tables_from_fragments",
+        fake_detect_tables_from_fragments,
     )
 
-    assert [detect_tables for _doc, detect_tables in calls] == [False, True]
-    assert result.tables == [repaired_table]
+    result = FontBasedStrategy().extract_text(str(source))
+    # `table_calls` is what this helper gained: the fragment-variant table detection
+    # records the document and fragment texts it was handed, so a caller can assert the
+    # repair compared BOTH passes rather than re-detecting on one.
+    #
+    # The other line also asserted here that `embedded_legacy_maps` reached three
+    # consumers as the same object. That assertion is not carried: it reads locals this
+    # helper no longer has, because the helper was restructured here, and the property is
+    # covered by tests/test_embedded_name_legacy_candidacy.py,
+    # tests/test_name_legacy_reconciliation.py and tests/test_digit_companion.py.
+    return calls, table_calls, result, original_table, repaired_table
+
+
+def test_broken_cmap_builds_repaired_tables_from_merged_fragments(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, table_calls, result, _original_table, repaired_table = (
+        _run_broken_cmap_table_flow(
+            monkeypatch,
+            tmp_path,
+            repaired_has_tables=True,
+        )
+    )
+
+    assert [(detect, merge) for _doc, detect, merge in calls] == [
+        (False, True),
+        (True, False),
+    ]
+    assert table_calls == [(calls[1][0], ["ठीक सही", "सञ्चाल"])]
+    assert result.raw_text == "ठीक सही\n\nसञ्चाल"
+    assert result.tables[0].row_count == repaired_table.row_count
+    assert result.tables[0].cells[0].text == "श्री सफा"
+    assert repaired_table.cells[0].text == "श्रर्ी सफा"
 
 
 def test_broken_cmap_recovers_unrepaired_tables_when_repair_finds_none(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    calls, result, original_table, _repaired_table = _run_broken_cmap_table_flow(
-        monkeypatch,
-        tmp_path,
-        repaired_has_tables=False,
+    calls, table_calls, result, original_table, _repaired_table = (
+        _run_broken_cmap_table_flow(
+            monkeypatch,
+            tmp_path,
+            repaired_has_tables=False,
+        )
     )
 
-    assert [detect_tables for _doc, detect_tables in calls] == [False, True, True]
+    assert [(detect, merge) for _doc, detect, merge in calls] == [
+        (False, True),
+        (True, False),
+        (True, False),
+    ]
     assert calls[0][0] is calls[2][0]
+    assert table_calls == [(calls[0][0], ["ठीक सही", "सञ्चाल"])]
+    assert result.tables[0].row_count == original_table.row_count
+    assert result.tables[0].cells[0].text == "श्री सफा"
+    assert original_table.cells[0].text == "श्रर्ी सफा"
+
+
+def test_broken_cmap_does_not_rebuild_clean_tables(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, table_calls, result, _original_table, repaired_table = (
+        _run_broken_cmap_table_flow(
+            monkeypatch,
+            tmp_path,
+            repaired_has_tables=True,
+            malformed_tables=False,
+        )
+    )
+
+    assert [(detect, merge) for _doc, detect, merge in calls] == [
+        (False, True),
+        (True, False),
+    ]
+    assert table_calls == []
+    assert result.tables == [repaired_table]
+
+
+def test_broken_cmap_does_not_rebuild_clean_fallback_tables(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, table_calls, result, original_table, _repaired_table = (
+        _run_broken_cmap_table_flow(
+            monkeypatch,
+            tmp_path,
+            repaired_has_tables=False,
+            malformed_tables=False,
+        )
+    )
+
+    assert [(detect, merge) for _doc, detect, merge in calls] == [
+        (False, True),
+        (True, False),
+        (True, False),
+    ]
+    assert table_calls == []
     assert result.tables == [original_table]
 
 
@@ -1431,6 +1576,537 @@ def test_join_spans_with_layout_adds_space_for_real_visual_gap() -> None:
     assert joined == "Mindray BS-230"
 
 
+def test_contextual_kalimati_marker_resolves_after_two_spans_are_joined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDoc:
+        def __getitem__(self, index: int) -> object:
+            assert index == 0
+            return object()
+
+    marker = kalimati_module._PUA_CONTEXTUAL_NE
+    page_dict = {
+        "blocks": [
+            {
+                "lines": [
+                    {
+                        "spans": [
+                            {
+                                "text": "गर्",
+                                "font": "AAAAAA+Kalimati",
+                                "bbox": (10.0, 10.0, 20.0, 20.0),
+                            },
+                            {
+                                "text": marker,
+                                "font": "AAAAAA+Kalimati",
+                                "bbox": (22.0, 10.0, 28.0, 20.0),
+                            },
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        font_based_module,
+        "get_cid_marked_page_dict",
+        lambda _page: page_dict,
+    )
+    monkeypatch.setattr(
+        font_based_module,
+        "collect_page_repairs_by_line",
+        lambda *_args, **_kwargs: {},
+    )
+
+    result = FontBasedStrategy()._extract_from_document(
+        FakeDoc(),  # type: ignore[arg-type]
+        {1: {"Kalimati": "broken_cmap"}},
+        page_start=0,
+        page_end=0,
+        needs_reorder=True,
+        detect_tables=False,
+    )
+
+    assert result.raw_text == "गर्ने"
+    assert result.fragments[0].text == "गर्ने"
+    assert marker not in result.raw_text
+
+
+def test_contextual_kalimati_marker_does_not_cross_a_large_span_gap() -> None:
+    marker = kalimati_module._PUA_CONTEXTUAL_NE
+
+    joined = join_spans_with_layout(
+        [
+            (10.0, 0.0, 20.0, 10.0, "गर्"),
+            (24.0, 0.0, 30.0, 10.0, marker),
+        ]
+    )
+
+    assert joined == f"गर् {marker}"
+    assert kalimati_module.reorder_devanagari(joined) == "गर् ने"
+
+
+def test_contextual_kalimati_marker_preserves_a_non_rakar_word_boundary() -> None:
+    marker = kalimati_module._PUA_CONTEXTUAL_NE
+
+    joined = join_spans_with_layout(
+        [
+            (10.0, 0.0, 20.0, 10.0, "राम"),
+            (21.0, 0.0, 27.0, 10.0, marker),
+        ]
+    )
+
+    assert joined == f"राम {marker}"
+    assert kalimati_module.reorder_devanagari(joined) == "राम ने"
+
+
+def test_contextual_kalimati_marker_keeps_authored_space_inside_one_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDoc:
+        def __getitem__(self, index: int) -> object:
+            assert index == 0
+            return object()
+
+    marker = kalimati_module._PUA_CONTEXTUAL_NE
+    page_dict = {
+        "blocks": [
+            {
+                "lines": [
+                    {
+                        "spans": [
+                            {
+                                "text": f"गर् {marker}",
+                                "font": "AAAAAA+Kalimati",
+                                "bbox": (10.0, 10.0, 30.0, 20.0),
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        font_based_module,
+        "get_cid_marked_page_dict",
+        lambda _page: page_dict,
+    )
+    monkeypatch.setattr(
+        font_based_module,
+        "collect_page_repairs_by_line",
+        lambda *_args, **_kwargs: {},
+    )
+
+    result = FontBasedStrategy()._extract_from_document(
+        FakeDoc(),  # type: ignore[arg-type]
+        {1: {"Kalimati": "broken_cmap"}},
+        page_start=0,
+        page_end=0,
+        needs_reorder=True,
+        detect_tables=False,
+    )
+
+    assert result.raw_text == "गर् ने"
+
+
+def test_joined_reorder_keeps_a_real_space_after_virama(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDoc:
+        def __getitem__(self, index: int) -> object:
+            assert index == 0
+            return object()
+
+    page_dict = {
+        "blocks": [
+            {
+                "lines": [
+                    {
+                        "spans": [
+                            {
+                                "text": "अर्थात्",
+                                "font": "AAAAAA+Kalimati",
+                                "bbox": (10.0, 10.0, 30.0, 20.0),
+                            },
+                            {
+                                "text": "९",
+                                "font": "AAAAAA+Kalimati",
+                                "bbox": (32.0, 10.0, 36.0, 20.0),
+                            },
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        font_based_module,
+        "get_cid_marked_page_dict",
+        lambda _page: page_dict,
+    )
+    monkeypatch.setattr(
+        font_based_module,
+        "collect_page_repairs_by_line",
+        lambda *_args, **_kwargs: {},
+    )
+
+    result = FontBasedStrategy()._extract_from_document(
+        FakeDoc(),  # type: ignore[arg-type]
+        {1: {"Kalimati": "broken_cmap"}},
+        page_start=0,
+        page_end=0,
+        needs_reorder=True,
+        detect_tables=False,
+    )
+
+    assert result.raw_text == "अर्थात् ९"
+
+
+def _extract_kokila_line(
+    monkeypatch: pytest.MonkeyPatch,
+    texts: tuple[str, ...],
+    *,
+    reverse_raw_spans: bool = False,
+    fonts: tuple[str, ...] | None = None,
+) -> str:
+    class FakeDoc:
+        def __getitem__(self, index: int) -> object:
+            assert index == 0
+            return object()
+
+    font_names = fonts or ("Kokila",) * len(texts)
+    assert len(font_names) == len(texts)
+    spans = [
+        {
+            "text": text,
+            "font": f"AAAAAA+{font_names[index]}",
+            "bbox": (
+                10.0 + index * 10.5,
+                10.0,
+                20.0 + index * 10.5,
+                20.0,
+            ),
+        }
+        for index, text in enumerate(texts)
+    ]
+    if reverse_raw_spans:
+        spans.reverse()
+    page_dict = {
+        "blocks": [
+            {
+                "lines": [
+                    {
+                        "spans": spans,
+                    }
+                ]
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        font_based_module,
+        "get_cid_marked_page_dict",
+        lambda _page: page_dict,
+    )
+    monkeypatch.setattr(
+        font_based_module,
+        "collect_page_repairs_by_line",
+        lambda *_args, **_kwargs: {},
+    )
+
+    result = FontBasedStrategy()._extract_from_document(
+        FakeDoc(),  # type: ignore[arg-type]
+        {1: {font_name: "correct" for font_name in font_names}},
+        page_start=0,
+        page_end=0,
+        needs_reorder=True,
+        detect_tables=False,
+    )
+    return result.raw_text
+
+
+def test_new_kokila_context_marker_does_not_normalize_unrelated_boundaries() -> None:
+    marker = kalimati_module._PUA_KOKILA_HALF_SA
+    source = f"{marker}थानीय सरकार सञ् चाल र सञ् चालन बोलपत्रर् आव्हान राख् नु"
+
+    converted = FontBasedStrategy()._convert_span_text(
+        source,
+        "Kokila",
+        {"Kokila": "correct"},
+        needs_reorder=True,
+    )
+
+    assert converted == ("स्थानीय सरकार सञ् चाल र सञ् चालन बोलपत्रर् आव्हान राख् नु")
+
+
+def test_complete_kokila_sequence_resolves_before_generic_ikar_reordering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generic_ikar = kalimati_module._PUA_IKAR
+    generic_reph = kalimati_module._PUA_REPH
+    half_sa = kalimati_module._PUA_KOKILA_HALF_SA
+    source = (
+        f"आ{generic_ikar}थ{generic_reph}क कारोबारको "
+        f"{generic_ikar}{half_sa}थ{generic_ikar}त"
+    )
+
+    assert _extract_kokila_line(monkeypatch, (source,)) == ("आर्थिक कारोबारको स्थिति")
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "expected"),
+    [
+        (kalimati_module._PUA_KOKILA_TA, "ह", "तह"),
+        (kalimati_module._PUA_KOKILA_HALF_SA, "थानीय", "स्थानीय"),
+        ("त" + kalimati_module._PUA_KOKILA_HALF_THA, "य", "तथ्य"),
+    ],
+)
+def test_kokila_context_markers_resolve_after_cross_span_assembly(
+    monkeypatch: pytest.MonkeyPatch,
+    left: str,
+    right: str,
+    expected: str,
+) -> None:
+    assert _extract_kokila_line(monkeypatch, (left, right)) == expected
+
+
+def test_kokila_dependency_detection_uses_visual_span_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    half_tha = kalimati_module._PUA_KOKILA_HALF_THA
+
+    assert (
+        _extract_kokila_line(
+            monkeypatch,
+            ("त" + half_tha, "य"),
+            reverse_raw_spans=True,
+        )
+        == "तथ्य"
+    )
+
+
+@pytest.mark.parametrize("split", range(1, 5))
+def test_mixed_kokila_status_resolves_at_every_span_split(
+    monkeypatch: pytest.MonkeyPatch,
+    split: int,
+) -> None:
+    sequence = (
+        kalimati_module._PUA_IKAR
+        + kalimati_module._PUA_KOKILA_HALF_SA
+        + "थ"
+        + kalimati_module._PUA_IKAR
+        + "त"
+    )
+
+    assert (
+        _extract_kokila_line(
+            monkeypatch,
+            (sequence[:split], sequence[split:]),
+        )
+        == "स्थिति"
+    )
+
+
+def test_cross_span_kokila_deferral_preserves_an_authored_word_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    left = "सञ् चालन कारोबारको " + kalimati_module._PUA_IKAR
+    right = kalimati_module._PUA_KOKILA_HALF_SA + "थ" + kalimati_module._PUA_IKAR + "त"
+
+    assert _extract_kokila_line(monkeypatch, (left, right)) == (
+        "सञ्चालन कारोबारको स्थिति"
+    )
+
+
+@pytest.mark.parametrize("split", range(1, 5))
+def test_pure_kokila_status_resolves_at_every_span_split(
+    monkeypatch: pytest.MonkeyPatch,
+    split: int,
+) -> None:
+    sequence = (
+        kalimati_module._PUA_KOKILA_IKAR
+        + kalimati_module._PUA_KOKILA_HALF_SA
+        + "थ"
+        + kalimati_module._PUA_KOKILA_IKAR
+        + kalimati_module._PUA_KOKILA_TA
+    )
+
+    assert (
+        _extract_kokila_line(
+            monkeypatch,
+            (sequence[:split], sequence[split:]),
+        )
+        == "स्थिति"
+    )
+
+
+@pytest.mark.parametrize("split", range(1, 5))
+def test_literal_th_kokila_status_resolves_at_every_span_split(
+    monkeypatch: pytest.MonkeyPatch,
+    split: int,
+) -> None:
+    sequence = (
+        kalimati_module._PUA_KOKILA_IKAR
+        + "थथ"
+        + kalimati_module._PUA_KOKILA_IKAR
+        + kalimati_module._PUA_KOKILA_TA
+    )
+
+    assert (
+        _extract_kokila_line(
+            monkeypatch,
+            (sequence[:split], sequence[split:]),
+        )
+        == "स्थिति"
+    )
+
+
+def test_later_literal_th_status_sequence_can_cross_a_span_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sequence = kalimati_module._KOKILA_LITERAL_TH_STATUS_SEQUENCE
+    split = 2
+
+    assert (
+        _extract_kokila_line(
+            monkeypatch,
+            (sequence + " " + sequence[:split], sequence[split:]),
+        )
+        == "स्थिति स्थिति"
+    )
+
+
+@pytest.mark.parametrize(
+    "spans",
+    [
+        (
+            "स्वा"
+            + kalimati_module._PUA_KOKILA_HALF_SA
+            + kalimati_module._PUA_KOKILA_HALF_THA,
+            "य",
+        ),
+        (
+            "स्वा",
+            kalimati_module._PUA_KOKILA_HALF_SA + kalimati_module._PUA_KOKILA_HALF_THA,
+            "य",
+        ),
+    ],
+)
+def test_kokila_health_cluster_resolves_across_span_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    spans: tuple[str, ...],
+) -> None:
+    assert _extract_kokila_line(monkeypatch, spans) == "स्वास्थ्य"
+
+
+def test_context_markers_fail_closed_when_a_line_has_no_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cases = (
+        (kalimati_module._PUA_CONTEXTUAL_NE, "ने", "Kalimati"),
+        (kalimati_module._PUA_KOKILA_IKAR, "र्", "Kokila"),
+        (kalimati_module._PUA_KOKILA_TA, "ि", "Kokila"),
+        (kalimati_module._PUA_KOKILA_HALF_SA, "थ", "Kokila"),
+        (kalimati_module._PUA_KOKILA_HALF_THA, "्", "Kokila"),
+    )
+
+    for marker, expected, font_name in cases:
+        assert (
+            _extract_kokila_line(
+                monkeypatch,
+                (marker,),
+                fonts=(font_name,),
+            )
+            == expected
+        )
+
+
+@pytest.mark.parametrize(
+    ("marker", "font_name"),
+    [
+        (kalimati_module._PUA_CONTEXTUAL_NE, "Helvetica"),
+        (kalimati_module._PUA_KOKILA_IKAR, "Helvetica"),
+        (kalimati_module._PUA_KOKILA_TA, "Helvetica"),
+        (kalimati_module._PUA_KOKILA_HALF_SA, "Helvetica"),
+        (kalimati_module._PUA_KOKILA_HALF_THA, "Helvetica"),
+        (kalimati_module._PUA_CONTEXTUAL_NE, "NotKalimati"),
+        (kalimati_module._PUA_CONTEXTUAL_NE, "KalimatiExtra"),
+        (kalimati_module._PUA_KOKILA_HALF_SA, "NotKokila"),
+        (kalimati_module._PUA_KOKILA_HALF_SA, "KokilaExtra"),
+    ],
+)
+def test_context_marker_from_an_unrelated_font_remains_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+    marker: str,
+    font_name: str,
+) -> None:
+    assert (
+        _extract_kokila_line(
+            monkeypatch,
+            (marker,),
+            fonts=(font_name,),
+        )
+        == marker
+    )
+
+
+def test_context_marker_font_family_accepts_a_style_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = kalimati_module._PUA_KOKILA_HALF_SA
+
+    assert (
+        _extract_kokila_line(
+            monkeypatch,
+            (marker + "थानीय",),
+            fonts=("Kokila-Bold",),
+        )
+        == "स्थानीय"
+    )
+
+
+def test_context_marker_provenance_is_preserved_within_one_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = kalimati_module._PUA_KOKILA_HALF_SA
+
+    assert (
+        _extract_kokila_line(
+            monkeypatch,
+            (marker + "थानीय ", marker + "थापा"),
+            fonts=("Kokila", "Helvetica"),
+        )
+        == "स्थानीय " + marker + "थापा"
+    )
+
+
+def test_existing_positional_marker_keeps_established_spacing_cleanup() -> None:
+    """The ikar marker still lands correctly when the span also holds a virama space.
+
+    ⚠️ The expectation differs from the extractor line this came from, deliberately, and
+    the difference is the space in ``सञ् चालन`` -- not the marker, which is this test's
+    subject and resolves to ``विविध`` either way.
+
+    That line joined a space after any virama. This tree does not: it was measured to
+    join real word boundaries too (``छन् तथा``), so only the ``पुर्याउनु`` stem is
+    repaired, and the join is scoped to the marker-resolution pass, where the space
+    provably came from reassembling two spans rather than from the document. This call
+    is a SINGLE span on the non-deferred path, so its space is authored as far as the
+    extractor can tell, and is kept. ``test_cross_span_kokila_deferral_preserves_an_``
+    ``authored_word_boundary`` is the cross-span case and does join it.
+    """
+
+    marker = kalimati_module._PUA_IKAR
+
+    converted = FontBasedStrategy()._convert_span_text(
+        f"सञ् चालन {marker}व{marker}वध",
+        "Kokila",
+        {"Kokila": "correct"},
+        needs_reorder=True,
+    )
+
+    assert converted == "सञ् चालन विविध"
+
+
 def test_normalize_extracted_word_keeps_spaces_between_kalimati_words() -> None:
     line = join_words_with_spacing(
         [
@@ -1511,6 +2187,166 @@ def test_choose_fragment_text_can_merge_best_tokens_from_both_candidates() -> No
         )
         == "मुद्दाको बेहोरा:-"
     )
+
+
+def test_choose_fragment_text_merges_around_malformed_conjunct_ra() -> None:
+    assert (
+        _choose_fragment_text(
+            "श्री ववरण",
+            "श्रर्ी विवरण",
+        )
+        == "श्री विवरण"
+    )
+
+
+def test_choose_fragment_text_prefers_valid_rakar_order_without_other_noise() -> None:
+    assert _choose_fragment_text("तयार", "तर्ार") == "तयार"
+
+
+def test_conjunct_ra_merge_rejects_an_unrelated_candidate_change() -> None:
+    assert not _is_corroborated_conjunct_ra_repair("श्रर्ेस्ता", "श्रेथिा")
+    assert (
+        _merge_corroborated_conjunct_ra_tokens("श्रर्ेस्ता सफा", "श्रेथिा बिग्रिएको")
+        == "श्रर्ेस्ता सफा"
+    )
+
+
+def test_table_variant_matching_ignores_unstable_global_table_indices() -> None:
+    regions = [
+        TableRegion(2, 10.0, 20.0, 300.0, 700.0, start_row=0),
+        TableRegion(3, 10.0, 30.0, 300.0, 710.0, start_row=2),
+    ]
+    damaged = Table(
+        row_count=4,
+        col_count=2,
+        cells=[TableCell(row=0, col=0, text="श्रर्ी सफा")],
+        index=9,
+        regions=regions,
+    )
+    candidate = Table(
+        row_count=4,
+        col_count=2,
+        cells=[TableCell(row=0, col=0, text="श्री सफा")],
+        index=4,
+        regions=[
+            TableRegion(2, 10.0, 20.0, 300.0, 700.0, start_row=0),
+            TableRegion(3, 10.0, 30.0, 300.0, 710.0, start_row=2),
+        ],
+    )
+
+    merged = _merge_malformed_table_variants([damaged], [candidate])
+
+    assert merged[0].index == 9
+    assert merged[0].regions == regions
+    assert merged[0].cells[0].text == "श्री सफा"
+
+
+def test_caption_only_malformed_table_is_detected_and_repaired() -> None:
+    region = TableRegion(2, 10.0, 20.0, 300.0, 700.0, start_row=0)
+    damaged = Table(
+        row_count=2,
+        col_count=2,
+        cells=[TableCell(row=0, col=0, text="सफा")],
+        caption="श्रर्ी विवरण",
+        regions=[region],
+    )
+    candidate = replace(damaged, caption="श्री विवरण")
+
+    assert _tables_contain_malformed_conjunct_ra([damaged])
+
+    merged = _merge_malformed_table_variants([damaged], [candidate])
+
+    assert merged[0].caption == "श्री विवरण"
+    assert merged[0].regions == [region]
+
+
+def test_table_text_repairs_preserve_primary_continuation_geometry() -> None:
+    def page_table(page_number: int, data: str) -> Table:
+        return Table(
+            row_count=2,
+            col_count=2,
+            cells=[
+                TableCell(row=0, col=0, text="शीर्षक"),
+                TableCell(row=0, col=1, text="रकम"),
+                TableCell(row=1, col=0, text=data),
+                TableCell(row=1, col=1, text="१"),
+            ],
+            caption="श्रर्ी विवरण",
+            regions=[
+                TableRegion(
+                    page_number,
+                    40.0,
+                    60.0 if page_number == 1 else 20.0,
+                    550.0,
+                    800.0 if page_number == 1 else 500.0,
+                    page_height=842.0,
+                )
+            ],
+        )
+
+    first = page_table(1, "पहिलो")
+    second = page_table(2, "दोस्रो")
+    repaired_first = replace(first, caption="श्री विवरण")
+
+    merged = _merge_malformed_table_variants(
+        [first, second],
+        [repaired_first],
+    )
+
+    assert len(merged) == 1
+    assert merged[0].caption == "श्री विवरण"
+    assert merged[0].row_count == 3
+    assert [region.start_row for region in merged[0].regions] == [0, 2]
+    assert [cell.text for cell in merged[0].cells if cell.col == 0] == [
+        "शीर्षक",
+        "पहिलो",
+        "दोस्रो",
+    ]
+
+
+def test_table_text_repairs_preserve_primary_repeated_header_drop() -> None:
+    def page_table(page_number: int, data: str) -> Table:
+        return Table(
+            row_count=2,
+            col_count=2,
+            cells=[
+                TableCell(row=0, col=0, text="श्रर्ी"),
+                TableCell(row=0, col=1, text="रकम"),
+                TableCell(row=1, col=0, text=data),
+                TableCell(row=1, col=1, text="१"),
+            ],
+            regions=[
+                TableRegion(
+                    page_number,
+                    40.0,
+                    60.0 if page_number == 1 else 20.0,
+                    550.0,
+                    800.0 if page_number == 1 else 500.0,
+                    page_height=842.0,
+                )
+            ],
+        )
+
+    first = page_table(1, "पहिलो")
+    second = page_table(2, "दोस्रो")
+    repaired_first = replace(
+        first,
+        cells=[
+            replace(first.cells[0], text="श्री"),
+            *first.cells[1:],
+        ],
+    )
+
+    merged = _merge_malformed_table_variants(
+        [first, second],
+        [repaired_first],
+    )
+
+    assert len(merged) == 1
+    assert merged[0].row_count == 3
+    assert [region.start_row for region in merged[0].regions] == [0, 2]
+    assert sum(cell.text == "श्रर्ी" for cell in merged[0].cells) == 0
+    assert sum(cell.text == "श्री" for cell in merged[0].cells) == 1
 
 
 # --- legacy-font "invalid sign" garble (the appended clean+garble artifact) ---

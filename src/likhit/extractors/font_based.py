@@ -28,6 +28,14 @@ from likhit.extractors.font_classifier import (
     scan_pdf_fonts_by_page,
 )
 from likhit.extractors.kalimati import (
+    _KOKILA_LITERAL_TH_STATUS_SEQUENCE,
+    _PUA_CONTEXTUAL_NE,
+    _PUA_IKAR,
+    _PUA_KOKILA_HALF_SA,
+    _PUA_KOKILA_HALF_THA,
+    _PUA_KOKILA_IKAR,
+    _PUA_KOKILA_TA,
+    _PUA_REPH,
     fix_kalimati_cmap,
     normalize_devanagari_spacing,
     reorder_devanagari,
@@ -53,16 +61,23 @@ from likhit.extractors.numeric_boundaries import (
     collect_page_repairs_by_line,
 )
 from likhit.extractors.pua_maps import (
+    _font_name_matches_family,
     KNOWN_UNMAPPABLE,
     is_symbol_pua_font,
     remap_symbol_pua,
     unlift_symbol_pua,
 )
-from likhit.extractors.tables import detect_page_tables, merge_continuation_tables
+from likhit.extractors.tables import (
+    detect_page_tables,
+    merge_continuation_table_variants,
+    merge_continuation_tables,
+)
 from likhit.models import Table
 
 PAGE_RANGE_PATTERN = re.compile(r"^\d+(?:-\d+)?$")
 SPAN_GAP_THRESHOLD = 0.75
+_CONTEXTUAL_MARKER_MAX_GAP = 2.0
+_CONTEXTUAL_NE_ATTACHING_SUFFIX = "\u0930\u094d"
 # Zeroed ToUnicode maps otherwise collapse every unknown glyph to the same
 # replacement character. Raw CIDs keep those glyphs distinct for later repair.
 # This word REPLACES PyMuPDF's default rather than adding to it, and that is
@@ -141,6 +156,25 @@ _IMPOSSIBLE_IKAR_NASAL_PATTERN = re.compile(
 #: `_RANKING_DOUBLET_FORGIVENESS`'s sibling term already produced once in this stack.
 _IKAR_NASAL_WEIGHT = 6
 _HALANT_IKAR_PATTERN = re.compile(r"्ि")
+_MALFORMED_CONJUNCT_RA_PATTERN = re.compile(
+    r"[\u0915-\u0939\u0958-\u095F]\u0930\u094D[\u093E-\u094C]"
+)
+_CORROBORATED_CONJUNCT_RA_PATTERN = re.compile(
+    r"([\u0915-\u0939\u0958-\u095F])\u0930\u094D(?=[\u093E\u0940-\u094C])"
+)
+_KOKILA_CONTEXT_MARKERS = frozenset(
+    {
+        _PUA_KOKILA_IKAR,
+        _PUA_KOKILA_TA,
+        _PUA_KOKILA_HALF_SA,
+        _PUA_KOKILA_HALF_THA,
+    }
+)
+_CONTEXT_MARKERS = frozenset({_PUA_CONTEXTUAL_NE, *_KOKILA_CONTEXT_MARKERS})
+_LINE_REORDER_MARKERS = frozenset({_PUA_REPH, _PUA_IKAR, *_KOKILA_CONTEXT_MARKERS})
+_SPACING_NEUTRAL_CONTEXT_MARKERS = frozenset(
+    {_PUA_CONTEXTUAL_NE, *_KOKILA_CONTEXT_MARKERS}
+)
 _DUPLICATE_CONSONANT_PATTERN = re.compile(r"([क-ह])\1")
 # Named because `_legacy_map_garble` subtracts this exact term back out for map
 # ranking. If the penalty ever adds the narrowed count at one weight while the
@@ -152,6 +186,85 @@ _DUPLICATE_CONSONANT_WEIGHT = 3
 # eleven documents their correct map; hundreds of hits are real damage and must still
 # decide, which is what forgiving a bounded number rather than the whole term preserves.
 _RANKING_DOUBLET_FORGIVENESS = 1
+
+
+def _owned_context_markers(font_name: str) -> frozenset[str]:
+    """Context markers this font face is allowed to introduce."""
+
+    markers: set[str] = set()
+    if _font_name_matches_family(font_name, "kalimati"):
+        markers.add(_PUA_CONTEXTUAL_NE)
+    if _font_name_matches_family(font_name, "kokila"):
+        markers.update(_KOKILA_CONTEXT_MARKERS)
+    return frozenset(markers)
+
+
+def _has_scoped_context_marker(text: str, font_name: str) -> bool:
+    """Whether ``text`` carries a contextual marker owned by its font face."""
+
+    return not _owned_context_markers(font_name).isdisjoint(text)
+
+
+def _protect_unscoped_context_markers(
+    texts_with_fonts: list[tuple[str, str]],
+) -> tuple[list[str], dict[str, str]]:
+    """Hide face-specific markers that came from an unrelated font.
+
+    The temporary tokens exist only while one span or assembled line is being
+    reordered. The delimiter is selected to be absent from the source text, so
+    restoration is exact even when a PDF text layer contains NULs.
+    """
+
+    source = "".join(text for text, _font_name in texts_with_fonts)
+    delimiter = "\x00"
+    while delimiter in source:
+        delimiter += "\x00"
+
+    tokens: dict[str, str] = {}
+    protected: list[str] = []
+    for text, font_name in texts_with_fonts:
+        owned = _owned_context_markers(font_name)
+        for marker in _CONTEXT_MARKERS - owned:
+            if marker not in text:
+                continue
+            token = tokens.get(marker)
+            if token is None:
+                token = f"{delimiter}{len(tokens)}{delimiter}"
+                tokens[marker] = token
+            text = text.replace(marker, token)
+        protected.append(text)
+    return protected, {token: marker for marker, token in tokens.items()}
+
+
+def _restore_protected_context_markers(
+    text: str,
+    protected_markers: dict[str, str],
+) -> str:
+    for token, marker in protected_markers.items():
+        text = text.replace(token, marker)
+    return text
+
+
+def _kokila_reorder_dependency_crosses_span_boundary(
+    left: str,
+    right: str,
+) -> bool:
+    """Whether resolving either span alone would discard needed line context."""
+
+    if (left and left[-1] in _LINE_REORDER_MARKERS) or (
+        right and right[0] in _LINE_REORDER_MARKERS
+    ):
+        return True
+
+    joined = left + right
+    start = joined.find(_KOKILA_LITERAL_TH_STATUS_SEQUENCE)
+    while start >= 0:
+        if start < len(left) < start + len(_KOKILA_LITERAL_TH_STATUS_SEQUENCE):
+            return True
+        start = joined.find(_KOKILA_LITERAL_TH_STATUS_SEQUENCE, start + 1)
+    return False
+
+
 # The same floor on the other weak positive tell, for the same reason and calibrated in
 # the same sweep (VOL-185). VOL-131 calibrated `stranded` on counts of 3 and 6 against 0,
 # so a floor of 1 is inside what that calibration never rested on -- and a lone bracket
@@ -993,12 +1106,18 @@ def join_spans_with_layout(
     for x0, _y0, x1, _y1, text in spans:
         if not text:
             continue
+        gap = x0 - previous_x1 if previous_x1 is not None else None
         if (
-            previous_x1 is not None
-            and x0 - previous_x1 > SPAN_GAP_THRESHOLD
+            gap is not None
+            and gap > SPAN_GAP_THRESHOLD
             and parts
             and not parts[-1].endswith((" ", "\t"))
             and not text.startswith((" ", "\t"))
+            and not (
+                text.startswith(_PUA_CONTEXTUAL_NE)
+                and gap <= _CONTEXTUAL_MARKER_MAX_GAP
+                and parts[-1].endswith(_CONTEXTUAL_NE_ATTACHING_SUFFIX)
+            )
         ):
             parts.append(" ")
         parts.append(text)
@@ -1010,9 +1129,21 @@ def join_spans_with_layout(
 def normalize_extracted_word(text: str) -> str:
     """Normalize a single extracted token without touching inter-word spacing."""
 
+    return _finalize_reordered_text(text).strip()
+
+
+def _finalize_reordered_text(text: str) -> str:
+    """Resolve and normalize reorder markers within one text span."""
+
     normalized = reorder_devanagari(text)
     normalized = normalize_devanagari_spacing(normalized)
-    return normalized.strip()
+    return normalized
+
+
+def _finalize_joined_reordered_text(text: str) -> str:
+    """Resolve cross-span markers without collapsing ordinary word boundaries."""
+
+    return reorder_devanagari(text)
 
 
 def _line_key(fragment: TextFragment) -> tuple[int, int, int]:
@@ -1033,6 +1164,13 @@ def _private_use_count(text: str) -> int:
 
 def _contains_private_use_marker(text: str) -> bool:
     return _private_use_count(text) > 0
+
+
+def _contains_scoped_private_use_marker(text: str, font_name: str) -> bool:
+    """Private-use evidence after unrelated contextual markers are hidden."""
+
+    protected, _restore = _protect_unscoped_context_markers([(text, font_name)])
+    return _contains_private_use_marker(protected[0])
 
 
 def _duplicate_consonant_count(text: str) -> int:
@@ -1306,6 +1444,48 @@ def _merge_tokenwise(original: str, repaired: str) -> str | None:
     return " ".join(merged_tokens)
 
 
+def _is_corroborated_conjunct_ra_repair(damaged: str, candidate: str) -> bool:
+    """Accept only the two visual-order repairs demonstrated by the other variant."""
+
+    matches = list(_CORROBORATED_CONJUNCT_RA_PATTERN.finditer(damaged))
+    if len(matches) != 1:
+        return False
+    if len(_MALFORMED_CONJUNCT_RA_PATTERN.findall(candidate)) >= len(
+        _MALFORMED_CONJUNCT_RA_PATTERN.findall(damaged)
+    ):
+        return False
+
+    match = matches[0]
+    base = match.group(1)
+    prefix = damaged[: match.start()]
+    suffix = damaged[match.end() :]
+    expected = {prefix + base + "\u092f" + suffix}
+    if base == "\u0930":
+        expected.add(prefix + base + suffix)
+    return candidate in expected
+
+
+def _merge_corroborated_conjunct_ra_tokens(base: str, candidate: str) -> str:
+    """Take only structurally proven token repairs from a candidate text variant."""
+
+    base_tokens = base.split()
+    candidate_tokens = candidate.split()
+    if len(base_tokens) != len(candidate_tokens):
+        return base
+
+    merged_tokens = [
+        candidate_token
+        if _is_corroborated_conjunct_ra_repair(base_token, candidate_token)
+        else base_token
+        for base_token, candidate_token in zip(base_tokens, candidate_tokens)
+    ]
+    if merged_tokens == base_tokens:
+        return base
+
+    replacements = iter(merged_tokens)
+    return re.sub(r"\S+", lambda _match: next(replacements), base)
+
+
 def _choose_fragment_text(original: str, repaired: str | None) -> str:
     if repaired is None or repaired == original:
         return original
@@ -1324,6 +1504,8 @@ def _choose_fragment_text(original: str, repaired: str | None) -> str:
         candidates,
         key=lambda item: (_text_quality_penalty(item[0]), item[1], -item[2]),
     )
+    best_text = _merge_corroborated_conjunct_ra_tokens(best_text, original)
+    best_text = _merge_corroborated_conjunct_ra_tokens(best_text, repaired)
     return best_text
 
 
@@ -1379,7 +1561,7 @@ def _raw_document_from_fragments(
         paragraphs=paragraphs,
         raw_text="\n\n".join(paragraphs).strip(),
         fragments=fragments,
-        tables=merge_continuation_tables(tables),
+        tables=tables,
         # This path has no document handle, so the pages it covered can only be
         # recovered from what it produced.
         page_numbers=sorted(
@@ -1387,6 +1569,132 @@ def _raw_document_from_fragments(
             | {region.page_number for table in tables for region in table.regions}
         ),
     )
+
+
+def _detect_tables_from_fragments(
+    doc: fitz.Document,
+    fragments: list[TextFragment],
+    *,
+    page_start: int,
+    page_end: int,
+) -> list[Table]:
+    """Detect table geometry while sourcing every cell from ``fragments``."""
+
+    fragments_by_page: dict[int, list[TextFragment]] = defaultdict(list)
+    for fragment in fragments:
+        fragments_by_page[fragment.page_number].append(fragment)
+
+    tables: list[Table] = []
+    table_index = 0
+    for page_index in range(page_start, page_end + 1):
+        page_tables = detect_page_tables(
+            doc[page_index],
+            fragments_by_page.get(page_index + 1, []),
+            table_index,
+        )
+        tables.extend(page_tables)
+        table_index += len(page_tables)
+    return tables
+
+
+def _tables_contain_malformed_conjunct_ra(tables: list[Table]) -> bool:
+    return any(
+        (table.caption and _MALFORMED_CONJUNCT_RA_PATTERN.search(table.caption))
+        or any(_MALFORMED_CONJUNCT_RA_PATTERN.search(cell.text) for cell in table.cells)
+        for table in tables
+    )
+
+
+def _table_variant_key(table: Table) -> tuple[object, ...]:
+    return (
+        table.row_count,
+        table.col_count,
+        tuple(
+            (
+                region.page_number,
+                round(region.x0, 2),
+                round(region.y0, 2),
+                round(region.x1, 2),
+                round(region.y1, 2),
+                region.start_row,
+            )
+            for region in table.regions
+        ),
+    )
+
+
+def _merge_malformed_table_variants(
+    tables: list[Table],
+    candidate_tables: list[Table],
+) -> list[Table]:
+    """Repair table text while preserving primary continuation geometry."""
+
+    candidates_by_key: dict[tuple[object, ...], list[Table]] = defaultdict(list)
+    for candidate in candidate_tables:
+        candidates_by_key[_table_variant_key(candidate)].append(candidate)
+
+    variants: list[Table] = []
+    for table in tables:
+        candidates = candidates_by_key.get(_table_variant_key(table), [])
+        if not candidates:
+            variants.append(table)
+            continue
+        candidate = candidates.pop(0)
+        candidate_cells = {
+            (cell.row, cell.col, cell.rowspan, cell.colspan): cell
+            for cell in candidate.cells
+        }
+
+        changed = False
+        cells = []
+        for cell in table.cells:
+            candidate_cell = candidate_cells.get(
+                (cell.row, cell.col, cell.rowspan, cell.colspan)
+            )
+            text = cell.text
+            if candidate_cell is not None:
+                text = _merge_corroborated_conjunct_ra_tokens(
+                    text,
+                    candidate_cell.text,
+                )
+            changed |= text != cell.text
+            cells.append(replace(cell, text=text) if text != cell.text else cell)
+
+        caption = table.caption
+        if caption and candidate.caption:
+            caption = _merge_corroborated_conjunct_ra_tokens(
+                caption,
+                candidate.caption,
+            )
+            changed |= caption != table.caption
+        variants.append(
+            replace(table, cells=cells, caption=caption) if changed else table
+        )
+    return merge_continuation_table_variants(tables, variants)
+
+
+def _merge_tables_from_fragment_variants(
+    doc: fitz.Document,
+    tables: list[Table],
+    fragments: list[TextFragment],
+    *,
+    page_start: int,
+    page_end: int,
+) -> list[Table]:
+    """Merge primary tables, taking only corroborated text from merged fragments."""
+
+    if not tables or not _tables_contain_malformed_conjunct_ra(tables):
+        return merge_continuation_tables(tables)
+
+    candidate_tables = _detect_tables_from_fragments(
+        doc,
+        fragments,
+        page_start=page_start,
+        page_end=page_end,
+    )
+    if not candidate_tables:
+        return merge_continuation_tables(tables)
+    return _merge_malformed_table_variants(tables, candidate_tables)
 
 
 # --- Part B: content-based (name-agnostic) legacy-font detection ---------------
@@ -4433,13 +4741,12 @@ class FontBasedStrategy(ExtractionStrategy):
             )
 
             # On a broken-CMap PDF this document is extracted twice, before and
-            # after the ToUnicode repair, and the merge below keeps the repaired
-            # pass's tables whenever it found any. Table detection is the single
-            # largest cost in extraction (67-87% of wall time on these documents),
-            # so detecting in the first pass is usually pure waste: measured
-            # across 28 corpus documents, the repaired pass found tables every
-            # time and the first pass's were always discarded. Skip it here and
-            # detect below only if the repaired pass comes back empty.
+            # after the ToUnicode repair. Table detection is the single largest
+            # cost in extraction (67-87% of wall time on these documents), so
+            # detecting in the first pass is usually pure waste: measured across
+            # 28 corpus documents, the repaired pass found tables every time and
+            # the first pass's were always discarded. Skip it here and detect
+            # below only if the repaired pass comes back empty.
             #
             # The results cannot simply be shared between passes: PyMuPDF derives
             # a table's header from the page's decoded text, so on a broken-CMap
@@ -4483,8 +4790,14 @@ class FontBasedStrategy(ExtractionStrategy):
                     name_legacy_confirmed=name_legacy_confirmed,
                     digit_companion_fonts=digit_companion_fonts,
                     acronym_survivors=acronym_survivors,
+                    merge_tables=False,
+                )
+                merged_fragments = _merge_fragment_variants(
+                    raw_document.fragments,
+                    repaired_document.fragments,
                 )
                 tables = repaired_document.tables
+                table_doc = repaired_doc
                 if not tables:
                     # The repaired pass found nothing, so fall back to detecting
                     # on the unrepaired document -- preserving the behaviour of
@@ -4501,12 +4814,20 @@ class FontBasedStrategy(ExtractionStrategy):
                         name_legacy_confirmed=name_legacy_confirmed,
                         digit_companion_fonts=digit_companion_fonts,
                         acronym_survivors=acronym_survivors,
+                        merge_tables=False,
                     ).tables
+                    table_doc = doc
+                # Preserve the selected pass's continuation and repeated-header
+                # decisions. Only table text may come from the merged fragments.
+                tables = _merge_tables_from_fragment_variants(
+                    table_doc,
+                    tables,
+                    merged_fragments,
+                    page_start=page_start,
+                    page_end=page_end,
+                )
                 raw_document = _raw_document_from_fragments(
-                    _merge_fragment_variants(
-                        raw_document.fragments,
-                        repaired_document.fragments,
-                    ),
+                    merged_fragments,
                     tables,
                 )
 
@@ -4547,6 +4868,10 @@ class FontBasedStrategy(ExtractionStrategy):
         needs_reorder: bool,
         decoy_pages: frozenset[int] = frozenset(),
         content_legacy_maps: dict[str, LegacyMapChoice] | None = None,
+        # Whether this pass merges continuation tables itself. The conjunct-ra repair
+        # needs BOTH passes' tables unmerged so it can compare them, and merges once at
+        # the end -- see `_merge_tables_from_fragment_variants`.
+        merge_tables: bool = True,
         embedded_legacy_maps: dict[str, str] | None = None,
         name_legacy_confirmed: frozenset[str] | None = None,
         # VOL-323: threaded rather than re-detected, so every extraction pass over one
@@ -4577,13 +4902,34 @@ class FontBasedStrategy(ExtractionStrategy):
             )
             page_dict = get_cid_marked_page_dict(page)
             lines_by_key: dict[
-                tuple[int, int], list[tuple[float, float, float, float, str]]
+                tuple[int, int],
+                list[tuple[float, float, float, float, str, str]],
             ] = defaultdict(list)
             for block_number, block in enumerate(page_dict["blocks"]):
                 if "lines" not in block:
                     continue
                 for line_number, line in enumerate(block["lines"]):
                     spans = list(line["spans"])
+                    visual_spans = sorted(
+                        spans,
+                        key=lambda span: float(span["bbox"][0]),
+                    )
+                    span_texts = [str(span["text"]) for span in visual_spans]
+                    line_has_kokila_context = any(
+                        not _KOKILA_CONTEXT_MARKERS.isdisjoint(
+                            _owned_context_markers(str(span["font"]))
+                        )
+                        and not _KOKILA_CONTEXT_MARKERS.isdisjoint(str(span["text"]))
+                        for span in visual_spans
+                    )
+                    defer_kokila_reorder = line_has_kokila_context and any(
+                        _kokila_reorder_dependency_crosses_span_boundary(left, right)
+                        for left, right in zip(
+                            span_texts,
+                            span_texts[1:],
+                            strict=False,
+                        )
+                    )
                     latin_veto = _content_legacy_veto_flags(
                         spans,
                         content_legacy_maps,
@@ -4613,6 +4959,7 @@ class FontBasedStrategy(ExtractionStrategy):
                             digit_companion_fonts=digit_companion_fonts,
                             skip_content_legacy=latin_veto[span_index],
                             exempt_slices=bracket_exemptions[span_index],
+                            defer_kokila_reorder=defer_kokila_reorder,
                         )
                         if not text:
                             continue
@@ -4624,6 +4971,7 @@ class FontBasedStrategy(ExtractionStrategy):
                                 float(x1),
                                 float(y1),
                                 text,
+                                str(span["font"]),
                             )
                         )
 
@@ -4637,7 +4985,24 @@ class FontBasedStrategy(ExtractionStrategy):
                 ),
             ):
                 ordered_words = sorted(line_words, key=lambda piece: piece[0])
-                line_text = join_spans_with_layout(ordered_words)
+                protected_texts, protected_markers = _protect_unscoped_context_markers(
+                    [(piece[4], piece[5]) for piece in ordered_words]
+                )
+                positioned_words = [
+                    (piece[0], piece[1], piece[2], piece[3], protected_text)
+                    for piece, protected_text in zip(
+                        ordered_words,
+                        protected_texts,
+                        strict=True,
+                    )
+                ]
+                line_text = join_spans_with_layout(positioned_words)
+                if needs_reorder:
+                    line_text = _finalize_joined_reordered_text(line_text)
+                line_text = _restore_protected_context_markers(
+                    line_text,
+                    protected_markers,
+                )
                 line_text = apply_line_numeric_boundary_repairs(
                     line_text,
                     numeric_repairs.get(
@@ -4683,7 +5048,7 @@ class FontBasedStrategy(ExtractionStrategy):
             paragraphs=paragraphs,
             raw_text="\n\n".join(paragraphs).strip(),
             fragments=fragments,
-            tables=merge_continuation_tables(tables),
+            tables=merge_continuation_tables(tables) if merge_tables else tables,
             page_numbers=list(range(page_start + 1, page_end + 2)),
         )
 
@@ -4715,6 +5080,10 @@ class FontBasedStrategy(ExtractionStrategy):
         # Precomputed only by the exemption splice, so every segment inherits the
         # whole original span's name-path Latin decision.
         skip_name_legacy: bool | None = None,
+        # Hold the Kokila reorder back to the caller, which reorders once after the
+        # contextual markers are resolved. Reordering per span moves a marker away from
+        # the base it is scoped to.
+        defer_kokila_reorder: bool = False,
     ) -> str:
         if exempt_slices:
             return self._convert_span_exempting(
@@ -4728,6 +5097,7 @@ class FontBasedStrategy(ExtractionStrategy):
                 embedded_legacy_maps=embedded_legacy_maps,
                 name_legacy_confirmed=name_legacy_confirmed,
                 digit_companion_fonts=digit_companion_fonts,
+                defer_kokila_reorder=defer_kokila_reorder,
             )
         decided_on = text if decision_text is None else decision_text
         base = _span_base_font(font_name)
@@ -4856,10 +5226,36 @@ class FontBasedStrategy(ExtractionStrategy):
             return remap_symbol_pua(text, font_name)
 
         if needs_reorder and (
-            strategy == "broken_cmap" or _contains_private_use_marker(decided_on)
+            strategy == "broken_cmap"
+            or _contains_scoped_private_use_marker(decided_on, font_name)
         ):
-            text = reorder_devanagari(text)
-            text = normalize_devanagari_spacing(text)
+            protected_texts, protected_markers = _protect_unscoped_context_markers(
+                [(text, font_name)]
+            )
+            text = protected_texts[0]
+            # A Kokila signature can mix generic and face-specific markers across
+            # several spans. Preserve the entire line's dependency closure until
+            # assembly; other lines retain established span-local reordering.
+            if not defer_kokila_reorder:
+                text = reorder_devanagari(text, resolve_contextual=False)
+            # F002-F006 are replacement provenance, not evidence that every
+            # whitespace boundary in the span is broken. Before those markers
+            # existed, a repaired span such as `स्थानीय सरकार सञ् चालन` skipped
+            # this cleanup; activating it solely because half-sa was marked at
+            # the start silently joined the unrelated word later in the span.
+            if strategy == "broken_cmap" or any(
+                char not in _SPACING_NEUTRAL_CONTEXT_MARKERS
+                and (
+                    0xE000 <= ord(char) <= 0xF8FF
+                    or _CID_MARK_BASE <= ord(char) <= _CID_MARK_BASE + _MAX_MARKABLE_CID
+                )
+                for char in decided_on
+            ):
+                text = normalize_devanagari_spacing(
+                    text,
+                    preserve_marker_spaces=defer_kokila_reorder,
+                )
+            text = _restore_protected_context_markers(text, protected_markers)
         return text
 
     def _convert_span_exempting(
@@ -4882,6 +5278,7 @@ class FontBasedStrategy(ExtractionStrategy):
         # re-checked whenever `_convert_span_text` gains one; a positional-only splice
         # would have been silently wrong instead of visibly incomplete.
         digit_companion_fonts: frozenset[str] | None = None,
+        defer_kokila_reorder: bool = False,
     ) -> str:
         """Convert a span, writing its matched bracketed-number runs unmapped. (VOL-515)
 
@@ -4935,6 +5332,7 @@ class FontBasedStrategy(ExtractionStrategy):
                         digit_companion_fonts=digit_companion_fonts,
                         decision_text=text,
                         skip_name_legacy=skip_name_legacy,
+                        defer_kokila_reorder=defer_kokila_reorder,
                     )
                 )
             pieces.append(devanagarize_ascii_digits(text[start:end]))
@@ -4953,6 +5351,7 @@ class FontBasedStrategy(ExtractionStrategy):
                     digit_companion_fonts=digit_companion_fonts,
                     decision_text=text,
                     skip_name_legacy=skip_name_legacy,
+                    defer_kokila_reorder=defer_kokila_reorder,
                 )
             )
         return "".join(pieces)
