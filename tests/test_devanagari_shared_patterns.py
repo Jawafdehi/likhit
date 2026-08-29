@@ -17,8 +17,16 @@ from likhit.devanagari import (
     VIRAMA_MATRA_PATTERN,
 )
 
-#: `क़ानून` (law) and `ज़िल्ला` (district), written from code points so a normalising editor
-#: or a copy through a shell cannot silently change what this test is about.
+#: `क़ानून` (law) and `ज़िल्ला` (district). Written as **literals**, deliberately -- as escapes
+#: they read `\u0915\u093c\u093e\u0928\u0942\u0928`, and a fixture nobody can read is a fixture
+#: nobody will notice going wrong.
+#:
+#: ⚠️ So the spelling is NOT what protects them. The `unicodedata.normalize("NFC", word) == word`
+#: assertion below is: it fails if a normalising editor or a copy through a shell has changed
+#: these to the precomposed form, which would silently stop the test being about a decomposed
+#: nukta consonant at all. An earlier version of this comment claimed they were "written from
+#: code points", which was simply untrue of the line beneath it -- exactly the drift this
+#: module exists to remove, in a file arguing that spelling is load-bearing.
 _NUKTA_WORDS = (
     ("क़ानून", "kaanoon, law"),
     ("ज़िल्ला", "jilla, district"),
@@ -52,6 +60,16 @@ def test_the_patterns_still_catch_real_damage() -> None:
 
 
 def test_a_matra_after_an_ordinary_consonant_or_virama_is_fine() -> None:
+    """The negative half: every character the lookbehind is supposed to admit.
+
+    ⚠️ These five overlap with ``test_regex_normalization_stability.py``'s assertions on the
+    same pattern, and the duplication is deliberate rather than accidental. That file's
+    subject is the *normalisation* hazard across every pattern in ``src/``; this one's is the
+    three matra shapes and what they mean. Neither is a superset -- and this is the pattern
+    two instruments disagreed about, so being reachable from both files is the point. If they
+    ever disagree, that is a finding.
+    """
+
     for preceding in ("क", "ह", "क़", "्", "़"):
         assert not ORPHAN_MATRA_PATTERN.findall(preceding + "ा"), preceding
 
