@@ -58,34 +58,39 @@ logger = logging.getLogger(__name__)
 #              The repair's Kokila corroboration logic (`_has_corroborated_kokila_half_sa`,
 #              `_has_proven_kokila_half_tha_outline`, `_kokila_displacement_corrections`)
 #              is unreachable without this entry.
-#   mangal  -- 2,874 documents carry a Mangal face by its OWN name table; 425 of them
-#              carry no Kalimati or Lohit at all, so nothing opens the gate for them
-#              (295 clean, 96 suspect, 34 garbled -- and those 34 are the entire
-#              matra-garbled cohort). Its outline-keyed reference table now exists:
-#              `mangal_reference.OUTLINE_TO_UNICODE`, 962 corroborated outlines,
-#              answering 98.2% of the glyph instances Mangal draws corpus-wide.
-#              Measured over ALL 425 on the bare extractor probe, routing this family
-#              WITH that table gives 74 verdicts better and 0 worse, `matra_damage`
-#              +80/-0, `repha_loss` +19/-0, `repha_corrupt` 9,482 -> 61, and +98,918
-#              Devanagari characters. WITHOUT it -- the one-line fix this entry used to
-#              describe -- the same population gives +78/-0 on matra but -20 on repha,
-#              doubles `repha_corrupt` to 18,346 and LOSES 20,915 Devanagari characters.
-#              At document grain the one-line fix takes 0 of the 34 garbled to clean;
-#              with the table 32 of 34 reach clean and none stays garbled.
-#              STILL NOT ROUTED, for one measured reason rather than a general one: a
-#              document whose CMap carries a COMPENSATING SWAP, where correcting one
-#              half of the pair and not the other is worse than correcting neither.
-#              Measured two ways. Decoding the page glyph stream through the table over
-#              all 2,874 Mangal documents: 173 canonical-word occurrences lost against
-#              123,571 gained. Through the extractor on the 2,449 documents the gate
-#              already reaches: ONE document loses three words (2511). Every loss is a
-#              CID outside its own subset's glyph range, so it has no outline and no
-#              outline-keyed table can reach it -- that is what a refusal guard is for.
-#              Route this family once the guard lands, and re-measure rather than
-#              trusting this comment.
+#   mangal  -- ROUTED, and its outline reference table is what made that safe.
+#              2,874 documents carry a Mangal face by their OWN name table; 425 carry no
+#              Kalimati or Lohit at all, so nothing opened the gate for them (295 clean,
+#              96 suspect, 34 garbled -- and those 34 were the entire matra-garbled
+#              cohort). Table: `mangal_reference.OUTLINE_TO_UNICODE`, 962 corroborated
+#              outlines, answering 98.2% of the glyph instances Mangal draws corpus-wide.
+#              WHY THE TABLE IS LOAD-BEARING AND NOT AN OPTIMISATION. Routing alone, on
+#              those 425: matra +78/-0 but repha_loss -20, `repha_corrupt` 9,482 ->
+#              18,346, and 20,915 Devanagari characters LOST -- the classic trade. With
+#              the table, the same 425: 74 verdicts better, 0 worse, matra +80/-0,
+#              repha_loss +19/-0, `repha_corrupt` 9,482 -> 61, +98,918 Devanagari. At
+#              document grain routing alone takes 0 of the 34 garbled to clean; with the
+#              table 32 of 34 reach clean and none stays garbled. So the trade was never
+#              a property of routing -- it was incompleteness.
+#              THE GUARD INTERACTION, MEASURED RATHER THAN REASONED. Routing a family
+#              turns `_face_reconstruction_is_unvalidated` off for it, and kokila's whole
+#              protection came from the guard covering the MANGAL faces those documents
+#              also carry -- so this entry should have re-broken 5471/5487/5492/5493.
+#              It does not. All four stay `clean` with `आर्थिक` at 49/52/56/62, repha_loss
+#              `clean` and `malformed_conjunct_ra` 0, byte-identical on every metric with
+#              and without this entry, because the table answers those glyphs EXACTLY so
+#              they are never metric-guessed and the guard had nothing to decline.
+#              Measured together over the 34 matra-garbled documents plus those four:
+#              20 garbled -> clean, 1 garbled -> suspect, 0 worse; `repha_corrupt`
+#              9,318 -> 10; `malformed_conjunct_ra` 325 -> 0; repha-bearing canonical
+#              words +165.7%.
+#              RESIDUE, and it is the guard's case not the table's: a CMap with a
+#              COMPENSATING SWAP, where a CID is drawn but lies outside its own subset's
+#              glyph range, so it has no outline and no outline-keyed table can ever reach
+#              it. 559 such instances corpus-wide; one document (2511) loses three words.
 #              Record: work/2026-08-29-v19-mangal-table/_recon/measurements/.
 #   nirmala -- 75 documents, 1 garbled.  arial unicode -- 100, 0 garbled.  utsaah -- 5.
-_KNOWN_BROKEN_CMAP = {"kalimati", "lohit", "kokila"}
+_KNOWN_BROKEN_CMAP = {"kalimati", "lohit", "kokila", "mangal"}
 
 # Page-level OCR markers. A "scanned_decoy_text" page is a full-page raster whose
 # only text layer is non-embedded core-font garbage (see cib-press-release

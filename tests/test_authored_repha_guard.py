@@ -107,13 +107,13 @@ def test_an_exact_vowel_sign_reading_is_believed_and_a_guessed_one_is_not() -> N
     correction_map = {10: IKAR, 11: IKAR}
 
     exact_only = kalimati._decline_authored_repha_rewrites(
-        pdf_map, correction_map, font_name="Mangal", guessed=frozenset()
+        pdf_map, correction_map, font_name="NirmalaUI", guessed=frozenset()
     )
     ten_guessed = kalimati._decline_authored_repha_rewrites(
-        pdf_map, correction_map, font_name="Mangal", guessed={10}
+        pdf_map, correction_map, font_name="NirmalaUI", guessed={10}
     )
     both_guessed = kalimati._decline_authored_repha_rewrites(
-        pdf_map, correction_map, font_name="Mangal", guessed={10, 11}
+        pdf_map, correction_map, font_name="NirmalaUI", guessed={10, 11}
     )
 
     assert exact_only == {10: IKAR, 11: IKAR}
@@ -126,7 +126,7 @@ def test_declining_drops_only_the_offending_entry() -> None:
     correction_map = {10: IKAR, 11: YA, 12: EKAR, 13: SHA, 99: IKAR}
 
     kept = kalimati._decline_authored_repha_rewrites(
-        pdf_map, correction_map, font_name="Mangal", guessed=set(correction_map)
+        pdf_map, correction_map, font_name="NirmalaUI", guessed=set(correction_map)
     )
 
     assert kept == {11: YA, 12: EKAR, 13: SHA, 99: IKAR}
@@ -136,7 +136,7 @@ def test_a_gid_the_pdf_never_authored_is_always_filled() -> None:
     """A fill cannot discard anything, so the guard must not touch one."""
 
     kept = kalimati._decline_authored_repha_rewrites(
-        {}, {7: IKAR, 8: UKAR}, font_name="Mangal", guessed={7, 8}
+        {}, {7: IKAR, 8: UKAR}, font_name="NirmalaUI", guessed={7, 8}
     )
 
     assert kept == {7: IKAR, 8: UKAR}
@@ -148,7 +148,7 @@ def test_a_map_with_nothing_to_decline_is_returned_unchanged() -> None:
     kept = kalimati._decline_authored_repha_rewrites(
         {1: REPHA, 3: KA},
         correction_map,
-        font_name="Mangal",
+        font_name="NirmalaUI",
         guessed=set(correction_map),
     )
 
@@ -163,12 +163,12 @@ def test_an_exempt_gid_keeps_its_reconstruction() -> None:
     guessed = set(correction_map)
 
     guarded = kalimati._decline_authored_repha_rewrites(
-        pdf_map, correction_map, font_name="Mangal", guessed=guessed
+        pdf_map, correction_map, font_name="NirmalaUI", guessed=guessed
     )
     exempted = kalimati._decline_authored_repha_rewrites(
         pdf_map,
         correction_map,
-        font_name="Mangal",
+        font_name="NirmalaUI",
         guessed=guessed,
         exempt=kalimati._KOKILA_DISPLACEMENT_GIDS,
     )
@@ -227,7 +227,7 @@ def test_a_declined_gid_keeps_the_authored_value_in_the_patched_cmap(
         kalimati._decline_authored_repha_rewrites(
             pdf_map,
             {10: IKAR, 11: YA, 12: SHA},
-            font_name="Mangal",
+            font_name="NirmalaUI",
             guessed={10, 11, 12},
         ),
     )
@@ -352,9 +352,9 @@ def test_a_kokila_face_declines_nothing_now_that_the_family_is_routed(
 def test_an_unrouted_face_declines_the_same_pair_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The same GID pair on Mangal IS guarded, and gets no exemption.
+    """The same GID pair on an unrouted face IS guarded, and gets no exemption.
 
-    `pair_scoped` needs a Kokila face, so on Mangal no exemption is installed and the
+    `pair_scoped` needs a Kokila face, so on NirmalaUI no exemption is installed and the
     generic guard decides: GID 108 and GID 300 are guessed vowel-sign claims over an
     authored `र्` and go; GID 301's consonant-bearing rewrite stays.
     """
@@ -362,7 +362,7 @@ def test_an_unrouted_face_declines_the_same_pair_shape(
     class FakePage:
         def get_fonts(self, full: bool = True) -> list[tuple[object, ...]]:
             assert full
-            return [(77, "ttf", "Type0", "BCDGEE+Mangal", "Identity-H")]
+            return [(77, "ttf", "Type0", "BCDGEE+NirmalaUI", "Identity-H")]
 
     doc = _kokila_doc()
     monkeypatch.setattr(type(doc), "__getitem__", lambda _s, _i: FakePage())
@@ -507,11 +507,7 @@ def test_simple_font_translation_re_expresses_provenance_in_character_codes(
 @pytest.mark.parametrize(
     ("font_name", "unvalidated"),
     [
-        # Faces `fix_kalimati_cmap` rewrites but was never measured against. These are
-        # where every recovered word came from.
-        ("Mangal", True),
-        ("Mangal-Bold", True),
-        ("Mangal,Bold", True),
+        # Faces `fix_kalimati_cmap` rewrites but was never measured against.
         ("Arial Unicode MS", True),
         ("ArialUnicodeMS", True),
         ("NirmalaUI", True),
@@ -520,6 +516,13 @@ def test_simple_font_translation_re_expresses_provenance_in_character_codes(
         ("Kalimati", False),
         ("Kalimati-Bold", False),
         ("Lohit-Devanagari", False),
+        # Mangal joined them once `mangal_reference.OUTLINE_TO_UNICODE` landed. It was the
+        # exemplar of an unrouted face throughout this file; the swap to `NirmalaUI` above
+        # is a fixture change, not a weakening -- the property each test asserts is about
+        # an unrouted face, and a routed one would make them vacuous.
+        ("Mangal", False),
+        ("Mangal-Bold", False),
+        ("Mangal,Bold", False),
         # Family boundary, so a longer name that merely contains one is NOT routed.
         ("NotKalimati", True),
         ("KalimatiExtra", True),
@@ -551,7 +554,7 @@ def test_a_routed_face_keeps_every_guessed_rewrite() -> None:
     correction_map = {466: IKAR}
 
     unrouted = kalimati._decline_authored_repha_rewrites(
-        pdf_map, correction_map, font_name="Mangal", guessed={466}
+        pdf_map, correction_map, font_name="NirmalaUI", guessed={466}
     )
     routed = kalimati._decline_authored_repha_rewrites(
         pdf_map, correction_map, font_name="Kalimati", guessed={466}
