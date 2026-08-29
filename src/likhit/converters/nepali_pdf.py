@@ -38,6 +38,7 @@ from likhit.font_classifier import classify_fonts_from_stream
 from likhit.handlers.content_blocks import build_content_blocks
 from likhit.handlers.two_column_layout import TwoColumnLayoutHandler
 from likhit.models import ParagraphBlock, TableBlock
+from likhit.ocr_acceptance import classify_ocr_response
 from likhit.pdf_page_analysis import (
     _is_vowel_poor_latin_token,
 )
@@ -140,6 +141,13 @@ class _PreparedPdf:
 class _PageOcrResult:
     text_by_page: dict[int, str]
     failed_pages: tuple[int, ...]
+    #: Pages the model answered, but with a decline rather than a transcription.
+    #: A subset of `failed_pages` -- they need OCR for exactly the same reason a
+    #: render failure does, so every consumer of `failed_pages` keeps working
+    #: unchanged. Carried separately only so the `needs-ocr` marker can say WHICH
+    #: kind of failure it was; see `_needs_ocr_reason`. Defaulted so the many
+    #: tests that build this positionally with two arguments still do.
+    declined_pages: tuple[int, ...] = ()
 
 
 class NepaliPdfConverter(DocumentConverter):
@@ -467,9 +475,29 @@ def _convert_pages_requiring_ocr(
         return _stamp_needs_ocr(
             merged,
             _source_page_numbers(prepared, ocr.failed_pages),
-            reason="ocr-failed",
+            reason=_needs_ocr_reason(ocr),
         )
     return merged
+
+
+def _needs_ocr_reason(run: _PageOcrResult) -> str:
+    """Which `needs-ocr` reason describes every page in `run.failed_pages`.
+
+    `ocr-declined` is claimed only when EVERY failed page was a decline, so the
+    narrower label can never overstate: a document with one decline and five
+    render failures reports `ocr-failed`, which is true of all six. Both mean the
+    same thing to a consumer -- these pages need OCR -- so the distinction costs
+    nothing and buys an in-band signal that the model answered and refused, which
+    is otherwise indistinguishable from the provider being down.
+
+    Compared as SETS, not lengths. Equal lengths would say the same thing today
+    only because no caller passes a duplicate page number -- `_run_full_page_ocr`
+    passes a `range` and `_convert_pages_requiring_ocr` passes sorted dict keys --
+    and that is a property of two callers, not of this function.
+    """
+    if run.declined_pages and set(run.declined_pages) == set(run.failed_pages):
+        return "ocr-declined"
+    return "ocr-failed"
 
 
 def _source_page_numbers(
@@ -574,7 +602,7 @@ def _run_full_page_ocr(
         markdown=_merge_page_ocr(skeleton, run.text_by_page)
     )
     if run.failed_pages:
-        return _stamp_needs_ocr(result, run.failed_pages, reason="ocr-failed")
+        return _stamp_needs_ocr(result, run.failed_pages, reason=_needs_ocr_reason(run))
     return result
 
 
@@ -583,8 +611,24 @@ def _run_page_ocr(
     ocr_service: LLMVisionOCRService,
     page_numbers: Sequence[int],
 ) -> _PageOcrResult:
+    """OCR each page, keeping only responses that actually transcribed it.
+
+    Every failure leg here used to be mechanical -- unrenderable page, provider
+    exception, provider `error`, empty response -- so a response was accepted on
+    truthiness alone. A model that answers "This appears to be a blank page with
+    only a solid green vertical stripe on the right side" therefore counted as a
+    success and its prose became the body of a page of a Nepali audit report,
+    with no marker to say so. `error` answers "did the call fail", not "did the
+    model transcribe"; a polite decline succeeds.
+
+    A declined page is recorded as a failure, because that is what it is: the page
+    still has no trustworthy text and still needs OCR. See
+    `likhit.ocr_acceptance` for why the discriminator is the model's own wording
+    and not the absence of Devanagari -- the corpus contains genuine English.
+    """
     text_by_page: dict[int, str] = {}
     failures: list[tuple[int, str]] = []
+    declined: list[int] = []
     doc = fitz.open(stream=raw, filetype="pdf")
 
     try:
@@ -611,10 +655,20 @@ def _run_page_ocr(
                 continue
 
             extracted_text = ocr_result.text.strip()
-            if extracted_text:
-                text_by_page[page_number] = _format_full_page_ocr_text(extracted_text)
-            else:
+            if not extracted_text:
                 failures.append((page_number, "OCR returned no text"))
+                continue
+
+            acceptance = classify_ocr_response(extracted_text)
+            if acceptance.declined:
+                # Never page text. Inserting a decline fabricates content, and
+                # because it is well-formed prose with no replacement characters
+                # no downstream quality check can tell it from a transcription.
+                declined.append(page_number)
+                failures.append((page_number, f"OCR declined: {acceptance.reason()}"))
+                continue
+
+            text_by_page[page_number] = _format_full_page_ocr_text(extracted_text)
     finally:
         doc.close()
 
@@ -628,6 +682,7 @@ def _run_page_ocr(
     return _PageOcrResult(
         text_by_page=text_by_page,
         failed_pages=tuple(page for page, _reason in failures),
+        declined_pages=tuple(declined),
     )
 
 
