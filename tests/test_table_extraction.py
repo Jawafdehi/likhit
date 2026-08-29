@@ -15,6 +15,7 @@ from likhit.extractors.tables import (
     _drop_frame_cells,
     _extract_cell_text,
     _same_printed_position,
+    _strip_covered_lines,
     detect_page_tables,
 )
 from likhit.models import TableCell
@@ -733,6 +734,30 @@ def test_a_coarse_grid_over_a_finer_one_does_not_duplicate_the_page() -> None:
     ]
 
 
+def test_a_coarse_grid_keeps_a_unique_header_but_drops_covered_body_lines() -> None:
+    """A missed header must not force the duplicated body to survive with it."""
+
+    fragments = [
+        # Inside the coarse swallowing cell but above the finer grid.
+        fragment("अनुसूची", 20.0, 2.0, 80.0, 8.0),
+        # A complete one-token line in the fine grid as well as the coarse cell.
+        fragment("टिप्पणी", 20.0, 45.0, 80.0, 54.0),
+        *coarse_and_fine_fragments(),
+    ]
+
+    tables = detect_page_tables(FakePage(coarse_and_fine_tables()), fragments)
+
+    texts = [cell.text for table in tables for cell in table.cells if cell.text.strip()]
+    lines = [line for text in texts for line in text.splitlines()]
+    assert sum("अनुसूची" in text for text in texts) == 1
+    assert lines.count("टिप्पणी") == 1
+    for value in FINE_VALUES:
+        assert lines.count(value) == 1, f"{value!r} in {texts}"
+
+    coarse = tables[0]
+    assert any(cell.text == "अनुसूची" for cell in coarse.cells)
+
+
 def test_the_coarse_grid_keeps_the_page_footer_it_alone_holds() -> None:
     """Dropping the container WHOLE was tried and lost this row. It must survive.
 
@@ -754,11 +779,11 @@ def test_the_coarse_grid_keeps_the_page_footer_it_alone_holds() -> None:
 
 
 def test_a_container_holding_content_of_its_own_is_left_alone() -> None:
-    """The condition that makes the strip safe, exercised on its own.
+    """A mixed line is kept whole rather than carved apart word by word.
 
-    Vary ONE thing against the fixture above: the swallowing cell also holds a word
-    the fine grid does not (a total). Its content is then no longer covered, so it
-    is not a duplicate and must be kept whole -- otherwise the total is deleted.
+    Vary ONE thing against the fixture above: the swallowing cell's first line also
+    holds a word the fine grid does not (a total). That line must stay whole, while
+    its fully covered second line can still go.
     """
 
     fragments = [
@@ -771,9 +796,88 @@ def test_a_container_holding_content_of_its_own_is_left_alone() -> None:
 
     joined = "\n".join(cell.text for table in tables for cell in table.cells)
     assert "जम्मा" in joined
-    # Kept whole: the swallowing cell is still there, so every value appears twice.
+    # The mixed first line stays whole: token-level removal could detach the total
+    # from the values it qualifies.
     texts = [cell.text for table in tables for cell in table.cells]
     assert any("क्र" in text and "शिक्षक" in text for text in texts)
+    # The fully covered second line is still removable.
+    assert sum(1 for text in texts if text == "१") == 1
+    assert sum(1 for text in texts if text == "श्री") == 1
+    assert sum(1 for text in texts if text == "४") == 1
+    assert all("१ श्री ४" not in text for text in texts)
+
+
+def test_line_coverage_preserves_token_multiplicity() -> None:
+    """One matching token cannot cover two occurrences in the coarse line."""
+
+    cell = TableCell(row=0, col=0, text="जम्मा\n१ १")
+
+    assert _strip_covered_lines(cell, [["१"]], {("१",)}) is cell
+
+
+def test_line_coverage_cannot_be_stitched_across_finer_tables() -> None:
+    """A line must be reproduced by one table, not a union of unrelated grids."""
+
+    cell = TableCell(row=0, col=0, text="अद्वितीय\nजम्मा ७१८६४")
+
+    assert (
+        _strip_covered_lines(
+            cell,
+            [["जम्मा"], ["७१८६४"]],
+            {("जम्मा",), ("७१८६४",)},
+        )
+        is cell
+    )
+
+
+def test_line_coverage_preserves_token_order() -> None:
+    """A bag of matching tokens is not evidence that the line was duplicated."""
+
+    cell = TableCell(row=0, col=0, text="अद्वितीय\nशिक्षक क्र")
+
+    assert (
+        _strip_covered_lines(
+            cell,
+            [["क्र", "विद्यालय", "शिक्षक"]],
+            set(),
+        )
+        is cell
+    )
+
+
+def test_single_token_coverage_requires_an_exact_inner_line() -> None:
+    """Occurrence inside a longer fine line cannot delete a one-token coarse line."""
+
+    cell = TableCell(row=0, col=0, text="अद्वितीय\nजम्मा")
+    table_tokens = [["अद्वितीय", "जम्मा"]]
+
+    assert (
+        _strip_covered_lines(
+            cell,
+            table_tokens,
+            {("अद्वितीय", "जम्मा")},
+        )
+        is cell
+    )
+
+    stripped = _strip_covered_lines(cell, table_tokens, {("जम्मा",)})
+    assert stripped is not None
+    assert stripped.text == "अद्वितीय"
+
+
+def test_line_coverage_allows_intervening_fine_cell_tokens() -> None:
+    """The coarse row is ordered even when the finer grid contributes separators."""
+
+    cell = TableCell(row=0, col=0, text="अनुसूची\nक्र विद्यालय शिक्षक")
+
+    stripped = _strip_covered_lines(
+        cell,
+        [["क्र", "१", "विद्यालय", "२", "शिक्षक"]],
+        set(),
+    )
+
+    assert stripped is not None
+    assert stripped.text == "अनुसूची"
 
 
 def test_a_grid_no_coarser_than_the_one_it_encloses_is_left_alone() -> None:
