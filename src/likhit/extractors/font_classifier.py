@@ -29,12 +29,12 @@ logger = logging.getLogger(__name__)
 # sample. What bounds the risk empirically: `kalimati` already fires on 4,879 corpus
 # documents of which 4,502 audit `clean`, and they stay clean.
 #
-# ⚠️⚠️ This set ALSO scopes a refusal. `kalimati._face_reconstruction_is_unvalidated`
-# reads it, and the authored-repha guard applies only to faces NOT named here -- so
-# routing a family turns that guard OFF for it. `kokila` below was landable only because
-# the guard protects the MANGAL faces those documents also carry, and adding `mangal`
-# would remove that protection unless the same change completes Mangal's outline
-# reference table. Read `kalimati._decline_authored_repha_rewrites` before adding one.
+# ⚠️ This set once ALSO scoped the authored-repha refusal, so routing a family silently
+# turned that guard off for it. It does not any more: the guard is keyed on whether the
+# reconstruction places any repha at all (`kalimati._reconstruction_supplies_no_repha`),
+# which is a property of the reconstruction rather than of the family. Adding a family
+# here therefore changes only when the repair is ATTEMPTED, which is what this set should
+# ever have meant.
 #
 #   kokila  -- ROUTED. 64 no-gate documents, all of them measured against f7dd065 on the
 #              bare extractor probe: 28 verdicts better, 0 worse; `matra_damage` 29
@@ -72,14 +72,15 @@ logger = logging.getLogger(__name__)
 #              document grain routing alone takes 0 of the 34 garbled to clean; with the
 #              table 32 of 34 reach clean and none stays garbled. So the trade was never
 #              a property of routing -- it was incompleteness.
-#              THE GUARD INTERACTION, MEASURED RATHER THAN REASONED. Routing a family
-#              turns `_face_reconstruction_is_unvalidated` off for it, and kokila's whole
+#              THE GUARD INTERACTION, WHICH NO LONGER EXISTS. When the guard was scoped by
+#              this set, routing a family turned it off for that family, and kokila's
 #              protection came from the guard covering the MANGAL faces those documents
-#              also carry -- so this entry should have re-broken 5471/5487/5492/5493.
-#              It does not. All four stay `clean` with `आर्थिक` at 49/52/56/62, repha_loss
-#              `clean` and `malformed_conjunct_ra` 0, byte-identical on every metric with
-#              and without this entry, because the table answers those glyphs EXACTLY so
-#              they are never metric-guessed and the guard had nothing to decline.
+#              also carry -- so this entry should have re-broken 5471/5487/5492/5493. It
+#              did not: all four stayed `clean` with `आर्थिक` at 49/52/56/62, byte-identical
+#              with and without the entry, because the table answers those glyphs EXACTLY
+#              so they were never metric-guessed. The guard has since been re-keyed on
+#              whether the reconstruction places any repha, which removes the coupling
+#              rather than relying on that measurement holding.
 #              Measured together over the 34 matra-garbled documents plus those four:
 #              20 garbled -> clean, 1 garbled -> suspect, 0 worse; `repha_corrupt`
 #              9,318 -> 10; `malformed_conjunct_ra` 325 -> 0; repha-bearing canonical

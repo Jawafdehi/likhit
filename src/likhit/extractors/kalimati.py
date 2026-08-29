@@ -1200,35 +1200,47 @@ def _rewrite_discards_authored_repha(pdf_value: str, correct_value: str) -> bool
     )
 
 
-def _face_reconstruction_is_unvalidated(font_name: str) -> bool:
-    """Whether this repair has no measured evidence about ``font_name``'s face.
+def _reconstruction_supplies_no_repha(correction_map: dict[int, str]) -> bool:
+    """Whether this reconstruction places no repha anywhere in the face it speaks for.
 
-    ``font_classifier._KNOWN_BROKEN_CMAP`` is this module's statement of which families
-    it was built and measured for: each carries an outline-keyed reference table,
-    per-face corroboration logic and a measured GID space, and each was added on its own
-    against its whole affected population. But :func:`fix_kalimati_cmap` does not
-    restrict itself to those families -- once a document opens the gate it rewrites
-    *every* Type0 CMap in it that clears a generic three-difference floor, including
-    faces nobody measured. This says which those are.
+    This is the condition that tells the two directions of the same glyph pattern apart,
+    and it is the only thing measured that does. An authored ``र्`` rewritten to a
+    metric-guessed vowel sign is right on some documents and wrong on others, with the
+    *same* GID, the *same* face and the *same* word -- ``आर्थिक`` goes 8 -> 95 on OAG 5785
+    and 102 -> 6 on OAG 5760.
 
-    ⚠️ **This couples the guard's scope to the routed set, and the coupling has teeth.**
-    Routing a family here turns the guard OFF for it. That is the intended reading --
-    routing a family is a claim to have evidence about it -- but it means adding
-    ``mangal`` would stop protecting documents 5471/5487/5492/5493 unless the same change
-    completes Mangal's outline reference table, which is what would give GID 876's
-    neighbour a real value and remove the need for the guard there at all.
+    What separates them is whether the reconstruction has any notion of where the repha
+    is. If it does, the authored ``र्`` on a vowel-sign glyph is spurious and removing it
+    is a repair. If it does not, the reconstruction is blind to the repha for this face --
+    its reference table has no entry for one -- so the authored values are the document's
+    only repha evidence and taking them away deletes the mark outright. That is the
+    transposition case: the producer's table has the repha glyph and a wide ikar variant
+    swapped, the base decoding is accidentally correct, and fixing one half destroys it.
+
+    Measured over all 284 documents the guard touches corpus-wide, per CMap, against the
+    same tree with the guard disabled:
+
+        reconstruction supplies a repha      declining LOSES    136 CMaps  -4,517 words
+                                             declining gains      3 CMaps      +3 words
+        reconstruction supplies none         declining GAINS    139 CMaps  +4,988 words
+                                             no effect           46 CMaps       0
+
+    Zero losses on the side this admits, and 3 words of gain forgone on the side it
+    refuses. The separation is on presence, not magnitude: repha-valued entries run 47-108
+    per CMap on the losing side and exactly 0 on the gaining side, so no threshold is
+    involved.
+
+    Asked of the map as it will be applied -- reconstruction merged over the trace
+    fallback -- because that is what decides the output, and it is what was measured.
     """
 
-    return not any(
-        _font_name_matches_family(font_name, family) for family in _KNOWN_BROKEN_CMAP
-    )
+    return not any(_RA + _VIRAMA in value for value in correction_map.values())
 
 
 def _decline_authored_repha_rewrites(
     pdf_map: dict[int, str],
     correction_map: dict[int, str],
     *,
-    font_name: str,
     guessed: Container[int],
     exempt: Container[int] = frozenset(),
 ) -> dict[int, str]:
@@ -1248,27 +1260,26 @@ def _decline_authored_repha_rewrites(
     on the 55-document gated sample, added 97 corrupt forms and 9
     ``malformed_conjunct_ra``, and moved document 4070 from ``clean`` to ``suspect``.
 
-    The third is ``font_name``, and it is the one that keeps this from being a
-    regression of the very defect it fixes. Provenance alone still declines on faces the
-    repair *was* measured against, and there the guess is right and the authored value
-    wrong. Measured, guessed-vowel-over-authored-repha rewrites split by face with no
-    overlap at all:
+    The third is :func:`_reconstruction_supplies_no_repha`, and it is the one that keeps
+    this from being a regression of the very defect it fixes. The same rewrite -- same GID,
+    same face, same word -- is right on some documents and wrong on others: ``आर्थिक`` goes
+    8 -> 95 on OAG 5785 when it is declined and 102 -> 6 on OAG 5760. Only the
+    reconstruction's own repha supply separates those; see that function for the table.
 
-      * **unvalidated faces** -- Mangal GID 876 and Arial Unicode MS GID 7414. On the 64
-        no-gate Kokila documents this is 2,098 drawn glyphs, 2,094 of them on
-        5471/5487/5492/5493, where declining restores ``आर्थिक`` to 49/52/56/62 from
-        2/2/2/5 and takes ``repha_loss`` back to ``clean`` on all four.
-      * **routed faces** -- Kalimati GID 466/467. On the 55-document gated sample this
-        is 7,180 drawn glyphs over 15 documents, and declining there DESTROYS correct
-        words: document 5403 loses ``आर्थिक`` 51 -> 6 and ``निर्माण`` 66 -> 3. Same
-        failure mode this guard exists to prevent, mirrored.
+    ⚠️ TWO OTHER DISCRIMINATORS WERE MEASURED AND REJECTED. Do not retry them without new
+    evidence.
 
-    So the boundary is drawn where the evidence is, and it is drawn on the face rather
-    than on a threshold: nothing here separates the two populations by magnitude. Their
-    well-formedness rates overlap completely -- the authored repha lands on a consonant
-    0.399 of the time on 5471, where declining is right, and 1.000 of the time on 4070,
-    where it is wrong -- so "decline when the existing text is already well-formed",
-    which is the shape this guard was asked for, does not work and is not what it does.
+      * *The well-formedness of the authored repha in the existing text* -- the shape this
+        guard was originally asked for. Per candidate GID, the share of authored-``र्``
+        occurrences followed by a consonant is 0.399 on 5471 where declining is right and
+        1.000 on 4070 where it is wrong. The populations overlap completely; there is no
+        gap and no threshold anywhere in this guard.
+      * *The font family* (unrouted faces only, keyed on
+        ``font_classifier._KNOWN_BROKEN_CMAP``). It separates the two samples that were to
+        hand and NOT the corpus: over all 284 affected documents, Mangal and Arial Unicode
+        MS alone account for 101 documents losing 3,337 canonical words and 82 gaining
+        2,783. It also coupled the guard's scope to the routed set, so routing a family
+        would silently switch the guard off for it.
 
     Dropping the entry rather than skipping it inside :func:`_patch_single_cmap` is
     what keeps the authored value: a GID absent from the correction map is left at
@@ -1294,18 +1305,28 @@ def _decline_authored_repha_rewrites(
     that forgot it would silently turn the guard off, which is exactly the failure this
     function exists to prevent.
 
-    Scope is per GID inside a per-face reconstruction, which is what the code
-    structure and the measurement both ask for. The correction map is built and cached
-    per embedded font program (``fontfile_maps``) and applied per ``/ToUnicode``
-    stream, so a face is the coarsest unit that has a reconstruction at all -- and on
-    the four documents where this bites, the harmful rewrites are 8 GIDs out of 141
-    the same faces rewrite correctly. Declining the face would forfeit the matra
+    ⚠️ **On measuring this, for whoever changes it next.** The provenance split above was
+    first measured with a probe that *re-implemented* the four-source composition of
+    :func:`_get_font_correction_map` rather than calling it, and that probe reported ZERO
+    metric guesses on the gated sample -- which would have made the face condition look
+    unnecessary. It was wrong: wrapping the shipped function instead showed 7,180 drawn
+    glyphs of guessed rewrites there, on Kalimati GID 466/467. A replicated composition is
+    not the composition. Instrument by wrapping what ships.
+
+    Scope is per GID for the category and provenance tests and per FACE for the repha
+    supply test, which is what the code structure and the measurement both ask for. The
+    correction map is built and cached per embedded font program (``fontfile_maps``) and
+    applied per ``/ToUnicode`` stream, so a face is the coarsest unit that has a
+    reconstruction at all, and "does this reconstruction know where the repha is" is a
+    question about the whole map rather than about one GID. On the four documents this was
+    built for, the harmful rewrites are 8 GIDs out of 141 the same faces rewrite
+    correctly. Declining the face would forfeit the matra
     repair that takes all four from ``garbled`` to ``suspect``
     (``malformed_conjunct_ra`` 183/233/230/318 -> 0); declining the document would
     forfeit the whole 64-document gain.
     """
 
-    if not _face_reconstruction_is_unvalidated(font_name):
+    if not _reconstruction_supplies_no_repha(correction_map):
         return correction_map
     declined = {
         gid
@@ -1721,19 +1742,16 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
                     unrepaired_named_fonts.add(font_name)
                 continue
 
-            # Currently unreachable: the collection loop admits a non-Type0 font only
-            # when `_is_named_repair_font` accepts it, and every family that predicate
-            # accepts is routed, so `_face_reconstruction_is_unvalidated` is False here.
-            # Wired anyway, because it becomes reachable the moment that admission gate
-            # widens, and "every path that rewrites a CMap is guarded" is easier to hold
-            # than to re-derive.
+            # Wired on every path that rewrites a CMap, because "all of them are
+            # guarded" is easier to hold than to re-derive per call site. The guard is
+            # now keyed on whether the reconstruction places any repha at all, not on
+            # the font's family, so this needs no per-face reasoning.
             _patch_single_cmap(
                 doc,
                 to_unicode_xref,
                 _decline_authored_repha_rewrites(
                     pdf_map,
                     correction_map,
-                    font_name=font_name,
                     guessed=_reconstruction_guesses(correction_map),
                 ),
             )
@@ -1887,7 +1905,6 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
             _decline_authored_repha_rewrites(
                 pdf_maps[to_unicode_xref],
                 correction_map,
-                font_name=font_names[type0_xref],
                 guessed=metric_guessed.get(to_unicode_xref, frozenset()),
                 exempt=proven_repha_rewrites.get(to_unicode_xref, frozenset()),
             ),
