@@ -237,10 +237,11 @@ _PLACEHOLDER_CELL = re.compile(
 #: have deleted text the corpus paid for.
 #:
 #: Measured as a negative control over all 6,234 documents of the published v1.3
-#: tree (332,988 non-empty page bodies): `appears to be blank` 0 hits,
-#: `blank page` 0 hits, `no visible/readable text` 0 hits, `nothing to
-#: transcribe` 0 hits. No page of the corpus says these things, so nothing
-#: legitimate is at risk -- including the 60 English pages of `11353`.
+#: tree, searched as whole files: `appears to be blank` 0 hits, `blank page` 0
+#: hits, `no visible/readable text` 0 hits, `nothing to transcribe` 0 hits. The
+#: whole predicate was then run per page body over the same tree -- 332,988
+#: non-empty bodies -- and declined 0 of them. No page of the corpus says these
+#: things, so nothing legitimate is at risk, `11353`'s 20 English pages included.
 ASSERTS_BLANK = re.compile(
     r"appears?\s+to\s+be\s+(?:a\s|an\s)?(?:blank|empty)"
     r"|is\s+(?:a\s)?blank"

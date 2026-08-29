@@ -489,8 +489,13 @@ def _needs_ocr_reason(run: _PageOcrResult) -> str:
     same thing to a consumer -- these pages need OCR -- so the distinction costs
     nothing and buys an in-band signal that the model answered and refused, which
     is otherwise indistinguishable from the provider being down.
+
+    Compared as SETS, not lengths. Equal lengths would say the same thing today
+    only because no caller passes a duplicate page number -- `_run_full_page_ocr`
+    passes a `range` and `_convert_pages_requiring_ocr` passes sorted dict keys --
+    and that is a property of two callers, not of this function.
     """
-    if run.declined_pages and len(run.declined_pages) == len(run.failed_pages):
+    if run.declined_pages and set(run.declined_pages) == set(run.failed_pages):
         return "ocr-declined"
     return "ocr-failed"
 
