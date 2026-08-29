@@ -869,6 +869,62 @@ def _looks_like_register_rows(parts: list[str]) -> bool:
     return any(re.search(r"[^\s0-9०-९,.।-]", line) for line in lines)
 
 
+def _composed_header_label(
+    grid: list[list[str]],
+    expanded: list[list[str]],
+    title_rows: int,
+    header_end: int,
+    col: int,
+) -> str:
+    """This column's own label path across the header band, or `""`.
+
+    A two-level header -- one cell spanning several columns, each of those columns
+    carrying its own label on the next physical row -- has to become ONE rendered
+    row, because the renderer emits no `|---|` separator and every downstream
+    consumer therefore reads a second header row as data. Composing per column is
+    what makes that possible: column `col`'s label is its path through the band,
+    outermost first, so `जम्मा चेयर` spanning two columns labelled `इलेक्टि\\क` and
+    `हाइड\\ोलिक` yields `जम्मा चेयर इलेक्टि\\क` and `जम्मा चेयर हाइड\\ोलिक`.
+
+    Two rules, and each is load-bearing:
+
+    **The anchor wins, the span fills in.** `grid` holds anchored cell text and
+    `expanded` propagates a span into the positions it covers, so reading `grid`
+    first and falling back to `expanded` gets both: a column under a colspan
+    inherits the spanning label it would otherwise never see, while a cell a
+    malformed table anchored *inside* another's span keeps its own text.
+    `_expanded_grid` fills left to right under `if not grid[row][col]`, so the
+    spanning cell reaches that position first and the anchor's text is absent from
+    `expanded` -- reading `expanded` alone would silently drop it.
+
+    **A column with no label of its own stays empty.** The fallback is context, not
+    content: without this test every column a wide span covers would repeat the
+    spanning label, which recovers nothing (the label is already at its anchor) and
+    manufactures text -- one OAG table spans 31 columns with a sub-label under only
+    two of them. So the composition fires exactly where a label was being lost.
+
+    Joined with a space rather than a separator token, for two reasons. It keeps ONE
+    join rule for both shapes this band can hold -- a genuine two-level header, and
+    the far commoner case of a single label the detector split across physical rows,
+    where `अतिक्रमण/आवादी` + `गरिएको क्षेत्रफल` must read as one phrase and a
+    separator would falsely assert two levels. And `audit_quality.py`'s
+    `LEGACY_RUN_RE` character class contains `/`, while `check_legacy_ascii` strips
+    `|` but not `/`, so a `" / "` separator would add a legacy-run hit per composed
+    cell to an axis that sets 43 of the corpus's `suspect` verdicts.
+    """
+
+    band = range(title_rows, header_end)
+    own = [_clean_text(grid[row][col]) for row in band]
+    if not any(own):
+        return ""
+    parts: list[str] = []
+    for anchored, row in zip(own, band, strict=True):
+        value = anchored or expanded[row][col]
+        if value and value not in parts:
+            parts.append(value)
+    return " ".join(parts)
+
+
 def _raw_table_row_lines(table: Table) -> list[tuple[int, list[str]]]:
     """Render each table row without losing its source row index."""
 
@@ -913,13 +969,10 @@ def _raw_table_row_lines(table: Table) -> list[tuple[int, list[str]]]:
         ):
             header_end += 1
 
-        for col in range(table.col_count):
-            parts: list[str] = []
-            for row in range(title_rows, header_end):
-                value = _clean_text(grid[row][col])
-                if value and value not in parts:
-                    parts.append(value)
-            grid[title_rows][col] = " ".join(parts)
+        grid[title_rows] = [
+            _composed_header_label(grid, expanded, title_rows, header_end, col)
+            for col in range(table.col_count)
+        ]
         for row in range(title_rows + 1, header_end):
             grid[row] = ["" for _ in range(table.col_count)]
         joined_header_row = title_rows
@@ -927,13 +980,13 @@ def _raw_table_row_lines(table: Table) -> list[tuple[int, list[str]]]:
     rows: list[tuple[int, list[str]]] = []
     for row_index, row in enumerate(grid):
         if row_index == joined_header_row:
+            # `covered` is deliberately NOT consulted here, and that is the whole
+            # of the sub-column-label fix -- see `_composed_header_label`. The
+            # joined row is composed, not extracted: a column the spanning header
+            # covers holds this column's own label, so blanking it on coverage
+            # threw the label away.
             cell_lines = [
-                (
-                    []
-                    if covered[row_index][col_index] or not _clean_text(cell)
-                    else [_clean_text(cell)]
-                )
-                for col_index, cell in enumerate(row)
+                ([] if not _clean_text(cell) else [_clean_text(cell)]) for cell in row
             ]
         else:
             cell_lines = [
