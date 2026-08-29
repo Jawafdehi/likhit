@@ -72,7 +72,12 @@ _MAX_PARTITION_SEGMENTS = 12
 
 @dataclass(frozen=True)
 class NumericBoundaryRepair:
-    """One geometry-proven numeric run and its original cell values."""
+    """One geometry-proven numeric run and its original cell values.
+
+    `block_number` and `line_number` locate the line in the extraction this repair was
+    measured on and are diagnostic only. They are NOT how a caller finds the line again
+    -- see :func:`group_repairs_by_line` and :data:`line_origin`.
+    """
 
     page_number: int
     block_number: int
@@ -82,10 +87,14 @@ class NumericBoundaryRepair:
     parts: tuple[str, ...]
     line_text: str
     occurrence_index: int = 0
+    #: Top-left corner of the line's glyph boxes, `(min y0, min x0)` rounded to 0.1pt.
+    #: This is the key a caller looks the repair up by, because it survives a second
+    #: extraction of the same page and an enumeration index does not.
+    line_origin: tuple[float, float] = (0.0, 0.0)
 
     @property
     def repaired_text(self) -> str:
-        return " | ".join(self.parts)
+        return CELL_BOUNDARY_SEPARATOR.join(self.parts)
 
 
 @dataclass(frozen=True)
@@ -198,6 +207,7 @@ def collect_page_numeric_boundary_evidence(
     run_positions: dict[str, set[tuple[int, int, int]]] = defaultdict(set)
     for block_number, line_number, characters in lines:
         line_text = "".join(character.text for character in characters)
+        origin = line_origin_key(character.bbox for character in characters)
         for run_start, run_end in _maximal_numeric_runs(characters):
             run_text = "".join(
                 character.text for character in characters[run_start:run_end]
@@ -235,6 +245,7 @@ def collect_page_numeric_boundary_evidence(
                 block_number=block_number,
                 line_number=line_number,
                 line_text=line_text,
+                line_origin=origin,
             )
         )
         repairs.extend(
@@ -244,6 +255,7 @@ def collect_page_numeric_boundary_evidence(
                 block_number=block_number,
                 line_number=line_number,
                 line_text=line_text,
+                line_origin=origin,
             )
         )
 
@@ -318,18 +330,70 @@ def apply_line_numeric_boundary_repairs(
     return repaired
 
 
+#: Precision the line origin is rounded to before it is used as a key. 0.1pt is finer
+#: than any inter-line or inter-column gap in this corpus and coarser than the float
+#: noise between two extractions of the same page.
+_LINE_ORIGIN_PRECISION = 1
+
+
+def line_origin_key(
+    boxes: Iterable[tuple[float, float, float, float]],
+) -> tuple[float, float]:
+    """The key a line is indexed by: `(min y0, min x0)` over ALL its glyph boxes.
+
+    Callers must pass every box on the line, including ones whose text they are about to
+    discard -- dropping the empty ones first moves the minimum and the key stops
+    matching. Measured over the 1,843 repairs the 102 `numeric_damage` documents produce:
+    resolved 1,843/1,843 including all boxes, 1,379/1,843 excluding the empty ones.
+    """
+
+    ys: list[float] = []
+    xs: list[float] = []
+    for box in boxes:
+        xs.append(float(box[0]))
+        ys.append(float(box[1]))
+    if not ys:
+        return (0.0, 0.0)
+    return (
+        round(min(ys), _LINE_ORIGIN_PRECISION),
+        round(min(xs), _LINE_ORIGIN_PRECISION),
+    )
+
+
 def group_repairs_by_line(
     repairs: Iterable[NumericBoundaryRepair],
-) -> dict[tuple[int, int, int], list[NumericBoundaryRepair]]:
-    """Index repairs by 1-based page, block, and line."""
+) -> dict[tuple[int, float, float], list[NumericBoundaryRepair]]:
+    """Index repairs by 1-based page and the line's glyph-box origin.
 
-    grouped: dict[tuple[int, int, int], list[NumericBoundaryRepair]] = defaultdict(list)
+    NOT by `(page, block, line)`, which is what this did and is the reason the repairs
+    were computed and then thrown away. The block and line numbers are `enumerate()`
+    indices over `page.get_text("rawdict", flags=TEXT_PRESERVE_WHITESPACE)`, while both
+    callers enumerate `font_based.get_cid_marked_page_dict(page)` -- and that function
+    re-extracts the page with `TEXT_USE_CID_FOR_UNKNOWN_UNICODE` whenever any glyph
+    decodes to U+FFFD. The second extraction re-blocks the page, so every index after the
+    first regrouped block is shifted and the lookup lands on a different line or on none.
+    Measured on document 11724 page 7: 38 blocks plain, 39 with the CID flag, diverging
+    at block 4.
+
+    The geometry does not move -- `get_cid_marked_page_dict`'s own docstring records that
+    glyph boxes survive the regrouping, which is why it pairs the two extractions by box.
+    Measured over the 1,843 line-applicable repairs the 102 published `numeric_damage`
+    documents produce, counting a key as resolved only when the line it names actually
+    contains the merged text:
+
+        (block, line) enumeration index   1,669 / 1,843   90.6%
+        (min y0,)                         1,829 / 1,843   99.2%, 14 ambiguous
+        (min y0, min x0)                  1,843 / 1,843  100.0%, 0 ambiguous
+
+    A rounded float pair is only safe as a key because both sides round the same MuPDF
+    box; the 100% above is the evidence, not the reasoning.
+    """
+
+    grouped: dict[tuple[int, float, float], list[NumericBoundaryRepair]] = defaultdict(
+        list
+    )
     for repair in repairs:
-        grouped[
-            repair.page_number,
-            repair.block_number,
-            repair.line_number,
-        ].append(repair)
+        grouped[repair.page_number, *repair.line_origin].append(repair)
     return dict(grouped)
 
 
@@ -916,6 +980,7 @@ def _repairs_for_contiguous_runs(
     block_number: int,
     line_number: int,
     line_text: str,
+    line_origin: tuple[float, float],
 ) -> list[NumericBoundaryRepair]:
     if not cuts:
         return []
@@ -953,6 +1018,7 @@ def _repairs_for_contiguous_runs(
                 parts=tuple(parts),
                 line_text=line_text,
                 occurrence_index=_occurrence_index(line_text, merged_text, start),
+                line_origin=line_origin,
             )
         )
     return repairs
@@ -965,6 +1031,7 @@ def _repairs_for_decimal_whitespace(
     block_number: int,
     line_number: int,
     line_text: str,
+    line_origin: tuple[float, float],
 ) -> list[NumericBoundaryRepair]:
     repairs: list[NumericBoundaryRepair] = []
     index = 0
@@ -1012,6 +1079,7 @@ def _repairs_for_decimal_whitespace(
                 parts=(left, right),
                 line_text=line_text,
                 occurrence_index=0,
+                line_origin=line_origin,
             )
         )
     return repairs

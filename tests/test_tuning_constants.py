@@ -633,6 +633,18 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "likhit/extractors/numeric_boundaries.py",
         "_MAX_PARTITION_SEGMENTS",
     ): (12, "combinatorial bound on rule partitions per numeric run"),
+    (
+        "likhit/extractors/numeric_boundaries.py",
+        "_LINE_ORIGIN_PRECISION",
+    ): (
+        1,
+        "decimal places the line origin is rounded to before it keys a repair, so "
+        "0.1pt. Finer than any inter-line or inter-column gap in this corpus and "
+        "coarser than the float difference between two extractions of one page: "
+        "measured over the 1,843 line-applicable repairs the 102 published "
+        "numeric_damage documents produce, (min y0, min x0) at this precision "
+        "resolves 1,843 of 1,843 where the enumeration index resolves 1,669",
+    ),
     # -- table extraction ----------------------------------------------------- #
     (
         "likhit/extractors/tables.py",
