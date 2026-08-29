@@ -192,6 +192,18 @@ def _drop_container_tables(tables: list[Table]) -> list[Table]:
     a longer line. Duplicate body lines still go while a header or footer the finer
     grid missed stays.
 
+    ⚠️ **KNOWN LIMITATION, stated rather than fixed: order is bounded, distance is not.**
+    A multi-token line needs only to occur in order *somewhere* in one contained table, at
+    any separation -- so `जम्मा ७१८६४` is deleted even if those two tokens sit 40 tokens
+    apart in the finer grid. A total row whose label is a column header and whose value is
+    30 rows below it would go. Review raised this; it is unbounded by construction and it is
+    **unobserved**: over the 13 documents this rule moves most, it removes 20,863 duplicated
+    token occurrences and loses **0 distinct words**, measured by diffing the content-word
+    multiset of every transcript against the same document without the rule. A distance
+    bound would be a behaviour change needing its own corpus measurement, so it is not
+    smuggled in here. `test_multi_token_coverage_is_not_distance_bounded` characterises the
+    current behaviour so that adding one is a deliberate change with a failing test.
+
     Two conditions gate the table before any cell is examined:
 
     * **containment** -- the coarse region must enclose the fine one, within
@@ -228,8 +240,12 @@ def _drop_container_tables(tables: list[Table]) -> list[Table]:
         covered: set[str] = set()
         for inner in contained:
             covered |= words[inner]
-        covered_tables = [token_streams[inner] for inner in contained]
-        covered_lines = {line for inner in contained for line in tokenized_lines[inner]}
+        # Paired, not two parallel collections: the single-token rule needs both halves of
+        # one table's evidence, and a union on either side lets a deletion be justified by
+        # two tables jointly. See `_strip_covered_lines`.
+        covered_tables = [
+            (token_streams[inner], tokenized_lines[inner]) for inner in contained
+        ]
         keep = []
         changed = False
         for cell in table.cells:
@@ -239,11 +255,7 @@ def _drop_container_tables(tables: list[Table]) -> list[Table]:
                 changed = True
                 continue
 
-            cell_or_none = _strip_covered_lines(
-                cell,
-                covered_tables,
-                covered_lines,
-            )
+            cell_or_none = _strip_covered_lines(cell, covered_tables)
             if cell_or_none is cell:
                 keep.append(cell)
                 continue
@@ -260,25 +272,39 @@ def _drop_container_tables(tables: list[Table]) -> list[Table]:
 
 def _strip_covered_lines(
     cell: TableCell,
-    covered_tables: list[list[str]],
-    covered_lines: set[tuple[str, ...]],
+    covered_tables: list[tuple[list[str], set[tuple[str, ...]]]],
 ) -> TableCell | None:
-    """Remove lines reproduced in order by one finer table."""
+    """Remove lines reproduced in order by ONE finer table.
+
+    "One table" is load-bearing, so ``covered_tables`` pairs each contained table's token
+    stream with its OWN line set: both pieces of evidence -- the ordered occurrence and, for
+    a lone token, the proof that a table emitted it as a whole line -- come from one table.
+
+    ⚠️ This shape replaces a per-table stream list beside a line set unioned across every
+    contained table, which review flagged as letting a one-token line take its whole-line
+    evidence from table A and its occurrence from table B. **That was unreachable, and the
+    reason is worth keeping**: ``_table_tokenized_lines`` and ``_table_content_tokens`` walk
+    the same cells, so a line ``("जम्मा",)`` in the union implies ``जम्मा`` in that same
+    table's stream -- which then satisfies both halves by itself. The two forms agree on
+    every input the caller can build; asserted in
+    ``test_a_single_token_line_implies_its_token_in_the_same_table_stream``.
+
+    It is fixed anyway because the union said something the rule does not mean, and the
+    unreachability rests on a coupling between two helpers that nothing enforced. Deriving
+    lines differently -- from rendered rows, say -- would have made a latent inconsistency
+    into a live one silently.
+    """
 
     kept = []
     changed = False
     for line in cell.text.splitlines():
         own = _CONTENT_WORD.findall(line)
-        # A one-token subsequence proves only occurrence. Require the finer table
+        # A one-token subsequence proves only occurrence. Require the same finer table
         # to have emitted that token as a whole line before deleting it.
-        has_line_evidence = len(own) > 1 or tuple(own) in covered_lines
-        if (
-            own
-            and has_line_evidence
-            and any(
-                _is_ordered_subsequence(own, table_tokens)
-                for table_tokens in covered_tables
-            )
+        if own and any(
+            _is_ordered_subsequence(own, table_tokens)
+            and (len(own) > 1 or tuple(own) in table_lines)
+            for table_tokens, table_lines in covered_tables
         ):
             changed = True
             continue
