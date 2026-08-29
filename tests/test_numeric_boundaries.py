@@ -323,6 +323,34 @@ def test_selects_unique_minimal_rule_partition(
     assert selected == expected
 
 
+def test_selects_unique_minimal_partition_of_grouped_integers() -> None:
+    """A beruju column carries no decimal point, and used to narrow no run at all.
+
+    Document 11754 page 8, verbatim. The two rule cuts are at 12 and 21; only the one at
+    12 is real. Requiring every part to match `_DECIMAL_AMOUNT_PATTERN` validated no
+    partition, so both cuts survived and `_repairs_for_contiguous_runs` then rejected the
+    whole run because `['३२,१०,६५,४९४', '७,३९,५२,३', '८८']` holds an implausible part --
+    the correct cut died with the spurious one.
+    """
+
+    text = "३२,१०,६५,४९४७,३९,५२,३८८"
+    characters = [
+        _Character(
+            text=character,
+            origin_x=float(index),
+            bbox=(float(index), 0.0, float(index + 1), 12.0),
+            font="Kalimati",
+            size=10.0,
+            span_number=0,
+        )
+        for index, character in enumerate(text)
+    ]
+
+    selected = _select_minimal_rule_cuts(characters, {12, 21}, set())
+
+    assert selected == {12}
+
+
 def test_preserves_ambiguous_adjacent_small_rule_cells() -> None:
     text = "125500"
     characters = [

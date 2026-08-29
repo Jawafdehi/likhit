@@ -867,7 +867,24 @@ def _select_minimal_rule_cuts(
     rule_cuts: set[int],
     preferred_runs: set[tuple[int, int]],
 ) -> set[int]:
-    """Discard neighboring false rules when one valid partition is unique."""
+    """Discard neighboring false rules when one valid partition is unique.
+
+    A candidate partition is valid when every part is a plausible single value -- the
+    same predicate :func:`_repairs_for_contiguous_runs` applies when it decides whether
+    to emit, so the two functions that must agree, do.
+
+    This used to require every part to match `_DECIMAL_AMOUNT_PATTERN`,
+    `^[0-9][0-9,]*\\.[0-9]{1,2}$`, which insists on a decimal point. An OAG beruju column
+    is Indian-grouped integers, so no partition validated, no run was ever narrowed, and
+    the spurious cut then took the correct one down with it. Traced on document 11754
+    page 8: the run `३२,१०,६५,४९४७,३९,५२,३८८` has rule cuts at 12 and 21, under the
+    decimal-only predicate 0 minimal partitions exist and the emitter rejects
+    `['३२,१०,६५,४९४', '७,३९,५२,३', '८८']` whole; under this predicate there is exactly
+    one, `(12,)` -> `['३२,१०,६५,४९४', '७,३९,५२,३८८']`.
+
+    The uniqueness requirement below is what keeps the wider predicate safe: a run that
+    can be partitioned two ways is still left alone.
+    """
 
     cuts_by_run: dict[tuple[int, int], set[int]] = defaultdict(set)
     for cut in rule_cuts:
@@ -894,7 +911,7 @@ def _select_minimal_rule_cuts(
                     for part_start, part_end in zip(boundaries, boundaries[1:])
                 ]
                 if all(
-                    _DECIMAL_AMOUNT_PATTERN.fullmatch(_canonical_numeric_text(part))
+                    _looks_like_complete_amount(part)
                     and _looks_like_plausible_single_number(part)
                     for part in parts
                 ):
@@ -1103,6 +1120,36 @@ def _occurrence_index(line_text: str, text: str, start_index: int) -> int:
         1
         for match in re.finditer(re.escape(text), line_text)
         if match.start() < start_index
+    )
+
+
+def _looks_like_complete_amount(text: str) -> bool:
+    """A value a money column can hold as ONE cell: decimal or integer, grouped or not.
+
+    Narrower than :func:`_looks_like_plausible_single_number` on purpose. That predicate
+    also accepts a serial (`12.`) and a dotted reference (`4.1.4`), and a dotted reference
+    swallows a genuine merge: on `123.45678.9099.10` with rule cuts at 6 and 12 it accepts
+    `678.9099.10`, so the one-cut partition validates first and the correct cut at 12 is
+    discarded. Measured -- it took
+    `test_collects_multiple_boundaries_inside_one_pdf_span` from three parts to two.
+
+    Wider than `_DECIMAL_AMOUNT_PATTERN`, which is what this replaced: that insists on a
+    decimal point, and an OAG beruju column is Indian-grouped integers.
+
+    The caller keeps asking BOTH this and `_looks_like_plausible_single_number`, and the
+    conjunction is not redundant -- it is why the old predicate worked at all. `0358,500.00`
+    matches `_DECIMAL_AMOUNT_PATTERN` (its `[0-9,]*` does not care that `0358` is a
+    four-digit group) and fails every grouping rule, so only the intersection rejects it.
+    Measured: dropping the second half re-partitions `358,500.00358,500.00` at 9 instead of
+    at 10.
+    """
+
+    canonical = _canonical_numeric_text(text)
+    return bool(
+        _DECIMAL_AMOUNT_PATTERN.fullmatch(canonical)
+        or _PLAIN_NUMBER_PATTERN.fullmatch(canonical)
+        or _INDIAN_GROUPED_NUMBER_PATTERN.fullmatch(canonical)
+        or _WESTERN_GROUPED_NUMBER_PATTERN.fullmatch(canonical)
     )
 
 
