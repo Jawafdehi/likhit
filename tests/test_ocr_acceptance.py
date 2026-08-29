@@ -1,0 +1,300 @@
+"""A vision-OCR decline must never become page text, and English must survive.
+
+Two halves. The first pins `likhit.ocr_acceptance` itself -- each leg on a case
+only that leg can reach, and each of the measured false-positive families that
+shaped its guards. The second pins the consumer, `_run_page_ocr`: before this,
+every failure leg there was mechanical, so a model answering "This appears to be
+a blank page" counted as a success and its prose became the body of a page of a
+Nepali audit report.
+
+The negative cases are the point, not decoration. The published corpus contains
+18 documents with zero Devanagari characters, 13 of them scoring `clean`, and one
+60-page English publication delivered entirely by OCR. A fix that drops English
+is a worse defect than the one it replaces.
+"""
+
+from typing import cast
+
+import fitz
+import pytest
+from markitdown_ocr import LLMVisionOCRService, OCRResult
+
+from likhit.converters.nepali_pdf import (
+    NEEDS_OCR_MARKER_PATTERN,
+    _needs_ocr_reason,
+    _PageOcrResult,
+    _run_full_page_ocr,
+)
+from likhit.ocr_acceptance import (
+    ABSTENTION_PATTERNS,
+    ASSERTS_BLANK,
+    DECLINED,
+    DELIVERED,
+    LEG_ASSERTS_BLANK,
+    LEG_NO_SUBSTANCE,
+    LEG_PLACEHOLDER,
+    LEG_SCRIPT_SHARE,
+    _PLACEHOLDER_CELL,
+    TASK_FRAME,
+    classify_ocr_response,
+    is_declined,
+)
+
+# The exact response shape measured on a live OCR buy: 1,554 of its rows carry no
+# Devanagari at all and describe a blank page instead of transcribing one.
+BLANK_COMMENTARY = (
+    "This appears to be a blank page with only a solid green vertical "
+    "stripe/border on the right side."
+)
+
+# A real page of the corpus's one English publication, `11353`. Zero Devanagari,
+# 100% Latin, and legitimate content that must reach the transcript.
+ENGLISH_PUBLICATION_PAGE = (
+    "3. Glimpses of Some Audit Observations\n"
+    "1. Public Accountability Status - Pursuant to compliance with public "
+    "accountability, the reconstruction authority has not maintained the "
+    "prescribed records of grant disbursement, and the reported physical "
+    "progress could not be reconciled with the financial progress."
+)
+
+DEVANAGARI_PAGE = "लेखापरीक्षण प्रतिवेदन आर्थिक वर्ष २०६०/२०६१"
+
+
+class TestLegs:
+    """Each leg on a case only that leg reaches."""
+
+    def test_blank_commentary_is_declined(self) -> None:
+        acceptance = classify_ocr_response(BLANK_COMMENTARY)
+
+        assert acceptance.verdict == DECLINED
+        assert acceptance.legs == (LEG_ASSERTS_BLANK,)
+        # The whole reason leg D exists: this phrase names no image, scan,
+        # rotation or transcription, so it fires NO task-frame-guarded family and
+        # leg A cannot see it.
+        assert acceptance.families == ()
+        assert TASK_FRAME.search(BLANK_COMMENTARY) is None
+
+    def test_english_refusal_naming_the_image_is_declined_by_leg_a(self) -> None:
+        text = "I cannot read this scanned image; the resolution is too low."
+
+        acceptance = classify_ocr_response(text)
+
+        assert acceptance.legs[0] == LEG_SCRIPT_SHARE
+        assert "first_person_inability" in acceptance.families
+
+    def test_placeholder_table_is_declined_by_leg_b(self) -> None:
+        # Devanagari-rich, so leg A cannot reach it: its Devanagari IS the word
+        # "unclear" repeated. 3 of 4 populated cells are placeholders.
+        unclear = "अस्पष्ट"
+        text = (
+            f"| शिर्षक | रकम |\n"
+            f"| --- | --- |\n"
+            f"| [{unclear}] | [{unclear}] |\n"
+            f"| [{unclear}] | १२३ |\n"
+        )
+
+        acceptance = classify_ocr_response(text)
+
+        assert acceptance.legs == (LEG_PLACEHOLDER,)
+        assert acceptance.devanagari_ratio > 0.05
+        assert acceptance.placeholder_cell_share is not None
+        assert acceptance.placeholder_cell_share >= 0.25
+
+    def test_header_only_table_with_abstention_is_declined_by_leg_c(self) -> None:
+        # A column header, its separator, and zero data rows -- "here is the shape
+        # of what I did not transcribe". Devanagari share is far above the floor,
+        # so leg A cannot reach it either.
+        text = "| क्र.स. | विवरण |\n| --- | --- |\n\nयस पेजको ट्रान्सक्रिप्शन गर्न पढ्न सकिएन्।"
+
+        acceptance = classify_ocr_response(text)
+
+        assert LEG_NO_SUBSTANCE in acceptance.legs
+        assert acceptance.empty_table_skeleton is True
+        assert acceptance.devanagari_ratio > 0.05
+
+
+class TestEnglishSurvives:
+    """The measured false-positive families that shaped the guards."""
+
+    def test_english_publication_page_is_delivered(self) -> None:
+        acceptance = classify_ocr_response(ENGLISH_PUBLICATION_PAGE)
+
+        assert acceptance.verdict == DELIVERED
+        assert acceptance.devanagari_chars == 0
+        # Shape alone would condemn it: this is exactly why leg A is a conjunction.
+        assert acceptance.devanagari_ratio < 0.05
+
+    def test_isa_disclaimer_in_a_real_report_is_delivered(self) -> None:
+        # "unable to obtain sufficient appropriate audit evidence" is a genuine
+        # sentence in a genuine audit report. Bare modality matched 41 pages of
+        # the negative control; the task frame is what removed them.
+        text = (
+            "We were unable to obtain sufficient appropriate audit evidence "
+            "about the carrying amount of inventories, and the entity cannot be "
+            "identified as having maintained the prescribed records."
+        )
+
+        acceptance = classify_ocr_response(text)
+
+        assert acceptance.verdict == DELIVERED
+        assert acceptance.families == ()
+
+    def test_one_illegible_cell_among_many_is_delivered(self) -> None:
+        # A page allowed to mark a single illegible stamp is doing its job. The
+        # base is cells, not occurrences: on the corpus population an occurrence
+        # threshold selected 7 genuine full transcriptions.
+        unclear = "अस्पष्ट"
+        rows = "".join(f"| विवरण {n} | १२३{n} |\n" for n in range(12))
+        text = f"| शिर्षक | रकम |\n| --- | --- |\n{rows}| [{unclear}] | १० |\n"
+
+        acceptance = classify_ocr_response(text)
+
+        assert acceptance.verdict == DELIVERED
+        assert acceptance.placeholder_cell_share is not None
+        assert acceptance.placeholder_cell_share < 0.25
+
+    def test_plain_devanagari_page_is_delivered(self) -> None:
+        assert not is_declined(DEVANAGARI_PAGE)
+
+    def test_full_devanagari_table_is_delivered(self) -> None:
+        text = "| शिर्षक | रकम |\n| --- | --- |\n| राजस्व | १२३ |\n"
+
+        assert classify_ocr_response(text).verdict == DELIVERED
+
+
+class TestPatternHygiene:
+    """No pasted Devanagari in any compiled pattern.
+
+    A literal class is normalization-fragile two ways that have both bitten this
+    repo: a range whose endpoint is composed can invert and raise `re.error` at
+    import -- taking the module with it -- and a set of composed characters can
+    silently widen to their base consonants. `\\uXXXX` escapes cannot do either,
+    and the escapes survive any normalization of the source file.
+    """
+
+    def test_no_devanagari_literal_in_any_pattern(self) -> None:
+        patterns = {
+            **{name: rx for name, rx in ABSTENTION_PATTERNS.items()},
+            "TASK_FRAME": TASK_FRAME,
+            "ASSERTS_BLANK": ASSERTS_BLANK,
+            "_PLACEHOLDER_CELL": _PLACEHOLDER_CELL,
+        }
+        offenders = {
+            name: [ch for ch in rx.pattern if "ऀ" <= ch <= "ॿ"]
+            for name, rx in patterns.items()
+        }
+        assert {n: chars for n, chars in offenders.items() if chars} == {}
+
+    def test_nepali_families_still_match_their_own_words(self) -> None:
+        """The escapes are not vacuous -- guard against a mangled rewrite."""
+        cases = {
+            "np_not_readable": "पढ्न सकिएन",
+            "np_not_identifiable": ("पहिचान गर्न सकिएन"),
+            "np_illegible": "अपठनीय",
+        }
+        for name, sample in cases.items():
+            assert ABSTENTION_PATTERNS[name].search(sample) is not None, name
+
+
+class TestConsumerDoesNotDeliverADecline:
+    """`_run_page_ocr` must not insert a decline under a page anchor."""
+
+    def test_declined_page_is_not_inserted_and_is_marked(self) -> None:
+        raw = _blank_pdf(page_count=2)
+        service = _StubOCRService(
+            [
+                OCRResult(text=BLANK_COMMENTARY),
+                OCRResult(text=DEVANAGARI_PAGE),
+            ]
+        )
+
+        result = _run_full_page_ocr(raw, cast(LLMVisionOCRService, service))
+
+        assert result is not None
+        # The decline is nowhere in the body, and the page that did deliver is.
+        assert "blank page" not in result.markdown
+        assert "green vertical" not in result.markdown
+        assert DEVANAGARI_PAGE in result.markdown
+        marker = NEEDS_OCR_MARKER_PATTERN.search(result.markdown)
+        assert marker is not None
+        assert marker.groups() == ("1", "ocr-declined")
+
+    def test_every_page_declined_yields_no_candidate(self) -> None:
+        raw = _blank_pdf(page_count=2)
+        service = _StubOCRService(
+            [OCRResult(text=BLANK_COMMENTARY), OCRResult(text=BLANK_COMMENTARY)]
+        )
+
+        result = _run_full_page_ocr(raw, cast(LLMVisionOCRService, service))
+
+        # No page delivered anything, so there is no OCR candidate at all and the
+        # caller falls back rather than publishing a document of commentary.
+        assert result is None
+
+    def test_english_page_is_still_delivered_by_the_consumer(self) -> None:
+        raw = _blank_pdf(page_count=1)
+        service = _StubOCRService([OCRResult(text=ENGLISH_PUBLICATION_PAGE)])
+
+        result = _run_full_page_ocr(raw, cast(LLMVisionOCRService, service))
+
+        assert result is not None
+        assert "Glimpses of Some Audit Observations" in result.markdown
+        assert NEEDS_OCR_MARKER_PATTERN.search(result.markdown) is None
+
+    def test_mixed_failure_kinds_report_the_wider_reason(self) -> None:
+        raw = _blank_pdf(page_count=3)
+        service = _StubOCRService(
+            [
+                OCRResult(text="", error="provider rejected image"),
+                OCRResult(text=BLANK_COMMENTARY),
+                OCRResult(text=DEVANAGARI_PAGE),
+            ]
+        )
+
+        result = _run_full_page_ocr(raw, cast(LLMVisionOCRService, service))
+
+        assert result is not None
+        marker = NEEDS_OCR_MARKER_PATTERN.search(result.markdown)
+        assert marker is not None
+        # `ocr-declined` would be false of page 1, so the wider label is used and
+        # both pages are still listed.
+        assert marker.groups() == ("1,2", "ocr-failed")
+
+
+class TestNeedsOcrReason:
+    def test_all_declined_reports_declined(self) -> None:
+        run = _PageOcrResult({}, failed_pages=(2, 5), declined_pages=(2, 5))
+
+        assert _needs_ocr_reason(run) == "ocr-declined"
+
+    def test_any_mechanical_failure_reports_failed(self) -> None:
+        run = _PageOcrResult({}, failed_pages=(2, 5), declined_pages=(5,))
+
+        assert _needs_ocr_reason(run) == "ocr-failed"
+
+    def test_no_declines_reports_failed(self) -> None:
+        run = _PageOcrResult({}, failed_pages=(2,))
+
+        assert _needs_ocr_reason(run) == "ocr-failed"
+
+
+class _StubOCRService:
+    def __init__(self, results: list[OCRResult]) -> None:
+        self.results = iter(results)
+
+    def extract_text(self, _image_stream: object) -> OCRResult:
+        return next(self.results)
+
+
+def _blank_pdf(page_count: int) -> bytes:
+    document = fitz.open()
+    try:
+        for _ in range(page_count):
+            document.new_page(width=200, height=300)
+        return document.tobytes()
+    finally:
+        document.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
