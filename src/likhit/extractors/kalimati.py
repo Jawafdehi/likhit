@@ -1248,6 +1248,14 @@ def _decline_authored_repha_rewrites(
     that forgot it would silently turn the guard off, which is exactly the failure this
     function exists to prevent.
 
+    ⚠️ **On measuring this, for whoever changes it next.** The provenance split above was
+    first measured with a probe that *re-implemented* the four-source composition of
+    :func:`_get_font_correction_map` rather than calling it, and that probe reported ZERO
+    metric guesses on the gated sample -- which would have made the face condition look
+    unnecessary. It was wrong: wrapping the shipped function instead showed 7,180 drawn
+    glyphs of guessed rewrites there, on Kalimati GID 466/467. A replicated composition is
+    not the composition. Instrument by wrapping what ships.
+
     Scope is per GID inside a per-face reconstruction, which is what the code
     structure and the measurement both ask for. The correction map is built and cached
     per embedded font program (``fontfile_maps``) and applied per ``/ToUnicode``
