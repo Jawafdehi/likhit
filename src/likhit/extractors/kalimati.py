@@ -1089,7 +1089,14 @@ def _rewrite_discards_authored_repha(pdf_value: str, correct_value: str) -> bool
     questions and are deliberately kept apart.
     """
 
-    if _RA + _VIRAMA not in pdf_value or _RA + _VIRAMA in correct_value:
+    # There is deliberately no second "and the reconstruction has no repha of its own"
+    # clause. Neither ``र`` nor the virama is a dependent vowel sign, so a value that
+    # satisfies the test below cannot contain ``र्``, and written as a clause it
+    # survived mutation -- unreachable as a distinct outcome, which is worse than
+    # absent because it reads as a live check. The ``(र् -> र्)`` and ``(र् -> कर्)``
+    # cases in ``tests/test_authored_repha_guard.py`` pin that behaviour through the
+    # vowel-sign test instead.
+    if _RA + _VIRAMA not in pdf_value:
         return False
     return bool(correct_value) and all(
         _is_devanagari_matra(char) for char in correct_value
