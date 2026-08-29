@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import tempfile
-from collections.abc import Container
+from collections.abc import Collection, Container
 from typing import Optional
 
 import fitz
@@ -20,6 +20,10 @@ from likhit.extractors.kalimati_reference import (
     outline_digest,
 )
 from likhit.extractors.lohit import lohit_correction_map, with_reordering_markers
+from likhit.extractors.mangal_reference import (
+    mangal_in_line_ra_cids,
+    mangal_reference_map,
+)
 from likhit.extractors.pua_maps import _base_font_name, _font_name_matches_family
 
 logger = logging.getLogger(__name__)
@@ -528,11 +532,29 @@ def _kalimati_reference_map(font, skip: Container[int] = frozenset()) -> dict[in
     geometry; see :data:`~likhit.extractors.kalimati_reference.IN_LINE_RA_DIGESTS`.
     """
 
-    reference = kalimati_reference_map(font, skip=skip)
+    return _with_markers(kalimati_reference_map(font, skip=skip), font, in_line_ra_cids)
+
+
+def _mangal_reference_map(font, skip: Container[int] = frozenset()) -> dict[int, str]:
+    """Reference-derived ``{CID: Unicode}`` for a Mangal face, carrying markers.
+
+    Mangal's half of what :func:`_kalimati_reference_map` does for Kalimati, with
+    the same contract, the same marker handling and the same in-line-ra
+    exemption -- see :mod:`likhit.extractors.mangal_reference`.
+    """
+
+    return _with_markers(
+        mangal_reference_map(font, skip=skip), font, mangal_in_line_ra_cids
+    )
+
+
+def _with_markers(reference, font, in_line_ra) -> dict[int, str]:
+    """Apply reordering markers to a reference map, exempting the in-line ra."""
+
     repha_valued = {
         gid for gid, value in reference.items() if value.startswith(_RA + _VIRAMA)
     }
-    exempt = in_line_ra_cids(font, repha_valued) if repha_valued else set()
+    exempt = in_line_ra(font, repha_valued) if repha_valued else set()
 
     return {
         gid: value if gid in exempt else with_reordering_markers(value)
@@ -568,6 +590,27 @@ def _reconstruction_guesses(correction_map: dict[int, str]) -> frozenset[int]:
     return getattr(correction_map, "metric_guessed", frozenset())
 
 
+def _reference_correction_map(
+    font, skip: Collection[int] = frozenset()
+) -> dict[int, str]:
+    """Reference-derived ``{CID: Unicode}`` from whichever family drew the glyphs.
+
+    Both reference tables are keyed on the glyph OUTLINE and their key sets are
+    disjoint -- pinned by
+    ``tests/test_mangal_reference.py::test_the_two_reference_tables_share_no_outline``
+    -- so which table answers a glyph is decided by the drawing, not by
+    precedence. Kalimati is asked first only so the Mangal pass can skip the
+    glyphs it already answered, which saves outline hashes; it is not a
+    tie-break, and if the two tables ever did collide the test would fail rather
+    than the collision being silently resolved here.
+    """
+
+    kalimati = _kalimati_reference_map(font, skip=skip)
+    if kalimati:
+        skip = set(skip) | set(kalimati)
+    return {**_mangal_reference_map(font, skip=skip), **kalimati}
+
+
 def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, str]:
     try:
         from fontTools.ttLib import TTFont
@@ -599,11 +642,14 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
             # here to reconstruct a mapping from. Fall back to a reference
             # table. Lohit's is keyed on CID, which holds because subsetting
             # preserves glyph order and every Lohit subset here descends from
-            # one build; Kalimati's is keyed on the glyph outline, because its
-            # subsets come from two lineages whose orders disagree -- see
-            # likhit.extractors.lohit and .kalimati_reference. Both return empty
-            # for a font they do not recognise, i.e. no repair.
-            reference_map = lohit_correction_map(font) or _kalimati_reference_map(font)
+            # one build; Kalimati's and Mangal's are keyed on the glyph outline,
+            # because their subsets come from several lineages whose orders
+            # disagree -- see likhit.extractors.lohit, .kalimati_reference and
+            # .mangal_reference. All return empty for a font they do not
+            # recognise, i.e. no repair.
+            reference_map = lohit_correction_map(font) or _reference_correction_map(
+                font
+            )
             font.close()
             return reference_map
         name_to_unicode = {name: codepoint for codepoint, name in best_cmap.items()}
@@ -623,7 +669,7 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
         # table fills those, but it only ever speaks for glyphs this font could
         # not resolve itself: skip whatever the font's own cmap or its own GSUB
         # already answered.
-        reference = _kalimati_reference_map(font, skip=set(from_cmap) | set(derived))
+        reference = _reference_correction_map(font, skip=set(from_cmap) | set(derived))
 
         full_map = dict(derived)
         full_map.update(inferred)
