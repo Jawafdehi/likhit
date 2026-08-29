@@ -88,6 +88,31 @@ def test_limit_is_applied_before_the_floor_is_checked(tmp_path) -> None:
         audit_tree(root, limit=2, min_transcripts=5)
 
 
+def test_a_limit_that_selects_nothing_says_so_rather_than_calling_the_tree_empty(
+    tmp_path,
+) -> None:
+    """🛑 An accurate refusal reason is this module's entire purpose, so a true refusal for the
+    wrong reason is still a defect.
+
+    `limit` is applied before `assess_tree` on purpose -- a truncated audit is a real audit of
+    a stated subset, and it should trip `min_transcripts` when a caller asks for both at once.
+    But that meant `limit=0` on a full corpus refused with "exists and contains no *.md file",
+    which is simply untrue of the tree. The empty-by-limit case now gets its own message.
+    """
+
+    root = _tree(tmp_path, count=3)
+
+    with pytest.raises(ValueError, match="limit=0 selected none"):
+        audit_tree(root, limit=0)
+
+    # ...and the genuinely empty tree still gets the other message, or this fix has just
+    # replaced one wrong reason with another.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="contains no \\*.md"):
+        audit_tree(empty)
+
+
 def test_an_unreadable_document_is_a_finding_not_an_exception(tmp_path) -> None:
     """One bad file must not lose the other results, and is itself worth reporting."""
 

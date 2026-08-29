@@ -84,7 +84,14 @@ def scan_text(t: str) -> tuple[Counter, Counter]:
     for m in SHRI.finditer(t):
         shri_total += 1
         tok = m.group(1)
-        if not any(tok.startswith(w) or w in tok for w in INSTITUTION):
+        # `tok.startswith(w)` implied `w in tok`, so the first clause was dead. Dropped
+        # rather than kept for symmetry, because it disguised what the rule actually is:
+        # substring-anywhere, not prefix. With three-character entries (`कोष`, `संघ`, `आयोग`)
+        # that is broader than "institution words that FOLLOW the honorific" reads, so this
+        # can under-count a real person whose name happens to contain one. Left as measured
+        # rather than narrowed: the exclusion list was calibrated against this behaviour, and
+        # tightening it is a change to the signal, not a cleanup.
+        if not any(w in tok for w in INSTITUTION):
             shri_personal += 1
     ns["shri_total"] = shri_total
     ns["shri_not_institution"] = shri_personal

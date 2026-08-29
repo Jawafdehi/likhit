@@ -11,8 +11,15 @@ Three surfaces, and the split between them is the point:
 :func:`redact_inline_text` / :func:`redact_table_text`
     What is *removed*, which is deliberately narrower than what is found. The inline pass
     handles a label and value in one span; the table pass handles a value in a cell away
-    from its label. Run inline first -- the table pass reads the inline pass's placeholders
-    and treats an already-redacted row as spent.
+    from its label.
+
+    ⚠️ The two passes are **independent**: the table pass's row-spent guard reads its own
+    `TABLE_*` markers, not the inline pass's, and
+    `test_inline_placeholder_does_not_hide_a_separate_table_value` pins that. Running inline
+    first is conventional, not required. An earlier version of this docstring claimed the
+    coupling existed -- measured, a row already carrying `[REDACTED:CITIZENSHIP-NO]` yields 1
+    table target and 0 refusals, while one carrying `[REDACTED:TABLE-CITIZENSHIP-NO]` yields 0
+    targets and a refusal.
 :mod:`likhit.privacy.placeholders`
     The marker vocabulary, which :mod:`likhit.quality` strips before measuring anything.
     Registering a marker in one place is what stops a redaction from being scored as a

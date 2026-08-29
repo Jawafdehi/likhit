@@ -13,7 +13,7 @@ all. That has happened on this corpus.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -75,7 +75,7 @@ def audit_document(
     path: Path,
     *,
     enrich: Enricher | None = None,
-    confirmed_merges: set | None = None,
+    confirmed_merges: int | None = None,
     repha_extended: bool = False,
     page_refusal: bool = False,
 ) -> dict:
@@ -115,7 +115,7 @@ def audit_tree(
     workers: int = 1,
     min_transcripts: int | None = None,
     limit: int | None = None,
-    confirmed_merges: set | None = None,
+    confirmed_merges: int | None = None,
     repha_extended: bool = False,
     page_refusal: bool = False,
 ) -> list[dict]:
@@ -130,10 +130,22 @@ def audit_tree(
     picklable.
     """
 
-    paths: Iterable[Path] = find_transcripts(root)
-    if limit is not None:
-        paths = list(paths)[:limit]
-    paths = list(paths)
+    found = find_transcripts(root)
+    paths = found[:limit] if limit is not None else found
+
+    # ⚠️ A limit that selects nothing gets its OWN refusal, and it has to come first.
+    # `assess_tree` is deliberately given the TRUNCATED count -- a limited audit is a real
+    # audit of a stated subset, so it should trip `min_transcripts` when a caller asks for
+    # both at once, which is the original tool's stated rule and what
+    # `test_limit_is_applied_before_the_floor_is_checked` pins. But that made
+    # `audit_tree(root, limit=0)` on a full corpus refuse with "exists and contains no *.md
+    # file": refusing is right, the reason was false, and accurate refusal reasons are this
+    # module's entire purpose. Handling the empty-by-limit case up here keeps both.
+    if limit is not None and found and not paths:
+        raise ValueError(
+            f"{root} holds {len(found):,} transcripts but limit={limit} selected none; an "
+            "audit of zero documents is not a measurement of this tree"
+        )
 
     ok, why = assess_tree(root, len(paths), min_transcripts=min_transcripts)
     if not ok:

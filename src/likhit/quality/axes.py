@@ -73,8 +73,6 @@ DEV = re.compile(r"[ऀ-ॿ]")
 #: three fragile classes in this file the moment it entered the package; in the
 #: untracked run directory it came from, nothing was checking.
 DEV_CONSONANT = re.compile(r"[\u0915-\u0939\u0958-\u095f]")
-DEV_VOWEL_SIGN = re.compile(r"[ा-ौॢॣ]")
-DEV_VIRAMA = "्"
 MALFORMED_CONJUNCT_RA = re.compile(
     r"[\u0915-\u0939\u0958-\u095f]\u0930\u094d[\u093e-\u094c]"
 )
@@ -110,6 +108,13 @@ LEGACY_MARKERS = (
 #: they are excluded from scoring.
 LEGACY_MARKERS_STRONG = tuple(m for m in LEGACY_MARKERS if len(m) >= 3)
 #: Punctuation these encodings scatter *inside* words.
+#:
+#: ⚠️ These are exactly the characters :data:`LEGACY_RUN_RE`'s bracket class contains, so this
+#: is two spellings of one fact -- which is why `test_the_legacy_punct_set_matches_the_run_
+#: pattern` asserts they agree rather than leaving them to drift. It stays a named set because
+#: :mod:`likhit.privacy.placeholders` cites it by name to explain why a `[REDACTED:...]` marker
+#: reads as a legacy run, and a cross-reference to a constant that does not exist is the defect
+#: this package keeps finding.
 LEGACY_PUNCT = set("]{|/[}~^`")
 #: A legacy-encoded token: Latin/digit word chars carrying at least one of the
 #: bracket-class chars these encodings emit. Requiring the bracket avoids
@@ -120,8 +125,11 @@ LEGACY_RUN_RE = re.compile(
 )
 #: Fenced code blocks — some transcripts wrap whole pages in ```text fences.
 #: Matches the fence *and its contents*, so substituting it deletes the page.
-#: Kept because `measure_legacy_denominator.py` scores the pre-2026-08-12
-#: behaviour with it; scoring code must use `strip_fences` instead.
+#: 🛑 NOT for scoring -- use `strip_fences`. Retained because the pre-2026-08-12 behaviour is
+#: what `strip_fences`' docstring and two spacing tests describe by contrast, and that history
+#: is not expressible without the pattern that caused it. The corpus-side
+#: `measure_legacy_denominator.py` also scores that old behaviour with it, but that tool lives
+#: outside this package, so it is not the reason this constant is here.
 FENCE_RE = re.compile(r"```.*?```", re.S)
 #: A fence *delimiter* line only — the pattern `measure_legacy_denominator.py`
 #: measured the fix with, character for character (`test_audit_legacy_ascii.py`
@@ -420,7 +428,7 @@ def check_repha_loss(text: str, extended: bool = False) -> tuple[str, dict]:
 
 
 def check_numeric_damage(
-    text: str, confirmed_merges: set | None = None
+    text: str, confirmed_merges: int | None = None
 ) -> tuple[str, dict]:
     """Corrupted amounts — audit-critical, and unchecked in v1.
 
@@ -528,6 +536,16 @@ def check_mojibake(text: str) -> tuple[str, dict]:
     ctrl = sum(
         1
         for ch in sample[:100_000]
+        # 🛑 KNOWN BLIND SPOT: this counts `Cc` -- C0/C1 controls -- and NOT `Co`, the
+        # private-use area. Undecoded legacy fonts in this corpus land in PUA, so this axis
+        # cannot see the single commonest glyph-mapping signature it has. Measured: 40 PUA
+        # glyphs appended to a clean document leave it `clean` with `control_chars: 0`, while
+        # 40 C1 controls make it `suspect`.
+        #
+        # Widening the class is a measured TRADE, not a refactor -- it moves a large number of
+        # documents at once and needs pricing against the other axes first -- so it is
+        # deliberately out of scope here. Recorded so a reader of this function cannot mistake
+        # silence for coverage.
         if unicodedata.category(ch) == "Cc" and ch not in "\t\n\r"
     )
     per1k = _ratio(total, max(1, len(sample))) * 1000
@@ -620,7 +638,11 @@ def check_spacing(text: str) -> tuple[str, dict]:
 
 RANK = {"clean": 0, "suspect": 1, "garbled": 2}
 
-#: The `verify_numeric_merges.py` verdicts that mean "this really was two cells".
+#: The geometry-oracle verdicts that mean "this really was two cells". This is the vocabulary a
+#: caller filters oracle rows by to build the COUNT it passes as `confirmed_merges` -- see
+#: `test_the_geometry_oracle_path_is_reachable_across_every_band`, which exercises that path.
+#: The corpus-side tool that produces those rows is `verify_numeric_merges.py`, which lives
+#: outside this package; this constant is for whoever consumes its output.
 ORACLE_MERGE_VERDICTS = frozenset({"merge_rule", "merge_gap"})
 
 
@@ -681,7 +703,7 @@ def check_page_refusal(text: str) -> tuple[str, dict]:
 def audit_text(
     text: str,
     *,
-    confirmed_merges: set | None = None,
+    confirmed_merges: int | None = None,
     repha_extended: bool = False,
     page_refusal: bool = False,
 ) -> dict:

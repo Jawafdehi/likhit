@@ -145,9 +145,21 @@ published beside the corpus. Redaction is anchored on the *label* and replaces o
 value, so a bare digit run can never match and a financial table cannot be touched.
 
 ```bash
-likhit-redact scan   path/to/markdown --out pii-report.json
-likhit-redact redact path/to/markdown --out-tree staged --journal journal.json
+likhit-redact scan path/to/markdown --out pii-report.json
+
+# Two independent passes. Run BOTH: the first handles a label and value in one span, the
+# second a value in a table cell away from its label. Either order works.
+likhit-redact redact path/to/markdown --out-tree staged-1 --journal inline.json
+likhit-redact redact staged-1 --out-tree staged-2 --journal tables.json --tables
 ```
+
+> **`--tables` is not optional in practice.** On this corpus, citizenship numbers held in
+> table cells are the case the second pass exists for, and the first pass cannot see them.
+> A recipe that omits it leaves them in place.
+
+Exit codes are distinguishable on purpose: `0` all documents processed, `1` ran but some
+document failed and was skipped — the journal names each one — and `2` refused to start.
+A partial redaction that exited `0` would be indistinguishable from a complete one.
 
 Redaction is **never in place**: it reads a tree and writes a staging copy, and refuses if the
 destination exists or is the source. Documents with nothing to redact are copied

@@ -339,18 +339,28 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         15,
         "digits a token needs before `numeric_damage` will consider it a merged cell. "
         "NOT evidence by itself -- the rule alone ran at precision 0.142 over the "
-        "14,891 flagged runs the geometry oracle checked, 12,540 of which were single "
-        "cells. It bounds the candidates to the population that oracle has measured",
+        "14,608 flagged runs the geometry oracle checked, 12,540 of which were single "
+        "cells. It bounds the candidates to the population that oracle has measured. "
+        "The denominator is 14,608, not the 14,891 an earlier revision of this pin and "
+        "the ported test docstring both carried: the shared precision figure settles "
+        "it, since (14608-12540)/14608 = 0.142 and (14891-12540)/14891 = 0.158",
     ),
     (
         "likhit/quality/axes.py",
         "REPHA_CORRUPT_FLOOR",
     ): (
         12,
-        "minimum corrupt-form length before a repha-loss hit counts. Calibrated on all "
-        "6,223 v13 transcripts: 96.4% of hits carry the corrupt form as the token "
-        "prefix, and the one clear corpus-wide false positive is `उपदेश्य` matching "
-        "`पदेश` in 6 occurrences",
+        "the per-document COUNT of whole-token repha corruptions at or above which a "
+        "document is at least `suspect` whatever its purity says -- `bad >= FLOOR` "
+        "where `bad` is a count, and the test fixture is that many REPETITIONS. Not a "
+        "character length, which an earlier revision of this pin said: that is the "
+        "exact error class the constant is a monument to, since VOL-168 proposed 20 "
+        "from a percentile computed on a different quantity than the field it named "
+        "and a literal implementation ran ~8.6x weaker than intended. 12 = one above "
+        "the 99th percentile (11) of v13's floor-decidable population, the 5,701 "
+        "documents already clean on the other seven checks and above the 0.75 purity "
+        "cut. The per-form precision evidence is a separate argument, for not sitting "
+        "HIGHER than p99",
     ),
     # -- quality audit: page refusal (opt-in axis) ------------------------------- #
     (
@@ -978,6 +988,14 @@ def test_every_pin_carries_a_derivation():
     near-empty cell -- a truncated clause passes, and one did: this file shipped
     ``_BBOX_GAP_OUTLIER_EM``'s derivation ending mid-sentence at "because bboxes are",
     62 characters and green. Read the column; do not rely on this test to.
+
+    🛑 That hole has now bitten twice more, both found by review and neither catchable here.
+    ``MERGE_MIN_DIGITS`` shipped with a denominator (14,891) that contradicted its own
+    module's (14,608) while quoting the same precision figure, which is what settled which
+    was wrong. ``REPHA_CORRUPT_FLOOR`` described its value as a character *length* when it is
+    a per-document occurrence count, and gave the wrong one of its module's two arguments.
+    A rationale that is confidently wrong is longer than 20 characters, so **the only thing
+    that catches this class is someone reading the column against the source.**
     """
 
     missing = [key for key, (_v, why) in _PINNED.items() if len(why.strip()) < 20]

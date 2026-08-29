@@ -98,3 +98,29 @@ def test_a_clean_fenced_body_is_in_the_denominator():
 
     assert verdict == "clean", evidence
     assert evidence["legacy_frac_of_doc"] < 0.05
+
+
+def test_the_legacy_punct_set_matches_the_run_pattern() -> None:
+    """`LEGACY_PUNCT` and `LEGACY_RUN_RE`'s bracket class are two spellings of one fact.
+
+    The set is not read by any scoring code -- the pattern is. It stays a named constant
+    because `likhit.privacy.placeholders` cites it to explain why a `[REDACTED:...]` marker
+    reads as a legacy run, and a docstring pointing at a constant that does not exist is a
+    defect this package keeps finding. This asserts the two agree so they cannot drift into
+    the documentation being about a different set of characters than the code uses.
+    """
+
+    from likhit.quality.axes import LEGACY_PUNCT, LEGACY_RUN_RE
+
+    # Probe every ASCII punctuation character: which ones does the pattern treat as the
+    # in-word bracket that makes a token a legacy run?
+    import string
+
+    in_pattern = {
+        char for char in string.punctuation if LEGACY_RUN_RE.fullmatch(f"a{char}b")
+    }
+
+    assert in_pattern == LEGACY_PUNCT, (
+        f"LEGACY_PUNCT and LEGACY_RUN_RE disagree: only in the set {LEGACY_PUNCT - in_pattern}, "
+        f"only in the pattern {in_pattern - LEGACY_PUNCT}"
+    )

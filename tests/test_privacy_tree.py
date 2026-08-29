@@ -181,3 +181,115 @@ def test_the_char_accounting_layer_of_rule_two_has_its_own_guard(tmp_path) -> No
         )
         - with_pii
     )
+
+
+def test_one_unreadable_document_does_not_lose_the_sweep(tmp_path) -> None:
+    """🛑 Per-document isolation, and it matters more here than in the audit walker.
+
+    This walker WRITES. An exception partway through leaves a half-populated destination, and
+    `redact_tree` then refuses the retry because the destination exists -- so an operator has
+    to delete a tree that already holds real redacted output before they can try again. The
+    quality walker already caught `OSError` per document for the weaker version of this
+    reason; this one did not, which made the PII-handling walker the fragile one.
+    """
+
+    root = _tree(tmp_path)
+    (
+        root / "bucket" / "unreadable.md"
+    ).mkdir()  # a directory named *.md: read_text raises
+    out = tmp_path / "staged"
+
+    report = redact_tree(root, out)
+
+    assert report.documents_changed == 1, "the good document must still be redacted"
+    assert (out / "bucket" / "1__pii.md").exists()
+    assert len(report.failed_documents) == 1
+    failed = report.failed_documents[0]
+    assert failed["path"] == "bucket/unreadable.md"
+    assert "Error" in failed["error"]
+    assert report.counters["documents_failed"] == 1
+
+
+def test_a_failed_document_is_not_copied_through_unredacted(tmp_path) -> None:
+    """The one outcome worse than stopping.
+
+    Skipping a document that crashed is right; emitting its ORIGINAL bytes into the staging
+    tree would silently publish the identifiers the pass failed to remove.
+    """
+
+    root = _tree(tmp_path)
+    out = tmp_path / "staged"
+    victim = root / "bucket" / "1__pii.md"
+
+    # Force the redaction of that one document to fail, leaving the other intact.
+    import likhit.privacy.tree as tree_module
+
+    real = tree_module._redact_one
+
+    def explode(text, *, tables):
+        if "नागरिकता" in text:
+            raise AssertionError("target value changed")
+        return real(text, tables=tables)
+
+    tree_module._redact_one = explode
+    try:
+        report = redact_tree(root, out)
+    finally:
+        tree_module._redact_one = real
+
+    assert len(report.failed_documents) == 1
+    assert not (out / "bucket" / "1__pii.md").exists(), (
+        "a document whose redaction crashed was copied into the staging tree, which would "
+        "publish the identifiers the pass failed to remove"
+    )
+    assert "१२-३४-५६७८९" in victim.read_text(encoding="utf-8"), (
+        "source must be untouched"
+    )
+
+
+def test_residue_after_redaction_is_refused(tmp_path) -> None:
+    """🛑 Rule 4 -- the corpus-grain detector, not just the fix it produced.
+
+    A selected cell surviving its own redaction means the pass disagrees with itself. The
+    original tooling had this rescan in its `main()`; the first version of this module kept the
+    guard that a rescan once found and dropped the rescan. Simulated here by making the
+    residual check report leftovers, because reproducing the real 11862 shape needs the
+    row-spent guard removed as well.
+    """
+
+    root = _tree(tmp_path)
+    out = tmp_path / "staged"
+
+    import likhit.privacy.tree as tree_module
+
+    real = tree_module._residual_targets
+    tree_module._residual_targets = lambda text, *, tables: 1
+    try:
+        report = redact_tree(root, out)
+    finally:
+        tree_module._residual_targets = real
+
+    assert report.documents_changed == 0
+    assert len(report.failed_documents) == 1
+    assert "disagrees with itself" in report.failed_documents[0]["error"]
+    assert not (out / "bucket" / "1__pii.md").exists()
+
+
+def test_the_rescan_runs_on_the_table_pass_and_is_structurally_zero_inline(
+    tmp_path,
+) -> None:
+    """Why rule 4's rescan is table-only, asserted rather than asserted-in-prose.
+
+    The table pass's selection depends on what else is in the row, so removing one value can
+    change what a second pass sees. The inline pass replaces the value inside the match it just
+    made and its placeholder carries no digits, so it can never satisfy a label-plus-digits
+    pattern.
+    """
+
+    from likhit.privacy.tree import _residual_targets
+
+    inline_output = "नागरिकता नं. [REDACTED:CITIZENSHIP-NO] हो।"
+    table_output = "| ना. प्र. नं. | [REDACTED:TABLE-CITIZENSHIP-NO] |\n"
+
+    assert _residual_targets(inline_output, tables=False) == 0
+    assert _residual_targets(table_output, tables=True) == 0

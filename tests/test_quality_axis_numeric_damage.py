@@ -6,7 +6,7 @@ Neither has moved into the package yet, so porting their tests would mean portin
 about code that is not here. They are listed in the deferred set beside this file.
 
 Ground truth for every expectation here is `verify_numeric_merges.py`, which put
-all 14,891 flagged runs in V8 to the page geometry: 12,540 were single cells, so
+all 14,608 flagged runs in V8 to the page geometry: 12,540 were single cells, so
 the `>= 15 digits` rule alone ran at precision 0.142.
 """
 
@@ -113,3 +113,39 @@ def test_a_transcript_with_no_numbers_is_clean():
 
 
 # --- the oracle artifact ---------------------------------------------------
+
+
+def test_the_geometry_oracle_path_is_reachable_across_every_band() -> None:
+    """The geometry-oracle branch at every band, and a note on what no gate can see.
+
+    `confirmed_merges` lets a caller substitute a count measured from page geometry for the
+    text rule's estimate. This migration annotated it `set | None`, which is wrong -- it has
+    always been a COUNT -- so anyone following the signature got
+    `TypeError: unsupported operand type(s) for +: 'int' and 'set'`, including through the
+    public `audit_text`.
+
+    ⚠️ **Why neither gate caught that, measured rather than assumed.** Two tests above
+    (`test_evidence_says_where_the_count_came_from`, `test_the_oracle_can_clear_a_file_the_
+    text_rule_flags`) already pass integers here, so the branch WAS exercised -- pytest was
+    green because the runtime is correct. And with the wrong annotation restored, `ty` reports
+    the same 8 diagnostics and never names this parameter, even with int literals at the call
+    site. So the defect was unfalsifiable by either gate and only review could find it.
+
+    This test does not change that; it is not a guard against a bad annotation. What it adds
+    is the branch asserted across all three bands with `merge_source` pinned, so a change that
+    silently stops taking the oracle path fails here instead of passing quietly.
+    """
+
+    text = "| १२३४५६७८९०१२३४५६ |\n| 534,000.00534,000.00 |\n" * 3
+
+    for count, expected in ((0, "clean"), (3, "suspect"), (7, "garbled")):
+        verdict, evidence = check_numeric_damage(text, confirmed_merges=count)
+
+        assert verdict == expected, (count, evidence)
+        assert evidence["merged_cell_runs"] == count
+        assert evidence["merge_source"] == "geometry", (
+            "the oracle branch was not taken, so this test is measuring the text rule"
+        )
+
+    # And the default really is the other branch, or the assertions above prove nothing.
+    assert check_numeric_damage(text)[1]["merge_source"] == "text"

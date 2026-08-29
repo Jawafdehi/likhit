@@ -1,4 +1,4 @@
-"""Redacting a directory of transcripts, under three rules that each exist because they
+"""Redacting a directory of transcripts, under four rules that each exist because they
 were broken once.
 
 🛑 **1. Never in place.** Reads a measured tree, writes a staging copy. The measured tree is
@@ -16,9 +16,17 @@ so the residual cancelled inside the net delta.
 be publishable beside the corpus it describes. Lengths, digit counts and separator presence
 are enough to measure precision; the value itself is the thing being removed.
 
+🛑 **4. Rescan every document redacted, and refuse on residue.** A selected cell that survives
+its own redaction means the pass disagrees with itself. This caught a real defect: removing
+one of two ambiguous values in a row made the survivor look unique on a second pass, so a
+rerun found a target in output the pass had just written -- one document, ``11862``, one cell.
+The guard that fixed it lives in :mod:`likhit.privacy.redact_tables`; **this is the detector
+that found it**, and it works at corpus grain where a unit test cannot. It did not come across
+in the first version of this module, so the fix was here without the check that produced it.
+
 The redaction rules themselves are in :mod:`likhit.privacy.redact` (a label and value in one
 span) and :mod:`likhit.privacy.redact_tables` (a value in a cell away from its label). This
-module only walks and journals.
+module only walks, rescans and journals.
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ from pathlib import Path
 
 from .redact import redact as redact_inline
 from .redact_tables import redact_table_text
+from .redact_tables import scan as scan_table_targets
 
 
 @dataclass
@@ -46,6 +55,10 @@ class RedactionReport:
     counters: Counter = field(default_factory=Counter)
     changed_documents: list[dict] = field(default_factory=list)
     span_shapes: list[dict] = field(default_factory=list)
+    #: Documents this pass could not process, with the error. A sweep over a corpus should
+    #: report a bad document rather than lose the other six thousand results -- and a document
+    #: that cannot be read or redacted is itself a finding about the tree.
+    failed_documents: list[dict] = field(default_factory=list)
 
     @property
     def net_char_delta(self) -> int:
@@ -55,6 +68,7 @@ class RedactionReport:
         return {
             "documents_in_tree": self.documents_in_tree,
             "documents_changed": self.documents_changed,
+            "documents_failed": len(self.failed_documents),
             "documents_nfc_differs_from_disk": self.documents_nfc_differs_from_disk,
             "spans_redacted": self.spans_redacted,
             "chars_before": self.chars_before,
@@ -67,9 +81,53 @@ class RedactionReport:
                 if "refused" in key
             },
             "changed_documents": self.changed_documents,
+            "failed_documents": self.failed_documents,
             "span_shapes": self.span_shapes,
             "no_matched_digits_recorded": True,
         }
+
+
+def _redact_one(text: str, *, tables: bool) -> tuple[str, list[dict], Counter]:
+    """One document's redaction: ``(redacted, span shapes, counters)``.
+
+    The two passes report their spans differently -- the inline one appends dicts to a
+    journal, the table one returns typed targets -- so this is where that is flattened, and
+    the flattening is the only reason the walker below need not care which pass it drives.
+    """
+
+    if tables:
+        redacted, targets, stats = redact_table_text(text)
+        shapes = [
+            {
+                "line": target.ref.line_index + 1,
+                "cell": target.ref.column_index,
+                "classification": target.classification,
+                "value_digit_count": target.shape.digit_count,
+                "value_had_separators": target.shape.had_separators,
+            }
+            for target in targets
+        ]
+        return redacted, shapes, stats
+
+    journal: list[dict] = []
+    stats: Counter = Counter()
+    redacted = redact_inline(text, journal, stats)
+    return redacted, journal, stats
+
+
+def _residual_targets(text: str, *, tables: bool) -> int:
+    """How many selected cells survive their own redaction. Rule 4's measurement.
+
+    Only the table pass has a rescan worth running: its selection depends on what else is in
+    the row, so removing one value can change what a second pass sees. The inline pass
+    replaces the value inside the match it just made, and its placeholder carries no digits,
+    so it cannot satisfy a label-plus-digits pattern and a rescan there is structurally zero.
+    """
+
+    if not tables:
+        return 0
+    residual, _ = scan_table_targets(text)
+    return len(residual)
 
 
 def redact_tree(
@@ -81,13 +139,25 @@ def redact_tree(
 ) -> RedactionReport:
     """Redact every ``*.md`` under ``source`` into ``destination``.
 
-    ``destination`` must not exist: refusing to overwrite is rule 1 in practice, since the
-    obvious mistake is pointing the output at the input. ``dry_run`` measures without
+    ``destination`` must not exist, and must not be ``source``. ``dry_run`` measures without
     writing, and is the only mode in which ``destination`` may be ``None``.
 
-    ``tables=True`` runs the table pass instead of the inline one. They are separate passes
-    rather than one because the table pass reads the inline pass's placeholders and treats an
-    already-redacted row as spent -- so the order matters and is the caller's to choose.
+    ``tables=True`` runs the table pass instead of the inline one.
+
+    ⚠️ They are separate passes because they answer different questions -- a label and value in
+    one span versus a value in a cell away from its label -- **not** because one reads the
+    other's output. An earlier version of this docstring said the table pass treats a row the
+    inline pass touched as spent, and used that as the justification for this API's shape. It
+    is false: the row-spent guard reads only ``TABLE_*`` markers, and
+    ``test_inline_placeholder_does_not_hide_a_separate_table_value`` asserts the opposite of
+    the claim. One cell can never be both passes' target anyway -- a table candidate must be
+    digits-and-separators only, and an inline target must contain its label -- so neither pass
+    can shrink the other's candidate set. Order is the caller's choice and carries no
+    correctness requirement. Run **both** to cover identifiers held inline and in table cells.
+
+    A document that cannot be read or redacted is recorded in ``failed_documents`` and
+    skipped; it is **not** copied through, because emitting the unredacted bytes of a file
+    whose redaction crashed is the one outcome worse than stopping.
     """
 
     if not source.is_dir():
@@ -111,31 +181,38 @@ def redact_tree(
     report.documents_in_tree = len(documents)
 
     for path in documents:
-        raw = path.read_text(encoding="utf-8", errors="replace")
-        normalised = unicodedata.normalize("NFC", raw)
+        relative = str(path.relative_to(source))
+
+        # 🛑 Per-document isolation, for the reason `quality.tree.audit_document` gives: one
+        # bad file in a corpus sweep must not lose the rest. It matters MORE here, because
+        # this walker WRITES -- an exception partway through leaves a half-populated
+        # destination, and `destination.exists()` then refuses the retry, so an operator has to
+        # delete a tree that already holds real redacted output. The two walkers took opposite
+        # positions on the same question and the one handling PII was the fragile one.
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+            normalised = unicodedata.normalize("NFC", raw)
+            redacted, shapes, stats = _redact_one(normalised, tables=tables)
+            spans = len(shapes)
+            # 🛑 Rule 4, and before anything is written.
+            if spans and _residual_targets(redacted, tables=tables):
+                raise ValueError(
+                    "selected cells remain after redaction; the pass disagrees with itself "
+                    "about this document"
+                )
+        except (OSError, AssertionError, ValueError) as exc:
+            # `apply_targets` and `scan` assert on "target value changed", "target column
+            # vanished" and "candidate shape disagrees". Those are findings about the document,
+            # not reasons to abandon the sweep.
+            report.failed_documents.append(
+                {"path": relative, "error": f"{type(exc).__name__}: {exc}"}
+            )
+            report.counters["documents_failed"] += 1
+            continue
+
+        report.counters.update(stats)
         if normalised != raw:
             report.documents_nfc_differs_from_disk += 1
-
-        if tables:
-            redacted, targets, stats = redact_table_text(normalised)
-            spans = len(targets)
-            shapes = [
-                {
-                    "line": t.ref.line_index + 1,
-                    "cell": t.ref.column_index,
-                    "classification": t.classification,
-                    "value_digit_count": t.shape.digit_count,
-                    "value_had_separators": t.shape.had_separators,
-                }
-                for t in targets
-            ]
-        else:
-            journal: list[dict] = []
-            stats = Counter()
-            redacted = redact_inline(normalised, journal, stats)
-            spans = len(journal)
-            shapes = journal
-        report.counters.update(stats)
 
         # 🛑 Rule 2. Zero spans -> emit the bytes that were READ. Emitting `redacted` here
         # would rewrite documents the journal does not name, because NFC alone changes
@@ -153,7 +230,7 @@ def redact_tree(
             report.spans_redacted += spans
             report.changed_documents.append(
                 {
-                    "path": str(path.relative_to(source)),
+                    "path": relative,
                     "spans": spans,
                     "nfc_normalized": normalised != raw,
                     "char_delta": len(emitted) - len(raw),

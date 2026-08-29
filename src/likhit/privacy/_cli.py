@@ -48,9 +48,9 @@ def build_redact_parser() -> argparse.ArgumentParser:
     redact.add_argument(
         "--tables",
         action="store_true",
-        help="run the table pass (value in a cell away from its label) instead of the "
-        "inline pass. Run inline FIRST: the table pass reads the inline placeholders and "
-        "treats an already-redacted row as spent",
+        help="run the table pass -- a value in a cell away from its label -- instead of "
+        "the inline pass. The two are independent and either order works; run both to "
+        "cover identifiers held inline AND in table cells",
     )
     return parser
 
@@ -116,7 +116,13 @@ def _redact(args: argparse.Namespace) -> int:
             tables=args.tables,
             dry_run=args.dry_run,
         )
-    except ValueError as exc:
+    except (ValueError, AssertionError) as exc:
+        # `AssertionError` as well as `ValueError`: `redact_tables.apply_targets` and `scan`
+        # assert on "target value changed", "target column vanished" and "candidate shape
+        # disagrees". Catching only `ValueError` let those surface as a traceback instead of
+        # this command's exit-2 path. Per-document failures no longer reach here at all --
+        # `redact_tree` records them in `failed_documents` -- so what does reach here is a
+        # refusal about the run as a whole, which is exactly what should stop it.
         print(f"likhit-redact: {exc}", file=sys.stderr)
         return 2
 
@@ -134,14 +140,24 @@ def _redact(args: argparse.Namespace) -> int:
 
     print(
         f"documents: {report.documents_in_tree:,}  "
-        f"changed: {report.documents_changed:,}  spans: {report.spans_redacted:,}"
+        f"changed: {report.documents_changed:,}  spans: {report.spans_redacted:,}  "
+        f"failed: {len(report.failed_documents):,}"
     )
+    for failure in report.failed_documents[:10]:
+        print(f"  FAILED {failure['path']}: {failure['error']}", file=sys.stderr)
     print(
         f"chars {report.chars_before:,} -> {report.chars_after:,} "
         f"(delta {report.net_char_delta:,})"
     )
     print(f"-> {args.journal}")
-    return 0
+
+    # 🛑 Exit 1 when any document failed, by the same argument `quality.tree.assess_tree`
+    # makes: a partial result that exits 0 is indistinguishable, to any caller, from a
+    # complete one. That matters more for redaction than for auditing -- a CI step reading
+    # success here would conclude a tree had been de-identified when some of it was skipped.
+    # 2 is a refusal to start, 1 is "ran and something did not complete", 0 is all clear.
+    # The journal names every failure either way.
+    return 1 if report.failed_documents else 0
 
 
 def main(argv: list[str] | None = None) -> int:
