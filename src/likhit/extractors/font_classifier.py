@@ -65,12 +65,16 @@ logger = logging.getLogger(__name__)
 #              with the table 32 of 34 reach clean and none stays garbled.
 #              STILL NOT ROUTED, for one measured reason rather than a general one: a
 #              document whose CMap carries a COMPENSATING SWAP, where correcting one
-#              half of the pair and not the other is worse than correcting neither. Over
-#              2,874 documents that costs 173 canonical-word occurrences against 123,571
-#              gained, and every loss is a CID outside its own subset's glyph range, so
-#              no table can reach it -- that is what a refusal guard is for. Route this
-#              family once the guard lands, and re-measure rather than trusting this
-#              comment. Record: work/2026-08-29-v19-mangal-table/_recon/measurements/.
+#              half of the pair and not the other is worse than correcting neither.
+#              Measured two ways. Decoding the page glyph stream through the table over
+#              all 2,874 Mangal documents: 173 canonical-word occurrences lost against
+#              123,571 gained. Through the extractor on the 2,449 documents the gate
+#              already reaches: ONE document loses three words (2511). Every loss is a
+#              CID outside its own subset's glyph range, so it has no outline and no
+#              outline-keyed table can reach it -- that is what a refusal guard is for.
+#              Route this family once the guard lands, and re-measure rather than
+#              trusting this comment.
+#              Record: work/2026-08-29-v19-mangal-table/_recon/measurements/.
 #   nirmala -- 75 documents, 1 garbled.  arial unicode -- 100, 0 garbled.  utsaah -- 5.
 _KNOWN_BROKEN_CMAP = {"kalimati", "lohit"}
 
