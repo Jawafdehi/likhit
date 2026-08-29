@@ -210,7 +210,7 @@ _CONTENT_WORD = re.compile(r"[ऀ-ॿ‌‍]+|[0-9]+|[०-९]+")
 
 
 def _drop_container_tables(tables: list[Table]) -> list[Table]:
-    """Strip the duplicated cells of a COARSE table that contains a finer one.
+    """Strip duplicated lines from a COARSE table that contains a finer one.
 
     `find_tables()` can return two grids for one printed table: a coarse one whose few
     cells swallow the whole page, and the real one. Both are accepted, both are
@@ -223,16 +223,35 @@ def _drop_container_tables(tables: list[Table]) -> list[Table]:
     cells at (51.5,30.3,741.1,588.0). Both carry the same 674 tokens over the same 105
     distinct words, and the coarse one renders them as a single 2,009-character line.
 
-    🛑 **The coarse table is stripped CELL BY CELL rather than dropped whole, and that is
+    🛑 **The coarse table is stripped LINE BY LINE rather than dropped whole, and that is
     not fastidiousness -- dropping it whole loses real content.** On p61 the container
     also holds the page-furniture row (`8 of 10`, the NAMS URL, `Page 58 of 64`), and the
     fine grid does NOT: its last row is the 24th school. That footer is the only record
     of which printed page a transcript page came from, so a rule that deletes the
     container deletes it. Measured, on the first page this was tried against.
 
-    A cell goes only if its own content words are a non-empty subset of what the
-    contained tables already hold. So the swallowing cell goes and the footer stays,
-    and the safety argument is made per cell instead of per table.
+    The existing whole-cell rule is preserved. Within a cell it has to retain, a line
+    goes only if its token sequence is an ordered subsequence of ONE contained table.
+    This is stricter than set membership on purpose: the rejected set-union version
+    moved 463 of 1,400 controls, including a line with two `१` tokens when the finer
+    table held one, and `जम्मा ७१८६४` when those two tokens lived in different tables.
+    Requiring one ordered sequence preserves multiplicity and cannot stitch coverage
+    across tables. A one-token sequence has no order evidence, so it additionally has
+    to be a complete line in the finer table rather than merely occur somewhere inside
+    a longer line. Duplicate body lines still go while a header or footer the finer
+    grid missed stays.
+
+    ⚠️ **KNOWN LIMITATION, stated rather than fixed: order is bounded, distance is not.**
+    A multi-token line needs only to occur in order *somewhere* in one contained table, at
+    any separation -- so `जम्मा ७१८६४` is deleted even if those two tokens sit 40 tokens
+    apart in the finer grid. A total row whose label is a column header and whose value is
+    30 rows below it would go. Review raised this; it is unbounded by construction and it is
+    **unobserved**: over the 13 documents this rule moves most, it removes 20,863 duplicated
+    token occurrences and loses **0 distinct words**, measured by diffing the content-word
+    multiset of every transcript against the same document without the rule. A distance
+    bound would be a behaviour change needing its own corpus measurement, so it is not
+    smuggled in here. `test_multi_token_coverage_is_not_distance_bounded` characterises the
+    current behaviour so that adding one is a deliberate change with a failing test.
 
     Two conditions gate the table before any cell is examined:
 
@@ -251,6 +270,8 @@ def _drop_container_tables(tables: list[Table]) -> list[Table]:
         return tables
 
     words = [_table_content_words(table) for table in tables]
+    token_streams = [_table_content_tokens(table) for table in tables]
+    tokenized_lines = [_table_tokenized_lines(table) for table in tables]
     cell_counts = [len(table.cells) for table in tables]
     stripped: list[Table] = []
     for outer, table in enumerate(tables):
@@ -268,12 +289,97 @@ def _drop_container_tables(tables: list[Table]) -> list[Table]:
         covered: set[str] = set()
         for inner in contained:
             covered |= words[inner]
-        keep = [cell for cell in table.cells if not _cell_is_covered_by(cell, covered)]
-        if len(keep) == len(table.cells):
+        # Paired, not two parallel collections: the single-token rule needs both halves of
+        # one table's evidence, and a union on either side lets a deletion be justified by
+        # two tables jointly. See `_strip_covered_lines`.
+        covered_tables = [
+            (token_streams[inner], tokenized_lines[inner]) for inner in contained
+        ]
+        keep = []
+        changed = False
+        for cell in table.cells:
+            # Preserve B3's established whole-cell behavior exactly. The ordered
+            # predicate below governs only the new mixed-cell case.
+            if _cell_is_covered_by(cell, covered):
+                changed = True
+                continue
+
+            cell_or_none = _strip_covered_lines(cell, covered_tables)
+            if cell_or_none is cell:
+                keep.append(cell)
+                continue
+            changed = True
+            if cell_or_none is not None:
+                keep.append(cell_or_none)
+
+        if not changed:
             stripped.append(table)
         elif any(cell.text.strip() for cell in keep):
             stripped.append(replace(table, cells=keep))
     return stripped
+
+
+def _strip_covered_lines(
+    cell: TableCell,
+    covered_tables: list[tuple[list[str], set[tuple[str, ...]]]],
+) -> TableCell | None:
+    """Remove lines reproduced in order by ONE finer table.
+
+    "One table" is load-bearing, so ``covered_tables`` pairs each contained table's token
+    stream with its OWN line set: both pieces of evidence -- the ordered occurrence and, for
+    a lone token, the proof that a table emitted it as a whole line -- come from one table.
+
+    ⚠️ This shape replaces a per-table stream list beside a line set unioned across every
+    contained table, which review flagged as letting a one-token line take its whole-line
+    evidence from table A and its occurrence from table B. **That was unreachable, and the
+    reason is worth keeping**: ``_table_tokenized_lines`` and ``_table_content_tokens`` walk
+    the same cells, so a line ``("जम्मा",)`` in the union implies ``जम्मा`` in that same
+    table's stream -- which then satisfies both halves by itself. The two forms agree on
+    every input the caller can build; asserted in
+    ``test_a_single_token_line_implies_its_token_in_the_same_table_stream``.
+
+    It is fixed anyway because the union said something the rule does not mean, and the
+    unreachability rests on a coupling between two helpers that nothing enforced. Deriving
+    lines differently -- from rendered rows, say -- would have made a latent inconsistency
+    into a live one silently.
+    """
+
+    kept = []
+    changed = False
+    for line in cell.text.splitlines():
+        own = _CONTENT_WORD.findall(line)
+        # A one-token subsequence proves only occurrence. Require the same finer table
+        # to have emitted that token as a whole line before deleting it.
+        if own and any(
+            _is_ordered_subsequence(own, table_tokens)
+            and (len(own) > 1 or tuple(own) in table_lines)
+            for table_tokens, table_lines in covered_tables
+        ):
+            changed = True
+            continue
+        kept.append(line)
+
+    if not changed:
+        return cell
+    text = "\n".join(kept)
+    if not text.strip():
+        return None
+    return replace(cell, text=text)
+
+
+def _is_ordered_subsequence(needle: list[str], haystack: list[str]) -> bool:
+    """Does ``needle`` occur in order and with multiplicity in ``haystack``?"""
+
+    if not needle:
+        return True
+    position = 0
+    for token in haystack:
+        if token != needle[position]:
+            continue
+        position += 1
+        if position == len(needle):
+            return True
+    return False
 
 
 def _cell_is_covered_by(cell: TableCell, covered: set[str]) -> bool:
@@ -288,6 +394,20 @@ def _cell_is_covered_by(cell: TableCell, covered: set[str]) -> bool:
 
 def _table_content_words(table: Table) -> set[str]:
     return set(_CONTENT_WORD.findall(" ".join(cell.text for cell in table.cells)))
+
+
+def _table_content_tokens(table: Table) -> list[str]:
+    return [token for cell in table.cells for token in _CONTENT_WORD.findall(cell.text)]
+
+
+def _table_tokenized_lines(table: Table) -> set[tuple[str, ...]]:
+    lines = set()
+    for cell in table.cells:
+        for line in cell.text.splitlines():
+            tokens = tuple(_CONTENT_WORD.findall(line))
+            if tokens:
+                lines.add(tokens)
+    return lines
 
 
 def _region_contains(outer: Table, inner: Table) -> bool:

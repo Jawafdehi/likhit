@@ -14,10 +14,14 @@ from likhit.extractors.base import TextFragment
 from likhit.extractors.tables import (
     _drop_frame_cells,
     _extract_cell_text,
+    _is_ordered_subsequence,
     _same_printed_position,
+    _strip_covered_lines,
+    _table_content_tokens,
+    _table_tokenized_lines,
     detect_page_tables,
 )
-from likhit.models import TableCell
+from likhit.models import Table, TableCell
 
 #: `tools/verify_numeric_boundaries.py`'s rule in the OAG corpus: a run this long
 #: is a spliced figure, not a number anyone printed.
@@ -733,6 +737,30 @@ def test_a_coarse_grid_over_a_finer_one_does_not_duplicate_the_page() -> None:
     ]
 
 
+def test_a_coarse_grid_keeps_a_unique_header_but_drops_covered_body_lines() -> None:
+    """A missed header must not force the duplicated body to survive with it."""
+
+    fragments = [
+        # Inside the coarse swallowing cell but above the finer grid.
+        fragment("अनुसूची", 20.0, 2.0, 80.0, 8.0),
+        # A complete one-token line in the fine grid as well as the coarse cell.
+        fragment("टिप्पणी", 20.0, 45.0, 80.0, 54.0),
+        *coarse_and_fine_fragments(),
+    ]
+
+    tables = detect_page_tables(FakePage(coarse_and_fine_tables()), fragments)
+
+    texts = [cell.text for table in tables for cell in table.cells if cell.text.strip()]
+    lines = [line for text in texts for line in text.splitlines()]
+    assert sum("अनुसूची" in text for text in texts) == 1
+    assert lines.count("टिप्पणी") == 1
+    for value in FINE_VALUES:
+        assert lines.count(value) == 1, f"{value!r} in {texts}"
+
+    coarse = tables[0]
+    assert any(cell.text == "अनुसूची" for cell in coarse.cells)
+
+
 def test_the_coarse_grid_keeps_the_page_footer_it_alone_holds() -> None:
     """Dropping the container WHOLE was tried and lost this row. It must survive.
 
@@ -754,11 +782,11 @@ def test_the_coarse_grid_keeps_the_page_footer_it_alone_holds() -> None:
 
 
 def test_a_container_holding_content_of_its_own_is_left_alone() -> None:
-    """The condition that makes the strip safe, exercised on its own.
+    """A mixed line is kept whole rather than carved apart word by word.
 
-    Vary ONE thing against the fixture above: the swallowing cell also holds a word
-    the fine grid does not (a total). Its content is then no longer covered, so it
-    is not a duplicate and must be kept whole -- otherwise the total is deleted.
+    Vary ONE thing against the fixture above: the swallowing cell's first line also
+    holds a word the fine grid does not (a total). That line must stay whole, while
+    its fully covered second line can still go.
     """
 
     fragments = [
@@ -771,9 +799,84 @@ def test_a_container_holding_content_of_its_own_is_left_alone() -> None:
 
     joined = "\n".join(cell.text for table in tables for cell in table.cells)
     assert "जम्मा" in joined
-    # Kept whole: the swallowing cell is still there, so every value appears twice.
+    # The mixed first line stays whole: token-level removal could detach the total
+    # from the values it qualifies.
     texts = [cell.text for table in tables for cell in table.cells]
     assert any("क्र" in text and "शिक्षक" in text for text in texts)
+    # The fully covered second line is still removable.
+    assert sum(1 for text in texts if text == "१") == 1
+    assert sum(1 for text in texts if text == "श्री") == 1
+    assert sum(1 for text in texts if text == "४") == 1
+    assert all("१ श्री ४" not in text for text in texts)
+
+
+def test_line_coverage_preserves_token_multiplicity() -> None:
+    """One matching token cannot cover two occurrences in the coarse line."""
+
+    cell = TableCell(row=0, col=0, text="जम्मा\n१ १")
+
+    assert _strip_covered_lines(cell, [(["१"], {("१",)})]) is cell
+
+
+def test_line_coverage_cannot_be_stitched_across_finer_tables() -> None:
+    """A line must be reproduced by one table, not a union of unrelated grids."""
+
+    cell = TableCell(row=0, col=0, text="अद्वितीय\nजम्मा ७१८६४")
+
+    assert (
+        _strip_covered_lines(
+            cell,
+            [(["जम्मा"], {("जम्मा",)}), (["७१८६४"], {("७१८६४",)})],
+        )
+        is cell
+    )
+
+
+def test_line_coverage_preserves_token_order() -> None:
+    """A bag of matching tokens is not evidence that the line was duplicated."""
+
+    cell = TableCell(row=0, col=0, text="अद्वितीय\nशिक्षक क्र")
+
+    assert (
+        _strip_covered_lines(
+            cell,
+            [(["क्र", "विद्यालय", "शिक्षक"], set())],
+        )
+        is cell
+    )
+
+
+def test_single_token_coverage_requires_an_exact_inner_line() -> None:
+    """Occurrence inside a longer fine line cannot delete a one-token coarse line."""
+
+    cell = TableCell(row=0, col=0, text="अद्वितीय\nजम्मा")
+    tokens = ["अद्वितीय", "जम्मा"]
+
+    assert (
+        _strip_covered_lines(
+            cell,
+            [(tokens, {("अद्वितीय", "जम्मा")})],
+        )
+        is cell
+    )
+
+    stripped = _strip_covered_lines(cell, [(tokens, {("जम्मा",)})])
+    assert stripped is not None
+    assert stripped.text == "अद्वितीय"
+
+
+def test_line_coverage_allows_intervening_fine_cell_tokens() -> None:
+    """The coarse row is ordered even when the finer grid contributes separators."""
+
+    cell = TableCell(row=0, col=0, text="अनुसूची\nक्र विद्यालय शिक्षक")
+
+    stripped = _strip_covered_lines(
+        cell,
+        [(["क्र", "१", "विद्यालय", "२", "शिक्षक"], set())],
+    )
+
+    assert stripped is not None
+    assert stripped.text == "अनुसूची"
 
 
 def test_a_grid_no_coarser_than_the_one_it_encloses_is_left_alone() -> None:
@@ -823,3 +926,134 @@ def test_a_grid_no_coarser_than_the_one_it_encloses_is_left_alone() -> None:
     assert sorted(cell.text for cell in outer_built.cells) == sorted(
         ["क", "ख", "ग", "घ ङ\nच छ"]
     )
+
+
+def test_the_no_stitch_rule_holds_where_the_caller_decides_it() -> None:
+    """🛑 The no-stitch property, tested where it is actually decided.
+
+    ``test_line_coverage_cannot_be_stitched_across_finer_tables`` calls
+    ``_strip_covered_lines`` directly and hands the per-table list in itself, so it pins the
+    helper's contract while the CALLER's construction is what chooses per-table or union.
+    Review measured the gap: flattening ``covered_tables`` into one union stream -- the exact
+    defect that test forbids -- left the whole suite green at 2,025 passed.
+
+    So this goes through ``detect_page_tables``. A coarse 2x2 grid swallows two finer 3x2
+    grids side by side, and each of the two printed lines crossing them draws tokens from
+    BOTH -- so each line is an ordered subsequence of the concatenation and of neither grid
+    alone.
+
+    ``अद्वितीय`` is load-bearing, not decoration: without a token the finer grids do not
+    hold, the established whole-cell rule strips the swallowing cell before the line rule is
+    reached and the fixture tests nothing. Measured while writing it -- the first version
+    produced a 3-cell coarse table with the cell already gone.
+    """
+
+    outer = FakeFitzTable(
+        bbox=(0.0, 0.0, 400.0, 300.0),
+        rows=[
+            FakeRow([(0.0, 0.0, 100.0, 150.0), (100.0, 0.0, 400.0, 150.0)]),
+            FakeRow([(0.0, 150.0, 100.0, 300.0), (100.0, 150.0, 400.0, 300.0)]),
+        ],
+        col_count=2,
+    )
+    left_inner = FakeFitzTable(
+        bbox=(110.0, 160.0, 230.0, 290.0),
+        rows=[
+            FakeRow([(110.0, 160.0, 170.0, 200.0), (170.0, 160.0, 230.0, 200.0)]),
+            FakeRow([(110.0, 200.0, 170.0, 240.0), (170.0, 200.0, 230.0, 240.0)]),
+            FakeRow([(110.0, 240.0, 170.0, 290.0), (170.0, 240.0, 230.0, 290.0)]),
+        ],
+        col_count=2,
+    )
+    right_inner = FakeFitzTable(
+        bbox=(300.0, 160.0, 390.0, 290.0),
+        rows=[
+            FakeRow([(300.0, 160.0, 345.0, 200.0), (345.0, 160.0, 390.0, 200.0)]),
+            FakeRow([(300.0, 200.0, 345.0, 240.0), (345.0, 200.0, 390.0, 240.0)]),
+            FakeRow([(300.0, 240.0, 345.0, 290.0), (345.0, 240.0, 390.0, 290.0)]),
+        ],
+        col_count=2,
+    )
+    fragments = [
+        fragment("शीर्षक", 10.0, 20.0, 60.0, 29.0),
+        fragment("तालिका", 120.0, 20.0, 180.0, 29.0),
+        fragment("सूची", 10.0, 170.0, 60.0, 179.0),
+        # One printed line crossing both finer grids, then a second.
+        fragment("जम्मा", 115.0, 170.0, 165.0, 179.0),
+        fragment("अनुसूची", 175.0, 170.0, 225.0, 179.0),
+        fragment("७१८६४", 305.0, 170.0, 340.0, 179.0),
+        fragment("रकम", 350.0, 170.0, 385.0, 179.0),
+        fragment("क्र", 115.0, 210.0, 165.0, 219.0),
+        fragment("विद्यालय", 175.0, 210.0, 225.0, 219.0),
+        fragment("शिक्षक", 305.0, 210.0, 340.0, 219.0),
+        fragment("कैफियत", 350.0, 210.0, 385.0, 219.0),
+        # In the swallowing cell and in neither finer grid.
+        fragment("अद्वितीय", 240.0, 250.0, 290.0, 259.0),
+    ]
+
+    tables = detect_page_tables(FakePage([outer, left_inner, right_inner]), fragments)
+
+    assert len(tables) == 3
+    assert [len(table.cells) for table in tables] == [4, 6, 6]
+    swallowing = [cell for cell in tables[0].cells if "अद्वितीय" in cell.text]
+    assert len(swallowing) == 1
+
+    # Neither finer grid reproduces either line, so neither line may go.
+    assert swallowing[0].text.splitlines() == [
+        "जम्मा अनुसूची ७१८६४ रकम",
+        "क्र विद्यालय शिक्षक कैफियत",
+        "अद्वितीय",
+    ]
+
+
+def test_a_single_token_line_implies_its_token_in_the_same_table_stream() -> None:
+    """Why the union that `_strip_covered_lines` replaced could not actually stitch.
+
+    Review reproduced a stitch by passing a line set from one table beside another's token
+    stream. The caller cannot build that: both helpers walk ``table.cells`` with the same
+    pattern, so a one-token line in a table's line set is always in that table's own stream,
+    and that table satisfies both halves of the rule by itself.
+
+    Asserted rather than argued because the per-table fix is *only* a clarification while
+    this holds -- and it stops holding the moment lines are derived from anything but cells.
+    """
+
+    table = Table(
+        row_count=2,
+        col_count=2,
+        cells=[
+            TableCell(row=0, col=0, text="जम्मा"),
+            TableCell(row=0, col=1, text="अद्वितीय ७१८६४\nजम्मा"),
+            TableCell(row=1, col=0, text="क्र विद्यालय"),
+            TableCell(row=1, col=1, text=""),
+        ],
+        caption=None,
+        index=0,
+        regions=[],
+    )
+
+    stream = _table_content_tokens(table)
+    for line in _table_tokenized_lines(table):
+        if len(line) == 1:
+            assert _is_ordered_subsequence(list(line), stream)
+
+
+def test_multi_token_coverage_is_not_distance_bounded() -> None:
+    """⚠️ CHARACTERISATION, not a desired property. See the limitation in the module.
+
+    A multi-token line is deleted when its tokens occur in order anywhere in one contained
+    table, however far apart. Raised in review, unobserved on the corpus -- 0 distinct words
+    lost over the 13 documents the rule moves most -- and left unfixed because a distance
+    bound is a behaviour change owing its own measurement.
+
+    This test exists so that adding the bound fails here rather than passing silently.
+    """
+
+    cell = TableCell(row=0, col=0, text="जम्मा ७१८६४")
+    far_apart = ["जम्मा"] + ["क्र"] * 40 + ["७१८६४"]
+
+    assert _strip_covered_lines(cell, [(far_apart, set())]) is None
+
+    # The ordering half IS enforced, so this is a bound on evidence, not its absence.
+    reversed_order = ["७१८६४"] + ["क्र"] * 40 + ["जम्मा"]
+    assert _strip_covered_lines(cell, [(reversed_order, set())]) is cell
