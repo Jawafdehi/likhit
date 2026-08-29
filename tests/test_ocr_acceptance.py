@@ -124,10 +124,17 @@ class TestEnglishSurvives:
         # Shape alone would condemn it: this is exactly why leg A is a conjunction.
         assert acceptance.devanagari_ratio < 0.05
 
-    def test_isa_disclaimer_in_a_real_report_is_delivered(self) -> None:
-        # "unable to obtain sufficient appropriate audit evidence" is a genuine
-        # sentence in a genuine audit report. Bare modality matched 41 pages of
-        # the negative control; the task frame is what removed them.
+    def test_isa_disclaimer_is_delivered_because_of_the_subject_guard(self) -> None:
+        # "unable to obtain sufficient appropriate audit evidence" is the standard
+        # ISA disclaimer and a genuine sentence in a genuine report; "cannot be
+        # identified" is ordinary audit English. Bare modality matched 41 pages of
+        # the negative control.
+        #
+        # THE SUBJECT REQUIREMENT is what protects this one, NOT the task frame:
+        # every English family pivots on a literal `I`, and this sentence has
+        # none. Asserting the raw patterns miss is the point -- a version of this
+        # test that only checked the verdict passed even with the frame guard
+        # removed, because the frame guard was never what saved it.
         text = (
             "We were unable to obtain sufficient appropriate audit evidence "
             "about the carrying amount of inventories, and the entity cannot be "
@@ -138,6 +145,26 @@ class TestEnglishSurvives:
 
         assert acceptance.verdict == DELIVERED
         assert acceptance.families == ()
+        assert [
+            name for name, rx in ABSTENTION_PATTERNS.items() if rx.search(text)
+        ] == []
+
+    def test_first_person_inability_away_from_the_task_frame_is_delivered(self) -> None:
+        # This one DOES fire a family raw -- "I cannot" -- and is saved only by the
+        # task frame: it mentions no image, scan, rotation, resolution or
+        # transcription, so the model is talking about the audited entity's
+        # records, not about the picture it was handed.
+        text = (
+            "I cannot confirm the opening balances because the entity did not "
+            "produce its ledgers."
+        )
+
+        acceptance = classify_ocr_response(text)
+
+        assert ABSTENTION_PATTERNS["first_person_inability"].search(text) is not None
+        assert TASK_FRAME.search(text) is None
+        assert acceptance.families == ()
+        assert acceptance.verdict == DELIVERED
 
     def test_one_illegible_cell_among_many_is_delivered(self) -> None:
         # A page allowed to mark a single illegible stamp is doing its job. The
@@ -170,6 +197,17 @@ class TestPatternHygiene:
     import -- taking the module with it -- and a set of composed characters can
     silently widen to their base consonants. `\\uXXXX` escapes cannot do either,
     and the escapes survive any normalization of the source file.
+
+    NOT REDUNDANT WITH `tests/test_regex_normalization_stability.py`, and that is
+    measured rather than assumed. That file asserts the weaker, broader property --
+    every non-ASCII regex in `src/` survives NFC/NFD/NFKC/NFKD -- and it does
+    already collect this module's patterns. But a pasted literal that happens to
+    contain no composition exclusion is normalization-STABLE, so it passes there:
+    replacing one escape sequence in `ocr_acceptance` with its pasted character
+    left that file green at 110 passed and failed only the test below. The
+    difference matters because whether a given Devanagari word is stable is not
+    something a future editor should have to know -- "never paste" is checkable,
+    "paste only stable words" is not.
     """
 
     def test_no_devanagari_literal_in_any_pattern(self) -> None:

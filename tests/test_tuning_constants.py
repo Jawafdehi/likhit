@@ -875,6 +875,50 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "is not evidence of anything, and the two shares above are ratios that a tiny "
         "denominator makes meaningless",
     ),
+    # -- vision-OCR acceptance -------------------------------------------------- #
+    #
+    # These three decide whether a model's answer becomes page text. Getting any of
+    # them wrong is not a formatting defect: too low and a decline is published as a
+    # transcription, too high and legitimate English is deleted. All three are
+    # inherited from the OAG corpus tooling's `ocr_refusal.py`, where they were
+    # placed against a 335,132-page negative control.
+    (
+        "likhit/ocr_acceptance.py",
+        "DEV_RATIO_FLOOR",
+    ): (
+        0.05,
+        "Devanagari share of script-bearing letters below which a response is not a "
+        "transcription of a Devanagari page. Sits in a measured gap: the "
+        "hand-adjudicated declines occupy 0.0000-0.0078 and the lowest legitimately "
+        "Devanagari-bearing page is 0.1076 (an English bibliography page of an audit "
+        "journal), so this is 6.4x above the highest decline and 2.2x below the "
+        "lowest real transcription. NOT raisable to catch a stubborn decline: any "
+        "floor high enough rejects a real page first",
+    ),
+    (
+        "likhit/ocr_acceptance.py",
+        "TASK_FRAME_WINDOW",
+    ): (
+        200,
+        "characters an abstention may sit from a reference to the task's own artifact "
+        "and still count as one statement. Co-occurrence anywhere on the page is too "
+        "weak -- a 3,000-char page holds an unrelated 'image' far from an unrelated "
+        "'I cannot' -- and this guard is the whole reason the module does not fire on "
+        "the standard ISA disclaimer",
+    ),
+    (
+        "likhit/ocr_acceptance.py",
+        "PLACEHOLDER_CELL_SHARE_FLOOR",
+    ): (
+        0.25,
+        "share of populated table cells that must be placeholders before the table "
+        "counts as not transcribed. A judgement -- 'a quarter of the cells were "
+        "declined' -- and stated as one: the observed population is 0.0 vs 0.4444 "
+        "with nothing in between, so any floor in that gap separates it identically. "
+        "What IS measured is the BASE: cells, not occurrences. An occurrence "
+        "threshold selected 7 genuine full transcriptions that each marked one honest "
+        "gap (one unreadable cell among 206, one among 145)",
+    ),
 }
 
 
