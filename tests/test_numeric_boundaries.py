@@ -383,7 +383,7 @@ def test_line_repair_changes_only_geometry_scoped_duplicate() -> None:
 
     repaired = apply_line_numeric_boundary_repairs("12500 12500", [repair])
 
-    assert repaired == "12500 1 | 2500"
+    assert repaired == "12500 1 2500"
 
 
 def test_line_repair_matches_devanagari_equivalent() -> None:
@@ -391,7 +391,67 @@ def test_line_repair_matches_devanagari_equivalent() -> None:
 
     repaired = apply_line_numeric_boundary_repairs("३८००००।००२३।", [repair])
 
-    assert repaired == "३८००००।०० | २३।"
+    assert repaired == "३८००००।०० २३।"
+
+
+def test_line_repair_never_writes_a_cell_delimiter() -> None:
+    """An extracted line becomes a Markdown table CELL through its fragment.
+
+    `renderers/markdown.py::_raw_table_row_lines` emits every row from the same
+    `col_count` columns and does not escape a pipe already in the cell text, so a pipe
+    written here states a column the table does not have and shifts every later cell of
+    that row.
+    """
+
+    repair = _repair("123.45678.90", ("123.45", "678.90"))
+
+    repaired = apply_line_numeric_boundary_repairs("123.45678.90", [repair])
+
+    assert "|" not in repaired
+    assert repaired == "123.45 678.90"
+
+
+def test_markdown_repair_does_not_widen_a_table_row() -> None:
+    """A contiguous run inside ONE cell must not be split into two cells.
+
+    The row is rendered from a fixed column count, so the repaired row has to keep the
+    cell count of the rest of its table. Only `_repair_pipe_lines_by_digit_signature`
+    may write a pipe, because its pattern matches across delimiters that are already
+    there (see `test_markdown_repair_recovers_values_from_misaligned_table_columns`).
+    """
+
+    repair = _repair("123.45678.90", ("123.45", "678.90"))
+
+    repaired = repair_markdown_numeric_boundaries(
+        "| a | 123.45678.90 | b |",
+        [repair],
+    )
+
+    assert repaired == "| a | 123.45 678.90 | b |"
+    assert repaired.count("|") == 4
+
+
+def test_markdown_repair_still_writes_a_cell_delimiter_outside_a_table_row() -> None:
+    """Outside a row a pipe is not a delimiter, so the cell claim is kept."""
+
+    repair = _repair("123.45678.90", ("123.45", "678.90"))
+
+    repaired = repair_markdown_numeric_boundaries("total 123.45678.90", [repair])
+
+    assert repaired == "total 123.45 | 678.90"
+
+
+def test_markdown_repair_chooses_the_separator_per_line() -> None:
+    """One markdown pass sees both kinds of line, so the choice cannot be global."""
+
+    repair = _repair("123.45678.90", ("123.45", "678.90"))
+
+    repaired = repair_markdown_numeric_boundaries(
+        "total 123.45678.90\n| a | 123.45678.90 | b |\n",
+        [repair],
+    )
+
+    assert repaired == "total 123.45 | 678.90\n| a | 123.45 678.90 | b |\n"
 
 
 def test_font_based_extraction_inserts_ruled_numeric_boundaries(
@@ -402,7 +462,7 @@ def test_font_based_extraction_inserts_ruled_numeric_boundaries(
 
     result = FontBasedStrategy().extract_text(str(path))
 
-    assert result.raw_text == "123.45 | 678.90"
+    assert result.raw_text == "123.45 678.90"
 
 
 def test_reusable_pdf_repair_inserts_ruled_numeric_boundaries(
@@ -413,7 +473,7 @@ def test_reusable_pdf_repair_inserts_ruled_numeric_boundaries(
 
     blocks = extract_repaired_text_blocks(path)
 
-    assert [block.text for block in blocks] == ["123.45 | 678.90"]
+    assert [block.text for block in blocks] == ["123.45 678.90"]
 
 
 def test_markdown_repair_recovers_values_from_misaligned_table_columns() -> None:

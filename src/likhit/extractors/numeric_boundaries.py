@@ -45,6 +45,22 @@ _EQUIVALENT_CHARACTER_PATTERNS = {
     "9": "[9९]",
     ".": r"[.।]",
 }
+#: What a recovered boundary is written as when the text it sits in cannot become a
+#: Markdown table cell: a pipe, which says "these were separate cells".
+CELL_BOUNDARY_SEPARATOR = " | "
+#: ...and what it is written as when the text CAN become one. A bare `|` inside a cell
+#: is a cell delimiter, so writing one there states a column the table does not have:
+#: `renderers/markdown.py::_raw_table_row_lines` renders every row of a table from the
+#: same `col_count` columns and does NOT escape a pipe already in the cell text, so the
+#: row comes out one cell wider than its own table and every later cell in that row
+#: shifts. `tables._join_visual_line` already refuses `|` for exactly this reason.
+#:
+#: Measured on 17 documents / 20,721 rendered table rows, comparing each arm against
+#: the modal cell count of its own table block: the line-level repair moved **173 rows
+#: from aligned to misaligned** and 21 the other way, and the Markdown-level repair
+#: moved **28** rows to misaligned and 0 the other way. A space keeps the grid and
+#: still un-glues the digits, which is what the numeric axis measures.
+INLINE_BOUNDARY_SEPARATOR = " "
 _ADVANCE_OUTLIER_EM = 0.10
 _BBOX_GAP_OUTLIER_EM = 0.20
 _MIN_RULE_HEIGHT = 4.0
@@ -267,7 +283,14 @@ def apply_line_numeric_boundary_repairs(
     text: str,
     repairs: Iterable[NumericBoundaryRepair],
 ) -> str:
-    """Apply occurrence-scoped repairs to one extracted PDF line."""
+    """Apply occurrence-scoped repairs to one extracted PDF line.
+
+    The boundary is written as a space, not as a pipe. This text is a PDF line, and a
+    PDF line becomes a Markdown table CELL through the fragment the caller builds from
+    it (`tables.detect_page_tables` is passed those fragments), so a pipe written here
+    ends up inside a cell -- where it is a cell delimiter that the renderer does not
+    escape. See :data:`INLINE_BOUNDARY_SEPARATOR` for the measurement.
+    """
 
     repaired = text
     ordered = sorted(
@@ -286,7 +309,11 @@ def apply_line_numeric_boundary_repairs(
             # confidently wrong one.
             continue
         match = matches[repair.occurrence_index]
-        replacement = _split_matched_text(match.group(), repair.parts)
+        replacement = _split_matched_text(
+            match.group(),
+            repair.parts,
+            separator=INLINE_BOUNDARY_SEPARATOR,
+        )
         repaired = repaired[: match.start()] + replacement + repaired[match.end() :]
     return repaired
 
@@ -383,10 +410,7 @@ def repair_markdown_numeric_boundaries(
                 continue
         else:
             pattern = _complete_numeric_run_pattern(merged_text)
-        repaired = pattern.sub(
-            lambda match: _split_matched_text(match.group(), parts),
-            repaired,
-        )
+        repaired = _substitute_per_line(pattern, repaired, parts)
         signature = _digit_signature(merged_text)
         if len(signature) >= 8 and len(signature_partitions[signature]) == 1:
             repaired = _repair_pipe_lines_by_digit_signature(
@@ -395,6 +419,36 @@ def repair_markdown_numeric_boundaries(
                 parts,
             )
     return repaired
+
+
+def _substitute_per_line(
+    pattern: re.Pattern[str],
+    markdown: str,
+    parts: tuple[str, ...],
+) -> str:
+    """Substitute line by line so the separator can depend on the line.
+
+    Equivalent to one whole-string `pattern.sub` outside table rows: every pattern
+    :func:`_complete_numeric_run_pattern` builds is made of digit and numeric-punctuation
+    classes and per-character escapes, so no match can span a newline.
+    """
+
+    lines = markdown.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        separator = (
+            INLINE_BOUNDARY_SEPARATOR
+            if _is_markdown_table_row(line)
+            else CELL_BOUNDARY_SEPARATOR
+        )
+        lines[index] = pattern.sub(
+            lambda match, separator=separator: _split_matched_text(
+                match.group(),
+                parts,
+                separator=separator,
+            ),
+            line,
+        )
+    return "".join(lines)
 
 
 def _safe_plausible_global_repair(parts: tuple[str, ...]) -> bool:
@@ -1069,9 +1123,17 @@ def _complete_numeric_run_pattern(text: str) -> re.Pattern[str]:
     )
 
 
+def _is_markdown_table_row(line: str) -> bool:
+    """Is this line a rendered Markdown table row, where a `|` is a cell delimiter?"""
+
+    return line.lstrip().startswith("|")
+
+
 def _split_matched_text(
     matched_text: str,
     parts: tuple[str, ...],
+    *,
+    separator: str = CELL_BOUNDARY_SEPARATOR,
 ) -> str:
     split_parts: list[str] = []
     offset = 0
@@ -1079,7 +1141,7 @@ def _split_matched_text(
         end = offset + len(part)
         split_parts.append(matched_text[offset:end])
         offset = end
-    return " | ".join(split_parts)
+    return separator.join(split_parts)
 
 
 def _render_parts_with_matched_digits(
@@ -1088,6 +1150,17 @@ def _render_parts_with_matched_digits(
     *,
     use_danda: bool,
 ) -> str:
+    """Re-render a run that already spans cell delimiters, keeping them.
+
+    Deliberately joins with a pipe even inside a table row, unlike
+    :func:`_split_matched_text`: this is only reached from
+    :func:`_repair_pipe_lines_by_digit_signature`, whose pattern matches ACROSS existing
+    `|` and whitespace, so the run it replaces already occupied several cells. Writing a
+    space here would collapse them into one and destroy the column structure -- measured
+    by `test_markdown_repair_recovers_values_from_misaligned_table_columns`, where the
+    repair takes a 6-cell row to the correct 5.
+    """
+
     matched_digits = iter(
         character for character in matched_text if character in _DIGITS
     )
@@ -1102,7 +1175,7 @@ def _render_parts_with_matched_digits(
             else:
                 rendered.append(character)
         rendered_parts.append("".join(rendered))
-    return " | ".join(rendered_parts)
+    return CELL_BOUNDARY_SEPARATOR.join(rendered_parts)
 
 
 def _unique_text_repairs(
