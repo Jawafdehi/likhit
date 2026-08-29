@@ -55,11 +55,26 @@ CELL_BOUNDARY_SEPARATOR = " | "
 #: row comes out one cell wider than its own table and every later cell in that row
 #: shifts. `tables._join_visual_line` already refuses `|` for exactly this reason.
 #:
-#: Measured on 17 documents / 20,721 rendered table rows, comparing each arm against
-#: the modal cell count of its own table block: the line-level repair moved **173 rows
-#: from aligned to misaligned** and 21 the other way, and the Markdown-level repair
-#: moved **28** rows to misaligned and 0 the other way. A space keeps the grid and
-#: still un-glues the digits, which is what the numeric axis measures.
+#: MEASURED, counting rows whose cell count is off the modal width of their own table
+#: block. The grid width is a property of the detected table, so it is taken from an arm
+#: with NO numeric repair and held constant across arms -- recomputing it per arm lets it
+#: move with the defect. 17 documents, 20,721 rendered table rows:
+#:
+#:     no repair at all           2 rows off the grid   119 runs >= 15 digits
+#:     Markdown repair only     698                      56
+#:     line repair only         955                      50
+#:     both, with a pipe        983                      45
+#:     both, with a space        48                      45
+#:
+#: 981 of 20,721 rows (4.7%) were pushed off their grid by the pipe; a space leaves 48,
+#: all of them from `_repair_pipe_lines_by_digit_signature`, which legitimately writes
+#: one. The repair's purpose is untouched -- the >=15-digit runs the numeric axis counts
+#: stay at 45, and the digit count is identical -- because a space un-glues the figures
+#: just as well.
+#:
+#: Not confined to documents the audit flags: on 24 documents that ship `clean` on
+#: `numeric_damage`, 13,067 table rows, the pipe leaves 25 rows off their block's modal
+#: width and a space leaves 2.
 INLINE_BOUNDARY_SEPARATOR = " "
 _ADVANCE_OUTLIER_EM = 0.10
 _BBOX_GAP_OUTLIER_EM = 0.20
@@ -869,9 +884,10 @@ def _select_minimal_rule_cuts(
 ) -> set[int]:
     """Discard neighboring false rules when one valid partition is unique.
 
-    A candidate partition is valid when every part is a plausible single value -- the
-    same predicate :func:`_repairs_for_contiguous_runs` applies when it decides whether
-    to emit, so the two functions that must agree, do.
+    A candidate partition is valid when every part is both a complete amount and a
+    plausible single value. That is STRICTER than the `_looks_like_plausible_single_number`
+    test :func:`_repairs_for_contiguous_runs` applies when it decides whether to emit, and
+    deliberately so -- narrowing a run discards evidence, while emitting only spends it.
 
     This used to require every part to match `_DECIMAL_AMOUNT_PATTERN`,
     `^[0-9][0-9,]*\\.[0-9]{1,2}$`, which insists on a decimal point. An OAG beruju column
