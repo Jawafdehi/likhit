@@ -73,6 +73,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from likhit.quality.page_refusal import PLACEHOLDER_CELL_SHARE_FLOOR
+
 #: Devanagari block including the Devanagari digits U+0966-U+096F.
 _DEVANAGARI = re.compile(r"[\u0900-\u097f]")
 _LATIN = re.compile(r"[A-Za-z]")
@@ -260,7 +262,17 @@ ASSERTS_BLANK = re.compile(
 #: transcriptions that contain one honest gap -- one unreadable cell among 206
 #: populated ones, one among 145. A page allowed to mark a single illegible stamp
 #: is doing its job.
-PLACEHOLDER_CELL_SHARE_FLOOR = 0.25
+#:
+#: 🛑 Re-exported from `likhit.quality.page_refusal` rather than defined here, and the
+#: reason is the same one `likhit/devanagari.py` exists for. Two instruments read this
+#: number: THIS module decides whether a model's answer becomes page text, and the audit
+#: in `quality.page_refusal` decides whether a page that shipped counts as transcribed.
+#: They arrived in this package from opposite directions -- the audit with #107, this
+#: module with the v19 extractor line -- each carrying its own `0.25`. A chooser and a
+#: grader that disagree about the threshold accept a page they then condemn, which is
+#: exactly the drift `774aee4` was written about. `quality.page_refusal` holds the fuller
+#: provenance and is the pinned site, so it owns the value. Imported at the top of this
+#: module; this block is the derivation, kept here because this is where the value is used.
 
 #: Verdicts. `DELIVERED` is the only one a caller may insert as page text.
 DELIVERED = "delivered"

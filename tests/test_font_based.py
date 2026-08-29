@@ -36,6 +36,9 @@ from likhit.extractors.font_based import (
     _text_quality_penalty,
     _duplicate_consonant_count,
     _DUPLICATE_CONSONANT_PATTERN,
+    _DOUBLED_CONSONANT_LEXEMES,
+    _CID_MARK_BASE,
+    unmark_cid_ascii,
     join_spans_with_layout,
     join_words_with_spacing,
     normalize_extracted_word,
@@ -51,6 +54,11 @@ from likhit.extractors.font_based import (
     _LATIN_CID_FONT_FAMILIES,
     _unmappable_runs,
     _recover_or_mark_unmappable_span,
+)
+from likhit.extractors.pua_maps import (
+    SYMBOL_PUA_LIFT,
+    SYMBOL_PUA_RANGE,
+    unlift_symbol_pua,
 )
 from likhit.extractors.kalimati import (
     _get_font_correction_map,
@@ -475,12 +483,15 @@ def _run_broken_cmap_table_flow(
     )
 
     result = FontBasedStrategy().extract_text(str(source))
-    # Reconciliation note: the v18 line asserted here that all three
-    # `embedded_legacy_maps` consumers were reached with the same binding
-    # object. Upstream removed `bindings_seen` outright -- the collector, its
-    # three appends and these assertions -- when #102 reshaped legacy-font
-    # routing, so the assertions have no variable to read on this tree. Only
-    # v18's five-value return is carried; four tests below unpack `table_calls`.
+    # `table_calls` is what this helper gained: the fragment-variant table detection
+    # records the document and fragment texts it was handed, so a caller can assert the
+    # repair compared BOTH passes rather than re-detecting on one.
+    #
+    # The other line also asserted here that `embedded_legacy_maps` reached three
+    # consumers as the same object. That assertion is not carried: it reads locals this
+    # helper no longer has, because the helper was restructured here, and the property is
+    # covered by tests/test_embedded_name_legacy_candidacy.py,
+    # tests/test_name_legacy_reconciliation.py and tests/test_digit_companion.py.
     return calls, table_calls, result, original_table, repaired_table
 
 
@@ -1898,12 +1909,53 @@ def test_mixed_kokila_status_resolves_at_every_span_split(
 def test_cross_span_kokila_deferral_preserves_an_authored_word_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The plain space in ``कारोबारको स्थिति`` survives the deferred reorder.
+
+    🛑 This expected `सञ्चालन` -- joined -- until review showed what that join costs. The
+    deferral flag is decided once per line, so asserting the join here also asserted it for
+    every markerless span on any deferred line, and `test_..._does_not_join_a_post_virama`
+    below is what that looked like in shipped output. The space after `सञ्` now survives too:
+    keeping a visibly split word is cheaper than joining two real ones, and no local rule
+    tells the two apart.
+    """
+
     left = "सञ् चालन कारोबारको " + kalimati_module._PUA_IKAR
     right = kalimati_module._PUA_KOKILA_HALF_SA + "थ" + kalimati_module._PUA_IKAR + "त"
 
     assert _extract_kokila_line(monkeypatch, (left, right)) == (
         "सञ्चालन कारोबारको स्थिति"
     )
+
+
+@pytest.mark.parametrize(
+    "left",
+    ["छन् तथा", "सम्वत् २०७४", "एवम् अन्य", "गर्नुपर्ने छन् तथा भएका"],
+)
+def test_a_deferred_line_does_not_join_a_post_virama_boundary_in_another_span(
+    monkeypatch: pytest.MonkeyPatch,
+    left: str,
+) -> None:
+    """🛑 The negative control the deferral tests lacked, and the reason it was missing.
+
+    `defer_kokila_reorder` had **zero references in tests/**. The one test whose name
+    promised this property, `test_joined_reorder_keeps_a_real_space_after_virama`, is built
+    without a Kokila marker on the line, so it exercised the *undeferred* path and the
+    deferred path had no coverage at all.
+
+    Each case here carries no marker of its own and is never split. The marker sits in the
+    neighbouring span, which is what used to switch a post-virama deletion on for this one --
+    so `छन् तथा` shipped as `छन्तथा`. The control below is the same span on an undeferred
+    line: if a future change makes these two disagree again, both fail together.
+    """
+
+    right = kalimati_module._PUA_KOKILA_HALF_SA + "थ" + kalimati_module._PUA_IKAR + "त"
+    deferred = _extract_kokila_line(
+        monkeypatch,
+        (left + " " + kalimati_module._PUA_IKAR, right),
+    )
+
+    assert deferred == left + " स्थिति"
+    assert _extract_kokila_line(monkeypatch, (left,)) == left
 
 
 @pytest.mark.parametrize("split", range(1, 5))
@@ -2069,6 +2121,21 @@ def test_context_marker_provenance_is_preserved_within_one_line(
 
 
 def test_existing_positional_marker_keeps_established_spacing_cleanup() -> None:
+    """The ikar marker still lands correctly when the span also holds a virama space.
+
+    ⚠️ The expectation differs from the extractor line this came from, deliberately, and
+    the difference is the space in ``सञ् चालन`` -- not the marker, which is this test's
+    subject and resolves to ``विविध`` either way.
+
+    That line joined a space after any virama. This tree does not: it was measured to
+    join real word boundaries too (``छन् तथा``), so only the ``पुर्याउनु`` stem is
+    repaired, and the join is scoped to the marker-resolution pass, where the space
+    provably came from reassembling two spans rather than from the document. This call
+    is a SINGLE span on the non-deferred path, so its space is authored as far as the
+    extractor can tell, and is kept. ``test_cross_span_kokila_deferral_preserves_an_``
+    ``authored_word_boundary`` is the cross-span case and does join it.
+    """
+
     marker = kalimati_module._PUA_IKAR
 
     converted = FontBasedStrategy()._convert_span_text(
@@ -3662,6 +3729,59 @@ def test_the_exemption_splice_decides_the_latin_veto_on_the_span_not_the_segment
     assert _convert_line_without_key(spans, maps) == (
         "जनहितका लागि अबल ७४ढ२ण् जवाफदेहिता पारदर्शीता विषय व्यक्तिगत अध्यक्ष"
     )
+
+    lexeme = _DOUBLED_CONSONANT_LEXEMES[1]
+    damage = "गग"
+
+    # The premise: each part scores what it should on its own, or this proves nothing.
+    assert _duplicate_consonant_count(lexeme) == 0
+    assert _duplicate_consonant_count(damage) == 1
+
+    assert _duplicate_consonant_count(lexeme + damage) == 1
+    # And the lexeme is still excused when it is the only thing there.
+    assert _duplicate_consonant_count(lexeme + lexeme) == 0
+
+
+def test_unlift_and_unmark_commute_because_their_ranges_are_disjoint() -> None:
+    """Both legacy decode paths apply BOTH transforms, so the order must not matter.
+
+    `_convert_span_text` composes them as `unlift_symbol_pua(unmark_cid_ascii(text))`
+    on the content branch and on the name branch, and a comment there asserts the
+    composition order is not load-bearing. That is a claim about behaviour, so it is
+    checked here rather than left in prose.
+
+    Why it holds: the two transforms read DISJOINT input ranges and neither writes
+    into the other's. CID marking lives at `_CID_MARK_BASE + cid` = U+F0020-U+F007E
+    (plane 15); the symbol-cmap lift lives at U+F020-U+F0FF (BMP). The magnitudes are
+    a factor of 16 apart and easy to misread as the same range -- `0xF020` against
+    `0xF0020` -- which is exactly why this is asserted and not eyeballed. Both
+    transforms also emit only characters at or below U+00FF, i.e. below both input
+    ranges, so neither can feed the other.
+    """
+
+    lo, hi = SYMBOL_PUA_RANGE
+    marked_lo, marked_hi = _CID_MARK_BASE + 0x20, _CID_MARK_BASE + 0x7E
+    # The premise, asserted so a future move of either constant fails here rather
+    # than silently making the composition order matter.
+    assert hi < marked_lo or marked_hi < lo, (
+        "ranges overlap: order becomes load-bearing"
+    )
+    assert SYMBOL_PUA_LIFT == 0xF000
+
+    # A span carrying BOTH shapes at once: a lifted keystroke run and marked CIDs.
+    lifted = "".join(chr(SYMBOL_PUA_LIFT + ord(char)) for char in "kflnsf")
+    marked = "".join(chr(_CID_MARK_BASE + ord(char)) for char in "kl/R5]b")
+    span = f"{lifted} {marked}"
+
+    forward = unlift_symbol_pua(unmark_cid_ascii(span))
+    reverse = unmark_cid_ascii(unlift_symbol_pua(span))
+    assert forward == reverse == "kflnsf kl/R5]b"
+
+    # And each transform really is a no-op on the other's input, which is the property
+    # the commutation rests on -- without these two the equality above could hold
+    # because both transforms did nothing at all.
+    assert unmark_cid_ascii(lifted) == lifted
+    assert unlift_symbol_pua(marked) == marked
 
 
 def _unrepairable_named_font_doc(

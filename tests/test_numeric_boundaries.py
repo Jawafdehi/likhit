@@ -8,6 +8,8 @@ import fitz
 from markitdown import DocumentConverterResult
 import pytest
 
+import likhit.devanagari as devanagari_module
+
 import likhit.converters.nepali_pdf as nepali_pdf_module
 from likhit.converters.nepali_pdf import NepaliPdfConverter
 import likhit.extractors.font_based as font_based_module
@@ -1096,7 +1098,7 @@ def test_orphan_matra_pattern_accepts_a_decomposed_nukta() -> None:
     # NFC decomposes क़ into क + U+093C, so canonical Nepali uses this form.
     decomposed = "क़ानून"
 
-    assert nepali_pdf_module._ORPHAN_MATRA_PATTERN.findall(decomposed) == []
+    assert devanagari_module.ORPHAN_MATRA_PATTERN.findall(decomposed) == []
 
 
 def test_converter_prefers_a_safe_candidate_over_a_higher_scoring_unsafe_one(

@@ -188,3 +188,81 @@ def test_reusable_repair_tracks_same_marker_per_span_provenance(
         )
         == "स्थानीय " + marker + "थापा"
     )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("क " + kalimati._PUA_REPH + "ख", "र्कख"),
+        ("क " + kalimati._PUA_IKAR + "ख", "कखि"),
+        ("कार " + kalimati._PUA_REPH, "कार्र"),
+    ],
+)
+def test_the_undeferred_path_normalizes_before_reordering(
+    text: str,
+    expected: str,
+) -> None:
+    """🛑 Pins the pass order, which nothing pinned and review found reversed.
+
+    Upstream runs normalize then reorder: closing the gap before a marker is what lets the
+    reorder attach it to its base. This file's branch ran reorder first, so the marker
+    resolved where it stood and the space survived it, shipping an unattached ``क र्ख``.
+
+    Each expectation here is upstream's output for the same input, so the test states the
+    equivalence rather than a value someone chose.
+    """
+
+    assert (
+        repair._convert_span_text(
+            text,
+            "AAAAAA+Kalimati",
+            {"Kalimati": "broken_cmap"},
+            needs_reorder=True,
+            defer_contextual_reorder=False,
+        )
+        == expected
+    )
+
+
+def test_the_deferred_path_keeps_its_markers_and_their_spaces() -> None:
+    """The other branch, which must not reorder at all.
+
+    Markers survive to line assembly, where the whole line's dependency closure is
+    resolvable; the space before one survives with it, because that space is what assembly
+    reads to find where the marker's base ended.
+    """
+
+    text = "कारोबारको " + kalimati._PUA_IKAR
+
+    assert (
+        repair._convert_span_text(
+            text,
+            "AAAAAA+Kalimati",
+            {"Kalimati": "broken_cmap"},
+            needs_reorder=True,
+            defer_contextual_reorder=True,
+        )
+        == text
+    )
+
+
+def test_a_deferred_span_does_not_lose_a_post_virama_boundary() -> None:
+    """The repair path's version of the deferral defect, whose trigger is wider.
+
+    ``_has_scoped_context_marker`` includes the contextual-ne marker for Kalimati faces, not
+    only the Kokila markers, so this path deferred -- and deleted the space -- on more
+    documents than the font_based one.
+    """
+
+    text = "छन् तथा " + kalimati._PUA_IKAR
+
+    assert (
+        repair._convert_span_text(
+            text,
+            "AAAAAA+Kalimati",
+            {"Kalimati": "broken_cmap"},
+            needs_reorder=True,
+            defer_contextual_reorder=True,
+        )
+        == text
+    )

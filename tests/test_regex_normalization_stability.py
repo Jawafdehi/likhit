@@ -353,7 +353,7 @@ def test_the_composition_exclusions_decompose_under_every_form(char):
 
     NFC is "decompose, then recompose", and recomposition is *blocked* for these, so
     even NFC leaves them decomposed. This is the family that breaks
-    ``_ORPHAN_MATRA_PATTERN``, and it is why that pattern is fragile under all four
+    ``likhit.devanagari.ORPHAN_MATRA_PATTERN``, and it is why that pattern is fragile under all four
     forms rather than only the D ones.
     """
 
@@ -369,7 +369,7 @@ def test_the_nfd_only_family_survives_nfc(char):
     """U+0929/0931/0934 are NOT composition exclusions, so NFC recomposes them.
 
     They decompose under NFD and NFKD only. That is why ``_INVALID_SIGN_PATTERN`` was
-    reported fragile under two forms where ``_ORPHAN_MATRA_PATTERN`` was fragile under
+    reported fragile under two forms where ``ORPHAN_MATRA_PATTERN`` was fragile under
     four -- one hazard, two different exposures, and treating them as one family gets
     the exposure wrong.
     """
@@ -504,7 +504,7 @@ def test_the_two_repaired_patterns_kept_their_exact_meaning():
     at any value.
     """
 
-    from likhit.converters.nepali_pdf import _ORPHAN_MATRA_PATTERN
+    from likhit.devanagari import ORPHAN_MATRA_PATTERN
     from likhit.extractors.font_based import _INVALID_SIGN_PATTERN
 
     block = [chr(c) for c in range(0x0900, 0x0980)]
@@ -523,15 +523,15 @@ def test_the_two_repaired_patterns_kept_their_exact_meaning():
     assert not _INVALID_SIGN_PATTERN.search("र")  # bare र must NOT match
     assert not _INVALID_SIGN_PATTERN.search("ळ")  # bare ळ must NOT match
 
-    # _ORPHAN_MATRA_PATTERN: a vowel sign U+093E-U+094C not preceded by a consonant,
+    # ORPHAN_MATRA_PATTERN: a vowel sign U+093E-U+094C not preceded by a consonant,
     # a virama or a nukta. Checked as a lookbehind, in context, both ways.
-    assert _ORPHAN_MATRA_PATTERN.search("ा")  # bare matra: orphan
-    assert _ORPHAN_MATRA_PATTERN.search(" ा")  # after a space: orphan
-    assert not _ORPHAN_MATRA_PATTERN.search("\u0915\u093e")  # preceded, fine
-    assert not _ORPHAN_MATRA_PATTERN.search("\u0939\u093e")  # preceded, fine
-    assert not _ORPHAN_MATRA_PATTERN.search("\u0958\u093e")  # preceded, fine
-    assert not _ORPHAN_MATRA_PATTERN.search("\u094d\u093e")  # preceded, fine
-    assert not _ORPHAN_MATRA_PATTERN.search("\u093c\u093e")  # preceded, fine
+    assert ORPHAN_MATRA_PATTERN.search("ा")  # bare matra: orphan
+    assert ORPHAN_MATRA_PATTERN.search(" ा")  # after a space: orphan
+    assert not ORPHAN_MATRA_PATTERN.search("\u0915\u093e")  # preceded, fine
+    assert not ORPHAN_MATRA_PATTERN.search("\u0939\u093e")  # preceded, fine
+    assert not ORPHAN_MATRA_PATTERN.search("\u0958\u093e")  # preceded, fine
+    assert not ORPHAN_MATRA_PATTERN.search("\u094d\u093e")  # preceded, fine
+    assert not ORPHAN_MATRA_PATTERN.search("\u093c\u093e")  # preceded, fine
 
 
 def test_this_test_file_is_itself_normalization_stable():

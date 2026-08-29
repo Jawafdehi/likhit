@@ -459,8 +459,9 @@ _SUSPICIOUS_ARTIFACT_PATTERN = re.compile(
 # NOTE: candra-O (U+0949 ॉ) is deliberately EXCLUDED — it appears in legitimate
 # Nepali/Hindi loanwords (डॉलर "dollar", कॉल "call", डॉक्टर "doctor"), so
 # flagging it would penalise clean text. The remaining signs have no such use.
-# Escapes, not literals, for the same reason as _ORPHAN_MATRA_PATTERN in
-# converters/nepali_pdf.py: U+0929/0931/0934 are composition exclusions that every
+# Escapes, not literals, for the same reason as ORPHAN_MATRA_PATTERN in
+# likhit/devanagari.py, whose module docstring is the canonical statement of this
+# argument: U+0929/0931/0934 are composition exclusions that every
 # normalization form decomposes to <base, U+093C NUKTA>. Written literally this
 # class normalizes into a FIVE-member set that includes the bare consonants, so a
 # garble detector would start firing on three of the commonest Nepali letters.
@@ -1686,6 +1687,15 @@ def _merge_tables_from_fragment_variants(
     if not tables or not _tables_contain_malformed_conjunct_ra(tables):
         return merge_continuation_tables(tables)
 
+    # ⚠️ Costed rather than assumed cheap, because this is a THIRD full table-detection pass
+    # over every page and the comment above measures detection at 67-87% of extraction wall
+    # time -- the reason the first pass skips it at all.
+    #
+    # What bounds it is the guard immediately above, not the work below: detection runs only
+    # for documents whose primary pass already shows malformed conjunct-ra, which is a few
+    # hundred of the ~6,200 corpus documents. On those it roughly doubles extraction; on the
+    # rest it costs one predicate over the tables already in hand. Widening that guard is
+    # therefore a performance change, not just a coverage one.
     candidate_tables = _detect_tables_from_fragments(
         doc,
         fragments,
@@ -4868,6 +4878,10 @@ class FontBasedStrategy(ExtractionStrategy):
         needs_reorder: bool,
         decoy_pages: frozenset[int] = frozenset(),
         content_legacy_maps: dict[str, LegacyMapChoice] | None = None,
+        # Whether this pass merges continuation tables itself. The conjunct-ra repair
+        # needs BOTH passes' tables unmerged so it can compare them, and merges once at
+        # the end -- see `_merge_tables_from_fragment_variants`.
+        merge_tables: bool = True,
         embedded_legacy_maps: dict[str, str] | None = None,
         name_legacy_confirmed: frozenset[str] | None = None,
         # VOL-323: threaded rather than re-detected, so every extraction pass over one
@@ -4878,7 +4892,6 @@ class FontBasedStrategy(ExtractionStrategy):
         digit_companion_fonts: frozenset[str] | None = None,
         acronym_survivors: frozenset[str] = frozenset(),
         detect_tables: bool = True,
-        merge_tables: bool = True,
     ) -> RawDocument:
         paragraphs: list[str] = []
         fragments: list[TextFragment] = []
@@ -5087,6 +5100,9 @@ class FontBasedStrategy(ExtractionStrategy):
         # Precomputed only by the exemption splice, so every segment inherits the
         # whole original span's name-path Latin decision.
         skip_name_legacy: bool | None = None,
+        # Hold the Kokila reorder back to the caller, which reorders once after the
+        # contextual markers are resolved. Reordering per span moves a marker away from
+        # the base it is scoped to.
         defer_kokila_reorder: bool = False,
     ) -> str:
         if exempt_slices:
