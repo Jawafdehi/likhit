@@ -238,6 +238,150 @@ def test_render_table_keeps_covered_rowspan_positions():
     )
 
 
+# ------------------------------------------------ a two-level header is composed, not cut
+#
+# The renderer emits no `|---|` separator row, so nothing downstream can tell a
+# second header row from data -- `hf_export/build_oag_hf_dataset.py` reads the
+# header only when `SEPARATOR_ROW` matches, which for a likhit table is never
+# (439,391 of the 443,516 published tables carry `header_json == "[]"`). A
+# two-level header therefore has to become ONE rendered row, and each column's
+# label has to be that column's own path through the header band.
+
+
+def test_a_spanning_header_keeps_every_sub_column_label():
+    """The shape of OAG `oag-11130`'s expenditure table, four columns of it.
+
+    `विनियोजन` and `राजस्व` each span an `इकाई`/`रकम` pair. The sub-labels REPEAT
+    across the groups, which is why the spanning label has to be carried into every
+    column it covers rather than left at its anchor: without it the row would name
+    two different columns `रकम`.
+    """
+
+    table = Table(
+        row_count=3,
+        col_count=6,
+        cells=[
+            TableCell(row=0, col=0, text="क्र.सं", rowspan=2),
+            TableCell(row=0, col=1, text="मन्त्रालय/ निकायको नाम", rowspan=2),
+            TableCell(row=0, col=2, text="विनियोजन", colspan=2),
+            TableCell(row=0, col=4, text="राजस्व", colspan=2),
+            TableCell(row=1, col=2, text="इकाई"),
+            TableCell(row=1, col=3, text="रकम"),
+            TableCell(row=1, col=4, text="इकाई"),
+            TableCell(row=1, col=5, text="रकम"),
+            TableCell(row=2, col=0, text="१"),
+            TableCell(row=2, col=1, text="प्रधानमन्त्री कार्यालय"),
+            TableCell(row=2, col=2, text="४"),
+            TableCell(row=2, col=3, text="१२३"),
+            TableCell(row=2, col=4, text="२"),
+            TableCell(row=2, col=5, text="४५६"),
+        ],
+    )
+
+    assert render_table_preformatted_markdown(table) == (
+        "```text\n"
+        "| क्र.सं | मन्त्रालय/ निकायको नाम | विनियोजन इकाई | विनियोजन रकम"
+        " | राजस्व इकाई | राजस्व रकम |\n"
+        "| १ | प्रधानमन्त्री कार्यालय | ४ | १२३ | २ | ४५६ |\n"
+        "```"
+    )
+
+
+def test_a_span_leaves_a_column_carrying_no_label_of_its_own_empty():
+    """The spanning label is context for a sub-label, not content of its own.
+
+    Filling every covered column from the span would recover nothing -- the label is
+    already at its anchor -- and would manufacture text: OAG `oag-11134` has a header
+    cell spanning 31 columns with a sub-label under two of them, so the eager form
+    writes the same phrase 29 extra times.
+    """
+
+    table = Table(
+        row_count=3,
+        col_count=4,
+        cells=[
+            TableCell(row=0, col=0, text="सि.नं.", rowspan=2),
+            TableCell(row=0, col=1, text="कुल", colspan=3),
+            TableCell(row=1, col=1, text="विवरण"),
+            TableCell(row=2, col=0, text="१"),
+            TableCell(row=2, col=1, text="अ"),
+            TableCell(row=2, col=2, text="ब"),
+            TableCell(row=2, col=3, text="स"),
+        ],
+    )
+
+    assert render_table_preformatted_markdown(table) == (
+        "```text\n| सि.नं. | कुल विवरण |  |  |\n| १ | अ | ब | स |\n```"
+    )
+
+
+def test_a_header_cell_anchored_inside_a_span_keeps_its_own_label():
+    """Anchor first, span only as the fallback.
+
+    `_expanded_grid` fills under `if not grid[row][col]`, so a wider cell to the left
+    reaches this position first and the anchor's own text is ABSENT from the expanded
+    grid. Composing from the expanded grid alone would therefore replace `रकम` with
+    `शीर्षक` -- a silent substitution, not a loss, so no character count would show it.
+    """
+
+    table = Table(
+        row_count=3,
+        col_count=3,
+        cells=[
+            TableCell(row=0, col=0, text="सि.नं.", rowspan=2),
+            TableCell(row=0, col=1, text="शीर्षक", colspan=2),
+            TableCell(row=0, col=2, text="रकम"),
+            TableCell(row=1, col=1, text="क"),
+            TableCell(row=1, col=2, text="ख"),
+            TableCell(row=2, col=0, text="१"),
+            TableCell(row=2, col=1, text="अ"),
+            TableCell(row=2, col=2, text="ब"),
+        ],
+    )
+
+    assert render_table_preformatted_markdown(table) == (
+        "```text\n| सि.नं. | शीर्षक क | रकम ख |\n| १ | अ | ब |\n```"
+    )
+
+
+def test_a_single_header_label_split_across_rows_still_reads_as_one_phrase():
+    """OAG 11113's lake table, whose header wraps INSIDE its cell.
+
+    The band is one row here, so this pins the other half of the join: a header the
+    detector emitted as one multi-line cell renders as ONE row, not one row per
+    visual line. Disabling the join is the mutation it catches.
+
+    ⚠️ It does NOT discriminate the space-vs-separator choice, and no test here does:
+    a single-part column joins to itself whatever the separator. See
+    `_composed_header_label` for what that choice actually rests on.
+    """
+
+    table = Table(
+        row_count=2,
+        col_count=5,
+        cells=[
+            TableCell(row=0, col=0, text="सि.नं."),
+            TableCell(row=0, col=1, text="तालको नाम"),
+            TableCell(row=0, col=2, text="तालको जम्मा क्षेत्रफल"),
+            TableCell(row=0, col=3, text="अतिक्रमण/आवादी\nगरिएको क्षेत्रफल"),
+            TableCell(row=0, col=4, text="आवादी गरिएको\nप्रतिशत"),
+            TableCell(row=1, col=0, text="१"),
+            TableCell(row=1, col=1, text="कमलपोखरी ताल"),
+            TableCell(row=1, col=2, text="186-8-2-2"),
+            TableCell(row=1, col=3, text="135-7-1-0"),
+            TableCell(row=1, col=4, text="७२.६२"),
+        ],
+    )
+
+    assert render_table_preformatted_markdown(table) == (
+        "```text\n"
+        "| सि.नं. | तालको नाम | तालको जम्मा क्षेत्रफल"
+        " | अतिक्रमण/आवादी गरिएको क्षेत्रफल | आवादी गरिएको प्रतिशत |\n"
+        "| १ | कमलपोखरी ताल | 186-8-2-2 | 135-7-1-0 | ७२.६२ |\n"
+        "```"
+    )
+
+
 # --------------------------------------------- a register row is not a wrapped sentence
 #: What a swallowed register looks like AFTER the extractor keeps its rows together --
 #: one space-joined line per printed row. Must stay in step with what

@@ -903,14 +903,25 @@ def _composed_header_label(
     manufactures text -- one OAG table spans 31 columns with a sub-label under only
     two of them. So the composition fires exactly where a label was being lost.
 
-    Joined with a space rather than a separator token, for two reasons. It keeps ONE
-    join rule for both shapes this band can hold -- a genuine two-level header, and
-    the far commoner case of a single label the detector split across physical rows,
-    where `अतिक्रमण/आवादी` + `गरिएको क्षेत्रफल` must read as one phrase and a
-    separator would falsely assert two levels. And `audit_quality.py`'s
-    `LEGACY_RUN_RE` character class contains `/`, while `check_legacy_ascii` strips
-    `|` but not `/`, so a `" / "` separator would add a legacy-run hit per composed
-    cell to an axis that sets 43 of the corpus's `suspect` verdicts.
+    Joined with a space rather than a separator token such as `" / "`, on two
+    grounds -- and NOT on a third that was checked and dropped:
+
+      * `audit_quality.py`'s `LEGACY_RUN_RE` character class contains `/`, and
+        `check_legacy_ascii` strips `|` from the text it scores but not `/`. A lone
+        slash therefore matches as a one-character legacy run, so a separator would
+        add a hit per composed cell to the axis that sets 43 of the published
+        corpus's 611 `suspect` verdicts (re-derived from that release's own
+        `audit.json`). Small, but in the wrong direction and for no gain.
+      * A space is what a header written as ONE multi-line cell already collapses to,
+        via `_clean_text` here and in `_expanded_grid`. Two spellings of the same
+        header would otherwise render differently depending on whether the detector
+        emitted one cell or two.
+
+    🛑 The tempting third ground -- "a separator would falsely assert two levels on a
+    label the detector split across two physical ROWS" -- is NOT supported by a
+    measurement. Over all 57 tables of OAG 11113, every multi-part composition comes
+    from a colspan; no column reaches two parts without one. So that shape may not
+    occur at all, and the argument must not be quoted as though it had been counted.
     """
 
     band = range(title_rows, header_end)
@@ -979,28 +990,24 @@ def _raw_table_row_lines(table: Table) -> list[tuple[int, list[str]]]:
 
     rows: list[tuple[int, list[str]]] = []
     for row_index, row in enumerate(grid):
-        if row_index == joined_header_row:
-            # `covered` is deliberately NOT consulted here, and that is the whole
-            # of the sub-column-label fix -- see `_composed_header_label`. The
-            # joined row is composed, not extracted: a column the spanning header
-            # covers holds this column's own label, so blanking it on coverage
-            # threw the label away.
-            cell_lines = [
-                ([] if not _clean_text(cell) else [_clean_text(cell)]) for cell in row
-            ]
-        else:
-            cell_lines = [
-                (
-                    []
-                    if covered[row_index][col_index]
-                    else [
-                        _clean_text(part)
-                        for part in cell.splitlines()
-                        if _clean_text(part)
-                    ]
-                )
-                for col_index, cell in enumerate(row)
-            ]
+        # Coverage is consulted for every row EXCEPT the composed one, and that
+        # exception is the whole of the sub-column-label fix -- see
+        # `_composed_header_label`. The composed row is built, not extracted: a
+        # column the spanning header covers holds that column's own label here, so
+        # blanking it on coverage threw the label away. Nothing else differs; a
+        # composed cell has already been through `_clean_text`, so it holds no line
+        # break for the split below to find.
+        composed = row_index == joined_header_row
+        cell_lines = [
+            (
+                []
+                if not composed and covered[row_index][col_index]
+                else [
+                    _clean_text(part) for part in cell.splitlines() if _clean_text(part)
+                ]
+            )
+            for col_index, cell in enumerate(row)
+        ]
         max_line_count = max(
             (len(parts) for parts in cell_lines),
             default=0,
