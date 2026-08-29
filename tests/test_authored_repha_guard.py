@@ -548,3 +548,52 @@ def test_a_routed_face_keeps_every_guessed_rewrite() -> None:
 
     assert unrouted == {}
     assert routed is correction_map
+
+
+def test_provenance_follows_the_reconstruction_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real composition inside `_get_font_correction_map`, not a supplied set.
+
+    Every other test here hands the guard a provenance set directly, so the code that
+    DERIVES that set was uncovered -- and mutation showed it: turning
+    `guessed -= set(from_cmap)` into `guessed |= set(from_cmap)` marks every
+    cmap-sourced GID as a guess, which would make the guard decline exact readings, and
+    the whole suite stayed green.
+
+    The four sources and their precedence, each represented once:
+
+        gid 1  the font's own cmap                        exact    -> not guessed
+        gid 2  reference table, overriding an inference    exact    -> not guessed
+        gid 3  inference, overriding GSUB                  GUESS    -> guessed
+        gid 4  reference table alone                       exact    -> not guessed
+    """
+
+    class FakeFont:
+        def getGlyphOrder(self):  # noqa: N802 - fontTools spelling
+            return ["gid0", "uni0915", "glyph00002", "glyph00003", "glyph00004"]
+
+        def close(self) -> None:
+            return None
+
+    class FakeDoc:
+        def xref_stream(self, xref: int) -> bytes:
+            return b"font-bytes"
+
+    monkeypatch.setattr(kalimati, "_resolve_fontfile2_xref", lambda _d, _x: 9)
+    monkeypatch.setattr("fontTools.ttLib.TTFont", lambda *a, **k: FakeFont())
+    monkeypatch.setattr(kalimati, "_safe_get_best_cmap", lambda _f: {0x0915: "uni0915"})
+    monkeypatch.setattr(
+        kalimati, "_infer_mark_variants", lambda _f, _o, _c: {2: IKAR, 3: EKAR}
+    )
+    monkeypatch.setattr(kalimati, "_analyze_gsub", lambda _f, _o, _c: {3: "ख्"})
+    monkeypatch.setattr(
+        kalimati,
+        "_kalimati_reference_map",
+        lambda _f, skip=frozenset(): {2: "ी", 4: "ग"},
+    )
+
+    built = kalimati._get_font_correction_map(FakeDoc(), 1)  # type: ignore[arg-type]
+
+    assert built == {1: "क", 2: "ी", 3: EKAR, 4: "ग"}
+    assert kalimati._reconstruction_guesses(built) == {3}
