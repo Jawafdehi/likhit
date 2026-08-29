@@ -939,8 +939,9 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "Measured over the 18 OAG documents the refusal withholds, the two "
         "populations are four orders of magnitude apart: document 11113 -- set in "
         "Preeti, declaring a Kalimati face that draws ONE glyph of 433,222 -- sits "
-        "at 0.0002%, and the next-smallest genuine offender at 10.04%. This floor "
-        "is ~20x clear of each, so it is not fitted to either",
+        "at 0.0002%, and the next-smallest genuine offender at 10.04%. The floor sits "
+        "2,166x above the incidental case and 20.1x below the smallest genuine one, "
+        "so it is not fitted to either",
     ),
 }
 
@@ -1039,17 +1040,51 @@ def test_every_pin_carries_a_derivation():
     ``_BBOX_GAP_OUTLIER_EM``'s derivation ending mid-sentence at "because bboxes are",
     62 characters and green. Read the column; do not rely on this test to.
 
-    🛑 That hole has now bitten twice more, both found by review and neither catchable here.
+    🛑 That hole has now bitten three times more, all found by review and none catchable here.
     ``MERGE_MIN_DIGITS`` shipped with a denominator (14,891) that contradicted its own
     module's (14,608) while quoting the same precision figure, which is what settled which
     was wrong. ``REPHA_CORRUPT_FLOOR`` described its value as a character *length* when it is
     a per-document occurrence count, and gave the wrong one of its module's two arguments.
+    ``_INCIDENTAL_FACE_GLYPH_SHARE`` said the floor sat "~20x clear of each" of two
+    populations whose own figures put it 2,166x above one of them -- wrong by two orders of
+    magnitude, in the pin and in the module comment, in the same words.
     A rationale that is confidently wrong is longer than 20 characters, so **the only thing
     that catches this class is someone reading the column against the source.**
+
+    ✅ Where a derivation states arithmetic over figures it also states, that much *can* be
+    gated: see ``test_the_incidental_face_floor_ratios_follow_from_its_own_figures``. It is
+    one pin, not a general fix, but it is the first cell in this table whose numbers cannot
+    silently disagree with each other.
     """
 
     missing = [key for key, (_v, why) in _PINNED.items() if len(why.strip()) < 20]
     assert missing == [], missing
+
+
+def test_the_incidental_face_floor_ratios_follow_from_its_own_figures():
+    """The one derivation in this table whose arithmetic is checked, not just read.
+
+    Its rationale states three things: the incidental face draws one glyph of 433,222, the
+    smallest genuine offender draws 10.04%, and the floor's distance from each. The first two
+    determine the third, so the third does not need to be trusted -- and when it was trusted
+    it was wrong by two orders of magnitude, in two places, in the same words.
+    """
+
+    from likhit.extractors import kalimati as kalimati_module
+
+    floor = kalimati_module._INCIDENTAL_FACE_GLYPH_SHARE
+    incidental = 1 / 433_222
+    smallest_genuine = 0.1004
+
+    assert incidental < floor < smallest_genuine
+    assert round(floor / incidental) == 2_166
+    assert round(smallest_genuine / floor, 1) == 20.1
+
+    why = _PINNED[("likhit/extractors/kalimati.py", "_INCIDENTAL_FACE_GLYPH_SHARE")][1]
+    assert "2,166x" in why
+    assert "20.1x" in why
+    assert "433,222" in why
+    assert "10.04%" in why
 
 
 def test_no_pin_is_derived_from_the_thing_it_pins():

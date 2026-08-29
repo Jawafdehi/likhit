@@ -1170,8 +1170,9 @@ def _is_named_repair_font(font_name: str) -> bool:
 #: cleaner than the corpus median (0.06 vs 0.13 word-initial vowel signs per
 #: 10,000). Across the 18 OAG documents the refusal withholds, the two
 #: populations are four orders of magnitude apart: that face draws 0.0002% of
-#: the glyphs and the next-smallest genuine offender draws 10.04%. This floor
-#: sits ~20x clear of each, so it separates them without being fitted to either.
+#: the glyphs and the next-smallest genuine offender draws 10.04%. The floor sits
+#: 2,166x above the incidental case and 20.1x below the smallest genuine one, so
+#: it separates them without being fitted to either.
 _INCIDENTAL_FACE_GLYPH_SHARE = 0.005
 
 
@@ -1585,6 +1586,24 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
         patched = True
 
     if not patched:
+        # 🛑 Two deliberate departures from the unconditional `raise` this replaces, and the
+        # asymmetry between them is the part worth reading.
+        #
+        # A Kokila face still refuses, on presence alone and with no glyph-share gate --
+        # unlike the named kalimati/lohit faces, which `_INCIDENTAL_FACE_GLYPH_SHARE` above
+        # argues at length should not cost a document when they draw almost nothing. The
+        # reason the same floor does not apply here is that the two failures are not the
+        # same failure. An unrepairable *named* face means one face in the document is
+        # undecodable, and the rest of the text is unaffected -- so if that face draws one
+        # glyph in 400,000, refusing costs 351,475 correct characters to protect one. Not
+        # patching *any* map when a Kokila face is present means the repair pass itself
+        # produced nothing, so every Kokila glyph in the document is still wrong; there is
+        # no correct remainder to weigh against. Sizing it by glyph share would be
+        # measuring the wrong quantity.
+        #
+        # ⚠️ And the other half is a widening: a document with no repair-font name at all
+        # now returns unrepaired instead of raising. That is the intended outcome -- such a
+        # document never needed this pass -- but it is a behaviour change, not a refactor.
         if any(
             _font_name_matches_family(font_name, "kokila")
             for font_name in font_names.values()
@@ -1827,28 +1846,27 @@ def normalize_devanagari_spacing(
                 )
             ):
                 remove = True
-            # 🛑 A space after a virama, and ONLY while markers are being resolved.
+            # 🛑 There is deliberately NO post-virama space deletion here, and the reason
+            # is a defect that was measured rather than reasoned about.
             #
-            # Both readings of this are right about a different case and neither rule alone
-            # is sufficient, because the two are orthographically identical: `सञ् चालन` is
-            # one word a span split in half, and `छन् तथा` is two words with a real space,
-            # and both are "space after virama". What separates them is not the text but
-            # the pass. The marker-resolution pass is fed text reassembled from spans, so a
-            # space there is a splitting artifact; ordinary text has authored spaces, and a
-            # blanket deletion joined them -- which is why the narrow `पुर्याउनु`
-            # substitution below exists instead.
+            # The extractor line these Kokila changes come from deleted the space after
+            # EVERY virama, in every pass. That is right for `सञ् चालन` -- one word a span
+            # split in half -- and wrong for `छन् तथा`, two words with an authored space,
+            # and the two are orthographically identical. An earlier form of this function
+            # tried to separate them by *pass* rather than by text: delete only while
+            # markers are being resolved, on the theory that such text is reassembled from
+            # spans and so its spaces are splitting artifacts.
             #
-            # So the deletion is scoped to `preserve_marker_spaces`, the flag that says
-            # this is that pass. `_PUA_CONTEXTUAL_NE` stays excluded: its space is the only
-            # thing recording where the marker's base ended.
-            if (
-                preserve_marker_spaces
-                and not protected_boundary
-                and result
-                and result[-1] == _VIRAMA
-                and next_char != _PUA_CONTEXTUAL_NE
-            ):
-                remove = True
+            # That theory is false, and its own witness disproves it. The flag is decided
+            # once per LINE and handed to every span on it, so one span's marker switched
+            # the deletion on for spans that carried no marker and were never split --
+            # turning `छन् तथा` into `छन्तथा` in shipped output, the exact case the
+            # comment justifying the rule named as what must not happen. A markerless span
+            # on a deferred line has the same evidence as one on an undeferred line and
+            # was getting the opposite treatment.
+            #
+            # No local rule separates the two cases, so this keeps the space -- upstream's
+            # measured position -- and repairs only the narrow `पुर्याउनु` stem below.
             if remove:
                 index += 1
                 continue
@@ -1859,14 +1877,5 @@ def normalize_devanagari_spacing(
     # PyMuPDF exposes this Kalimati glyph sequence with an internal space in
     # forms of ``पुर्याउनु``. A blanket virama-space deletion also joins real
     # word boundaries (``छन् तथा``), so repair only the measured lexical stem.
-    #
-    # 🛑 The extractor line these Kokila changes come from applied that rule to EVERY pass.
-    # It is scoped to the marker pass above instead, which is what lets both cases be right;
-    # the reasoning is at that branch. Restoring the unscoped form would re-join the word
-    # boundaries this comment names.
-    #
-    # ⚠️ Worth knowing how this was nearly got wrong: no test in that line calls this
-    # function directly, so it read as uncovered and dropping the rule outright looked
-    # free. Two marker tests reach it end to end and failed on it -- a grep for direct
-    # callers is not a coverage measurement.
+    # The branch above records why the general rule is not worth having.
     return _BROKEN_PURYA_PATTERN.sub("", normalized)
