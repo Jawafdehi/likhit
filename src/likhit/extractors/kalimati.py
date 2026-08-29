@@ -2207,8 +2207,13 @@ def normalize_devanagari_spacing(
             # on a deferred line has the same evidence as one on an undeferred line and
             # was getting the opposite treatment.
             #
-            # No local rule separates the two cases, so this keeps the space -- upstream's
-            # measured position -- and repairs only the narrow `पुर्याउनु` stem below.
+            # ⚠️ That reasoning ended "no local rule separates the two cases", and THAT
+            # part was wrong -- corrected here rather than left standing, because the rule
+            # it argued against now exists twenty lines below. What separates them is the
+            # consonant BEFORE the virama, not the virama; see the comment at
+            # `_BROKEN_NYA_CONJUNCT_PATTERN`. What survives from the paragraphs above is
+            # the narrower and still-true claim: no rule keyed on the *pass* can separate
+            # them, so there is no blanket deletion here.
             if remove:
                 index += 1
                 continue
@@ -2230,5 +2235,26 @@ def normalize_devanagari_spacing(
     # first member of a conjunct (सञ्चालन, पञ्च, अञ्चल). So this is upstream's
     # targeted rule, extended to the second class rather than widened to all
     # viramas.
+    #
+    # ✅ The ञ् half is MEASURED, not only argued from orthography, because "never
+    # word-final" is an empirical claim and a wrong one would destroy words. Over the
+    # published v1.3 transcripts (6,235 files) this pattern fires **273 times in 112
+    # documents**, and the consonant after the space is only च (247), ज (14), र (8),
+    # छ (2) or स (2) -- exactly ञ's conjunct set. All 37 distinct pairs:
+    #
+    #   261 of 273 produce a well-formed word -- सञ्चालन, सञ्चय, सञ्चयकोष, सञ्चार,
+    #       मनोरञ्जन, मञ्च, अञ्चल, पञ्जीकरण, वाञ्छनीय, कञ्चनपुर, निरञ्जन, नेपालगञ्ज;
+    #    12 stay malformed for reasons UPSTREAM of this rule -- 8 where च was itself
+    #       mis-decoded as र् (`सञ्र्ालन`) and 4 inside already-garbled runs. In none of
+    #       them is the joined form worse than the split one.
+    #     0 destroy a real word boundary.
+    #
+    # ⚠️ A first pass at this measurement read 359 word-final ञ् and looked like a
+    # refutation. That was an instrument error: the "word-final" pattern used
+    # `(?=\s|$)`, which also matches the space this rule deletes, so it counted the
+    # rule's own targets. Measured disjointly, ञ् with no following space appears 48
+    # times -- all in ONE document, as a stray `ञ्\n` between unrelated words, a
+    # separate defect this rule does not touch -- and ञ् before a space then a
+    # non-consonant 37 times, all cell-boundary truncations, also untouched.
     normalized = _BROKEN_PURYA_PATTERN.sub("", normalized)
     return _BROKEN_NYA_CONJUNCT_PATTERN.sub("", normalized)
