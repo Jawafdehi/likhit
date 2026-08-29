@@ -327,6 +327,86 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "this was 3 until the figures axis was carried over from the corpus line and "
         "took index 3, which is why the two changes are one unit",
     ),
+    # -- quality audit: axes ---------------------------------------------------- #
+    #
+    # Every derivation below is the one recorded at the constant's definition when this
+    # tooling lived in an untracked corpus directory. Registering them here is what this
+    # guard is for: an unpinned number is one nobody can safely change.
+    (
+        "likhit/quality/axes.py",
+        "MERGE_MIN_DIGITS",
+    ): (
+        15,
+        "digits a token needs before `numeric_damage` will consider it a merged cell. "
+        "NOT evidence by itself -- the rule alone ran at precision 0.142 over the "
+        "14,608 flagged runs the geometry oracle checked, 12,540 of which were single "
+        "cells. It bounds the candidates to the population that oracle has measured. "
+        "The denominator is 14,608, not the 14,891 an earlier revision of this pin and "
+        "the ported test docstring both carried: the shared precision figure settles "
+        "it, since (14608-12540)/14608 = 0.142 and (14891-12540)/14891 = 0.158",
+    ),
+    (
+        "likhit/quality/axes.py",
+        "REPHA_CORRUPT_FLOOR",
+    ): (
+        12,
+        "the per-document COUNT of whole-token repha corruptions at or above which a "
+        "document is at least `suspect` whatever its purity says -- `bad >= FLOOR` "
+        "where `bad` is a count, and the test fixture is that many REPETITIONS. Not a "
+        "character length, which an earlier revision of this pin said: that is the "
+        "exact error class the constant is a monument to, since VOL-168 proposed 20 "
+        "from a percentile computed on a different quantity than the field it named "
+        "and a literal implementation ran ~8.6x weaker than intended. 12 = one above "
+        "the 99th percentile (11) of v13's floor-decidable population, the 5,701 "
+        "documents already clean on the other seven checks and above the 0.75 purity "
+        "cut. The per-form precision evidence is a separate argument, for not sitting "
+        "HIGHER than p99",
+    ),
+    # -- quality audit: page refusal (opt-in axis) ------------------------------- #
+    (
+        "likhit/quality/page_refusal.py",
+        "PLACEHOLDER_CELL_SHARE_FLOOR",
+    ): (
+        0.25,
+        "share of a page's table DATA cells that must be placeholders before the page "
+        "is a refusal. A measured GAP, not a tuned value: 0.4444 for the one refusal "
+        "page against 0.0000 for every other staged page carrying a table",
+    ),
+    (
+        "likhit/quality/page_refusal.py",
+        "MIN_DATA_CELLS",
+    ): (
+        4,
+        "below this many data cells the share is not a measurement at all -- a 2-cell "
+        "table with one placeholder scores 0.5 and means nothing",
+    ),
+    (
+        "likhit/quality/page_refusal.py",
+        "PLACEHOLDER_PROSE_PER_KCHAR",
+    ): (
+        5.0,
+        "for a page with no table: placeholder occurrences per 1,000 characters. "
+        "`11356` p5 is at 17.75; the highest non-refusal staged page is 0.304, so this "
+        "sits inside an empty gap",
+    ),
+    (
+        "likhit/quality/page_refusal.py",
+        "MIN_PROSE_PLACEHOLDERS",
+    ): (
+        3,
+        "the absolute floor beside PLACEHOLDER_PROSE_PER_KCHAR. A rate alone would let "
+        "a very short page qualify on one hit",
+    ),
+    (
+        "likhit/quality/page_refusal.py",
+        "PLACEHOLDER_CELL_DOMINANCE",
+    ): (
+        0.5,
+        "how much of a cell the bracketed placeholder must occupy. Separates the two "
+        "populations with NO overlap: all four placeholder cells of `11356` p5 score "
+        "1.000 because the cell IS the placeholder, and all 15 false-positive cells "
+        "score 0.000 with no bracket at any offset. The midpoint of an empty gap",
+    ),
     # -- ranking forgiveness ---------------------------------------------------- #
     #
     # Each term forgives ONE occurrence before the tell counts, because each fires at a
@@ -908,6 +988,14 @@ def test_every_pin_carries_a_derivation():
     near-empty cell -- a truncated clause passes, and one did: this file shipped
     ``_BBOX_GAP_OUTLIER_EM``'s derivation ending mid-sentence at "because bboxes are",
     62 characters and green. Read the column; do not rely on this test to.
+
+    🛑 That hole has now bitten twice more, both found by review and neither catchable here.
+    ``MERGE_MIN_DIGITS`` shipped with a denominator (14,891) that contradicted its own
+    module's (14,608) while quoting the same precision figure, which is what settled which
+    was wrong. ``REPHA_CORRUPT_FLOOR`` described its value as a character *length* when it is
+    a per-document occurrence count, and gave the wrong one of its module's two arguments.
+    A rationale that is confidently wrong is longer than 20 characters, so **the only thing
+    that catches this class is someone reading the column against the source.**
     """
 
     missing = [key for key, (_v, why) in _PINNED.items() if len(why.strip()) < 20]

@@ -345,8 +345,9 @@ _SUSPICIOUS_ARTIFACT_PATTERN = re.compile(
 # NOTE: candra-O (U+0949 ॉ) is deliberately EXCLUDED — it appears in legitimate
 # Nepali/Hindi loanwords (डॉलर "dollar", कॉल "call", डॉक्टर "doctor"), so
 # flagging it would penalise clean text. The remaining signs have no such use.
-# Escapes, not literals, for the same reason as _ORPHAN_MATRA_PATTERN in
-# converters/nepali_pdf.py: U+0929/0931/0934 are composition exclusions that every
+# Escapes, not literals, for the same reason as ORPHAN_MATRA_PATTERN in
+# likhit/devanagari.py, whose module docstring is the canonical statement of this
+# argument: U+0929/0931/0934 are composition exclusions that every
 # normalization form decomposes to <base, U+093C NUKTA>. Written literally this
 # class normalizes into a FIVE-member set that includes the bare consonants, so a
 # garble detector would start firing on three of the commonest Nepali letters.

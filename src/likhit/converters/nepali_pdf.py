@@ -24,6 +24,11 @@ from markitdown import DocumentConverter, DocumentConverterResult, StreamInfo
 from markitdown.converters import PdfConverter
 from markitdown_ocr import LLMVisionOCRService
 
+from likhit.devanagari import (
+    DOUBLED_MATRA_PATTERN,
+    ORPHAN_MATRA_PATTERN,
+    VIRAMA_MATRA_PATTERN,
+)
 from likhit.errors import ExtractionError, ScannedPdfError, ValidationError
 from likhit.extractors.base import RawDocument, TextFragment
 from likhit.extractors.font_based import FontBasedStrategy, parse_page_range
@@ -75,23 +80,6 @@ _CID_GARBAGE_PATTERN = re.compile(r"\(cid:\d+\)")
 _SUSPICIOUS_LATIN_TOKEN_PATTERN = re.compile(
     r"""[\\\[\]\{\}\$^&*_+=<>]|[A-Za-z]\d|\d[A-Za-z]"""
 )
-_DOUBLED_MATRA_PATTERN = re.compile(r"[ा-ौ]{2,}")
-# U+093C NUKTA belongs in the lookbehind because NFC *decomposes* the
-# precomposed nukta consonants (क़ becomes क + U+093C), so canonical
-# Nepali writes the decomposed form. Without it the matra in क़ानून reads as
-# orphaned and clean text gets penalised.
-# The class is written as code-point escapes, NOT as literal Devanagari, and that
-# is load-bearing rather than a style choice. U+0958-U+095F are Unicode
-# composition exclusions: every normalization form (NFC, NFD, NFKC, NFKD) replaces
-# each with a two-code-point <base, U+093C NUKTA> sequence. Written literally, the
-# range "\u0915\u093c-\u092f\u093c" leaves the class ending on the DESCENDING
-# range U+093C-U+092F, and re.compile raises "bad character range". This module
-# then fails to IMPORT -- not to match. Verified on the literal form: compiles as
-# shipped, stops compiling under all four normalization forms.
-_ORPHAN_MATRA_PATTERN = re.compile(
-    r"(?<![\u0915-\u0939\u0958-\u095f\u094d\u093c])[\u093e-\u094c]"
-)
-_VIRAMA_MATRA_PATTERN = re.compile(r"्[ा-ौ]")
 _OCR_SERIAL_PATTERN = re.compile(r"^\s*([०-९0-9]{1,2}[.)।])\s+(.*\S)\s*$")
 _TABLE_SEPARATOR_CELL_PATTERN = re.compile(r"^:?-+:?$")
 _UNESCAPED_PIPE_PATTERN = re.compile(r"(?<!\\)\|")
@@ -1281,9 +1269,9 @@ def _markdown_quality_score(markdown: str) -> int:
         - int(len(content_tokens) * _MAX_REASONABLE_SINGLE_TOKEN_RATIO),
     )
     matra_damage_count = (
-        len(_DOUBLED_MATRA_PATTERN.findall(content_markdown))
-        + len(_ORPHAN_MATRA_PATTERN.findall(content_markdown))
-        + len(_VIRAMA_MATRA_PATTERN.findall(content_markdown))
+        len(DOUBLED_MATRA_PATTERN.findall(content_markdown))
+        + len(ORPHAN_MATRA_PATTERN.findall(content_markdown))
+        + len(VIRAMA_MATRA_PATTERN.findall(content_markdown))
     )
     return (
         devanagari_chars * _DEVANAGARI_CHAR_CREDIT

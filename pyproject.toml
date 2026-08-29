@@ -1,7 +1,7 @@
 [project]
 name = "likhit"
 version = "0.1.8"
-description = "MarkItDown plugin for Nepali PDFs and legacy DOC files"
+description = "MarkItDown plugin for Nepali PDFs and legacy DOC files, with transcript quality auditing and personal-data redaction"
 authors = [
     { name = "Jawafdehi", email = "inquiry@jawafdehi.org" }
 ]
@@ -39,11 +39,34 @@ Repository = "https://github.com/Jawafdehi/likhit/"
 Issues = "https://github.com/Jawafdehi/likhit/issues"
 Documentation = "https://github.com/Jawafdehi/likhit/#readme"
 
+# ⚠️ These extras install NOTHING today, and that is stated rather than hidden.
+#
+# Both feature sets are pure-stdlib, so there is no dependency for an extra to gate. And an
+# extra cannot gate CODE: every module under `src/likhit/` ships in the wheel regardless, and
+# `[project.scripts]` entry points always install. So `pip install likhit[quality]` and
+# `pip install likhit` currently give you exactly the same files.
+#
+# They are declared anyway, for two reasons that are worth the two lines:
+#
+#   * they NAME the separable surfaces, so `likhit[quality]` in a downstream requirements
+#     file records which part of this package that project actually depends on;
+#   * they reserve the name for the first real optional dependency. The obvious candidate is
+#     Parquet output for the audit's per-document frame, which needs pyarrow and which the
+#     corpus tooling already builds outside this package.
+#
+# If the goal is ever that `pip install likhit` must not CONTAIN this code, an extra is the
+# wrong mechanism -- exclude the subpackages from the wheel instead.
+[project.optional-dependencies]
+quality = []
+privacy = []
+
 [project.entry-points."markitdown.plugin"]
 likhit = "likhit._plugin"
 
 [project.scripts]
 likhit-save = "likhit.save_cli:main"
+likhit-audit = "likhit.quality._cli:main"
+likhit-redact = "likhit.privacy._cli:main"
 
 [build-system]
 # Bounded to a major, as `poetry-core>=2.0.0,<3.0.0` was before it. This is not

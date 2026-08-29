@@ -692,6 +692,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0,<7.0" },
     { name = "sentry-sdk", specifier = ">=2.0.0,<3.0.0" },
 ]
+provides-extras = ["quality", "privacy"]
 
 [package.metadata.requires-dev]
 dev = [
