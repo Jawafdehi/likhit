@@ -25,7 +25,12 @@ anything, for the same reason it strips code fences and fiscal-year spans: the m
 structure this project inserted, not evidence about the decode.
 
 **Adding a placeholder means adding it here**, not in the pass that emits it.
-``test_every_placeholder_is_registered`` fails otherwise.
+``test_every_placeholder_a_module_emits_is_registered`` fails otherwise -- but be precise
+about what that guard can see, because **three** markers got past it and into a published
+corpus. It scans this repository's sources, so a redaction pass living *outside* the package
+is structurally invisible to it, and the OAG release has such a pass. The vocabulary this
+module owns is therefore the **project's**, not this package's, which is why :data:`ALL`
+registers markers that nothing here emits.
 """
 
 from __future__ import annotations
@@ -48,12 +53,57 @@ TABLE_DATE_OF_BIRTH: Final = "[REDACTED:TABLE-DATE-OF-BIRTH]"
 #: honestly name which. Never emitted by the inline pass, which always knows its label.
 TABLE_PERSONAL_VALUE: Final = "[REDACTED:TABLE-PERSONAL-VALUE]"
 
+#: Contact details, emitted by the OAG release's contact pass and by **no module in this
+#: package**. Registered anyway, and that is the point of the module rather than an oversight.
+#:
+#: 🛑 **These three are in a published corpus**: 287 occurrences over 104 of its 6,234
+#: transcripts (178 :data:`PHONE`, 80 :data:`TABLE_PHONE`, 29 :data:`EMAIL`).
+#: ``test_every_placeholder_a_module_emits_is_registered`` scans this repository for the
+#: literal, so it is structurally blind to a consumer that redacts with its own pass and then
+#: hands the result to :mod:`likhit.quality` -- which is exactly what that release does. Until
+#: they were registered, :func:`strip_placeholders` left them in the text
+#: :mod:`likhit.quality` measures, and each scored as **two** ``legacy_ascii`` runs --
+#: ``[REDACTED`` and ``NO]`` -- so the audit read this project's own markers as evidence about
+#: a decode. That is the defect this module's docstring records, reappearing through the one
+#: hole its guard cannot cover.
+#:
+#: Re-auditing those 104 documents with and without the registration, the report loses:
+#:
+#: * ``legacy_ascii``: -574 ``legacy_runs``, -3,531 ``legacy_run_chars``, -4,647 latin chars
+#: * ``spacing``: -187 ``tokens``
+#: * ``structure``: -188 ``words``
+#:
+#: **20 of the 104 had at least half of their reported ``legacy_runs`` manufactured by these
+#: markers, and one had all of it.** ⚠️ **No verdict moved, on any axis** -- the density is too
+#: low to cross a threshold on this corpus, which is a reason to fix it while it is still free
+#: rather than an argument that it does not matter. The bias is one-directional and grows with
+#: redaction scope. It also reaches two axes the module docstring above does not mention: a
+#: marker is one ``\S+`` token, so it inflates ``structure``'s word count, and ``structure``
+#: refuses a document *below* 100 words.
+#:
+#: ⚠️ **Spelled exactly as the corpus writes them, which is not how they read.** The phone
+#: markers end ``-NO`` (an abbreviated "number", matching :data:`CITIZENSHIP`) and the email
+#: marker does not. A draft of this change registered ``[REDACTED:PHONE]``; that string occurs
+#: **0** times in the corpus, so it would have stripped nothing and left 258 of the 287
+#: occurrences in place while looking correct. Verify against the bytes, not the name.
+#:
+#: ⚠️ **Do not delete these as unused.** Nothing in this package imports them, so a reference
+#: search finds only the registration itself, and
+#: ``test_release_markers_stay_registered_without_an_emitter`` is all that stands between them
+#: and a tidy-up.
+PHONE: Final = "[REDACTED:PHONE-NO]"
+TABLE_PHONE: Final = "[REDACTED:TABLE-PHONE-NO]"
+EMAIL: Final = "[REDACTED:EMAIL]"
+
 ALL: Final = (
     CITIZENSHIP,
     DATE_OF_BIRTH,
     TABLE_CITIZENSHIP,
     TABLE_DATE_OF_BIRTH,
     TABLE_PERSONAL_VALUE,
+    PHONE,
+    TABLE_PHONE,
+    EMAIL,
 )
 
 #: Matches any registered placeholder.
