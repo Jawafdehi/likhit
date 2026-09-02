@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import tempfile
-from collections.abc import Container
+from collections.abc import Collection, Container
 from typing import Optional
 
 import fitz
@@ -19,6 +19,10 @@ from likhit.extractors.kalimati_reference import (
     outline_digest,
 )
 from likhit.extractors.lohit import lohit_correction_map, with_reordering_markers
+from likhit.extractors.mangal_reference import (
+    mangal_in_line_ra_cids,
+    mangal_reference_map,
+)
 from likhit.extractors.pua_maps import _base_font_name, _font_name_matches_family
 
 logger = logging.getLogger(__name__)
@@ -34,6 +38,14 @@ _VIRAMA = "\u094d"
 _RA = "\u0930"
 _IKAR = "\u093f"
 _BROKEN_PURYA_PATTERN = re.compile(r"(?<=पुर्) (?=य)")
+# Nya + virama followed by a consonant: a broken conjunct, never a word boundary,
+# because nya occurs in Nepali only as the first member of one -- सञ्चालन, पञ्च,
+# अञ्चल. Both halves are written as escapes rather than as a literal Devanagari
+# class: a literal range in a pattern is normalization-fragile in this repo, where
+# one such range has already raised `re.error` at import time and another silently
+# widened to bare consonants once its endpoints decomposed. The range below is
+# ka..ha, the same bounds `_is_devanagari_consonant` uses.
+_BROKEN_NYA_CONJUNCT_PATTERN = re.compile(r"(?<=\u091e\u094d) (?=[\u0915-\u0939])")
 _NUKTA = "\u093c"
 _CONTEXTUAL_NE_GID = 566
 _KOKILA_HALF_SA_GID = 214
@@ -519,16 +531,83 @@ def _kalimati_reference_map(font, skip: Container[int] = frozenset()) -> dict[in
     geometry; see :data:`~likhit.extractors.kalimati_reference.IN_LINE_RA_DIGESTS`.
     """
 
-    reference = kalimati_reference_map(font, skip=skip)
+    return _with_markers(kalimati_reference_map(font, skip=skip), font, in_line_ra_cids)
+
+
+def _mangal_reference_map(font, skip: Container[int] = frozenset()) -> dict[int, str]:
+    """Reference-derived ``{CID: Unicode}`` for a Mangal face, carrying markers.
+
+    Mangal's half of what :func:`_kalimati_reference_map` does for Kalimati, with
+    the same contract, the same marker handling and the same in-line-ra
+    exemption -- see :mod:`likhit.extractors.mangal_reference`.
+    """
+
+    return _with_markers(
+        mangal_reference_map(font, skip=skip), font, mangal_in_line_ra_cids
+    )
+
+
+def _with_markers(reference, font, in_line_ra) -> dict[int, str]:
+    """Apply reordering markers to a reference map, exempting the in-line ra."""
+
     repha_valued = {
         gid for gid, value in reference.items() if value.startswith(_RA + _VIRAMA)
     }
-    exempt = in_line_ra_cids(font, repha_valued) if repha_valued else set()
+    exempt = in_line_ra(font, repha_valued) if repha_valued else set()
 
     return {
         gid: value if gid in exempt else with_reordering_markers(value)
         for gid, value in reference.items()
     }
+
+
+class _Reconstruction(dict[int, str]):
+    """A ``{code: Unicode}`` reconstruction that remembers which values were GUESSED.
+
+    Every source :func:`_get_font_correction_map` composes is exact except one.
+    :func:`_infer_mark_variants` matches an unnamed glyph's *metrics* against five
+    candidate dependent vowel signs and takes the nearest within a distance cap, so its
+    answer is evidence about a shape and not about the document's text. The font's own
+    ``cmap``, its ``GSUB``, and the outline-digest reference table are all exact.
+    :func:`_decline_authored_repha_rewrites` has to tell those apart.
+
+    Carrying it on the mapping rather than in the signature is deliberate: fourteen
+    tests across six files monkeypatch :func:`_get_font_correction_map` with a
+    two-argument plain-dict stub, and a plain dict read through ``getattr`` reports no
+    guesses -- so the guard declines nothing under those stubs, which is the behaviour
+    they were written against. A signature change would break all fourteen, and
+    recomputing provenance separately would duplicate this function's precedence rules
+    and pay for a second full glyph pass.
+    """
+
+    metric_guessed: frozenset[int] = frozenset()
+
+
+def _reconstruction_guesses(correction_map: dict[int, str]) -> frozenset[int]:
+    """The metric-guessed codes of a reconstruction, or none for a plain mapping."""
+
+    return getattr(correction_map, "metric_guessed", frozenset())
+
+
+def _reference_correction_map(
+    font, skip: Collection[int] = frozenset()
+) -> dict[int, str]:
+    """Reference-derived ``{CID: Unicode}`` from whichever family drew the glyphs.
+
+    Both reference tables are keyed on the glyph OUTLINE and their key sets are
+    disjoint -- pinned by
+    ``tests/test_mangal_reference.py::test_the_two_reference_tables_share_no_outline``
+    -- so which table answers a glyph is decided by the drawing, not by
+    precedence. Kalimati is asked first only so the Mangal pass can skip the
+    glyphs it already answered, which saves outline hashes; it is not a
+    tie-break, and if the two tables ever did collide the test would fail rather
+    than the collision being silently resolved here.
+    """
+
+    kalimati = _kalimati_reference_map(font, skip=skip)
+    if kalimati:
+        skip = set(skip) | set(kalimati)
+    return {**_mangal_reference_map(font, skip=skip), **kalimati}
 
 
 def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, str]:
@@ -562,11 +641,14 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
             # here to reconstruct a mapping from. Fall back to a reference
             # table. Lohit's is keyed on CID, which holds because subsetting
             # preserves glyph order and every Lohit subset here descends from
-            # one build; Kalimati's is keyed on the glyph outline, because its
-            # subsets come from two lineages whose orders disagree -- see
-            # likhit.extractors.lohit and .kalimati_reference. Both return empty
-            # for a font they do not recognise, i.e. no repair.
-            reference_map = lohit_correction_map(font) or _kalimati_reference_map(font)
+            # one build; Kalimati's and Mangal's are keyed on the glyph outline,
+            # because their subsets come from several lineages whose orders
+            # disagree -- see likhit.extractors.lohit, .kalimati_reference and
+            # .mangal_reference. All return empty for a font they do not
+            # recognise, i.e. no repair.
+            reference_map = lohit_correction_map(font) or _reference_correction_map(
+                font
+            )
             font.close()
             return reference_map
         name_to_unicode = {name: codepoint for codepoint, name in best_cmap.items()}
@@ -586,10 +668,14 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
         # table fills those, but it only ever speaks for glyphs this font could
         # not resolve itself: skip whatever the font's own cmap or its own GSUB
         # already answered.
-        reference = _kalimati_reference_map(font, skip=set(from_cmap) | set(derived))
+        reference = _reference_correction_map(font, skip=set(from_cmap) | set(derived))
 
         full_map = dict(derived)
         full_map.update(inferred)
+        # `guessed` is maintained in lockstep with the precedence below rather than
+        # recomputed from it, so a future change to the order cannot leave provenance
+        # describing a composition that no longer happens.
+        guessed = set(inferred) - set(from_cmap)
         # An outline match is exact -- identical contours are the same drawing --
         # where _infer_mark_variants only matched a glyph's metrics against five
         # candidate marks. So the reference outranks an inferred value, and never
@@ -597,9 +683,13 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
         for gid, value in reference.items():
             if gid not in from_cmap and gid not in derived:
                 full_map[gid] = value
+                guessed.discard(gid)
         full_map.update(from_cmap)
+        guessed -= set(from_cmap)
         font.close()
-        return full_map
+        reconstruction = _Reconstruction(full_map)
+        reconstruction.metric_guessed = frozenset(guessed)
+        return reconstruction
     except Exception as exc:  # noqa: BLE001 - degrade to no repair, never fail
         logger.warning(
             "Failed to build Kalimati correction map for xref=%s: %s",
@@ -720,6 +810,11 @@ def _get_simple_font_correction_map(
     font's non-Unicode ``cmap`` records the missing bridge: PDF character code to
     glyph name. Subsetters commonly empty the Unicode cmap while retaining this
     Mac format-6 table so a renderer can still select the right drawing.
+
+    Provenance is translated with the values. ``gid_correction_map`` records which GIDs
+    were metric-guessed (see :class:`_Reconstruction`); after translation the keys are
+    character codes, so the guessed set has to be re-expressed in codes or the guard
+    downstream would look GIDs up in a code-keyed map and silently decline nothing.
     """
 
     if not _simple_font_uses_embedded_encoding(doc, font_xref):
@@ -747,13 +842,21 @@ def _get_simple_font_correction_map(
                         if gid is not None:
                             code_candidates.setdefault(code, set()).add(gid)
 
-            return {
-                code: gid_correction_map[gid]
-                for code, gids in code_candidates.items()
-                if len(gids) == 1
-                for gid in gids
-                if gid in gid_correction_map
-            }
+            guessed_gids = _reconstruction_guesses(gid_correction_map)
+            by_code: dict[int, str] = {}
+            guessed_codes: set[int] = set()
+            for code, gids in code_candidates.items():
+                if len(gids) != 1:
+                    continue
+                gid = next(iter(gids))
+                if gid not in gid_correction_map:
+                    continue
+                by_code[code] = gid_correction_map[gid]
+                if gid in guessed_gids:
+                    guessed_codes.add(code)
+            translated = _Reconstruction(by_code)
+            translated.metric_guessed = frozenset(guessed_codes)
+            return translated
         finally:
             font.close()
     except Exception as exc:  # noqa: BLE001 - an unusable cmap means no repair
@@ -1045,6 +1148,204 @@ def _patch_single_cmap(
     return corrections
 
 
+def _rewrite_discards_authored_repha(pdf_value: str, correct_value: str) -> bool:
+    """True when a reconstruction re-identifies an authored repha as a bare mark.
+
+    A repha (``र`` + virama) is a member of a consonant cluster; a dependent vowel
+    sign is not. No shaping makes one glyph both, so a reconstruction offering a bare
+    vowel sign for a glyph whose ``/ToUnicode`` says ``र्`` is claiming a different
+    glyph identity rather than correcting that mapping. This predicate says when that
+    has happened; whether the claim is nonetheless believed is
+    :func:`_decline_authored_repha_rewrites`'s decision, because it depends on what
+    evidence produced the claim.
+
+    ⚠️ A repha rewritten to something *containing a consonant* is the opposite case
+    and is deliberately NOT matched. That is the known displaced-CMap shape this
+    module exists to repair: the PDF says ``र्`` where the embedded program says
+    ``य``/``ष``/``च`` because the authored table is shifted, and the reconstruction is
+    right. Measured over the 64-document no-gate Kokila population the two classes do
+    not overlap at all -- 111 GIDs / 13,354 drawn glyphs rewrite an authored ``र्`` to
+    a value carrying a consonant, and 12 GIDs / 1,106 drawn glyphs rewrite one to a
+    bare vowel sign; on the 55-document gated sample, 225 GIDs / 74,352 against
+    17 GIDs / 7,432. Only the second class can be declined, so nothing that carries
+    the repair's measured gain is reachable from here.
+
+    The vowel-sign test is exactly :func:`_is_devanagari_matra` and is not widened to
+    anusvara, candrabindu or nukta: :func:`_infer_mark_variants`, which produces every
+    value this predicate has been observed to decline, can only ever emit one of five
+    dependent vowel signs (``ि``, ``ु``, ``ू``, ``े``, ``ै``), all inside that range.
+    Widening past the measured population would be speculation.
+
+    What this is NOT: :data:`_INCIDENTAL_FACE_GLYPH_SHARE` refuses a whole *document*
+    when a face it *cannot repair at all* draws more than an incidental share of it.
+    That decision is keyed on :func:`_is_named_repair_font` -- which matches only
+    ``kalimati`` and ``lohit`` -- and is reached only when the correction map came back
+    empty. Neither holds for the case here: the faces are Mangal and Arial Unicode MS,
+    their correction maps are large, and the repair runs. The two mechanisms answer different
+    questions and are deliberately kept apart.
+    """
+
+    # There is deliberately no second "and the reconstruction has no repha of its own"
+    # clause. Neither ``र`` nor the virama is a dependent vowel sign, so a value that
+    # satisfies the test below cannot contain ``र्``, and written as a clause it
+    # survived mutation -- unreachable as a distinct outcome, which is worse than
+    # absent because it reads as a live check. The ``(र् -> र्)`` and ``(र् -> कर्)``
+    # cases in ``tests/test_authored_repha_guard.py`` pin that behaviour through the
+    # vowel-sign test instead.
+    if _RA + _VIRAMA not in pdf_value:
+        return False
+    return bool(correct_value) and all(
+        _is_devanagari_matra(char) for char in correct_value
+    )
+
+
+def _reconstruction_supplies_no_repha(correction_map: dict[int, str]) -> bool:
+    """Whether this reconstruction places no repha anywhere in the face it speaks for.
+
+    This is the condition that tells the two directions of the same glyph pattern apart,
+    and it is the only thing measured that does. An authored ``र्`` rewritten to a
+    metric-guessed vowel sign is right on some documents and wrong on others, with the
+    *same* GID, the *same* face and the *same* word -- ``आर्थिक`` goes 8 -> 95 on OAG 5785
+    and 102 -> 6 on OAG 5760.
+
+    What separates them is whether the reconstruction has any notion of where the repha
+    is. If it does, the authored ``र्`` on a vowel-sign glyph is spurious and removing it
+    is a repair. If it does not, the reconstruction is blind to the repha for this face --
+    its reference table has no entry for one -- so the authored values are the document's
+    only repha evidence and taking them away deletes the mark outright. That is the
+    transposition case: the producer's table has the repha glyph and a wide ikar variant
+    swapped, the base decoding is accidentally correct, and fixing one half destroys it.
+
+    Measured over all 284 documents the guard touches corpus-wide, per CMap, against the
+    same tree with the guard disabled:
+
+        reconstruction supplies a repha      declining LOSES    136 CMaps  -4,517 words
+                                             declining gains      3 CMaps      +3 words
+        reconstruction supplies none         declining GAINS    139 CMaps  +4,988 words
+                                             no effect           46 CMaps       0
+
+    Zero losses on the side this admits, and 3 words of gain forgone on the side it
+    refuses. The separation is on presence, not magnitude: repha-valued entries run 47-108
+    per CMap on the losing side and exactly 0 on the gaining side, so no threshold is
+    involved.
+
+    Asked of the map as it will be applied -- reconstruction merged over the trace
+    fallback -- because that is what decides the output, and it is what was measured.
+    """
+
+    return not any(_RA + _VIRAMA in value for value in correction_map.values())
+
+
+def _decline_authored_repha_rewrites(
+    pdf_map: dict[int, str],
+    correction_map: dict[int, str],
+    *,
+    guessed: Container[int],
+    exempt: Container[int] = frozenset(),
+) -> dict[int, str]:
+    """Drop GUESSED reconstruction entries that would discard an authored repha.
+
+    Three conditions, each with its own measured population, and all three are needed.
+
+    The first is the category test in :func:`_rewrite_discards_authored_repha`: only a
+    bare-vowel-sign claim over an authored ``र्`` is a candidate at all, never the
+    consonant-bearing rewrite that carries the repair's gain.
+
+    The second is ``guessed`` -- provenance. :func:`_infer_mark_variants` matches glyph
+    *metrics* against five candidate vowel signs, so its answer is evidence about a
+    shape; the font's own ``cmap``, its ``GSUB`` and the outline-digest reference table
+    are exact readings of the embedded program, and an exact reading IS evidence against
+    the authored table. Declining exact readings as well cost 68 canonical repha words
+    on the 55-document gated sample, added 97 corrupt forms and 9
+    ``malformed_conjunct_ra``, and moved document 4070 from ``clean`` to ``suspect``.
+
+    The third is :func:`_reconstruction_supplies_no_repha`, and it is the one that keeps
+    this from being a regression of the very defect it fixes. The same rewrite -- same GID,
+    same face, same word -- is right on some documents and wrong on others: ``आर्थिक`` goes
+    8 -> 95 on OAG 5785 when it is declined and 102 -> 6 on OAG 5760. Only the
+    reconstruction's own repha supply separates those; see that function for the table.
+
+    ⚠️ TWO OTHER DISCRIMINATORS WERE MEASURED AND REJECTED. Do not retry them without new
+    evidence.
+
+      * *The well-formedness of the authored repha in the existing text* -- the shape this
+        guard was originally asked for. Per candidate GID, the share of authored-``र्``
+        occurrences followed by a consonant is 0.399 on 5471 where declining is right and
+        1.000 on 4070 where it is wrong. The populations overlap completely; there is no
+        gap and no threshold anywhere in this guard.
+      * *The font family* (unrouted faces only, keyed on
+        ``font_classifier._KNOWN_BROKEN_CMAP``). It separates the two samples that were to
+        hand and NOT the corpus: over all 284 affected documents, Mangal and Arial Unicode
+        MS alone account for 101 documents losing 3,337 canonical words and 82 gaining
+        2,783. It also coupled the guard's scope to the routed set, so routing a family
+        would silently switch the guard off for it.
+
+    Dropping the entry rather than skipping it inside :func:`_patch_single_cmap` is
+    what keeps the authored value: a GID absent from the correction map is left at
+    whatever the PDF's CMap already said, and the fill loop there only writes GIDs the
+    PDF has no entry for. It also leaves :func:`_meaningful_cmap_diff_count` reading
+    the *unfiltered* reconstruction, which is correct -- that count answers "does the
+    embedded program disagree with the authored table", which is still true of a
+    disagreement this declines to act on, and the Kokila displacement fingerprint is
+    built on one such disagreement (GID 108, authored ``र्``, program ``ि``).
+
+    ``exempt`` carries GIDs whose repha rewrite is separately proven, so the guard defers
+    to evidence rather than overriding it. The one caller passes
+    :data:`_KOKILA_DISPLACEMENT_GIDS` for a face-scoped, corroborated displacement pair.
+    ⚠️ That path is currently **inert**: the pair fingerprint requires a Kokila face and
+    ``kokila`` is routed, so the face condition already returns the map untouched. It is
+    retained rather than deleted because it becomes load-bearing the moment the pair check
+    is widened to another family or ``kokila`` is unrouted, and because a guard silently
+    overriding corroborated evidence is the failure it prevents.
+    ``tests/test_authored_repha_guard.py`` pins both halves -- the parameter's behaviour
+    at unit level, and the production path's current no-op.
+
+    ``guessed`` is a required keyword rather than defaulted empty on purpose: a caller
+    that forgot it would silently turn the guard off, which is exactly the failure this
+    function exists to prevent.
+
+    ⚠️ **On measuring this, for whoever changes it next.** The provenance split above was
+    first measured with a probe that *re-implemented* the four-source composition of
+    :func:`_get_font_correction_map` rather than calling it, and that probe reported ZERO
+    metric guesses on the gated sample -- which would have made the face condition look
+    unnecessary. It was wrong: wrapping the shipped function instead showed 7,180 drawn
+    glyphs of guessed rewrites there, on Kalimati GID 466/467. A replicated composition is
+    not the composition. Instrument by wrapping what ships.
+
+    Scope is per GID for the category and provenance tests and per FACE for the repha
+    supply test, which is what the code structure and the measurement both ask for. The
+    correction map is built and cached per embedded font program (``fontfile_maps``) and
+    applied per ``/ToUnicode`` stream, so a face is the coarsest unit that has a
+    reconstruction at all, and "does this reconstruction know where the repha is" is a
+    question about the whole map rather than about one GID. On the four documents this was
+    built for, the harmful rewrites are 8 GIDs out of 141 the same faces rewrite
+    correctly. Declining the face would forfeit the matra
+    repair that takes all four from ``garbled`` to ``suspect``
+    (``malformed_conjunct_ra`` 183/233/230/318 -> 0); declining the document would
+    forfeit the whole 64-document gain.
+    """
+
+    if not _reconstruction_supplies_no_repha(correction_map):
+        return correction_map
+    declined = {
+        gid
+        for gid, correct_value in correction_map.items()
+        if gid in guessed
+        and gid not in exempt
+        and gid in pdf_map
+        and _rewrite_discards_authored_repha(pdf_map[gid], correct_value)
+    }
+    if not declined:
+        return correction_map
+    logger.debug(
+        "Declining %d reconstruction entr%s that would discard an authored repha: %s",
+        len(declined),
+        "y" if len(declined) == 1 else "ies",
+        sorted(declined),
+    )
+    return {gid: value for gid, value in correction_map.items() if gid not in declined}
+
+
 def _meaningful_cmap_diff_count(
     pdf_map: dict[int, str],
     correction_map: dict[int, str],
@@ -1220,10 +1521,24 @@ def _is_generic_type0_font_name(font_name: str) -> bool:
     return bool(re.fullmatch(r"(?:cidfont\+)?f\d+", font_name, re.IGNORECASE))
 
 
+#: Families this function groups by, spelled out rather than read from
+#: `_KNOWN_BROKEN_CMAP`.
+#:
+#: 🛑 It DID read that set, which coupled shared-CMap representative grouping to the
+#: routing decision -- so adding one of the families the routing comment invites
+#: (nirmala, utsaah) would silently change which faces are treated as one owner, a
+#: question that has nothing to do with whether their CMap needs repair. That is the same
+#: coupling this change deliberately removes from the repha guard, reintroduced two files
+#: away. Bounded in practice, because `_shared_type0_owners_are_homogeneous` still
+#: requires one fontfile, but an explicit tuple costs nothing and keeps the two decisions
+#: separable.
+_OWNER_FAMILIES: tuple[str, ...] = ("kalimati", "kokila", "lohit", "mangal")
+
+
 def _font_owner_family(font_name: str) -> str:
     """Stable ownership class used before selecting a shared-CMap representative."""
 
-    for family in ("kalimati", "lohit", "kokila"):
+    for family in _OWNER_FAMILIES:
         if _font_name_matches_family(font_name, family):
             return family
     if _is_generic_type0_font_name(font_name):
@@ -1393,6 +1708,13 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
     }
     patched = False
     unrepaired_named_fonts: set[str] = set()
+    #: Per CMap, the GIDs whose repha rewrite is separately proven and so exempt from
+    #: `_decline_authored_repha_rewrites`. Only the corroborated Kokila displacement
+    #: pair earns an entry.
+    proven_repha_rewrites: dict[int, frozenset[int]] = {}
+    #: Per CMap, the GIDs whose reconstruction value is a metric guess rather than an
+    #: exact reading of the embedded program. Only those may be declined.
+    metric_guessed: dict[int, frozenset[int]] = {}
     for to_unicode_xref, owner_xrefs in candidate_font_owners.items():
         owner_types = {font_types[xref] for xref in owner_xrefs}
         named_owner_names = {
@@ -1434,7 +1756,19 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
                     unrepaired_named_fonts.add(font_name)
                 continue
 
-            _patch_single_cmap(doc, to_unicode_xref, correction_map)
+            # Wired on every path that rewrites a CMap, because "all of them are
+            # guarded" is easier to hold than to re-derive per call site. The guard is
+            # now keyed on whether the reconstruction places any repha at all, not on
+            # the font's family, so this needs no per-face reasoning.
+            _patch_single_cmap(
+                doc,
+                to_unicode_xref,
+                _decline_authored_repha_rewrites(
+                    pdf_map,
+                    correction_map,
+                    guessed=_reconstruction_guesses(correction_map),
+                ),
+            )
             patched = True
             continue
 
@@ -1480,6 +1814,18 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
             correction_map = _get_font_correction_map(doc, font_xref)
             if fontfile_xref is not None:
                 fontfile_maps[fontfile_xref] = correction_map
+        # Captured here, before `combined_map` and the Kokila scoping rebuild it into a
+        # plain dict and drop the provenance the reconstruction carries.
+        #
+        # 🛑 It must therefore be DROPPED again on every path that discards this
+        # reconstruction, and two such paths exist below -- no displacement corrections,
+        # and below the meaningful-diff floor. Both replace the map with `trace_map`, so
+        # leaving the entry in place made `_decline_authored_repha_rewrites` filter a
+        # trace-derived correction using guessed GIDs from a map that was thrown away:
+        # evidence about a different map, which is what this function's own closing
+        # warning argues against. The `not correction_map` path needs no `pop` because
+        # `_reconstruction_guesses` of an empty map is already empty.
+        metric_guessed[to_unicode_xref] = _reconstruction_guesses(correction_map)
 
         # Generic F<n> resources are not face-attributed. They may fill only
         # missing entries, and only when every owner proves the same GID space.
@@ -1523,6 +1869,11 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
             "kokila",
         )
         if pair_scoped:
+            # Corroborated per face before it is applied, so it outranks the generic
+            # repha guard below. Inert while `kokila` is routed -- the guard's face
+            # condition already spares a Kokila reconstruction entirely -- and kept for
+            # the case where that stops being true.
+            proven_repha_rewrites[to_unicode_xref] = _KOKILA_DISPLACEMENT_GIDS
             displacement_corrections = _kokila_displacement_corrections(
                 font_name,
                 pdf_map,
@@ -1542,6 +1893,9 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
             )
             if not displacement_corrections:
                 if trace_map:
+                    # The reconstruction is discarded here, so its guessed-GID
+                    # provenance must go with it. See the note at `metric_guessed`.
+                    metric_guessed.pop(to_unicode_xref, None)
                     to_unicode_maps[to_unicode_xref] = trace_map
                 continue
             # Above the generic floor the embedded map already proves ordinary
@@ -1553,6 +1907,8 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
             )
         elif meaningful_diffs < 3 and not named_repair_font:
             if trace_map:
+                # Same as above: what ships is the trace map, not this reconstruction.
+                metric_guessed.pop(to_unicode_xref, None)
                 to_unicode_maps[to_unicode_xref] = trace_map
             continue
 
@@ -1574,7 +1930,12 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
         _patch_single_cmap(
             doc,
             to_unicode_xref,
-            correction_map,
+            _decline_authored_repha_rewrites(
+                pdf_maps[to_unicode_xref],
+                correction_map,
+                guessed=metric_guessed.get(to_unicode_xref, frozenset()),
+                exempt=proven_repha_rewrites.get(to_unicode_xref, frozenset()),
+            ),
             font_name=font_names[type0_xref],
             allow_gid_exceptions=_stream_allows_face_specific_gids(
                 doc,
@@ -1825,6 +2186,14 @@ def normalize_devanagari_spacing(
         if text[index] == " ":
             next_char = text[index + 1] if index + 1 < len(text) else None
             remove = False
+            # Reconciliation note: the v18 line still carried the blanket
+            # ``previous == _VIRAMA`` deletion, narrowed by ``next_char !=
+            # _PUA_CONTEXTUAL_NE``. Upstream removed that rule outright and
+            # replaced it with the targeted ``_BROKEN_PURYA_PATTERN`` below,
+            # because a blanket virama-space deletion also joins real word
+            # boundaries. Upstream's rule is kept: with no blanket deletion
+            # there is no space for the contextual-ne exception to protect, so
+            # the narrowing is unnecessary here rather than lost.
             # A caller mid-way through marker substitution asks for the space before a
             # marker to survive, because at that point the space is what tells the next
             # pass where the marker's base ended. Only the markers this module places are
@@ -1865,8 +2234,13 @@ def normalize_devanagari_spacing(
             # on a deferred line has the same evidence as one on an undeferred line and
             # was getting the opposite treatment.
             #
-            # No local rule separates the two cases, so this keeps the space -- upstream's
-            # measured position -- and repairs only the narrow `पुर्याउनु` stem below.
+            # ⚠️ That reasoning ended "no local rule separates the two cases", and THAT
+            # part was wrong -- corrected here rather than left standing, because the rule
+            # it argued against now exists twenty lines below. What separates them is the
+            # consonant BEFORE the virama, not the virama; see the comment at
+            # `_BROKEN_NYA_CONJUNCT_PATTERN`. What survives from the paragraphs above is
+            # the narrower and still-true claim: no rule keyed on the *pass* can separate
+            # them, so there is no blanket deletion here.
             if remove:
                 index += 1
                 continue
@@ -1874,8 +2248,40 @@ def normalize_devanagari_spacing(
         index += 1
 
     normalized = "".join(result)
-    # PyMuPDF exposes this Kalimati glyph sequence with an internal space in
-    # forms of ``पुर्याउनु``. A blanket virama-space deletion also joins real
-    # word boundaries (``छन् तथा``), so repair only the measured lexical stem.
-    # The branch above records why the general rule is not worth having.
-    return _BROKEN_PURYA_PATTERN.sub("", normalized)
+    # PyMuPDF exposes some Kalimati conjuncts with an internal space. A blanket
+    # virama-space deletion -- which the v18 extractor line still carried -- also
+    # joins real word boundaries, so what decides it is the consonant BEFORE the
+    # virama, not the virama:
+    #
+    #   preserve  सम्वत् २०८०  पश्चात् 2024  एवम् ।  अर्थात् अब  छन् तथा  क् ख
+    #   delete    पुर् याएको   नपुर् याई     सञ् चालन
+    #
+    # Every preserved case ends in a consonant Nepali words do end in (त् म् न्,
+    # and क् kept conservatively); both deleted classes end in one that cannot be
+    # word-final -- a forward-attaching repha, and ञ्, which occurs only as the
+    # first member of a conjunct (सञ्चालन, पञ्च, अञ्चल). So this is upstream's
+    # targeted rule, extended to the second class rather than widened to all
+    # viramas.
+    #
+    # ✅ The ञ् half is MEASURED, not only argued from orthography, because "never
+    # word-final" is an empirical claim and a wrong one would destroy words. Over the
+    # published v1.3 transcripts (6,235 files) this pattern fires **273 times in 112
+    # documents**, and the consonant after the space is only च (247), ज (14), र (8),
+    # छ (2) or स (2) -- exactly ञ's conjunct set. All 37 distinct pairs:
+    #
+    #   261 of 273 produce a well-formed word -- सञ्चालन, सञ्चय, सञ्चयकोष, सञ्चार,
+    #       मनोरञ्जन, मञ्च, अञ्चल, पञ्जीकरण, वाञ्छनीय, कञ्चनपुर, निरञ्जन, नेपालगञ्ज;
+    #    12 stay malformed for reasons UPSTREAM of this rule -- 8 where च was itself
+    #       mis-decoded as र् (`सञ्र्ालन`) and 4 inside already-garbled runs. In none of
+    #       them is the joined form worse than the split one.
+    #     0 destroy a real word boundary.
+    #
+    # ⚠️ A first pass at this measurement read 359 word-final ञ् and looked like a
+    # refutation. That was an instrument error: the "word-final" pattern used
+    # `(?=\s|$)`, which also matches the space this rule deletes, so it counted the
+    # rule's own targets. Measured disjointly, ञ् with no following space appears 48
+    # times -- all in ONE document, as a stray `ञ्\n` between unrelated words, a
+    # separate defect this rule does not touch -- and ञ् before a space then a
+    # non-consonant 37 times, all cell-boundary truncations, also untouched.
+    normalized = _BROKEN_PURYA_PATTERN.sub("", normalized)
+    return _BROKEN_NYA_CONJUNCT_PATTERN.sub("", normalized)

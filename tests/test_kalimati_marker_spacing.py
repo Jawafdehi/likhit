@@ -90,20 +90,42 @@ def test_the_contextual_ne_marker_is_not_in_the_protected_set() -> None:
         "सम्वत् २०७४",
         "एवम् अन्य",
         "गर्नुपर्ने छन् तथा भएका",
-        "सञ् चालन विविध",
     ],
 )
 def test_a_post_virama_space_survives_in_either_pass(text: str) -> None:
     """🛑 The regression this file was written for.
 
-    ``सञ् चालन`` is in this list on purpose even though joining it would be *correct*
-    orthographically. Nothing local separates it from ``छन् तथा``, and a rule that gets one
-    right gets the other wrong, so the space is kept in both cases. Deleting content on a
-    guess is worse than leaving a split word visible.
+    A blanket post-virama space deletion joins real word boundaries, so every case here
+    keeps its space in both passes.
+
+    ⚠️ ``सञ् चालन`` USED TO BE in this list, on the stated ground that "nothing local
+    separates it from ``छन् तथा``, and a rule that gets one right gets the other wrong."
+    That premise is false and the reconciliation is what showed it: what separates them is
+    the consonant BEFORE the virama, not the virama. ``त् म् न्`` are word-final in Nepali
+    (``सम्वत्``, ``एवम्``, ``छन्``); ``ञ्`` never is -- it occurs only as the first member of
+    a conjunct (``सञ्चालन``, ``पञ्च``, ``अञ्चल``). So the ञ case is decidable locally and is
+    now asserted joined, in
+    :func:`test_a_post_nya_space_is_joined_because_nya_is_never_word_final`. Every case
+    remaining in this list is untouched by that rule, which is why they still pass.
     """
 
     assert normalize_devanagari_spacing(text) == text
     assert normalize_devanagari_spacing(text, preserve_marker_spaces=True) == text
+
+
+def test_a_post_nya_space_is_joined_because_nya_is_never_word_final() -> None:
+    """``सञ् चालन`` joins, and that is a narrowing of the blanket rule, not a return to it.
+
+    The discriminator is the consonant preceding the virama, so this bites exactly where a
+    word-final consonant cannot occur. The four cases in the parametrized test above are the
+    negative control: they share the post-virama space and are all preserved.
+    """
+
+    assert normalize_devanagari_spacing("सञ् चालन विविध") == "सञ्चालन विविध"
+    assert (
+        normalize_devanagari_spacing("सञ् चालन विविध", preserve_marker_spaces=True)
+        == "सञ्चालन विविध"
+    )
 
 
 def test_a_real_combining_character_still_closes_the_gap() -> None:

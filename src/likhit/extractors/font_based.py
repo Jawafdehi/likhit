@@ -59,6 +59,7 @@ from likhit.extractors.legacy_maps import (
 from likhit.extractors.numeric_boundaries import (
     apply_line_numeric_boundary_repairs,
     collect_page_repairs_by_line,
+    line_origin_key,
 )
 from likhit.extractors.pua_maps import (
     _font_name_matches_family,
@@ -4914,11 +4915,21 @@ class FontBasedStrategy(ExtractionStrategy):
                 tuple[int, int],
                 list[tuple[float, float, float, float, str, str]],
             ] = defaultdict(list)
+            # The repair lookup key, taken over EVERY span on the line including the ones
+            # dropped below. `get_cid_marked_page_dict` may have re-extracted the page
+            # with the CID flag, which re-blocks it, so (block_number, line_number) does
+            # not name the line the repair was measured on -- see
+            # `numeric_boundaries.group_repairs_by_line`.
+            line_origins: dict[tuple[int, int], tuple[float, float]] = {}
             for block_number, block in enumerate(page_dict["blocks"]):
                 if "lines" not in block:
                     continue
                 for line_number, line in enumerate(block["lines"]):
                     spans = list(line["spans"])
+                    line_origins[(block_number, line_number)] = line_origin_key(
+                        tuple(float(value) for value in span["bbox"][:4])
+                        for span in spans
+                    )
                     visual_spans = sorted(
                         spans,
                         key=lambda span: float(span["bbox"][0]),
@@ -5015,7 +5026,7 @@ class FontBasedStrategy(ExtractionStrategy):
                 line_text = apply_line_numeric_boundary_repairs(
                     line_text,
                     numeric_repairs.get(
-                        (page_index + 1, block_number, line_number),
+                        (page_index + 1, *line_origins[(block_number, line_number)]),
                         (),
                     ),
                 )

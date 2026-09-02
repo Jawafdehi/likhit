@@ -60,6 +60,26 @@ failures on ordinary text:
 The scan is split into :func:`_patterns_in_source` so it can be tested against
 synthetic source rather than only against whatever ``src/`` happens to contain -- a scan
 nobody can test is a scan whose blind spots are found in production.
+
+🛑 WHAT THIS FILE DOES NOT CATCH, AND IT IS WEAKER THAN THE TRAP IT WAS WRITTEN FOR.
+This file guards *normalization stability*, not *"write escapes"*. Most Devanagari is
+already a normalization fixed point -- only the twelve characters in
+``_ALL_FORMS_DECOMPOSE`` and ``_NFD_ONLY_DECOMPOSE`` move at all -- so **a pasted
+literal built from stable characters passes every test here**. Measured: replacing one
+``\\uXXXX`` sequence in ``likhit/ocr_acceptance.py`` with the pasted characters it
+denotes left this file green at 110 passed, and was caught only by that module's own
+`TestPatternHygiene`, which forbids pasting outright.
+
+That is a real gap and not a quibble, because the two rules are not equally usable.
+"This pattern is a normalization fixed point" is a property of the specific characters
+someone happened to type, so it holds until the next edit adds a nukta consonant to the
+same class -- and at that point the failure is the loud one this file exists to prevent.
+"Never paste Devanagari into a pattern" needs no per-character knowledge and cannot
+decay. So this file is the backstop that catches the instance; a per-module
+escapes-only assertion is what prevents the class. Where both exist, expect this file
+to stay green while the other one fails, and do not read that as the other one being
+redundant. :func:`test_a_pasted_but_stable_literal_passes_every_test_in_this_file`
+pins the gap so it cannot be rediscovered the hard way.
 """
 
 from __future__ import annotations
@@ -370,6 +390,64 @@ def test_the_signs_with_no_decomposition_are_safe_in_a_literal(char):
 
     for form in NORMALIZATION_FORMS:
         assert unicodedata.normalize(form, char) == char
+
+
+def test_a_pasted_but_stable_literal_passes_every_test_in_this_file():
+    """This file's blind spot, executable so it cannot be argued away.
+
+    The test above says some Devanagari characters are safe in a literal. This is that
+    fact's uncomfortable consequence: because MOST Devanagari is a normalization fixed
+    point, a wholly pasted pattern usually satisfies every assertion here. So a green
+    run of this file does NOT mean the source is written with escapes -- it means
+    nobody has yet pasted one of the twelve characters that move.
+
+    Measured on the real instance rather than only asserted synthetically: replacing
+    one escape sequence in ``likhit/ocr_acceptance.py`` with its pasted characters left
+    this file green at 110 passed. Only that module's own `TestPatternHygiene`, which
+    scans compiled patterns for any character in the Devanagari block, failed.
+
+    Why the weaker rule is not good enough on its own: stability is a property of the
+    characters someone happened to type, so a pasted class is safe right up until an
+    edit adds a nukta consonant to it -- and that edit's failure mode is
+    ``re.error`` at import, i.e. the library stops loading. The fragile and the safe
+    form are visually identical, so review cannot tell them apart either. "Never paste"
+    is checkable without knowing which characters are exclusions; "paste only stable
+    characters" is not.
+    """
+
+    # A pattern of ordinary Nepali: "could not be read" and "illegible", the kind of
+    # vocabulary a real detector carries. No exclusion, no NFD-only sign.
+    #
+    # 🛑 THIS LITERAL MUST STAY PASTED, and the assertion below is what enforces it.
+    # At RUNTIME a pasted literal and its `\\uXXXX` spelling are the same `str`, so no
+    # assertion on the value can tell them apart -- rewriting this fixture into escapes
+    # would leave the test green while destroying what it demonstrates. Source form is
+    # therefore checked against this file's own bytes, the same way
+    # `_patterns_in_source` checks src/.
+    pasted = "पढ्न सकिएन|अपठनीय"
+
+    source = pathlib.Path(__file__).read_text(encoding="utf-8")
+    assert f'pasted = "{pasted}"' in source, (
+        "the fixture above has been rewritten as escapes; this test then demonstrates "
+        "nothing, because escapes and pasted characters are identical at runtime"
+    )
+
+    # And yet it satisfies both properties this file asserts, under all four forms --
+    # so a green run here is not evidence that src/ is written with escapes.
+    for form in NORMALIZATION_FORMS:
+        assert unicodedata.normalize(form, pasted) == pasted
+        assert re.compile(unicodedata.normalize(form, pasted))
+
+    # For contrast, the same construction over an exclusion IS caught -- so the gap is
+    # specifically "stable characters", not "literals in general".
+    #
+    # This one is written with ESCAPES while the fixture above is deliberately not,
+    # and the asymmetry is forced: `test_this_test_file_is_itself_normalization_stable`
+    # asserts this file's OWN source is a fixed point, so a pasted exclusion here makes
+    # the file fail that test. Which is the hazard demonstrating itself -- writing this
+    # line pasted is exactly what that test caught.
+    unstable = "[\u0915-\u0939\u0958-\u095f]"
+    assert unicodedata.normalize("NFC", unstable) != unstable
 
 
 def test_a_literal_range_over_an_exclusion_becomes_an_invalid_regex():

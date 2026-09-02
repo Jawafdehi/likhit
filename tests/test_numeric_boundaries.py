@@ -12,6 +12,7 @@ import likhit.devanagari as devanagari_module
 
 import likhit.converters.nepali_pdf as nepali_pdf_module
 from likhit.converters.nepali_pdf import NepaliPdfConverter
+import likhit.extractors.font_based as font_based_module
 from likhit.extractors.font_based import FontBasedStrategy
 import likhit.extractors.numeric_boundaries as numeric_boundaries_module
 from likhit.extractors.numeric_boundaries import (
@@ -28,9 +29,12 @@ from likhit.extractors.numeric_boundaries import (
     collect_page_numeric_boundary_evidence,
     collect_page_numeric_boundary_repairs,
     collect_page_repairs_by_line,
+    group_repairs_by_line,
+    line_origin_key,
     repair_markdown_numeric_boundaries,
     requires_geometry_aware_candidate,
 )
+import likhit.nepali_pdf_repair as nepali_pdf_repair_module
 from likhit.nepali_pdf_repair import extract_repaired_text_blocks
 
 
@@ -321,6 +325,34 @@ def test_selects_unique_minimal_rule_partition(
     assert selected == expected
 
 
+def test_selects_unique_minimal_partition_of_grouped_integers() -> None:
+    """A beruju column carries no decimal point, and used to narrow no run at all.
+
+    Document 11754 page 8, verbatim. The two rule cuts are at 12 and 21; only the one at
+    12 is real. Requiring every part to match `_DECIMAL_AMOUNT_PATTERN` validated no
+    partition, so both cuts survived and `_repairs_for_contiguous_runs` then rejected the
+    whole run because `['३२,१०,६५,४९४', '७,३९,५२,३', '८८']` holds an implausible part --
+    the correct cut died with the spurious one.
+    """
+
+    text = "३२,१०,६५,४९४७,३९,५२,३८८"
+    characters = [
+        _Character(
+            text=character,
+            origin_x=float(index),
+            bbox=(float(index), 0.0, float(index + 1), 12.0),
+            font="Kalimati",
+            size=10.0,
+            span_number=0,
+        )
+        for index, character in enumerate(text)
+    ]
+
+    selected = _select_minimal_rule_cuts(characters, {12, 21}, set())
+
+    assert selected == {12}
+
+
 def test_preserves_ambiguous_adjacent_small_rule_cells() -> None:
     text = "125500"
     characters = [
@@ -385,7 +417,7 @@ def test_line_repair_changes_only_geometry_scoped_duplicate() -> None:
 
     repaired = apply_line_numeric_boundary_repairs("12500 12500", [repair])
 
-    assert repaired == "12500 1 | 2500"
+    assert repaired == "12500 1 2500"
 
 
 def test_line_repair_matches_devanagari_equivalent() -> None:
@@ -393,7 +425,158 @@ def test_line_repair_matches_devanagari_equivalent() -> None:
 
     repaired = apply_line_numeric_boundary_repairs("३८००००।००२३।", [repair])
 
-    assert repaired == "३८००००।०० | २३।"
+    assert repaired == "३८००००।०० २३।"
+
+
+def test_line_repair_never_writes_a_cell_delimiter() -> None:
+    """An extracted line becomes a Markdown table CELL through its fragment.
+
+    `renderers/markdown.py::_raw_table_row_lines` emits every row from the same
+    `col_count` columns and does not escape a pipe already in the cell text, so a pipe
+    written here states a column the table does not have and shifts every later cell of
+    that row.
+    """
+
+    repair = _repair("123.45678.90", ("123.45", "678.90"))
+
+    repaired = apply_line_numeric_boundary_repairs("123.45678.90", [repair])
+
+    assert "|" not in repaired
+    assert repaired == "123.45 678.90"
+
+
+def test_markdown_repair_does_not_widen_a_table_row() -> None:
+    """A contiguous run inside ONE cell must not be split into two cells.
+
+    The row is rendered from a fixed column count, so the repaired row has to keep the
+    cell count of the rest of its table. Only `_repair_pipe_lines_by_digit_signature`
+    may write a pipe, because its pattern matches across delimiters that are already
+    there (see `test_markdown_repair_recovers_values_from_misaligned_table_columns`).
+    """
+
+    repair = _repair("123.45678.90", ("123.45", "678.90"))
+
+    repaired = repair_markdown_numeric_boundaries(
+        "| a | 123.45678.90 | b |",
+        [repair],
+    )
+
+    assert repaired == "| a | 123.45 678.90 | b |"
+    assert repaired.count("|") == 4
+
+
+def test_markdown_repair_still_writes_a_cell_delimiter_outside_a_table_row() -> None:
+    """Outside a row a pipe is not a delimiter, so the cell claim is kept."""
+
+    repair = _repair("123.45678.90", ("123.45", "678.90"))
+
+    repaired = repair_markdown_numeric_boundaries("total 123.45678.90", [repair])
+
+    assert repaired == "total 123.45 | 678.90"
+
+
+def _reblocking(module: object) -> None:
+    """Make `get_cid_marked_page_dict` re-block the page, as the CID flag does.
+
+    `get_cid_marked_page_dict` re-extracts a page with
+    `TEXT_USE_CID_FOR_UNKNOWN_UNICODE` whenever some glyph decodes to U+FFFD, and that
+    extraction groups the same glyphs into a different number of blocks -- measured on
+    document 11724 page 7 as 38 blocks against 39, diverging at block 4. Prepending an
+    empty text block reproduces the only consequence that matters: every block index
+    after the divergence names a different line than the collector measured.
+    """
+
+    real = module.get_cid_marked_page_dict
+
+    def reblocked(page: object) -> dict:
+        page_dict = real(page)
+        page_dict["blocks"] = [{"lines": []}, *page_dict["blocks"]]
+        return page_dict
+
+    module.get_cid_marked_page_dict = reblocked
+
+
+def test_line_origin_key_is_taken_over_every_span_including_empty_ones() -> None:
+    """A caller that drops its empty spans first moves the minimum and loses the key.
+
+    Measured over the 1,843 line-applicable repairs the 102 published `numeric_damage`
+    documents produce: 1,843 resolve when every box is included, 1,379 when the boxes
+    belonging to spans the caller discards are left out.
+    """
+
+    empty_span_box = (12.0, 68.0, 14.0, 83.0)
+    text_span_box = (40.0, 68.4, 96.0, 83.0)
+
+    assert line_origin_key([empty_span_box, text_span_box]) == (68.0, 12.0)
+    assert line_origin_key([text_span_box]) == (68.4, 40.0)
+
+
+def test_repairs_are_grouped_by_page_and_line_origin() -> None:
+    """The index key is geometry, not the enumeration indices of one extraction."""
+
+    repair = NumericBoundaryRepair(
+        page_number=7,
+        block_number=27,
+        line_number=7,
+        start_index=0,
+        merged_text="123.45678.90",
+        parts=("123.45", "678.90"),
+        line_text="123.45678.90",
+        line_origin=(253.8, 103.6),
+    )
+
+    grouped = group_repairs_by_line([repair])
+
+    assert list(grouped) == [(7, 253.8, 103.6)]
+
+
+def test_reusable_pdf_repair_survives_a_reblocked_second_extraction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "ruled.pdf"
+    path.write_bytes(_ruled_numeric_pdf("123.45678.90", cuts=(6,)))
+    monkeypatch.setattr(
+        nepali_pdf_repair_module,
+        "get_cid_marked_page_dict",
+        nepali_pdf_repair_module.get_cid_marked_page_dict,
+    )
+    _reblocking(nepali_pdf_repair_module)
+
+    blocks = extract_repaired_text_blocks(path)
+
+    assert [block.text for block in blocks] == ["123.45 678.90"]
+
+
+def test_font_based_extraction_survives_a_reblocked_second_extraction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "ruled.pdf"
+    path.write_bytes(_ruled_numeric_pdf("123.45678.90", cuts=(6,)))
+    monkeypatch.setattr(
+        font_based_module,
+        "get_cid_marked_page_dict",
+        font_based_module.get_cid_marked_page_dict,
+    )
+    _reblocking(font_based_module)
+
+    result = FontBasedStrategy().extract_text(str(path))
+
+    assert result.raw_text == "123.45 678.90"
+
+
+def test_markdown_repair_chooses_the_separator_per_line() -> None:
+    """One markdown pass sees both kinds of line, so the choice cannot be global."""
+
+    repair = _repair("123.45678.90", ("123.45", "678.90"))
+
+    repaired = repair_markdown_numeric_boundaries(
+        "total 123.45678.90\n| a | 123.45678.90 | b |\n",
+        [repair],
+    )
+
+    assert repaired == "total 123.45 | 678.90\n| a | 123.45 678.90 | b |\n"
 
 
 def test_font_based_extraction_inserts_ruled_numeric_boundaries(
@@ -404,7 +587,7 @@ def test_font_based_extraction_inserts_ruled_numeric_boundaries(
 
     result = FontBasedStrategy().extract_text(str(path))
 
-    assert result.raw_text == "123.45 | 678.90"
+    assert result.raw_text == "123.45 678.90"
 
 
 def test_reusable_pdf_repair_inserts_ruled_numeric_boundaries(
@@ -415,7 +598,7 @@ def test_reusable_pdf_repair_inserts_ruled_numeric_boundaries(
 
     blocks = extract_repaired_text_blocks(path)
 
-    assert [block.text for block in blocks] == ["123.45 | 678.90"]
+    assert [block.text for block in blocks] == ["123.45 678.90"]
 
 
 def test_markdown_repair_recovers_values_from_misaligned_table_columns() -> None:

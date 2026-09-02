@@ -1923,7 +1923,7 @@ def test_cross_span_kokila_deferral_preserves_an_authored_word_boundary(
     right = kalimati_module._PUA_KOKILA_HALF_SA + "थ" + kalimati_module._PUA_IKAR + "त"
 
     assert _extract_kokila_line(monkeypatch, (left, right)) == (
-        "सञ् चालन कारोबारको स्थिति"
+        "सञ्चालन कारोबारको स्थिति"
     )
 
 
@@ -2145,7 +2145,7 @@ def test_existing_positional_marker_keeps_established_spacing_cleanup() -> None:
         needs_reorder=True,
     )
 
-    assert converted == "सञ् चालन विविध"
+    assert converted == "सञ्चालन विविध"
 
 
 def test_normalize_extracted_word_keeps_spaces_between_kalimati_words() -> None:

@@ -8,6 +8,7 @@ from io import BytesIO
 import fitz
 from fontTools.ttLib import TTFont
 
+from likhit.extractors.pua_maps import _font_name_matches_family
 from likhit.pdf_page_analysis import analyze_text_quality, page_max_image_coverage
 
 from . import legacy_maps
@@ -22,7 +23,76 @@ logger = logging.getLogger(__name__)
 # PDF's own CMap (see kalimati.fix_kalimati_cmap), so a document carrying one of
 # these fonts with a correct CMap is left byte-identical -- it just pays for the
 # second extraction pass.
-_KNOWN_BROKEN_CMAP = {"kalimati", "lohit"}
+#
+# ⚠️ Adding a family here is not free even given that gating, because the repair can
+# also *refuse* a document (see kalimati._INCIDENTAL_FACE_GLYPH_SHARE), so each one is
+# added on its own and measured over its whole affected population rather than a
+# sample. What bounds the risk empirically: `kalimati` already fires on 4,879 corpus
+# documents of which 4,502 audit `clean`, and they stay clean.
+#
+# ⚠️ This set once ALSO scoped the authored-repha refusal, so routing a family silently
+# turned that guard off for it. It does not any more: the guard is keyed on whether the
+# reconstruction places any repha at all (`kalimati._reconstruction_supplies_no_repha`),
+# which is a property of the reconstruction rather than of the family. Adding a family
+# here therefore changes only when the repair is ATTEMPTED, which is what this set should
+# ever have meant.
+#
+#   kokila  -- ROUTED. 64 no-gate documents, all of them measured against f7dd065 on the
+#              bare extractor probe: 28 verdicts better, 0 worse; `matra_damage` 29
+#              better and 0 worse (33 -> 24 non-clean, `malformed_conjunct_ra`
+#              1,327 -> 10); canonical repha words 34,300 -> 34,411. On the 55-document
+#              stratified sample of the 1,861 documents where the repair already ran,
+#              verdicts and every axis are 0 better / 0 worse and canonical is +43, with
+#              2 of 55 transcripts differing at all.
+#              It only became landable behind that guard. Unguarded, four documents
+#              (5471, 5487, 5492, 5493) lost CORRECTLY SPELLED words -- `आर्थिक`
+#              49/52/56/62 -> 2/2/2/5 -- because the repair rewrites their MANGAL CMaps,
+#              not their Kokila ones, and a metric guess overwrote an authored `र्`. With
+#              the guard all four are restored to 49/52/56/62 and `repha_loss` is `clean`
+#              on all four, while the matra gain is untouched.
+#              Two things earlier records said about this that MEASUREMENT REFUTED:
+#              the four are NOT separated from the other 60 by base repha count -- that
+#              count runs 93-5,392 over the 64 and the four sit at 2,566-2,912, inside
+#              the bulk; and `_INCIDENTAL_FACE_GLYPH_SHARE` is not "the same shape", it
+#              refuses a whole document over an *unrepairable named* face and cannot
+#              reach this case at all.
+#              The repair's Kokila corroboration logic (`_has_corroborated_kokila_half_sa`,
+#              `_has_proven_kokila_half_tha_outline`, `_kokila_displacement_corrections`)
+#              is unreachable without this entry.
+#   mangal  -- ROUTED, and its outline reference table is what made that safe.
+#              2,874 documents carry a Mangal face by their OWN name table; 425 carry no
+#              Kalimati or Lohit at all, so nothing opened the gate for them (295 clean,
+#              96 suspect, 34 garbled -- and those 34 were the entire matra-garbled
+#              cohort). Table: `mangal_reference.OUTLINE_TO_UNICODE`, 962 corroborated
+#              outlines, answering 98.2% of the glyph instances Mangal draws corpus-wide.
+#              WHY THE TABLE IS LOAD-BEARING AND NOT AN OPTIMISATION. Routing alone, on
+#              those 425: matra +78/-0 but repha_loss -20, `repha_corrupt` 9,482 ->
+#              18,346, and 20,915 Devanagari characters LOST -- the classic trade. With
+#              the table, the same 425: 74 verdicts better, 0 worse, matra +80/-0,
+#              repha_loss +19/-0, `repha_corrupt` 9,482 -> 61, +98,918 Devanagari. At
+#              document grain routing alone takes 0 of the 34 garbled to clean; with the
+#              table 32 of 34 reach clean and none stays garbled. So the trade was never
+#              a property of routing -- it was incompleteness.
+#              THE GUARD INTERACTION, WHICH NO LONGER EXISTS. When the guard was scoped by
+#              this set, routing a family turned it off for that family, and kokila's
+#              protection came from the guard covering the MANGAL faces those documents
+#              also carry -- so this entry should have re-broken 5471/5487/5492/5493. It
+#              did not: all four stayed `clean` with `आर्थिक` at 49/52/56/62, byte-identical
+#              with and without the entry, because the table answers those glyphs EXACTLY
+#              so they were never metric-guessed. The guard has since been re-keyed on
+#              whether the reconstruction places any repha, which removes the coupling
+#              rather than relying on that measurement holding.
+#              Measured together over the 34 matra-garbled documents plus those four:
+#              20 garbled -> clean, 1 garbled -> suspect, 0 worse; `repha_corrupt`
+#              9,318 -> 10; `malformed_conjunct_ra` 325 -> 0; repha-bearing canonical
+#              words +165.7%.
+#              RESIDUE, and it is the guard's case not the table's: a CMap with a
+#              COMPENSATING SWAP, where a CID is drawn but lies outside its own subset's
+#              glyph range, so it has no outline and no outline-keyed table can ever reach
+#              it. 559 such instances corpus-wide; one document (2511) loses three words.
+#              Record: work/2026-08-29-v19-mangal-table/_recon/measurements/.
+#   nirmala -- 75 documents, 1 garbled.  arial unicode -- 100, 0 garbled.  utsaah -- 5.
+_KNOWN_BROKEN_CMAP = {"kalimati", "lohit", "kokila", "mangal"}
 
 # Page-level OCR markers. A "scanned_decoy_text" page is a full-page raster whose
 # only text layer is non-embedded core-font garbage (see cib-press-release
@@ -192,6 +262,107 @@ def resolve_embedded_legacy_maps(doc: fitz.Document) -> dict[str, str]:
     return resolved
 
 
+def _embedded_broken_cmap_family(font_bytes: bytes) -> str | None:
+    """The :data:`_KNOWN_BROKEN_CMAP` family this embed's own name table claims.
+
+    Matched at a font-name BOUNDARY, not by substring. A substring test was flagged in
+    review as possible overmatching, and measured not to be live -- over 400 corpus
+    documents the only pairs that trigger routing are `Kalimati`, `Mangal`, `Mangal-Bold`
+    and `Kokila`, each genuinely naming its family. But that made the guarantee
+    empirical over one corpus rather than structural, for a test over name IDs 16/1/6/4
+    whose values a producer chooses freely.
+
+    `_font_name_matches_family` is already in this repo, already used by
+    `kalimati._font_owner_family`, and gives the structural version for free: it accepts
+    `Mangal`, `Mangal-Bold` and `ABCDEF+Mangal`, and rejects `MangalTwo`. Its own comment
+    records why -- a prefix half-fix once landed at one site and left the suffix case
+    open at the other, which is exactly the shape of defect a second spelling invites.
+    """
+
+    for _name_id, value in _embedded_name_candidates(font_bytes):
+        for family in _KNOWN_BROKEN_CMAP:
+            if _font_name_matches_family(value, family):
+                return family
+    return None
+
+
+def resolve_embedded_broken_cmap(doc: fitz.Document) -> dict[str, str]:
+    """Resource base names whose EMBEDDED name table claims a broken-CMap family.
+
+    :func:`classify_font` can only read the PDF *resource* name, and a producer is
+    free to make that name say nothing: a document may embed Kalimati as
+    ``CIDFont+F2``. The resource name is not the font's identity -- the embedded
+    ``name`` table is -- so the family match is repeated against it here, exactly as
+    :func:`resolve_embedded_legacy_maps` already does for the legacy registry.
+
+    Measured over the 97 documents the published v1.3 audit fails on ``repha_loss``:
+    only 7 trip the resource-name gate, while **71 embed a Kalimati face under a name
+    that does not say so**. Those 71 never reached ``fix_kalimati_cmap`` at all,
+    because :func:`~likhit.nepali_pdf_repair.extract_repaired_text_blocks` gates the
+    whole repair on some font classifying ``broken_cmap``.
+
+    Naming a font here still only *attempts* the repair, as the module comment on
+    :data:`_KNOWN_BROKEN_CMAP` says: the rewrite is gated on the reconstructed
+    mapping disagreeing with the PDF's own CMap, so a document whose CMap is fine is
+    left byte-identical and merely pays for a second extraction pass.
+
+    Returns ``{resource base name: family}``. Only fonts that classify ``correct``
+    are probed -- a font already routed to ``legacy_remap`` must not be downgraded,
+    and one already ``broken_cmap`` needs no further evidence.
+    """
+
+    resolved: dict[str, str] = {}
+    seen_xrefs: dict[int, str | None] = {}
+    for page_index in range(doc.page_count):
+        try:
+            fonts = doc[page_index].get_fonts(full=True)
+        except Exception:  # noqa: BLE001 - one malformed page is no evidence
+            continue
+        for font_info in fonts:
+            if len(font_info) < 4:
+                continue
+            xref, ext, font_type, resource_name = (
+                font_info[0],
+                font_info[1],
+                font_info[2],
+                str(font_info[3]),
+            )
+            base = (
+                resource_name.split("+", 1)[-1]
+                if "+" in resource_name
+                else resource_name
+            )
+            if base in resolved:
+                continue
+            if classify_font(resource_name, font_type) != "correct":
+                continue
+            if ext in ("n/a", ""):
+                # No embedded program, so no name table to ask. A bare core font
+                # is never one of these families.
+                continue
+
+            if xref in seen_xrefs:
+                family = seen_xrefs[xref]
+            else:
+                try:
+                    extracted = doc.extract_font(xref, named=True)
+                except Exception:  # noqa: BLE001 - an unextractable embed is no evidence
+                    extracted = None
+                content = extracted.get("content") if extracted else None
+                family = _embedded_broken_cmap_family(content) if content else None
+                seen_xrefs[xref] = family
+            if family is None:
+                continue
+            resolved[base] = family
+            logger.debug(
+                "Font '%s' (xref %s) embeds a %s face -> broken_cmap",
+                base,
+                xref,
+                family,
+            )
+    return resolved
+
+
 def _core_font_family(base_font_name: str) -> str | None:
     """Return the core-font family for a ``/BaseFont`` name, else ``None``."""
 
@@ -287,8 +458,22 @@ def scan_ocr_pages(doc: fitz.Document) -> dict[int, str]:
     return ocr_pages
 
 
-def scan_pdf_fonts(doc: fitz.Document) -> dict[str, str]:
-    """Scan all PDF fonts and return a strategy per unique base font name."""
+def scan_pdf_fonts(
+    doc: fitz.Document,
+    embedded_broken_cmap: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Scan all PDF fonts and return a strategy per unique base font name.
+
+    The embedded-name binding is resolved here when the caller does not supply one,
+    because this function's result is what
+    :func:`~likhit.nepali_pdf_repair.extract_repaired_text_blocks` gates the entire
+    CMap repair on. Leaving it to the caller made the resource name the whole
+    identity, which silently withheld the repair from every document that embeds a
+    broken-CMap face under a name that does not say so.
+    """
+
+    if embedded_broken_cmap is None:
+        embedded_broken_cmap = resolve_embedded_broken_cmap(doc)
 
     font_strategies: dict[str, str] = {}
 
@@ -300,6 +485,8 @@ def scan_pdf_fonts(doc: fitz.Document) -> dict[str, str]:
             if base in font_strategies:
                 continue
             strategy = classify_font(name, font_type)
+            if strategy == "correct" and base in embedded_broken_cmap:
+                strategy = "broken_cmap"
             font_strategies[base] = strategy
             logger.debug("Font '%s' (type=%s) -> %s", base, font_type, strategy)
 
@@ -309,8 +496,12 @@ def scan_pdf_fonts(doc: fitz.Document) -> dict[str, str]:
 def scan_pdf_fonts_by_page(
     doc: fitz.Document,
     embedded_legacy_maps: dict[str, str] | None = None,
+    embedded_broken_cmap: dict[str, str] | None = None,
 ) -> dict[int, dict[str, str]]:
     """Scan fonts by page, including document-scoped embedded-name bindings."""
+
+    if embedded_broken_cmap is None:
+        embedded_broken_cmap = resolve_embedded_broken_cmap(doc)
 
     strategies_by_page: dict[int, dict[str, str]] = {}
 
@@ -326,7 +517,13 @@ def scan_pdf_fonts_by_page(
                 and embedded_legacy_maps
                 and base in embedded_legacy_maps
             ):
+                # The legacy registry wins: it is the higher-priority strategy, and
+                # a font it claims decodes by keystroke map rather than by CMap
+                # repair. Only a font it does NOT claim falls through to the
+                # broken-CMap binding below.
                 strategy = "legacy_remap"
+            elif strategy == "correct" and base in embedded_broken_cmap:
+                strategy = "broken_cmap"
             current = page_strategies.get(base)
             if (
                 current is None

@@ -713,6 +713,18 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "likhit/extractors/numeric_boundaries.py",
         "_MAX_PARTITION_SEGMENTS",
     ): (12, "combinatorial bound on rule partitions per numeric run"),
+    (
+        "likhit/extractors/numeric_boundaries.py",
+        "_LINE_ORIGIN_PRECISION",
+    ): (
+        1,
+        "decimal places the line origin is rounded to before it keys a repair, so "
+        "0.1pt. Finer than any inter-line or inter-column gap in this corpus and "
+        "coarser than the float difference between two extractions of one page: "
+        "measured over the 1,843 line-applicable repairs the 102 published "
+        "numeric_damage documents produce, (min y0, min x0) at this precision "
+        "resolves 1,843 of 1,843 where the enumeration index resolves 1,669",
+    ),
     # -- table extraction ----------------------------------------------------- #
     (
         "likhit/extractors/tables.py",
@@ -812,6 +824,70 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "MiB. A bound only needs to stop an unbounded corpus run, so anything well "
         "above the per-document count does the same work",
     ),
+    # -- carried with the v18 extractor line ---------------------------------- #
+    #
+    # Six constants that exist only in the carried Kalimati/Kokila contextual
+    # broken-CMap work, so upstream's table could not have listed them. The AST
+    # scan is what requires them: an unregistered module-level constant is a number
+    # a reviewer can change and see green.
+    #
+    # The 15 OAG-line pins that stood here on the v18 branch are NOT carried --
+    # upstream registered all of them itself (its table holds 79 pins against the
+    # branch's 62), so re-adding them would duplicate keys.
+    (
+        "likhit/extractors/font_based.py",
+        "_CONTEXTUAL_MARKER_MAX_GAP",
+    ): (
+        2.0,
+        "points: admits the measured two-point Kalimati span split while a larger "
+        "visual gap remains a word boundary",
+    ),
+    (
+        "likhit/extractors/kalimati.py",
+        "_CONTEXTUAL_NE_GID",
+    ): (
+        566,
+        "the measured Kalimati glyph whose authored CMap says ने while the embedded "
+        "font map says bare e-matra; only its र् context proves the consonant",
+    ),
+    (
+        "likhit/extractors/kalimati.py",
+        "_INCIDENTAL_FACE_GLYPH_SHARE",
+    ): (
+        0.005,
+        "the share of drawn glyphs below which an unrepairable named Kalimati/Lohit "
+        "face is incidental and refusing the document costs more than it protects. "
+        "Measured over the 18 OAG documents the refusal withholds, the two "
+        "populations are four orders of magnitude apart: document 11113 -- set in "
+        "Preeti, declaring a Kalimati face that draws ONE glyph of 433,222 -- sits "
+        "at 0.0002%, and the next-smallest genuine offender at 10.04%. The floor sits "
+        "2,166x above the incidental case and 20.1x below the smallest genuine one, "
+        "so it is not fitted to either",
+    ),
+    (
+        "likhit/extractors/kalimati.py",
+        "_KOKILA_HALF_SA_GID",
+    ): (
+        214,
+        "the measured Kokila half-sa glyph: 13 affected identity-mapped faces say थ, "
+        "corroborated as स् by their own font map or another Kokila face in the PDF",
+    ),
+    (
+        "likhit/extractors/kalimati.py",
+        "_KOKILA_HALF_THA_GID",
+    ): (
+        195,
+        "the measured Kokila half-tha glyph: PDF 5604 authors bare virama while "
+        "the target program's exact GID-195 outline digest proves the measured half-tha",
+    ),
+    (
+        "likhit/extractors/kalimati.py",
+        "_KOKILA_YA_GID",
+    ): (
+        94,
+        "the measured following-ya glyph: PDF 5604 authors र् while the embedded "
+        "Kokila map proves य, completing the GID-195 fingerprint",
+    ),
     (
         "likhit/extractors/digit_companion.py",
         "_RENDER_PT",
@@ -892,64 +968,36 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "is not evidence of anything, and the two shares above are ratios that a tiny "
         "denominator makes meaningless",
     ),
-    (
-        "likhit/extractors/font_based.py",
-        "_CONTEXTUAL_MARKER_MAX_GAP",
-    ): (
-        2.0,
-        "points: admits the measured two-point Kalimati span split while a larger "
-        "visual gap remains a word boundary",
-    ),
-    # -- Kokila / Kalimati faces whose embedded CMap contradicts what they draw --- #
+    # -- vision-OCR acceptance -------------------------------------------------- #
     #
-    # Every GID here is a specific glyph in a specific measured face, so the derivation
-    # names the document that proves it. They are identities, not thresholds: there is no
-    # range to widen, and changing one means the glyph was misidentified.
+    # These three decide whether a model's answer becomes page text. Getting any of
+    # them wrong is not a formatting defect: too low and a decline is published as a
+    # transcription, too high and legitimate English is deleted. All three are
+    # inherited from the OAG corpus tooling's `ocr_refusal.py`, where they were
+    # placed against a 335,132-page negative control.
     (
-        "likhit/extractors/kalimati.py",
-        "_CONTEXTUAL_NE_GID",
+        "likhit/ocr_acceptance.py",
+        "DEV_RATIO_FLOOR",
     ): (
-        566,
-        "the measured Kalimati glyph whose authored CMap says ने while the embedded "
-        "font map says bare e-matra; only its र् context proves the consonant",
+        0.05,
+        "Devanagari share of script-bearing letters below which a response is not a "
+        "transcription of a Devanagari page. Sits in a measured gap: the "
+        "hand-adjudicated declines occupy 0.0000-0.0078 and the lowest legitimately "
+        "Devanagari-bearing page is 0.1076 (an English bibliography page of an audit "
+        "journal), so this is 6.4x above the highest decline and 2.2x below the "
+        "lowest real transcription. NOT raisable to catch a stubborn decline: any "
+        "floor high enough rejects a real page first",
     ),
     (
-        "likhit/extractors/kalimati.py",
-        "_KOKILA_HALF_SA_GID",
+        "likhit/ocr_acceptance.py",
+        "TASK_FRAME_WINDOW",
     ): (
-        214,
-        "the measured Kokila half-sa glyph: 13 affected identity-mapped faces say थ, "
-        "corroborated as स् by their own font map or another Kokila face in the PDF",
-    ),
-    (
-        "likhit/extractors/kalimati.py",
-        "_KOKILA_HALF_THA_GID",
-    ): (
-        195,
-        "the measured Kokila half-tha glyph: PDF 5604 authors bare virama while "
-        "the target program's exact GID-195 outline digest proves the measured half-tha",
-    ),
-    (
-        "likhit/extractors/kalimati.py",
-        "_KOKILA_YA_GID",
-    ): (
-        94,
-        "the measured following-ya glyph: PDF 5604 authors र् while the embedded "
-        "Kokila map proves य, completing the GID-195 fingerprint",
-    ),
-    (
-        "likhit/extractors/kalimati.py",
-        "_INCIDENTAL_FACE_GLYPH_SHARE",
-    ): (
-        0.005,
-        "the share of drawn glyphs below which an unrepairable named Kalimati/Lohit "
-        "face is incidental and refusing the document costs more than it protects. "
-        "Measured over the 18 OAG documents the refusal withholds, the two "
-        "populations are four orders of magnitude apart: document 11113 -- set in "
-        "Preeti, declaring a Kalimati face that draws ONE glyph of 433,222 -- sits "
-        "at 0.0002%, and the next-smallest genuine offender at 10.04%. The floor sits "
-        "2,166x above the incidental case and 20.1x below the smallest genuine one, "
-        "so it is not fitted to either",
+        200,
+        "characters an abstention may sit from a reference to the task's own artifact "
+        "and still count as one statement. Co-occurrence anywhere on the page is too "
+        "weak -- a 3,000-char page holds an unrelated 'image' far from an unrelated "
+        "'I cannot' -- and this guard is the whole reason the module does not fire on "
+        "the standard ISA disclaimer",
     ),
 }
 

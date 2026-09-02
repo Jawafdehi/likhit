@@ -869,6 +869,84 @@ def _looks_like_register_rows(parts: list[str]) -> bool:
     return any(re.search(r"[^\s0-9०-९,.।-]", line) for line in lines)
 
 
+def _composed_header_label(
+    grid: list[list[str]],
+    expanded: list[list[str]],
+    title_rows: int,
+    header_end: int,
+    col: int,
+) -> str:
+    """This column's own label path across the header band, or `""`.
+
+    A two-level header -- one cell spanning several columns, each of those columns
+    carrying its own label on the next physical row -- has to become ONE rendered
+    row, because the renderer emits no `|---|` separator and every downstream
+    consumer therefore reads a second header row as data. Composing per column is
+    what makes that possible: column `col`'s label is its path through the band,
+    outermost first, so `जम्मा चेयर` spanning two columns labelled `इलेक्टि\\क` and
+    `हाइड\\ोलिक` yields `जम्मा चेयर इलेक्टि\\क` and `जम्मा चेयर हाइड\\ोलिक`.
+
+    Two rules, and each is load-bearing:
+
+    **The anchor wins, the span fills in.** `grid` holds anchored cell text and
+    `expanded` propagates a span into the positions it covers, so reading `grid`
+    first and falling back to `expanded` gets both: a column under a colspan
+    inherits the spanning label it would otherwise never see, while a cell a
+    malformed table anchored *inside* another's span keeps its own text.
+    `_expanded_grid` fills left to right under `if not grid[row][col]`, so the
+    spanning cell reaches that position first and the anchor's text is absent from
+    `expanded` -- reading `expanded` alone would silently drop it.
+
+    **A column with no label of its own stays empty.** The fallback is context, not
+    content: without this test every column a wide span covers would repeat the
+    spanning label, which recovers nothing (the label is already at its anchor) and
+    manufactures text -- one OAG table spans 31 columns with a sub-label under only
+    two of them. So the composition fires exactly where a label was being lost.
+
+    Carrying the spanning label into a covered column DOES repeat it, and the
+    alternative -- emit the column's own label alone -- was measured rather than
+    argued away. Over the 36 header-joined tables of OAG 11113, 4262 and 2801, 263
+    labelled columns: dropping the prefix leaves **52** columns sharing a name with
+    another column in the same row against **24**, for 3,439 header characters against
+    4,473. So 30% more header text halves the ambiguity, and the ambiguity is the kind
+    that matters here -- it is what separates `प्रारम्भिक बेरुजू रकम` from
+    `बाँकी बेरुजू रकम`, an initial irregularity amount from an outstanding one. The
+    24 that remain are tables where the source itself offers nothing to tell two
+    columns apart, because one sub-label cell spans them both.
+
+    Joined with a space rather than a separator token such as `" / "`, on two
+    grounds -- and NOT on a third that was checked and dropped:
+
+      * `audit_quality.py`'s `LEGACY_RUN_RE` character class contains `/`, and
+        `check_legacy_ascii` strips `|` from the text it scores but not `/`. A lone
+        slash therefore matches as a one-character legacy run, so a separator would
+        add a hit per composed cell to the axis that sets 43 of the published
+        corpus's 611 `suspect` verdicts (re-derived from that release's own
+        `audit.json`). Small, but in the wrong direction and for no gain.
+      * A space is what a header written as ONE multi-line cell already collapses to,
+        via `_clean_text` here and in `_expanded_grid`. Two spellings of the same
+        header would otherwise render differently depending on whether the detector
+        emitted one cell or two.
+
+    🛑 The tempting third ground -- "a separator would falsely assert two levels on a
+    label the detector split across two physical ROWS" -- is NOT supported by a
+    measurement. Over all 57 tables of OAG 11113, every multi-part composition comes
+    from a colspan; no column reaches two parts without one. So that shape may not
+    occur at all, and the argument must not be quoted as though it had been counted.
+    """
+
+    band = range(title_rows, header_end)
+    own = [_clean_text(grid[row][col]) for row in band]
+    if not any(own):
+        return ""
+    parts: list[str] = []
+    for anchored, row in zip(own, band, strict=True):
+        value = anchored or expanded[row][col]
+        if value and value not in parts:
+            parts.append(value)
+    return " ".join(parts)
+
+
 def _raw_table_row_lines(table: Table) -> list[tuple[int, list[str]]]:
     """Render each table row without losing its source row index."""
 
@@ -913,41 +991,34 @@ def _raw_table_row_lines(table: Table) -> list[tuple[int, list[str]]]:
         ):
             header_end += 1
 
-        for col in range(table.col_count):
-            parts: list[str] = []
-            for row in range(title_rows, header_end):
-                value = _clean_text(grid[row][col])
-                if value and value not in parts:
-                    parts.append(value)
-            grid[title_rows][col] = " ".join(parts)
+        grid[title_rows] = [
+            _composed_header_label(grid, expanded, title_rows, header_end, col)
+            for col in range(table.col_count)
+        ]
         for row in range(title_rows + 1, header_end):
             grid[row] = ["" for _ in range(table.col_count)]
         joined_header_row = title_rows
 
     rows: list[tuple[int, list[str]]] = []
     for row_index, row in enumerate(grid):
-        if row_index == joined_header_row:
-            cell_lines = [
-                (
-                    []
-                    if covered[row_index][col_index] or not _clean_text(cell)
-                    else [_clean_text(cell)]
-                )
-                for col_index, cell in enumerate(row)
-            ]
-        else:
-            cell_lines = [
-                (
-                    []
-                    if covered[row_index][col_index]
-                    else [
-                        _clean_text(part)
-                        for part in cell.splitlines()
-                        if _clean_text(part)
-                    ]
-                )
-                for col_index, cell in enumerate(row)
-            ]
+        # Coverage is consulted for every row EXCEPT the composed one, and that
+        # exception is the whole of the sub-column-label fix -- see
+        # `_composed_header_label`. The composed row is built, not extracted: a
+        # column the spanning header covers holds that column's own label here, so
+        # blanking it on coverage threw the label away. Nothing else differs; a
+        # composed cell has already been through `_clean_text`, so it holds no line
+        # break for the split below to find.
+        composed = row_index == joined_header_row
+        cell_lines = [
+            (
+                []
+                if not composed and covered[row_index][col_index]
+                else [
+                    _clean_text(part) for part in cell.splitlines() if _clean_text(part)
+                ]
+            )
+            for col_index, cell in enumerate(row)
+        ]
         max_line_count = max(
             (len(parts) for parts in cell_lines),
             default=0,
