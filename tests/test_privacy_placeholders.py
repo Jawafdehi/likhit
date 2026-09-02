@@ -101,3 +101,49 @@ def test_no_registered_marker_needs_unicode_normalisation() -> None:
     for marker in placeholders.ALL:
         assert marker.isascii(), marker
         assert unicodedata.normalize("NFD", marker) == marker
+
+
+def test_the_contact_markers_the_release_pipeline_writes_are_registered() -> None:
+    """🛑 Registered without an in-repo emitter, on purpose.
+
+    ``test_every_placeholder_a_module_emits_is_registered`` above scans this package's
+    sources, so it is structurally blind to a consumer that runs its own redaction pass and
+    then hands the result to :mod:`likhit.quality`. The OAG release pipeline does exactly
+    that for contact details, and its two markers reached a published corpus unregistered --
+    where each is scored as two ``legacy_ascii`` runs, the defect this module was built to
+    prevent.
+    """
+
+    assert placeholders.EMAIL == "[REDACTED:EMAIL]"
+    assert placeholders.PHONE == "[REDACTED:PHONE]"
+    for marker in (placeholders.EMAIL, placeholders.PHONE):
+        assert marker in placeholders.ALL
+        assert placeholders.PLACEHOLDER_PATTERN.fullmatch(marker)
+
+
+def test_a_contact_placeholder_leaves_a_document_scoring_as_it_did() -> None:
+    """The bite: the registration is worth nothing unless it moves the audit, so audit it.
+
+    Reverting either marker out of ``ALL`` fails this -- the placeholders then survive
+    ``normalise_for_audit`` and ``legacy_ascii`` counts them as legacy-encoded Nepali.
+    """
+
+    from likhit.quality import audit_text
+
+    original = (
+        "कार्यालयको लेखापरीक्षण प्रतिवेदन तयार भएको छ।\nसम्पर्क इमेल र फोन नम्बर तल दिइएको छ।\n"
+    ) * 24
+    contacted = original.replace(
+        "तल दिइएको छ।",
+        f"{placeholders.EMAIL} {placeholders.PHONE} हो।",
+    )
+    assert contacted.count(placeholders.EMAIL) == 24, "fixture must carry the markers"
+
+    before, after = audit_text(original), audit_text(contacted)
+
+    assert after["verdict"] == before["verdict"]
+    for axis in before["checks"]:
+        assert after["checks"][axis]["verdict"] == before["checks"][axis]["verdict"], (
+            f"contact placeholders moved the {axis} axis from "
+            f"{before['checks'][axis]['verdict']} to {after['checks'][axis]['verdict']}"
+        )

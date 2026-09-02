@@ -25,7 +25,13 @@ anything, for the same reason it strips code fences and fiscal-year spans: the m
 structure this project inserted, not evidence about the decode.
 
 **Adding a placeholder means adding it here**, not in the pass that emits it.
-``test_every_placeholder_is_registered`` fails otherwise.
+``test_every_placeholder_a_module_emits_is_registered`` fails otherwise -- but note what
+that guard can and cannot see, because markers got past it: it scans this package's sources,
+so a redaction pass living *outside* the package is invisible to it. **Two** reached a
+published corpus that way, ``[REDACTED:EMAIL]`` and ``[REDACTED:PHONE]``, counted by
+scanning the release pipeline's own sources for the literal -- the only place either string
+is written. The vocabulary is the **project's**, not this package's, which is why
+:data:`ALL` registers markers no module here emits.
 """
 
 from __future__ import annotations
@@ -48,12 +54,32 @@ TABLE_DATE_OF_BIRTH: Final = "[REDACTED:TABLE-DATE-OF-BIRTH]"
 #: honestly name which. Never emitted by the inline pass, which always knows its label.
 TABLE_PERSONAL_VALUE: Final = "[REDACTED:TABLE-PERSONAL-VALUE]"
 
+#: Contact details, redacted by a **caller** rather than by anything in this package.
+#:
+#: 🛑 These two are registered here despite having no emitter in this repo, and that is the
+#: point rather than an oversight. ``test_every_placeholder_a_module_emits_is_registered``
+#: scans ``likhit/privacy/*.py`` for the literal, so it is structurally blind to a consumer
+#: that redacts with its own pass and then hands the result to :mod:`likhit.quality` -- which
+#: is exactly what the OAG release pipeline does: it writes ``[REDACTED:EMAIL]`` and
+#: ``[REDACTED:PHONE]`` for label-anchored contact spans, and the transcripts published with
+#: them carry the markers into every later audit. Unregistered, each is scored as **two**
+#: ``legacy_ascii`` runs -- ``[REDACTED`` and ``EMAIL]`` -- which is the defect this module's
+#: own docstring records, reappearing through the one hole its guard cannot cover.
+#:
+#: A registered marker no pass here emits costs nothing: :func:`strip_placeholders` removes
+#: text that would otherwise be measured as evidence about a decode, and a document that
+#: never contained one is unchanged.
+EMAIL: Final = "[REDACTED:EMAIL]"
+PHONE: Final = "[REDACTED:PHONE]"
+
 ALL: Final = (
     CITIZENSHIP,
     DATE_OF_BIRTH,
     TABLE_CITIZENSHIP,
     TABLE_DATE_OF_BIRTH,
     TABLE_PERSONAL_VALUE,
+    EMAIL,
+    PHONE,
 )
 
 #: Matches any registered placeholder.

@@ -126,7 +126,8 @@ def test_a_redacted_document_scores_the_same_as_the_original() -> None:
 
 
 def test_normalising_removes_every_registered_placeholder() -> None:
-    """Not just the two the inline pass writes -- all five, including the table forms."""
+    """Not just the two the inline pass writes -- every registered form, including the
+    table forms and the two the release pipeline writes outside this package."""
 
     text = "क " + " ".join(placeholders.ALL) + " ख"
     normalised = normalise_for_audit(text)
