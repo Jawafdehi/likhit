@@ -13,7 +13,6 @@ from typing import Optional
 import fitz
 
 from likhit.errors import ExtractionError
-from likhit.extractors.font_classifier import _KNOWN_BROKEN_CMAP
 from likhit.extractors.kalimati_reference import (
     in_line_ra_cids,
     kalimati_reference_map,
@@ -1522,10 +1521,24 @@ def _is_generic_type0_font_name(font_name: str) -> bool:
     return bool(re.fullmatch(r"(?:cidfont\+)?f\d+", font_name, re.IGNORECASE))
 
 
+#: Families this function groups by, spelled out rather than read from
+#: `_KNOWN_BROKEN_CMAP`.
+#:
+#: 🛑 It DID read that set, which coupled shared-CMap representative grouping to the
+#: routing decision -- so adding one of the families the routing comment invites
+#: (nirmala, utsaah) would silently change which faces are treated as one owner, a
+#: question that has nothing to do with whether their CMap needs repair. That is the same
+#: coupling this change deliberately removes from the repha guard, reintroduced two files
+#: away. Bounded in practice, because `_shared_type0_owners_are_homogeneous` still
+#: requires one fontfile, but an explicit tuple costs nothing and keeps the two decisions
+#: separable.
+_OWNER_FAMILIES: tuple[str, ...] = ("kalimati", "kokila", "lohit", "mangal")
+
+
 def _font_owner_family(font_name: str) -> str:
     """Stable ownership class used before selecting a shared-CMap representative."""
 
-    for family in sorted(_KNOWN_BROKEN_CMAP):
+    for family in _OWNER_FAMILIES:
         if _font_name_matches_family(font_name, family):
             return family
     if _is_generic_type0_font_name(font_name):
@@ -1803,6 +1816,15 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
                 fontfile_maps[fontfile_xref] = correction_map
         # Captured here, before `combined_map` and the Kokila scoping rebuild it into a
         # plain dict and drop the provenance the reconstruction carries.
+        #
+        # 🛑 It must therefore be DROPPED again on every path that discards this
+        # reconstruction, and two such paths exist below -- no displacement corrections,
+        # and below the meaningful-diff floor. Both replace the map with `trace_map`, so
+        # leaving the entry in place made `_decline_authored_repha_rewrites` filter a
+        # trace-derived correction using guessed GIDs from a map that was thrown away:
+        # evidence about a different map, which is what this function's own closing
+        # warning argues against. The `not correction_map` path needs no `pop` because
+        # `_reconstruction_guesses` of an empty map is already empty.
         metric_guessed[to_unicode_xref] = _reconstruction_guesses(correction_map)
 
         # Generic F<n> resources are not face-attributed. They may fill only
@@ -1871,6 +1893,9 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
             )
             if not displacement_corrections:
                 if trace_map:
+                    # The reconstruction is discarded here, so its guessed-GID
+                    # provenance must go with it. See the note at `metric_guessed`.
+                    metric_guessed.pop(to_unicode_xref, None)
                     to_unicode_maps[to_unicode_xref] = trace_map
                 continue
             # Above the generic floor the embedded map already proves ordinary
@@ -1882,6 +1907,8 @@ def fix_kalimati_cmap(doc: fitz.Document) -> tuple[fitz.Document, bool]:
             )
         elif meaningful_diffs < 3 and not named_repair_font:
             if trace_map:
+                # Same as above: what ships is the trace map, not this reconstruction.
+                metric_guessed.pop(to_unicode_xref, None)
                 to_unicode_maps[to_unicode_xref] = trace_map
             continue
 

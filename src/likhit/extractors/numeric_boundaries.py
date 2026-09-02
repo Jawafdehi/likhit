@@ -107,9 +107,18 @@ class NumericBoundaryRepair:
     #: extraction of the same page and an enumeration index does not.
     line_origin: tuple[float, float] = (0.0, 0.0)
 
-    @property
-    def repaired_text(self) -> str:
-        return CELL_BOUNDARY_SEPARATOR.join(self.parts)
+    # 🛑 There is deliberately no `repaired_text` property, and the reason is worth more
+    # than the three lines it saves. One existed, with zero callers in `src/` or
+    # `tests/`, returning `CELL_BOUNDARY_SEPARATOR.join(self.parts)` -- `" | "` -- while
+    # `apply_line_numeric_boundary_repairs`, the only thing that applies a repair to a
+    # line, joins with `INLINE_BOUNDARY_SEPARATOR` because the pipe pushed 981 of 20,721
+    # table rows off their grid.
+    #
+    # So the obvious accessor was the wrong one, and a future caller reaching for it
+    # would have reintroduced exactly the defect measured and fixed here. Choosing the
+    # separator is the CALLER's decision -- it depends on whether the repair is being
+    # rendered into a cell or back into a line -- so there is no correct default to
+    # offer, and offering the plausible one is worse than offering none.
 
 
 @dataclass(frozen=True)

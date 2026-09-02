@@ -8,6 +8,7 @@ from io import BytesIO
 import fitz
 from fontTools.ttLib import TTFont
 
+from likhit.extractors.pua_maps import _font_name_matches_family
 from likhit.pdf_page_analysis import analyze_text_quality, page_max_image_coverage
 
 from . import legacy_maps
@@ -262,12 +263,25 @@ def resolve_embedded_legacy_maps(doc: fitz.Document) -> dict[str, str]:
 
 
 def _embedded_broken_cmap_family(font_bytes: bytes) -> str | None:
-    """The :data:`_KNOWN_BROKEN_CMAP` family this embed's own name table claims."""
+    """The :data:`_KNOWN_BROKEN_CMAP` family this embed's own name table claims.
+
+    Matched at a font-name BOUNDARY, not by substring. A substring test was flagged in
+    review as possible overmatching, and measured not to be live -- over 400 corpus
+    documents the only pairs that trigger routing are `Kalimati`, `Mangal`, `Mangal-Bold`
+    and `Kokila`, each genuinely naming its family. But that made the guarantee
+    empirical over one corpus rather than structural, for a test over name IDs 16/1/6/4
+    whose values a producer chooses freely.
+
+    `_font_name_matches_family` is already in this repo, already used by
+    `kalimati._font_owner_family`, and gives the structural version for free: it accepts
+    `Mangal`, `Mangal-Bold` and `ABCDEF+Mangal`, and rejects `MangalTwo`. Its own comment
+    records why -- a prefix half-fix once landed at one site and left the suffix case
+    open at the other, which is exactly the shape of defect a second spelling invites.
+    """
 
     for _name_id, value in _embedded_name_candidates(font_bytes):
-        lowered = value.lower()
         for family in _KNOWN_BROKEN_CMAP:
-            if family in lowered:
+            if _font_name_matches_family(value, family):
                 return family
     return None
 

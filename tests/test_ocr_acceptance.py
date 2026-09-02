@@ -181,6 +181,68 @@ class TestEnglishSurvives:
         assert acceptance.placeholder_cell_share is not None
         assert acceptance.placeholder_cell_share < 0.25
 
+    def test_a_small_table_is_not_a_denominator(self) -> None:
+        """🛑 A 2-cell signature table with one illegible signature is DELIVERED.
+
+        Review's reproduction. `placeholder_cell_share` used to count populated cells
+        itself, so this page -- 100% Devanagari, a full page of audit prose plus a
+        signature block -- scored 0.5 and was declined, while `page_refusal`, reading
+        the same page, does not refuse it because 2 < `MIN_DATA_CELLS`. A false decline
+        discards the whole page and pays for the OCR call twice.
+
+        The share is None rather than 0.0: a two-cell denominator is not a measurement,
+        which is the same abstention this module already makes for a page with no cells.
+        """
+        prose = (
+            "यस कार्यालयको आर्थिक वर्ष २०७९।८० को लेखापरीक्षण प्रतिवेदन अनुसार "
+            "आन्तरिक नियन्त्रण प्रणाली कमजोर रहेको देखिन्छ। " * 5
+        )
+        text = prose + "\n\n| हस्ताक्षर | [अस्पष्ट] |\n"
+
+        acceptance = classify_ocr_response(text)
+
+        assert acceptance.verdict == DELIVERED
+        assert acceptance.placeholder_cell_share is None
+        assert acceptance.devanagari_ratio > 0.9
+
+    def test_a_marker_mentioned_inside_a_prose_cell_is_not_a_placeholder_cell(
+        self,
+    ) -> None:
+        """Review's second reproduction: occurrence is not dominance.
+
+        Four data cells, one of them 287 characters of genuine prose that happens to
+        contain `[अस्पष्ट]`. Counting occurrences gives 0.25 and declines the page;
+        `page_refusal.is_placeholder_cell` requires the placeholder to DOMINATE the
+        cell, which is the rule that separates a transcript refusing a cell from audit
+        prose discussing ambiguity.
+        """
+        prose = (
+            "यस कार्यालयको आर्थिक वर्ष २०७९।८० को लेखापरीक्षण प्रतिवेदन अनुसार "
+            "आन्तरिक नियन्त्रण प्रणाली कमजोर रहेको देखिन्छ। " * 5
+        )
+        long_cell = (
+            "यो विवरण निकै लामो छ र यसमा एक ठाउँमा मात्र [अस्पष्ट] लेखिएको छ "
+            + "थप विवरण यहाँ छ " * 14
+        )
+        text = prose + f"\n\n| १ | {long_cell} | ५०००० | ठीक |\n"
+
+        acceptance = classify_ocr_response(text)
+
+        assert acceptance.verdict == DELIVERED
+        assert acceptance.placeholder_cell_share == 0.0
+
+    def test_a_table_of_nothing_but_placeholders_still_declines(self) -> None:
+        """The other direction, so the two fixes above cannot have disabled leg B."""
+
+        text = (
+            "| क्र | रकम | कैफियत | जम्मा |\n| [अस्पष्ट] | [अस्पष्ट] | [अस्पष्ट] | [अस्पष्ट] |\n"
+        )
+
+        acceptance = classify_ocr_response(text)
+
+        assert acceptance.verdict == DECLINED
+        assert LEG_PLACEHOLDER in acceptance.legs
+
     def test_plain_devanagari_page_is_delivered(self) -> None:
         assert not is_declined(DEVANAGARI_PAGE)
 

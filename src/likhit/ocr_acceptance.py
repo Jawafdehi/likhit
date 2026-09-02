@@ -73,7 +73,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from likhit.quality.page_refusal import PLACEHOLDER_CELL_SHARE_FLOOR
+from likhit.quality.page_refusal import (
+    MIN_DATA_CELLS,
+    PLACEHOLDER_CELL_SHARE_FLOOR,
+    data_cells,
+    is_placeholder_cell,
+)
 
 #: Devanagari block including the Devanagari digits U+0966-U+096F.
 _DEVANAGARI = re.compile(r"[\u0900-\u097f]")
@@ -369,17 +374,32 @@ def populated_cells(text: str) -> list[str]:
 
 
 def placeholder_cell_share(text: str) -> float | None:
-    """Placeholder share of the populated table cells; None when there are none.
+    """Placeholder share of the page's data cells; None when the share is not a measurement.
 
-    Returns None -- abstain, do not guess -- for a page with no populated table
-    cells, matching `devanagari_ratio`'s treatment of a page with no letters.
-    An empty denominator carries no evidence either way.
+    🛑 This DELEGATES to `quality.page_refusal` rather than recomputing the statistic,
+    and that is the whole point of importing from it. The module imported
+    `PLACEHOLDER_CELL_SHARE_FLOOR` so a chooser and a grader could not disagree about
+    the threshold -- then rewrote the statistic under it, dropping both companions
+    `page_refusal` applies together with that floor. Review measured the consequence on
+    two pages of genuine Nepali audit prose, both 100% Devanagari:
+
+      * a 2-cell signature table whose signature is `[अस्पष्ट]` -- share 0.5, DECLINED
+        here, not a refusal there, because 2 < MIN_DATA_CELLS;
+      * `[अस्पष्ट]` inside a 287-character prose cell among 4 -- share 0.25, DECLINED
+        here, share 0.0 there, because `is_placeholder_cell` requires the placeholder to
+        DOMINATE the cell rather than merely occur in it.
+
+    A false decline is expensive twice over: the page's transcription is discarded, the
+    document is stamped needs-ocr, and the OCR call is paid for again.
+
+    `MIN_DATA_CELLS` returns None rather than 0.0 for a small table, because "the share
+    is not a measurement" is exactly what None means here -- the same abstention this
+    function already makes for a page with no cells at all.
     """
-    cells = populated_cells(text)
-    if not cells:
+    cells = data_cells(text)
+    if len(cells) < MIN_DATA_CELLS:
         return None
-    hit = sum(1 for cell in cells if _PLACEHOLDER_CELL.search(cell))
-    return hit / len(cells)
+    return sum(1 for cell in cells if is_placeholder_cell(cell)) / len(cells)
 
 
 def is_empty_table_skeleton(text: str) -> bool:
