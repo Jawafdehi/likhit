@@ -19,6 +19,8 @@ import unicodedata
 from collections import Counter
 from pathlib import Path
 
+from .modes import DEFAULT_MODE, RedactionMode
+from .pdf import redact_pdf
 from .signals import scan_text
 from .tree import redact_tree
 
@@ -51,6 +53,27 @@ def build_redact_parser() -> argparse.ArgumentParser:
         help="run the table pass -- a value in a cell away from its label -- instead of "
         "the inline pass. The two are independent and either order works; run both to "
         "cover identifiers held inline AND in table cells",
+    )
+
+    pdf = sub.add_parser(
+        "pdf", help="write a redacted copy of ONE PDF; refuses if it cannot read a page"
+    )
+    pdf.add_argument("pdf", type=Path)
+    pdf.add_argument(
+        "--out",
+        type=Path,
+        help="redacted PDF to write; refused if it exists. Omit only with --dry-run",
+    )
+    pdf.add_argument("--journal", type=Path, required=True)
+    pdf.add_argument("--dry-run", action="store_true")
+    pdf.add_argument(
+        "--mode",
+        type=RedactionMode,
+        choices=[RedactionMode.IDENTIFIERS, RedactionMode.CONTACT],
+        default=DEFAULT_MODE,
+        help="removal tier. 'identifiers' (default) removes citizenship numbers and dates "
+        "of birth; 'contact' also removes mobile, landline and email, which is a scope "
+        "change -- choose it deliberately",
     )
     return parser
 
@@ -160,9 +183,47 @@ def _redact(args: argparse.Namespace) -> int:
     return 1 if report.failed_documents else 0
 
 
+def _pdf(args: argparse.Namespace) -> int:
+    if args.journal.exists():
+        print(f"likhit-redact: refusing to overwrite {args.journal}", file=sys.stderr)
+        return 2
+    try:
+        report = redact_pdf(args.pdf, args.out, mode=args.mode, dry_run=args.dry_run)
+    except ValueError as exc:
+        # Exit 2, the same refusal code `redact` uses: this is "did not run", not "ran and
+        # something was skipped". Every raise in `likhit.privacy.pdf` happens before anything
+        # is written, so a refusal here never leaves a partial artifact behind.
+        print(f"likhit-redact: {exc}", file=sys.stderr)
+        return 2
+
+    payload = report.as_dict()
+    payload |= {
+        "source": str(args.pdf),
+        "out": None if args.dry_run else str(args.out),
+        "dry_run": bool(args.dry_run),
+        "mode": args.mode.value,
+    }
+    args.journal.parent.mkdir(parents=True, exist_ok=True)
+    args.journal.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    print(
+        f"pages: {report.pages:,}  changed: {report.pages_changed:,}  "
+        f"values removed: {report.values_removed:,}  "
+        f"rectangles: {report.rects_applied:,}  mode: {args.mode.value}"
+    )
+    for page_class, count in sorted(report.pages_by_class.items()):
+        print(f"  {page_class:10} {count:,}")
+    print(f"-> {args.journal}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_redact_parser().parse_args(argv)
-    return _scan(args) if args.command == "scan" else _redact(args)
+    if args.command == "scan":
+        return _scan(args)
+    return _pdf(args) if args.command == "pdf" else _redact(args)
 
 
 if __name__ == "__main__":  # pragma: no cover

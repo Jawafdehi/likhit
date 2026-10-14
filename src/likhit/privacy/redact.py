@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Iterator
+from dataclasses import dataclass
 
 from ..devanagari import ANY_DIGITS as AD
 from .placeholders import CITIZENSHIP, DATE_OF_BIRTH
@@ -150,6 +152,101 @@ VALUE_SEPARATOR = re.compile(rf"[{_VALUE_SEPARATORS}]")
 AMOUNT_CUE = re.compile(r"रकम|जम्मा|खर्च|बजेट|राजस्व|बेरुजु|रु")
 
 
+#: Plausible identifier length per kind, set from the measured digit distribution rather than
+#: guessed. A Nepali citizenship number runs ~9-13 digits, often `XX-XX-XX-XXXXX`; a floor of 7
+#: keeps those and drops the 47 spans of <=6 digits, which are counts beside a service label
+#: (`नागरिकता सिफारिस`) and are real audit data worth keeping. The ceiling of 16 drops the five
+#: 18-19 digit spans, which are runs of table digits rather than an identifier.
+DIGIT_BOUNDS = {"citizenship": (7, 16), "date_of_birth": (5, 10)}
+
+#: The two patterns, in the order :func:`redact` applies them.
+INLINE_PATTERNS = (
+    ("citizenship", CITIZENSHIP_LABEL_VALUE, CITIZENSHIP),
+    ("date_of_birth", DOB_LABEL_VALUE, DATE_OF_BIRTH),
+)
+
+
+@dataclass(frozen=True)
+class InlineTarget:
+    """One inline value that passed every guard, located in the text it was found in.
+
+    🛑 ``start``/``end`` are offsets of the **value**, not of the whole match: the label is
+    kept and only ``text[start:end]`` is removed. A caller that redacts something other than
+    text -- :mod:`likhit.privacy.pdf` maps these offsets to glyph rectangles on a PDF page --
+    needs the value's own span, and reconstructing it from the match by subtracting the label
+    would be a second place the label/value split is written down.
+    """
+
+    start: int
+    end: int
+    kind: str
+    digit_count: int
+    had_separators: bool
+
+    @property
+    def placeholder(self) -> str:
+        return dict((kind, marker) for kind, _, marker in INLINE_PATTERNS)[self.kind]
+
+
+def _accept(val: str, kind: str, stats: Counter) -> int | None:
+    """The three guards. Returns the value's digit count, or ``None`` if any guard refuses.
+
+    Shared by :func:`redact` and :func:`iter_inline_targets` rather than written twice: the
+    guards are what make this pass safe, and this project's redaction history is 572 real hits
+    against **11,215 non-secret values clobbered**. A second copy that drifted from this one
+    would reintroduce that by construction, and ``test_no_duplicated_definitions`` refuses the
+    shape anyway.
+    """
+
+    # Guard 1: the value must be digits and separators only.
+    if VALUE_FORBIDDEN.search(val):
+        stats[f"{kind}_refused_nondigit"] += 1
+        return None
+    digits = re.sub(rf"[^{AD}]", "", val)
+    # Guard 2: plausible identifier length -- see DIGIT_BOUNDS.
+    lo, hi = DIGIT_BOUNDS[kind]
+    if not (lo <= len(digits) <= hi):
+        stats[f"{kind}_refused_length"] += 1
+        return None
+    # Guard 3: an amount cue inside the value means we mis-scoped.
+    if AMOUNT_CUE.search(val):
+        stats[f"{kind}_refused_amount_cue"] += 1
+        return None
+    return len(digits)
+
+
+def iter_inline_targets(
+    text: str, stats: Counter | None = None
+) -> Iterator[InlineTarget]:
+    """Every inline value that would be redacted, as a span in ``text``.
+
+    ⚠️ **Offsets are into the text as given**, so unlike :func:`redact` this does not see one
+    pattern's replacements while applying the next. The two cannot disagree about *which*
+    values qualify -- a citizenship placeholder carries no digits, so it can neither create
+    nor destroy a date-of-birth match -- and ``test_targets_agree_with_redact`` pins that
+    against the corpus rather than leaving it as an argument.
+    """
+
+    counters: Counter = Counter() if stats is None else stats
+    for kind, pattern, _ in INLINE_PATTERNS:
+        for match in pattern.finditer(text):
+            val = match.group("val")
+            digit_count = _accept(val, kind, counters)
+            if digit_count is None:
+                continue
+            # `_targeted`, not `_redacted` -- see the note in `likhit.privacy.contact`. The
+            # `*_refused_*` counters ARE shared with `redact`, because they are the guards'
+            # own verdicts and the two must agree on those.
+            counters[f"{kind}_targeted"] += 1
+            yield InlineTarget(
+                start=match.start("val"),
+                end=match.end("val"),
+                kind=kind,
+                digit_count=digit_count,
+                had_separators=bool(VALUE_SEPARATOR.search(val)),
+            )
+
+
 def redact(text: str, journal: list[dict], stats: Counter) -> str:
     """Return redacted text. Appends one journal row per replacement.
 
@@ -161,32 +258,15 @@ def redact(text: str, journal: list[dict], stats: Counter) -> str:
     def sub(rx: re.Pattern[str], placeholder: str, kind: str) -> str:
         def _r(m: re.Match[str]) -> str:
             val = m.group("val")
-            # Guard 1: the value must be digits and separators only.
-            if VALUE_FORBIDDEN.search(val):
-                stats[f"{kind}_refused_nondigit"] += 1
-                return m.group(0)
-            digits = re.sub(rf"[^{AD}]", "", val)
-            # Guard 2: plausible identifier length, set from the measured digit
-            # distribution rather than guessed. A Nepali citizenship number runs
-            # ~9-13 digits, often `XX-XX-XX-XXXXX`; a floor of 7 keeps those and
-            # drops the 47 spans of <=6 digits, which are counts beside a service
-            # label (`नागरिकता सिफारिस`) and are real audit data worth keeping.
-            # The ceiling of 16 drops the five 18-19 digit spans, which are runs
-            # of table digits rather than an identifier.
-            lo, hi = (7, 16) if kind == "citizenship" else (5, 10)
-            if not (lo <= len(digits) <= hi):
-                stats[f"{kind}_refused_length"] += 1
-                return m.group(0)
-            # Guard 3: an amount cue inside the value means we mis-scoped.
-            if AMOUNT_CUE.search(val):
-                stats[f"{kind}_refused_amount_cue"] += 1
+            digit_count = _accept(val, kind, stats)
+            if digit_count is None:
                 return m.group(0)
             journal.append(
                 {
                     "kind": kind,
                     "label_kept": True,
                     "value_chars_removed": len(val),
-                    "value_digit_count": len(digits),
+                    "value_digit_count": digit_count,
                     "value_had_separators": bool(VALUE_SEPARATOR.search(val)),
                 }
             )
@@ -196,8 +276,8 @@ def redact(text: str, journal: list[dict], stats: Counter) -> str:
 
         return rx.sub(_r, text)
 
-    text = sub(CITIZENSHIP_LABEL_VALUE, CITIZENSHIP, "citizenship")
-    text = sub(DOB_LABEL_VALUE, DATE_OF_BIRTH, "date_of_birth")
+    for kind, pattern, placeholder in INLINE_PATTERNS:
+        text = sub(pattern, placeholder, kind)
     return text
 
 

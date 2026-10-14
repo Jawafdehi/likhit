@@ -166,9 +166,50 @@ destination exists or is the source. Documents with nothing to redact are copied
 byte-for-byte rather than rewritten, and the journal records value *shapes* — lengths, digit
 counts, separator presence — never a matched digit.
 
+### Redaction modes
+
+A mode names a **policy tier**, not a pass. `identifiers` is the default and is exactly the
+scope above. `contact` additionally removes mobile numbers, landlines and email addresses —
+a scope expansion, so it is never applied to a caller who did not ask for it.
+
+| mode | removes |
+|---|---|
+| `none` | nothing — output is byte-identical to the input |
+| `identifiers` *(default)* | citizenship numbers, dates of birth |
+| `contact` | the above, plus mobile, landline, email |
+
+### PDF in, redacted PDF out
+
+```bash
+likhit-redact pdf aarop-patra.pdf --out redacted.pdf --journal redaction.json --mode contact
+```
+
+This is a **true removal**, not a drawn box: the value is gone from the extracted text and
+from the file's bytes. Only the value is removed — the label beside it is kept, because
+redaction is located from the detector's own character offsets mapped to per-glyph rectangles
+rather than by searching the page for the value's digits.
+
+> 🛑 **It refuses any PDF it cannot read, and that is the point.** Only a page whose text
+> layer is Unicode Devanagari can be redacted today. A page carrying a legacy pre-Unicode font
+> decodes to Latin-looking bytes, so the detectors find almost nothing in it — measured on two
+> CIAA annual reports, the raw text layer yields **1 and 4** high-precision hits where
+> `likhit`'s decoded output yields **16 and 62**, and in both cases the only survivors are the
+> ASCII email addresses. "No personal data found" on such a page is not a finding, so those
+> pages refuse the document rather than being passed through unchanged. A pure scan refuses
+> for the same reason: it needs bounding-box OCR, which `likhit`'s LLM-vision OCR cannot
+> provide because it returns text without coordinates.
+
+Document metadata, XMP and embedded attachments are scrubbed too — a document redacted only
+where someone looked is worse than one nobody redacted. Saves are always full saves with
+`garbage=4`, never incremental: an incremental save appends a revision and leaves the original
+content recoverable inside the same file.
+
+### Scope
+
 Scope is narrow on purpose: citizenship numbers and dates of birth. Mobile numbers, personal
 PANs and email addresses are *detected and disclosed* rather than removed, because their
-adjudication left undecided cases and over-redaction costs more than it saves.
+adjudication left undecided cases and over-redaction costs more than it saves. `--mode
+contact` is the opt-in for the first two of those.
 
 ### What likhit does
 

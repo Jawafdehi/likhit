@@ -93,6 +93,17 @@ _EXPLICIT_FLAG_SITES: dict[tuple[str, str, str], str] = {
     "counts -- the default word would let page geometry decide whether a face gets its "
     "digit row transliterated. Non-additive for the same reason as every other site "
     "here: OR-ing a TEXTFLAGS_* default back in sets TEXT_MEDIABOX_CLIP.",
+    (
+        "likhit/privacy/pdf.py",
+        "page_glyph_map",
+        "fitz.TEXT_PRESERVE_WHITESPACE",
+    ): "redaction maps a detected span to the glyph rectangles under it, so a clipped "
+    "glyph is an identifier left in a published file -- the one failure this module "
+    "exists to prevent. The same argument as the numeric-boundary site, with a worse "
+    "consequence. It must also be non-additive for the ordinary reason, and it is the "
+    "ONLY get_text site in `likhit.privacy`: `classify_text_layer` deliberately reuses "
+    "this function's text rather than calling `page.get_text()`, so the class a page is "
+    "given and the characters it is redacted on cannot be drawn from different words.",
 }
 
 # Call sites that pass no flags at all and therefore accept the clipping default.

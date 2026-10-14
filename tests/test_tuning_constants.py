@@ -364,6 +364,20 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
     ),
     # -- quality audit: page refusal (opt-in axis) ------------------------------- #
     (
+        "likhit/privacy/pdf.py",
+        "UNICODE_DEVANAGARI_RATIO",
+    ): (
+        0.20,
+        "the Devanagari share at or above which a PDF page's text layer is treated as "
+        "Unicode and is therefore redactable. A measured GAP, not a tuned value: across "
+        "1,283 pages of five documents the distribution is bimodal -- legacy pages sit "
+        "at exactly 0.0 (nirnaya 2/2, kanunpatrika 128/128, the 23rd CIAA report "
+        "534/542) and Unicode pages above 0.20 (aarop-patra 67/67, the 34th report "
+        "527/544). Only 10 of 1,283 pages land between, and all 10 refuse. Moving this "
+        "DOWN is the dangerous direction: it admits a part-legacy page, whose "
+        "undecoded half the detectors cannot read",
+    ),
+    (
         "likhit/quality/page_refusal.py",
         "PLACEHOLDER_CELL_SHARE_FLOOR",
     ): (
