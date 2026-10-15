@@ -14,6 +14,16 @@ the first two -- they cannot shrink each other's candidate set, and
 matches bare digit runs rather than a label, so running it against text the first two have
 already reduced means it can only ever see what they left. The placeholders they write carry
 no digits and no ``@``, so none of the contact patterns can match one.
+
+⚠️ **Known gap: the table pass covers only citizenship and date of birth.**
+:func:`likhit.privacy.redact_tables.scan` decides a cell's kind from
+``_label_kinds``, which knows those two and nothing else, so a PAN, bank account or age held
+in a table *cell away from its label* is not removed even at
+:data:`~likhit.privacy.modes.RedactionMode.STRICT`. The inline pass still catches every one
+of them that sits beside its own label. Measured over the 13 CIAA transcripts: **zero**
+occurrences of the uncovered shape, which is why this is recorded as a limit rather than
+closed with machinery nothing exercises -- extending the table pass means extending its
+per-row disambiguation and row-spent guards, whose behaviour is calibrated.
 """
 
 from __future__ import annotations

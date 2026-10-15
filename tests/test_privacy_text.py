@@ -169,6 +169,37 @@ def test_journal_records_shapes_and_never_a_value():
         assert value not in blob
 
 
+def test_save_cli_writes_nothing_if_redaction_raises(tmp_path, monkeypatch):
+    """🛑 Fail-closed, which is what makes redact-by-default more than a label.
+
+    Falling through to write the unredacted text a failed pass was asked to clean is the one
+    outcome worse than not converting the document at all. Asserted here rather than left to
+    `save_cli`'s docstring, because it is a property of the control flow and a later
+    `try/except` around the conversion loop would silently remove it.
+    """
+
+    import fitz
+
+    from likhit import save_cli
+
+    # A one-page PDF, not `samples/aarop-patra.pdf`: converting that one takes ~20 s, and
+    # this test is about control flow after conversion, not about conversion.
+    source = tmp_path / "tiny.pdf"
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "hello")
+    doc.save(str(source))
+    doc.close()
+
+    def boom(text, *, mode):
+        raise RuntimeError("simulated redaction failure")
+
+    monkeypatch.setattr(save_cli, "redact_text", boom)
+    out = tmp_path / "out"
+    with pytest.raises(RuntimeError, match="simulated redaction failure"):
+        save_cli.main([str(source), "--out-dir", str(out)])
+    assert not out.exists() or not list(out.iterdir())
+
+
 @pytest.mark.parametrize("mode", list(RedactionMode))
 def test_every_mode_is_reachable_from_the_save_cli(mode):
     args = build_parser().parse_args(["in.pdf", "--redact", mode.value])

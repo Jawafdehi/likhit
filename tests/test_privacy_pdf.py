@@ -192,6 +192,65 @@ def test_a_scanned_page_blocks_the_document_and_writes_nothing(tmp_path):
     assert not out.exists(), "a refusal must leave no partial artifact behind"
 
 
+def test_an_encrypted_pdf_is_refused_by_name(tmp_path):
+    """Without this guard the failure is a bare `ValueError: document closed or encrypted`
+    from inside PyMuPDF, on first page access -- which reads like a corrupt file rather than
+    a refusal, and tells the caller nothing about what to do."""
+
+    source, out = tmp_path / "enc.pdf", tmp_path / "out.pdf"
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "contact 9851234567")
+    doc.save(
+        str(source),
+        encryption=fitz.PDF_ENCRYPT_AES_256,
+        owner_pw="owner",
+        user_pw="user",
+    )
+    doc.close()
+
+    with pytest.raises(ValueError, match="password-protected"):
+        redact_pdf(source, out, mode=RedactionMode.CONTACT)
+    assert not out.exists()
+
+
+def test_verify_checks_a_page_even_if_redaction_changed_its_class(tmp_path):
+    """🛑 Redaction can push a page out of the class that selected it for verification.
+
+    Devanagari digits ०-९ are U+0966-U+096F, inside the `[ऀ-ॿ]` class, so removing them
+    lowers the Devanagari count *and* the total. A page just above
+    `UNICODE_DEVANAGARI_RATIO` can fall below it purely by being redacted -- measured on a
+    constructed page, 0.257 before and 0.103 after. An earlier `_verify` re-classified the
+    output and skipped anything no longer `UNICODE`, which skipped exactly the pages most
+    likely to have been partially redacted.
+    """
+
+    from likhit.privacy.pdf import _verify
+
+    source = tmp_path / "latin-heavy.pdf"
+    # Deliberately below the Devanagari ratio, so `classify_text_layer` calls it LEGACY --
+    # and it still carries a value in the removal set.
+    _make_pdf(
+        source,
+        [
+            "Reference ABCDEFGHIJKLMNOP QRSTUVWXYZ 0123456789",
+            "Continued ABCDEFGHIJKLMNOP QRSTUVWXYZ 0123456789",
+            "Continued ABCDEFGHIJKLMNOP QRSTUVWXYZ 0123456789",
+            "सम्पर्क ९८५१२३४५६७",
+        ],
+    )
+    with fitz.open(source) as doc:
+        assert not classify_text_layer(doc[0]).is_redactable, (
+            "fixture must be a page the old class-based check would have skipped"
+        )
+        data = doc.tobytes()
+
+    # Not in the checked set -> no opinion offered.
+    _verify(data, RedactionMode.CONTACT, frozenset())
+    # In the checked set -> the residue is found despite the page's class.
+    with pytest.raises(ValueError, match="verification failed"):
+        _verify(data, RedactionMode.CONTACT, frozenset({0}))
+
+
 def test_targets_agree_with_redact_on_the_corpus_samples(tmp_path):
     """`iter_inline_targets` and `redact` must qualify the same values.
 

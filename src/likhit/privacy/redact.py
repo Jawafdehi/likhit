@@ -153,11 +153,21 @@ VALUE_SEPARATOR = re.compile(rf"[{_VALUE_SEPARATORS}]")
 AMOUNT_CUE = re.compile(r"रकम|जम्मा|खर्च|बजेट|राजस्व|बेरुजु|रु")
 
 
+#: 🛑 **Case-sensitive, and the acronym is the reason.** An earlier version carried ``re.I``
+#: for the English ``no``/``number`` suffix, which also made ``\bPAN\b`` match the ordinary
+#: English word -- ``frying pan 123456789`` was a match. The corpus has **7** uppercase
+#: ``PAN`` and **0** lowercase, so the flag bought nothing and cost a whole false-positive
+#: class. Case-insensitivity is now scoped inline to the suffix that needs it.
+#:
+#: 🛑🛑 **There is deliberately no Devanagari abbreviation alternation.** A draft matched
+#: ``प\.?ा\.?न\.?``, which has **0** occurrences in the corpus in its dotted form and whose
+#: undotted reading is ``पान`` -- betel leaf, an ordinary word appearing **4** times. It
+#: matched ``पान १२३४५६७८९`` as a PAN number. Invented label forms do not merely fail to
+#: help; each one is a new way to delete real data.
 PAN_LABEL_VALUE = re.compile(
-    r"(?P<label>(?:स्थायी\s*लेखा\s*(?:नम्बर|नं\.?)|प\.?ा\.?न\.?|\bPAN\b)"
-    r"(?:\s*(?:नम्बर|नं\.?|no\.?|number))?)"
-    rf"(?P<sep>\s*[:ः]?\s*)(?P<val>{_value_window(_CIT_LEGACY_SEPARATORS, 3, 20)})",
-    re.I,
+    r"(?P<label>(?:स्थायी\s*लेखा\s*(?:नम्बर|नं\.?)|\bPAN\b)"
+    r"(?:\s*(?:नम्बर|नं\.?|(?i:no\.?|number)))?)"
+    rf"(?P<sep>\s*[:ः]?\s*)(?P<val>{_value_window(_CIT_LEGACY_SEPARATORS, 3, 20)})"
 )
 #: 🛑 A bank account value may open with a short uppercase Latin code -- a branch or product
 #: prefix -- and `खाता नं. MM##########` is a real example from the CIAA corpus. It is the one
@@ -169,7 +179,12 @@ PAN_LABEL_VALUE = re.compile(
 #: for every kind would let a citizenship or date window run out of the identifier and into
 #: the Latin-transliterated name beside it, which is exactly the escape that guard exists to
 #: catch.
-BANK_LATIN_PREFIX = re.compile(r"^[A-Z]{1,4}")
+#: ⚠️ ``re.I`` here is **load-bearing, not decoration**: :data:`BANK_LABEL_VALUE` carries
+#: ``re.I``, which makes its ``[A-Z]{0,4}`` prefix class match lowercase too. Without the same
+#: flag here, a lowercase prefix matched the pattern, survived this strip, and was then
+#: refused by guard 1 as a non-digit -- a **silent miss**, the pattern and the guard
+#: disagreeing about the same bytes.
+BANK_LATIN_PREFIX = re.compile(r"^[A-Z]{1,4}", re.I)
 BANK_LABEL_VALUE = re.compile(
     r"(?P<label>(?:खाता|बैंक\s*खाता|account)\s*(?:नम्बर|नं\.?|no\.?|number))"
     rf"(?P<sep>\s*[:ः]?\s*)"

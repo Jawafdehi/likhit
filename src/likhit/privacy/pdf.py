@@ -266,23 +266,35 @@ def _scrub_document_metadata(doc: fitz.Document) -> None:
         doc.embfile_del(name)
 
 
-def _verify(data: bytes, mode: RedactionMode) -> None:
+def _verify(data: bytes, mode: RedactionMode, checked_pages: frozenset[int]) -> None:
     """Re-read the written bytes and refuse if anything in the removal set survived.
 
     :mod:`likhit.privacy.tree`'s rule 4, at document grain: a pass that disagrees with itself
     about what it just wrote has not redacted the document, and the only honest place to find
     that out is the output.
+
+    🛑 **``checked_pages`` is passed in rather than recomputed, and that is the whole point of
+    this signature.** An earlier version re-classified each page of the output and skipped any
+    that was no longer :data:`PageClass.UNICODE`. That is unsound, because **redaction itself
+    can change a page's class**: Devanagari digits ``०-९`` are U+0966--U+096F, inside the
+    ``[ऀ-ॿ]`` class, so removing them lowers the Devanagari count *and* the total, and a page
+    just above :data:`UNICODE_DEVANAGARI_RATIO` can fall below it purely by being redacted.
+    Measured on a constructed page: ratio 0.257 before, **0.103 after**. The page would then
+    be skipped by the one check whose job is to catch a partial redaction -- and a partial
+    redaction is exactly when its class is most likely to have shifted.
+
+    So the set of pages to verify is decided on the **input**, where the class means what it
+    says, and carried here.
     """
 
     with fitz.open(stream=data, filetype="pdf") as doc:
         for page in doc:
-            # One extraction, used for both the class and the residue check: verifying
+            if page.number not in checked_pages:
+                continue
+            # The same extraction the redaction ran against, not `get_text()`: verifying
             # against a different extraction than the one that located the values would
             # leave a gap exactly the size of the difference between them.
-            text = page_glyph_map(page)[0]
-            if not classify_text_layer(page, text).is_redactable:
-                continue
-            residue = _targets(text, mode, Counter())
+            residue = _targets(page_glyph_map(page)[0], mode, Counter())
             if residue:
                 kinds = sorted({target.kind for target in residue})
                 raise ValueError(
@@ -325,10 +337,35 @@ def redact_pdf(
 
     report = PdfRedactionReport()
     with fitz.open(source) as doc:
+        # 🛑 An encrypted document reaches here happily and only fails on the first page
+        # access, as a bare `ValueError: document closed or encrypted` from deep inside
+        # PyMuPDF. Named here instead, because the caller's next question is "so what do I
+        # do", and because the failure must be unambiguously a refusal rather than something
+        # that looks like a corrupt file.
+        if doc.needs_pass:
+            raise ValueError(
+                f"{source} is password-protected; its text cannot be read, so it cannot be "
+                "redacted. Decrypt it first -- an unreadable document is not an unredacted "
+                "one, and must not be emitted as though it had been processed"
+            )
+        # 🛑 Zero pages is not a clean document. The same argument `likhit-redact scan` makes
+        # about an empty tree: a redaction of nothing cannot be distinguished, downstream,
+        # from a redaction that found nothing, and this one would write a "redacted"
+        # derivative that had never been examined.
+        if doc.page_count == 0:
+            raise ValueError(
+                f"{source} has no pages; refusing to emit a redacted derivative of a "
+                "document that was never examined"
+            )
         report.pages = doc.page_count
+        # Decided on the INPUT and carried to `_verify`, because redaction can change a
+        # page's class -- see that function.
+        redactable: set[int] = set()
         for page in doc:
             page_class = classify_text_layer(page)
             report.pages_by_class[page_class.value] += 1
+            if page_class.is_redactable:
+                redactable.add(page.number)
             if page_class.needs_work:
                 report.blocked_pages.append(
                     {"page": page.number + 1, "page_class": page_class.value}
@@ -357,7 +394,7 @@ def redact_pdf(
         # Full save, never incremental -- see this module's rule 1.
         data = doc.tobytes(garbage=4, deflate=True)
 
-    _verify(data, mode)
+    _verify(data, mode, frozenset(redactable))
 
     assert destination is not None
     destination.parent.mkdir(parents=True, exist_ok=True)
