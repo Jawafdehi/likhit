@@ -168,15 +168,33 @@ counts, separator presence — never a matched digit.
 
 ### Redaction modes
 
-A mode names a **policy tier**, not a pass. `identifiers` is the default and is exactly the
-scope above. `contact` additionally removes mobile numbers, landlines and email addresses —
-a scope expansion, so it is never applied to a caller who did not ask for it.
+A mode names a **policy tier**, not a pass. One call runs whichever passes the tier needs:
+
+```python
+from likhit.privacy import redact_text
+
+result = redact_text(markdown)                  # redacts — this is the default
+result.text, result.journal, result.values_removed
+```
 
 | mode | removes |
 |---|---|
 | `none` | nothing — output is byte-identical to the input |
 | `identifiers` *(default)* | citizenship numbers, dates of birth |
 | `contact` | the above, plus mobile, landline, email |
+
+> 🛑 **Redaction is the default, and unredacted output is what you ask for.**
+> `likhit-save report.pdf` writes a redacted transcript; `likhit-save report.pdf --redact none`
+> writes the unredacted one and says so at WARNING. The reasoning is that this command's
+> output is a *file*, and a file outlives the invocation that made it — nobody reading
+> `report.md` six months later can tell whether redaction was considered. The safe default is
+> the one where forgetting produces the harmless outcome.
+>
+> `--redact none` is a legitimate thing to want — the retained original, internal casework and
+> the research corpus all need it — so it is one flag and not a fight.
+
+Redaction **fails closed**: if a pass raises, nothing is written. Falling through to the
+unredacted text it was asked to clean is the one outcome worse than not converting at all.
 
 ### PDF in, redacted PDF out
 

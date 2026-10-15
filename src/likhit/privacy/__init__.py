@@ -47,6 +47,7 @@ from .placeholders import (
 from .redact import InlineTarget, iter_inline_targets, redact_inline_text
 from .redact_tables import redact_table_text
 from .signals import scan_text
+from .text import RedactedText, redact_text
 from .tree import RedactionReport, redact_tree
 
 __all__ = [
@@ -56,6 +57,7 @@ __all__ = [
     "InlineTarget",
     "PageClass",
     "PdfRedactionReport",
+    "RedactedText",
     "RedactionMode",
     "RedactionReport",
     "classify_text_layer",
@@ -66,6 +68,7 @@ __all__ = [
     "redact_inline_text",
     "redact_pdf",
     "redact_table_text",
+    "redact_text",
     "redact_tree",
     "scan_text",
     "strip_placeholders",
