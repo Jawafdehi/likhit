@@ -192,6 +192,42 @@ def test_a_scanned_page_blocks_the_document_and_writes_nothing(tmp_path):
     assert not out.exists(), "a refusal must leave no partial artifact behind"
 
 
+def test_a_value_that_wraps_across_a_line_is_redacted_not_refused(tmp_path):
+    """🛑 `page_glyph_map` advertises that a value broken across a line is still located --
+    and the rectangle check then refused the whole **document** for it.
+
+    The synthetic `"\\n"` between lines carries a `None` rect *by construction*: it is in the
+    text so the patterns can see line structure, and it has no glyph. Counting it as a
+    character the pass "could not place" turned every wrapped value into a refusal. An
+    English date makes that routine rather than exotic -- `Date of Birth: 27 August 1979`
+    has two mandatory spaces, so any column break inside it trips it.
+    """
+
+    font = _devanagari_font()
+    source, out = tmp_path / "wrap.pdf", tmp_path / "wrap-out.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_font(fontname="dev", fontfile=font)
+    # Devanagari so the page classifies UNICODE; the date is split as a column would wrap it.
+    page.insert_text((72, 52), "नागरिकता सम्बन्धी विवरण", fontname="dev", fontsize=12)
+    page.insert_text((72, 72), "Date of Birth: 27", fontname="helv", fontsize=12)
+    page.insert_text((72, 92), "August 1979", fontname="helv", fontsize=12)
+    doc.save(source)
+    doc.close()
+
+    report = redact_pdf(source, out, mode=RedactionMode.STRICT)
+
+    assert report.values_removed == 1
+    # One rectangle per line, which is what `_merge_rects` is for.
+    assert report.rects_applied == 2
+
+    with fitz.open(out) as written:
+        text = written[0].get_text()
+    for fragment in ("27", "August", "1979"):
+        assert fragment not in text, f"{fragment} survived a wrapped redaction"
+    assert "Date of Birth" in text, "the label is kept"
+
+
 def test_a_dry_run_reports_blocked_pages_instead_of_raising(tmp_path):
     """🛑 `blocked_pages` was unreachable: the only code path that filled it raised on the
     next line, so every report a caller could hold had it empty.

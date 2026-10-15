@@ -186,6 +186,128 @@ def test_a_labelled_phone_does_not_double_count_a_nepali_mobile():
     assert result.text.count("[REDACTED:PHONE-NO]") == 1
 
 
+def test_a_labelled_phone_value_stops_at_the_number():
+    """🛑 The rule added to prevent a disclosure nearly caused the opposite one.
+
+    A value window letting `[\\s-]` separate any two digits runs out of the number and into
+    the next figure on the line: `फोन नं.: ९८४१२३४५६७ २०७५` matched fourteen digits as one
+    "phone number" and deleted the year. That is this project's 11,215-clobbered-values
+    history reproduced exactly.
+
+    ⚠️ A Nepali mobile hides it -- `MOBILE` matches first and the overlap guard drops the
+    over-captured span -- so every case here uses a number `MOBILE` cannot see, which is
+    precisely the set this rule exists for.
+    """
+
+    for text, kept in (
+        ("Phone: 1234567 2075", "2075"),
+        ("फोन नं.: ५२६२२४७ २०७५", "२०७५"),
+        ("Tel: 01-4123456 2075", "2075"),
+    ):
+        result = redact_text(text, mode=RedactionMode.CONTACT)
+        assert kept in result.text, f"{text!r} swallowed the figure after the number"
+        assert result.text.count("[REDACTED:PHONE-NO]") == 1
+
+    # Both figures after the number survive, not just the first.
+    assert redact_text("Phone: 1234567 2075 2076", mode=RedactionMode.CONTACT).text == (
+        "Phone: [REDACTED:PHONE-NO] 2075 2076"
+    )
+    # Two short runs under a label are not a phone number at all.
+    assert (
+        "2075 2076" in redact_text("Phone: 2075 2076", mode=RedactionMode.CONTACT).text
+    )
+
+
+def test_the_shapes_the_labelled_phone_must_still_reach():
+    """The constraint above must not cost the numbers the rule was added for."""
+
+    for text in (
+        "Mobile Number: 919971766006",  # the Indian number from page 1
+        "Phone: +91 9971766006",  # country code separated by a space
+        "Tel: 9851-234567",  # hyphenated
+        "फोन नं.: ५२६२२४७",  # a bare Kathmandu landline
+    ):
+        result = redact_text(text, mode=RedactionMode.CONTACT)
+        assert result.values_removed == 1, text
+        assert not any(ch.isdigit() for ch in result.text.replace("REDACTED", "")), text
+
+
+@pytest.mark.parametrize("count", [1, 2, 3, 4, 6])
+def test_a_passport_list_has_no_length_cap(count):
+    """🛑 One capture group per list position has a cap, and overflowing it is SILENT.
+
+    With `val`/`val2`/`val3` a fourth passport under the same label was never captured, so
+    no counter, journal row or verification pass could see it -- the page carried three
+    visible redactions beside one live identifier, which is this module's worst failure
+    mode. The span is matched as a list and split, so there is no edge to fall off.
+    """
+
+    numbers = [f"Z{4362930 + index}" for index in range(count)]
+    text = "Passport No. " + " र ".join(f"{number}/India" for number in numbers)
+
+    result = redact_text(text, mode=RedactionMode.STRICT)
+
+    assert result.values_removed == count
+    for number in numbers:
+        assert number not in result.text
+    # The issuing country is research data and survives each one.
+    assert result.text.count("/India") == count
+
+
+def test_a_label_binds_across_at_most_one_line_break():
+    """🛑 A bare `\\s*` gap binds a label to a number any distance away through whitespace.
+
+    In text extracted from a PDF that reaches across blank lines into the next block, and
+    `फोन नं.:\\n\\n\\n२०७५०१२३` redacted a *date* as a phone number. One break has to be
+    allowed, because the real case needs it: the CIAA masthead puts the number on the
+    following line.
+    """
+
+    assert (
+        "२०७५०१२३"
+        in redact_text("फोन नं.:\n\n\n२०७५०१२३", mode=RedactionMode.CONTACT).text
+    )
+    assert redact_text("फोन नं.:    \n५२६२२४७", mode=RedactionMode.CONTACT).changed
+
+
+def test_blanking_a_placeholder_does_not_move_the_text_around_it():
+    """⚠️ Every labelled scanner pattern is distance-bounded, so collapsing a 25-character
+    marker to one space pulls what follows 24 characters closer and can invent a hit.
+
+    Measured: it put `date_of_birth` at 11 over the CIAA transcripts where the unredacted
+    text supports 10.
+    """
+
+    from likhit.privacy.placeholders import CITIZENSHIP
+
+    marker_len = len(CITIZENSHIP)
+    # A digit run just outside the citizenship scanner's 40-character window stays outside.
+    filler = "क" * (41 - marker_len)
+    text = f"नागरिकता {CITIZENSHIP}{filler} २०७५"
+    assert scan_text(text)[0]["citizenship"] == 0
+
+
+def test_a_label_glued_to_a_longer_word_is_not_a_label():
+    """🛑 Two scripts, two guards -- and `\\b` silently does nothing for one of them.
+
+    Python's `\\w` follows `str.isalnum()`, and a Devanagari vowel sign is category `Mn`, so
+    `\\b` *succeeds* between `को` and `सम्पर्क`. `कोसम्पर्क १२३४५६७` kept matching with a word
+    boundary in place; only the script-range lookbehind holds there.
+    """
+
+    for text in (
+        "Himobile 1234567",
+        "Nepal Telecom 1234567",
+        "Parcel 1234567",
+        "कोसम्पर्क १२३४५६७",
+    ):
+        assert not redact_text(text, mode=RedactionMode.CONTACT).changed, text
+
+    # The same labels, standing as words, still work in both scripts.
+    for text in ("Mobile 1234567", "सम्पर्क १२३४५६७", "को सम्पर्क ९८५१२३४५६७"):
+        assert redact_text(text, mode=RedactionMode.CONTACT).changed, text
+
+
 def test_no_contact_pattern_matches_inside_a_placeholder():
     """🛑 The contact pass runs LAST, on text the inline and table passes have already
     rewritten, so it reads their placeholders.

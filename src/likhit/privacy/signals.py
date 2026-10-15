@@ -29,7 +29,7 @@ import re
 from collections import Counter
 
 from ..devanagari import ANY_DIGITS
-from .placeholders import strip_placeholders
+from .placeholders import PLACEHOLDER_PATTERN
 
 
 # --- high-precision: an occurrence is evidence on its own -------------------
@@ -56,15 +56,50 @@ LANDLINE = re.compile(
 #
 # ⚠️ The value window admits at most ONE separator between digits. A looser
 # `[\s\-]*` lets the window run out of the number and swallow the next figure on the line.
+#
+# ⚠️ **A label glued to the end of a longer word is not a label**, and the two scripts need
+# different guards to say so. Without one, `Himobile 1234567` was a labelled phone number.
+#
+# 🛑 ``\b`` works for the Latin forms and is **silently useless** for the Devanagari ones.
+# Python's ``\w`` follows ``str.isalnum()``, and a Devanagari vowel sign is category ``Mn``
+# -- not alphanumeric -- so ``\b`` *succeeds* between `को` and `सम्पर्क` and `कोसम्पर्क` kept
+# matching. The script-range lookbehind is what actually holds there.
+_PHONE_LABEL_LATIN = r"mobile|cell(?:ular)?|phone|tel(?:ephone)?|contact|fax"
+_PHONE_LABEL_DEVA = r"सम्पर्क|मोबाइल|फोन|दूरभाष"
+_PHONE_LABEL_SUFFIX = r"(?:\s*(?:no\.?|number|#|नं\.?|नम्बर))?"
 PHONE_LABEL = (
-    r"(?:mobile|cell(?:ular)?|phone|tel(?:ephone)?|contact|fax)"
-    r"(?:\s*(?:no\.?|number|#))?"
-    r"|सम्पर्क(?:\s*(?:नं\.?|नम्बर|फोन))?|मोबाइल(?:\s*(?:नं\.?|नम्बर))?"
-    r"|फोन(?:\s*(?:नं\.?|नम्बर))?|दूरभाष(?:\s*(?:नं\.?|नम्बर))?"
+    rf"(?:\b(?:{_PHONE_LABEL_LATIN})"
+    rf"|(?<![ऀ-ॿ])(?:{_PHONE_LABEL_DEVA}))"
+    rf"{_PHONE_LABEL_SUFFIX}"
 )
+
+# 🛑 **Whitespace is admitted ONLY between a country code and the number, and this is the
+# whole safety argument for the rule.** A value window that let `[\s-]` separate any two
+# digits ran straight out of the number and into whatever figure came next: `फोन नं.:
+# ९८४१२३४५६७ २०७५` matched `९८४१२३४५६७ २०७५` as one 14-digit "phone number" and deleted the
+# year, and `Phone: 1234567 2075 2076` took both. That is the 11,215-non-secret-values
+# failure reproduced exactly, by a rule added to prevent a disclosure.
+#
+# A Nepali mobile hid it during testing: `MOBILE` matches those first and the overlap guard
+# then drops the over-captured span, so the bug was only reachable on a number `MOBILE`
+# cannot see -- which is precisely the set this rule exists for.
+#
+# Hyphens stay free (`01-4123456`, `9851-234567`); only the space is constrained. A number
+# written `+91 99717 66006`, with a space mid-number, is therefore missed. That is the
+# deliberate direction: this rule's job is the number `MOBILE` cannot see, and a miss is
+# recoverable where a deleted audit figure is not.
+#: 🛑 **At most one line break between the label and its value.** A bare ``\s*`` binds a label
+#: to a number any distance away so long as only whitespace lies between, and in text
+#: extracted from a PDF that reaches across blank lines into the next block:
+#: `फोन नं.:\n\n\n२०७५०१२३` redacted a *date* as a phone number. One break is required
+#: rather than zero, because the real case needs it -- the CIAA masthead prints
+#: `फोन नं.:` and its number on the following line.
+_LABEL_VALUE_GAP = r"[^\S\n]*[:ः]?[^\S\n]*\n?[^\S\n]*"
+
 PHONE_LABELLED = re.compile(
-    rf"(?:{PHONE_LABEL})\s*[:ः]?\s*"
-    rf"(?P<val>\+?[{ANY_DIGITS}](?:[\s-]?[{ANY_DIGITS}]){{6,14}})(?![{ANY_DIGITS}])",
+    rf"(?:{PHONE_LABEL}){_LABEL_VALUE_GAP}"
+    rf"(?P<val>\+?(?:[{ANY_DIGITS}]{{1,3}}\s)?[{ANY_DIGITS}](?:-?[{ANY_DIGITS}]){{6,14}})"
+    rf"(?![{ANY_DIGITS}])",
     re.I,
 )
 # 🛑 **A passport number is Latin-prefixed, so no digit-only pattern can reach it.** Page 1
@@ -137,9 +172,16 @@ def scan_text(t: str) -> tuple[Counter, Counter]:
     ⚠️ ``\\bPAN\\b`` had the same collision latent against ``[REDACTED:PAN-NO]`` and happened
     not to fire only because no 6-digit run followed one closely enough. Stripping handles
     the class rather than the instance.
+
+    🛑 **Blanked to its own width, not collapsed.** Every labelled pattern here is
+    *distance*-bounded -- ``[^\\n]{0,40}?`` between a label and its digits -- so replacing a
+    25-character marker with one space pulls everything after it 24 characters closer and can
+    invent a hit that the unredacted text did not have: ``फोन [REDACTED:EMAIL] 1234567``
+    scored a labelled phone that way. Same-width blanking removes the word without moving
+    anything, which keeps every window measuring the distance it was calibrated against.
     """
 
-    t = strip_placeholders(t)
+    t = PLACEHOLDER_PATTERN.sub(lambda m: " " * len(m.group(0)), t)
     hp = Counter()
     hp["email"] = len(EMAIL.findall(t))
     hp["mobile"] = len(MOBILE.findall(t))

@@ -218,11 +218,16 @@ _PASSPORT_VALUE = rf"[A-Z]{{1,2}}[{AD}]{{6,9}}(?![{AD}])"
 #: a cheque or voucher number elsewhere on the page out of reach.
 _PASSPORT_CONNECTOR = r"(?:\s*/\s*[^\s,;।/]{1,20})?\s*(?:र|and|&|,)\s*"
 
+#: 🛑 ``val`` spans the **whole list**, connectors and all, and :data:`VALUE_ITEMS` splits it
+#: back into the individual numbers. An earlier form gave the list one capture group per
+#: value (``val``/``val2``/``val3``) and so had a hard cap: a fourth passport under the same
+#: label was left in the file, and *silently* -- nothing downstream could see a value the
+#: pattern never captured, so the page carried three visible redactions and one live
+#: identifier. The repetition is unbounded here, and the split is what makes that safe.
 PASSPORT_LABEL_VALUE = re.compile(
     r"(?P<label>(?:passport|राहदानी)\s*(?:no\.?|number|नं\.?|नम्बर)?)"
-    rf"(?P<sep>\s*[:ः]?\s*)(?P<val>{_PASSPORT_VALUE})"
-    rf"(?:{_PASSPORT_CONNECTOR}(?P<val2>{_PASSPORT_VALUE}))?"
-    rf"(?:{_PASSPORT_CONNECTOR}(?P<val3>{_PASSPORT_VALUE}))?",
+    rf"(?P<sep>\s*[:ः]?\s*)"
+    rf"(?P<val>{_PASSPORT_VALUE}(?:{_PASSPORT_CONNECTOR}{_PASSPORT_VALUE})*)",
     re.I,
 )
 #: As :data:`BANK_LATIN_PREFIX`: stripped before the digits-only guard, and carrying ``re.I``
@@ -406,8 +411,23 @@ class InlineTarget:
 #: The value groups a rule may fill, in order. A pattern uses as many as it needs.
 VALUE_GROUPS = ("val", "val2", "val3")
 
+#: For a rule whose ``val`` group spans a **list** of values rather than one, the pattern
+#: that finds the individual values inside it.
+#:
+#: 🛑 This exists because the obvious alternative -- one capture group per list position --
+#: has a cap, and overflowing it is a *silent* miss: a fourth passport under one label was
+#: simply never captured, so no counter, journal row or verification pass could see it, and
+#: the page ended up carrying three visible redactions beside one live identifier. Splitting
+#: an unbounded span has no such edge.
+#:
+#: ⚠️ Each item is still guarded individually by :func:`_accept`, so a list does not buy a
+#: value any relief from the digit bounds or the amount cue.
+VALUE_ITEMS: dict[str, re.Pattern[str]] = {
+    "passport": re.compile(_PASSPORT_VALUE, re.I),
+}
 
-def _match_values(match: re.Match[str]) -> list[tuple[str, int, int]]:
+
+def _match_values(match: re.Match[str], kind: str) -> list[tuple[str, int, int]]:
     """Every ``(value, start, end)`` this match carried, in text order.
 
     🛑 **A match can carry more than one value, for two unrelated reasons, and both are
@@ -429,13 +449,21 @@ def _match_values(match: re.Match[str]) -> list[tuple[str, int, int]]:
     already began with a real label, so the label still decides.
     """
 
+    items = VALUE_ITEMS.get(kind)
     found = []
     for name in VALUE_GROUPS:
         if name not in match.re.groupindex:
             continue
-        if match.group(name) is None:
+        value = match.group(name)
+        if value is None:
             continue
-        found.append((match.group(name), match.start(name), match.end(name)))
+        if items is None:
+            found.append((value, match.start(name), match.end(name)))
+            continue
+        # A list span: offsets are relative to the group, so carry its start.
+        base = match.start(name)
+        for item in items.finditer(value):
+            found.append((item.group(0), base + item.start(), base + item.end()))
     return sorted(found, key=lambda item: item[1])
 
 
@@ -498,7 +526,7 @@ def iter_inline_targets(
         for match in pattern.finditer(text):
             # One match can carry several values -- see `_match_values`. Each is guarded on
             # its own, so one value failing a guard never suppresses its neighbour.
-            for val, start, end in _match_values(match):
+            for val, start, end in _match_values(match, kind):
                 digit_count = _accept(val, kind, counters)
                 if digit_count is None:
                     continue
@@ -544,7 +572,7 @@ def redact(
             # indifferent to all of it: whatever is not an accepted value survives verbatim,
             # which is exactly the "keep the label" rule stated once.
             accepted = []
-            for val, start, end in _match_values(m):
+            for val, start, end in _match_values(m, kind):
                 digit_count = _accept(val, kind, stats)
                 if digit_count is None:
                     continue

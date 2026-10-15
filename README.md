@@ -189,9 +189,9 @@ Measured over the 13 CIAA annual-report transcripts, by tier:
 | tier | values removed | high-precision signals remaining |
 |---|---:|---|
 | *(none)* | — | bank 32, citizenship 37, DOB 39, email 32, labelled-phone 21, landline 8, mobile 39, PAN 7 |
-| `identifiers` | 50 | bank 32, citizenship 33, DOB 11, email 32, labelled-phone 21, landline 8, mobile 39, PAN 7 |
-| `contact` | 131 | bank 32, citizenship 33, DOB 11, labelled-phone 2, PAN 7 |
-| `strict` | **203** | citizenship 33, DOB 11, labelled-phone 2 |
+| `identifiers` | 50 | bank 32, citizenship 33, DOB 10, email 32, labelled-phone 21, landline 8, mobile 39, PAN 7 |
+| `contact` | 131 | bank 32, citizenship 33, DOB 10, labelled-phone 2, PAN 7 |
+| `strict` | **203** | citizenship 33, DOB 10, labelled-phone 2 |
 
 > **What is left at `strict` is mostly not personal data.** The residual `citizenship` and
 > `date_of_birth` counts are the scanner's wide tier matching prose: 10 of them are

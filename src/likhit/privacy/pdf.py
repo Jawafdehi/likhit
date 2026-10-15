@@ -275,10 +275,29 @@ def _redact_page(
 
     to_redact: list[fitz.Rect] = []
     for target in targets:
-        span = [rect for rect in rects[target.start : target.end] if rect is not None]
-        if len(span) != target.end - target.start:
+        # 🛑 **The synthetic line separator is not an unplaceable glyph.** `page_glyph_map`
+        # inserts `"\n"` with a `None` rect between lines; it is in the text so the patterns
+        # can see line structure, and it has no glyph *by construction*. Counting it as a
+        # character this pass "could not place" refused any value that wrapped -- which the
+        # same module's docstring advertises as supported -- and refused the whole
+        # **document** for it. An English date makes that routine rather than exotic:
+        # `Date of Birth: 27 August 1979` carries two mandatory spaces, so any column break
+        # inside it tripped the guard.
+        #
+        # The guard itself is unchanged in substance: every character that *does* have a
+        # glyph must carry a rectangle, or the value is one this pass would report as
+        # removed while leaving it in the file.
+        span: list[fitz.Rect] = []
+        unplaceable = 0
+        for index in range(target.start, target.end):
+            rect = rects[index]
+            if rect is not None:
+                span.append(rect)
+            elif text[index] != "\n":
+                unplaceable += 1
+        if unplaceable:
             raise ValueError(
-                f"page {page.number + 1}: {target.end - target.start - len(span)} of "
+                f"page {page.number + 1}: {unplaceable} of "
                 f"{target.end - target.start} characters of a {target.kind} value have no "
                 "glyph rectangle; refusing rather than reporting a value as removed that "
                 "this pass could not place"
