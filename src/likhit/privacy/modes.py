@@ -10,11 +10,8 @@ a real corpus, and this project's redaction history is 572 real hits against **1
 non-secret values clobbered**. A flag set lets every caller invent a combination nobody
 measured; four named tiers are four configurations that can each carry a number.
 
-⚠️ :data:`RedactionMode.CONTACT` is **a scope change and is deliberately not the default.**
-Promoting phone and email from detected to removed is adjudicated work -- see
-``docs/2026-09-25-pii-redaction-pipeline/PLAN.md`` §1 in the meta-repo -- so it is available to
-a caller who has made that decision and never applied to one who has not. :data:`IDENTIFIERS`
-is exactly today's behaviour.
+⚠️ :data:`RedactionMode.IDENTIFIERS` is the scope that was formally adjudicated; it is **no
+longer the default**, for the reason recorded on :data:`DEFAULT_MODE`.
 """
 
 from __future__ import annotations
@@ -31,7 +28,8 @@ class RedactionMode(str, Enum):
     NONE = "none"
 
     #: Citizenship numbers and dates of birth -- the two classes adjudicated as unambiguously
-    #: personal and of no research value. Today's scope, and the default everywhere.
+    #: personal and of no research value. The formally adjudicated scope, and the right
+    #: choice for a caller who must not exceed it.
     IDENTIFIERS = "identifiers"
 
     #: :data:`IDENTIFIERS` plus mobile numbers, landlines and email addresses.
@@ -48,4 +46,17 @@ class RedactionMode(str, Enum):
 
 #: What a caller gets if they do not choose. Stated as a name rather than left implicit at
 #: each call site, because "what happens when nobody decided" is the question an incident asks.
-DEFAULT_MODE = RedactionMode.IDENTIFIERS
+#:
+#: 🛑 **This is :data:`~RedactionMode.CONTACT`, which is wider than the formally adjudicated
+#: scope, and that is deliberate.** `IDENTIFIERS` alone removes **0.3% of the personal data
+#: detected in the charge-sheet corpus** -- 15 of 4,685 -- because that corpus is phone
+#: numbers (3,773) and bank accounts (804), not citizenship numbers. On
+#: ``samples/aarop-patra.pdf`` it removes 2 values and leaves all 5 mobile numbers. A
+#: redact-by-default whose default leaves the largest category is a label rather than a
+#: safeguard, so the default errs toward removing too much.
+#:
+#: ⚠️ **Provisional.** Promoting phone and email from detected to removed is the scope
+#: decision in ``docs/2026-09-25-pii-redaction-pipeline/PLAN.md`` §1, which is a board/DRN
+#: call. If that adjudication lands the other way, this line moves back to `IDENTIFIERS` and
+#: nothing else changes -- which is the whole reason the tier is one named constant.
+DEFAULT_MODE = RedactionMode.CONTACT

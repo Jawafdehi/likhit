@@ -31,6 +31,22 @@ def test_the_default_is_not_none():
     assert DEFAULT_MODE is not RedactionMode.NONE
 
 
+def test_the_default_removes_contact_details():
+    """🛑 What the default is FOR, pinned as behaviour rather than as a constant.
+
+    `IDENTIFIERS` alone removes 0.3% of the personal data detected in the charge-sheet
+    corpus, because that corpus is phone numbers rather than citizenship numbers. A default
+    that leaves the largest category is a label, not a safeguard. If someone narrows
+    `DEFAULT_MODE`, this is the test that should stop them -- asserting on the enum value
+    would not, because narrowing it is exactly the edit that would update that assertion too.
+    """
+
+    result = redact_text(SAMPLE)
+    assert "९८५१२३४५६७" not in result.text
+    assert "ram.bahadur@example.com" not in result.text
+    assert not sum(scan_text(result.text)[0].values())
+
+
 def test_mode_none_returns_the_input_unchanged():
     result = redact_text(SAMPLE, mode=RedactionMode.NONE)
     assert result.text == SAMPLE

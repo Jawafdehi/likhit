@@ -180,8 +180,14 @@ result.text, result.journal, result.values_removed
 | mode | removes |
 |---|---|
 | `none` | nothing — output is byte-identical to the input |
-| `identifiers` *(default)* | citizenship numbers, dates of birth |
-| `contact` | the above, plus mobile, landline, email |
+| `identifiers` | citizenship numbers, dates of birth |
+| `contact` *(default)* | the above, plus mobile, landline, email |
+
+> The default is `contact` rather than the narrower `identifiers` because `identifiers` alone
+> removes **0.3% of the personal data detected in the charge-sheet corpus** — 15 of 4,685 —
+> which is phone numbers and bank accounts, not citizenship numbers. A redact-by-default
+> whose default leaves the largest category is a label rather than a safeguard. Use
+> `--redact identifiers` where output must not exceed the formally adjudicated scope.
 
 > 🛑 **Redaction is the default, and unredacted output is what you ask for.**
 > `likhit-save report.pdf` writes a redacted transcript; `likhit-save report.pdf --redact none`
@@ -224,10 +230,16 @@ content recoverable inside the same file.
 
 ### Scope
 
-Scope is narrow on purpose: citizenship numbers and dates of birth. Mobile numbers, personal
-PANs and email addresses are *detected and disclosed* rather than removed, because their
-adjudication left undecided cases and over-redaction costs more than it saves. `--mode
-contact` is the opt-in for the first two of those.
+`identifiers` is the formally adjudicated scope — citizenship numbers and dates of birth —
+and it is narrow on purpose: anchoring on the *label* means a bare digit run can never match,
+so a financial table cannot be touched. Personal PANs are still *detected and disclosed*
+rather than removed, because their adjudication left undecided cases and over-redaction costs
+more than it saves.
+
+Mobile, landline and email sit above that line in `contact`, which is the default. That is a
+**provisional** widening, pending the PII-redaction scope decision recorded in Jawafdehi's
+internal planning notes (September 2026, §1); if it lands the other way, `modes.DEFAULT_MODE`
+moves back and nothing else changes.
 
 ### What likhit does
 
