@@ -95,6 +95,27 @@ PHONE: Final = "[REDACTED:PHONE-NO]"
 TABLE_PHONE: Final = "[REDACTED:TABLE-PHONE-NO]"
 EMAIL: Final = "[REDACTED:EMAIL]"
 
+#: The ``strict`` tier -- personal financial identifiers and age. Emitted by
+#: :mod:`likhit.privacy.redact`'s label-anchored pass.
+#:
+#: ⚠️ :data:`PAN` and :data:`BANK_ACCOUNT` are removed only in ``strict``, and that is a real
+#: trade rather than caution for its own sake. A **company** PAN is public business
+#: registration data, and a bank account cited as the evidence of a transfer **is** the claim
+#: -- removing it does not protect anyone, it deletes the finding. Neither pattern can tell a
+#: company PAN from a personal one, so ``strict`` knowingly over-removes in exchange for
+#: catching the personal ones.
+PAN: Final = "[REDACTED:PAN-NO]"
+BANK_ACCOUNT: Final = "[REDACTED:BANK-ACCOUNT-NO]"
+
+#: ⚠️ Anchored on `उमेर` (the word "age") and never on `वर्ष` alone. Measured over the 13 CIAA
+#: transcripts: a `वर्ष`-adjacent rule matches **413** spans of which 230 are not even
+#: age-shaped, and the plausible-looking remainder is mostly *durations* -- `# वर्षको लागि रु
+#: #,#` (a contract term), `प्रमाणपत्र जारी भएको # वर्षभित्र` (a deadline), `सेवा प्रवेश गरेको
+#: ## वर्षमा` (years of service). Removing those deletes the financial evidence the corpus
+#: exists for. The `उमेर` anchor matches **20**, of which 2 are a statutory retirement age
+#: rather than a person's -- a loss worth taking in that direction.
+AGE: Final = "[REDACTED:AGE]"
+
 ALL: Final = (
     CITIZENSHIP,
     DATE_OF_BIRTH,
@@ -104,6 +125,9 @@ ALL: Final = (
     PHONE,
     TABLE_PHONE,
     EMAIL,
+    PAN,
+    BANK_ACCOUNT,
+    AGE,
 )
 
 #: Matches any registered placeholder.

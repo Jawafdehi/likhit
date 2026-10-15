@@ -146,7 +146,7 @@ def _targets(text: str, mode: RedactionMode, stats: Counter) -> list:
 
     found: list = []
     if mode.removes_identifiers:
-        found.extend(iter_inline_targets(text, stats))
+        found.extend(iter_inline_targets(text, stats, mode))
     if mode.removes_contact:
         found.extend(iter_contact_targets(text, stats))
     return sorted(found, key=lambda target: target.start)

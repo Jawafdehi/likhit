@@ -69,11 +69,19 @@ def build_redact_parser() -> argparse.ArgumentParser:
     pdf.add_argument(
         "--mode",
         type=RedactionMode,
-        choices=[RedactionMode.IDENTIFIERS, RedactionMode.CONTACT],
+        # `none` is excluded here, not forgotten: `redact_pdf` refuses it, because writing a
+        # file named as a redacted derivative that is byte-identical to its source is a
+        # different and worse thing than a function returning its argument.
+        choices=[
+            RedactionMode.IDENTIFIERS,
+            RedactionMode.CONTACT,
+            RedactionMode.STRICT,
+        ],
         default=DEFAULT_MODE,
-        help="removal tier. 'identifiers' (default) removes citizenship numbers and dates "
-        "of birth; 'contact' also removes mobile, landline and email, which is a scope "
-        "change -- choose it deliberately",
+        help="removal tier. 'identifiers' is the formally adjudicated scope (citizenship "
+        "numbers, dates of birth); 'contact' adds mobile, landline and email; 'strict' "
+        "(default) adds PAN, bank account and age. No tier removes names -- see "
+        "likhit.privacy.modes for why that is a decision rather than a gap",
     )
     return parser
 

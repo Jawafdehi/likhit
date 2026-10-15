@@ -181,13 +181,31 @@ result.text, result.journal, result.values_removed
 |---|---|
 | `none` | nothing — output is byte-identical to the input |
 | `identifiers` | citizenship numbers, dates of birth |
-| `contact` *(default)* | the above, plus mobile, landline, email |
+| `contact` | the above, plus mobile, landline, email |
+| `strict` *(default)* | the above, plus PAN, bank account, age |
 
-> The default is `contact` rather than the narrower `identifiers` because `identifiers` alone
-> removes **0.3% of the personal data detected in the charge-sheet corpus** — 15 of 4,685 —
-> which is phone numbers and bank accounts, not citizenship numbers. A redact-by-default
-> whose default leaves the largest category is a label rather than a safeguard. Use
-> `--redact identifiers` where output must not exceed the formally adjudicated scope.
+Measured over the 13 CIAA annual-report transcripts, by tier:
+
+| tier | values removed | high-precision signals remaining |
+|---|---:|---|
+| *(none)* | — | bank 32, citizenship 37, DOB 39, email 32, landline 8, mobile 39, PAN 7 |
+| `identifiers` | 50 | bank 32, citizenship 33, DOB 10, email 32, landline 8, mobile 39, PAN 7 |
+| `contact` | 129 | bank 32, citizenship 33, DOB 10, PAN 7 |
+| `strict` | **201** | citizenship 33, DOB 10 |
+
+> **What is left at `strict` is mostly not personal data.** The residual `citizenship` and
+> `date_of_birth` counts are the scanner's wide tier matching prose: 10 of them are
+> `नागरिकता ऐन, २०६३` — the **Citizenship Act** and its year, a statute citation — and most
+> of the rest are four-digit years in sentences like `नागरिकता लिएकोमा मिति २०७०`. The
+> scanner is deliberately wider than the remover, and that gap is meant to be disclosed
+> rather than chased.
+
+> 🛑 **No tier removes names, and that is a decision rather than a gap.** Nothing detects a
+> Nepali name reliably — the only signals are `श्री` followed by a non-institution token
+> (**2,179** hits across those 13 transcripts) and a filled `नाम:` field (**0**). Removing
+> parties *other than the accused* needs role assignment — वादी/प्रतिवादी versus witness
+> versus relative — which is a modelling project, not a pattern. And for an accountability
+> corpus, stripping the names of prosecuted officials would invert the product.
 
 > 🛑 **Redaction is the default, and unredacted output is what you ask for.**
 > `likhit-save report.pdf` writes a redacted transcript; `likhit-save report.pdf --redact none`
@@ -232,14 +250,25 @@ content recoverable inside the same file.
 
 `identifiers` is the formally adjudicated scope — citizenship numbers and dates of birth —
 and it is narrow on purpose: anchoring on the *label* means a bare digit run can never match,
-so a financial table cannot be touched. Personal PANs are still *detected and disclosed*
-rather than removed, because their adjudication left undecided cases and over-redaction costs
-more than it saves.
+so a financial table cannot be touched.
 
-Mobile, landline and email sit above that line in `contact`, which is the default. That is a
-**provisional** widening, pending the PII-redaction scope decision recorded in Jawafdehi's
-internal planning notes (September 2026, §1); if it lands the other way, `modes.DEFAULT_MODE`
-moves back and nothing else changes.
+Everything above it is a **provisional** widening, pending the PII-redaction scope decision
+recorded in Jawafdehi's internal planning notes (September 2026, §1). If that lands
+differently, `modes.DEFAULT_MODE` moves and nothing else changes. Two costs it knowingly
+accepts:
+
+- **A company PAN is public business registration data**, and no pattern can tell one from a
+  personal PAN. `strict` removes both.
+- **A bank account cited as the evidence of a transfer *is* the claim.** Removing it protects
+  nobody and deletes the finding. `strict` removes it anyway; use `--redact contact` where
+  the account numbers are the evidence.
+
+Age is anchored on `उमेर` and never on `वर्ष` alone. A `वर्ष`-adjacent rule matches **413**
+spans across the CIAA corpus and most of them are *durations* — `# वर्षको लागि रु #,#` is a
+contract term, `प्रमाणपत्र जारी भएको # वर्षभित्र` a deadline, `सेवा प्रवेश गरेको ## वर्षमा`
+years of service. Removing those would delete the financial evidence the corpus exists for.
+The `उमेर` anchor matches **20**, of which 2 are a statutory retirement age rather than a
+person's.
 
 ### What likhit does
 

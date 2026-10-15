@@ -29,7 +29,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 
 from ..devanagari import ANY_DIGITS as AD
-from .placeholders import CITIZENSHIP, DATE_OF_BIRTH
+from .modes import RedactionMode
+from .placeholders import AGE, BANK_ACCOUNT, CITIZENSHIP, DATE_OF_BIRTH, PAN
 
 
 # label ... value  — the label is kept, only group("val") is replaced.
@@ -152,17 +153,72 @@ VALUE_SEPARATOR = re.compile(rf"[{_VALUE_SEPARATORS}]")
 AMOUNT_CUE = re.compile(r"रकम|जम्मा|खर्च|बजेट|राजस्व|बेरुजु|रु")
 
 
+PAN_LABEL_VALUE = re.compile(
+    r"(?P<label>(?:स्थायी\s*लेखा\s*(?:नम्बर|नं\.?)|प\.?ा\.?न\.?|\bPAN\b)"
+    r"(?:\s*(?:नम्बर|नं\.?|no\.?|number))?)"
+    rf"(?P<sep>\s*[:ः]?\s*)(?P<val>{_value_window(_CIT_LEGACY_SEPARATORS, 3, 20)})",
+    re.I,
+)
+#: 🛑 A bank account value may open with a short uppercase Latin code -- a branch or product
+#: prefix -- and `खाता नं. MM##########` is a real example from the CIAA corpus. It is the one
+#: account the digits-only value window missed (1 of 44), and missing it is systematic rather
+#: than incidental: the prefix is a bank's convention, so it applies to every account that
+#: bank issues. The prefix is part of the identifier and is removed with it.
+#:
+#: ⚠️ Admitted for **bank accounts only**. :data:`VALUE_FORBIDDEN` is shared, and widening it
+#: for every kind would let a citizenship or date window run out of the identifier and into
+#: the Latin-transliterated name beside it, which is exactly the escape that guard exists to
+#: catch.
+BANK_LATIN_PREFIX = re.compile(r"^[A-Z]{1,4}")
+BANK_LABEL_VALUE = re.compile(
+    r"(?P<label>(?:खाता|बैंक\s*खाता|account)\s*(?:नम्बर|नं\.?|no\.?|number))"
+    rf"(?P<sep>\s*[:ः]?\s*)"
+    rf"(?P<val>[A-Z]{{0,4}}{_value_window(_CIT_LEGACY_SEPARATORS, 3, 24)})",
+    re.I,
+)
+
+#: 🛑 **Age anchors on `उमेर`, never on `वर्ष` alone** -- see :data:`placeholders.AGE` for the
+#: measurement. Both orders occur: `उमेर ४५` and `४५ वर्षको उमेर`, so both are matched, and the
+#: value group is whichever side carried it.
+AGE_LABEL_VALUE = re.compile(
+    rf"(?:(?P<label>उमेर)(?P<sep>\s*[:ः]?\s*)(?P<val>(?<![{AD}])[{AD}]{{1,3}}(?![{AD}]))"
+    rf"|(?P<val2>(?<![{AD}])[{AD}]{{1,3}}(?![{AD}]))(?P<label2>\s*(?:वर्ष|बर्ष)\s*(?:को\s*)?उमेर))"
+)
+
 #: Plausible identifier length per kind, set from the measured digit distribution rather than
 #: guessed. A Nepali citizenship number runs ~9-13 digits, often `XX-XX-XX-XXXXX`; a floor of 7
 #: keeps those and drops the 47 spans of <=6 digits, which are counts beside a service label
 #: (`नागरिकता सिफारिस`) and are real audit data worth keeping. The ceiling of 16 drops the five
 #: 18-19 digit spans, which are runs of table digits rather than an identifier.
-DIGIT_BOUNDS = {"citizenship": (7, 16), "date_of_birth": (5, 10)}
+#:
+#: ``pan`` is 9 digits in Nepal; the window is widened a little either side because the corpus
+#: writes them with separators. ``bank_account`` spans several banks' conventions, so its floor
+#: is the lowest that is still an account rather than a count. ``age`` is 2-3 digits: a floor of
+#: 2 drops single digits, which beside `उमेर` are a child's age in a welfare table far more
+#: often than a person being identified, and which a bare `#` is too weak a span to remove on.
+DIGIT_BOUNDS = {
+    "citizenship": (7, 16),
+    "date_of_birth": (5, 10),
+    "pan": (6, 14),
+    "bank_account": (6, 20),
+    "age": (2, 3),
+}
 
-#: The two patterns, in the order :func:`redact` applies them.
-INLINE_PATTERNS = (
-    ("citizenship", CITIZENSHIP_LABEL_VALUE, CITIZENSHIP),
-    ("date_of_birth", DOB_LABEL_VALUE, DATE_OF_BIRTH),
+#: Each removal rule, with the **lowest tier that removes it**. The tier lives here rather
+#: than in :mod:`likhit.privacy.modes` so that adding a rule is one edit in one file, and so a
+#: rule can never exist without a tier deciding when it fires.
+INLINE_RULES = (
+    ("citizenship", CITIZENSHIP_LABEL_VALUE, CITIZENSHIP, RedactionMode.IDENTIFIERS),
+    ("date_of_birth", DOB_LABEL_VALUE, DATE_OF_BIRTH, RedactionMode.IDENTIFIERS),
+    ("pan", PAN_LABEL_VALUE, PAN, RedactionMode.STRICT),
+    ("bank_account", BANK_LABEL_VALUE, BANK_ACCOUNT, RedactionMode.STRICT),
+    ("age", AGE_LABEL_VALUE, AGE, RedactionMode.STRICT),
+)
+
+#: The tiers that remove a given rule, as a set per mode. Derived from :data:`INLINE_RULES`
+#: rather than restated, so the two cannot disagree.
+INLINE_PATTERNS = tuple(
+    (kind, pattern, marker) for kind, pattern, marker, _ in INLINE_RULES
 )
 
 
@@ -188,6 +244,26 @@ class InlineTarget:
         return dict((kind, marker) for kind, _, marker in INLINE_PATTERNS)[self.kind]
 
 
+def _match_value(match: re.Match[str]) -> tuple[str, int, int]:
+    """``(value, start, end)`` for a match, whichever alternative carried it.
+
+    🛑 :data:`AGE_LABEL_VALUE` matches `उमेर ४५` **and** `४५ वर्षको उमेर`, so its value is in
+    ``val`` on one branch and ``val2`` on the other. Reading ``group("val")`` directly -- which
+    every other rule can do safely -- returns ``None`` on the second branch and crashes inside
+    the guards, so this is the one place that difference is handled.
+    """
+
+    if match.groupdict().get("val") is not None:
+        return match.group("val"), match.start("val"), match.end("val")
+    return match.group("val2"), match.start("val2"), match.end("val2")
+
+
+def _rules_for(mode: RedactionMode) -> tuple:
+    """The rules ``mode`` removes, in the order they are applied."""
+
+    return tuple(rule for rule in INLINE_RULES if mode.removes(rule[3]))
+
+
 def _accept(val: str, kind: str, stats: Counter) -> int | None:
     """The three guards. Returns the value's digit count, or ``None`` if any guard refuses.
 
@@ -198,8 +274,10 @@ def _accept(val: str, kind: str, stats: Counter) -> int | None:
     shape anyway.
     """
 
-    # Guard 1: the value must be digits and separators only.
-    if VALUE_FORBIDDEN.search(val):
+    # Guard 1: the value must be digits and separators only -- after a bank account's
+    # permitted Latin prefix, which is part of the identifier rather than surrounding prose.
+    body = BANK_LATIN_PREFIX.sub("", val) if kind == "bank_account" else val
+    if VALUE_FORBIDDEN.search(body):
         stats[f"{kind}_refused_nondigit"] += 1
         return None
     digits = re.sub(rf"[^{AD}]", "", val)
@@ -216,21 +294,27 @@ def _accept(val: str, kind: str, stats: Counter) -> int | None:
 
 
 def iter_inline_targets(
-    text: str, stats: Counter | None = None
+    text: str,
+    stats: Counter | None = None,
+    mode: RedactionMode = RedactionMode.IDENTIFIERS,
 ) -> Iterator[InlineTarget]:
-    """Every inline value that would be redacted, as a span in ``text``.
+    """Every inline value ``mode`` would redact, as a span in ``text``.
 
     ⚠️ **Offsets are into the text as given**, so unlike :func:`redact` this does not see one
     pattern's replacements while applying the next. The two cannot disagree about *which*
     values qualify -- a citizenship placeholder carries no digits, so it can neither create
     nor destroy a date-of-birth match -- and ``test_targets_agree_with_redact`` pins that
     against the corpus rather than leaving it as an argument.
+
+    ``mode`` defaults to :data:`~likhit.privacy.modes.RedactionMode.IDENTIFIERS` rather than to
+    the package default, so that widening the default cannot silently widen what an existing
+    caller of this function removes.
     """
 
     counters: Counter = Counter() if stats is None else stats
-    for kind, pattern, _ in INLINE_PATTERNS:
+    for kind, pattern, _, _ in _rules_for(mode):
         for match in pattern.finditer(text):
-            val = match.group("val")
+            val, start, end = _match_value(match)
             digit_count = _accept(val, kind, counters)
             if digit_count is None:
                 continue
@@ -239,25 +323,35 @@ def iter_inline_targets(
             # own verdicts and the two must agree on those.
             counters[f"{kind}_targeted"] += 1
             yield InlineTarget(
-                start=match.start("val"),
-                end=match.end("val"),
+                start=start,
+                end=end,
                 kind=kind,
                 digit_count=digit_count,
                 had_separators=bool(VALUE_SEPARATOR.search(val)),
             )
 
 
-def redact(text: str, journal: list[dict], stats: Counter) -> str:
+def redact(
+    text: str,
+    journal: list[dict],
+    stats: Counter,
+    mode: RedactionMode = RedactionMode.IDENTIFIERS,
+) -> str:
     """Return redacted text. Appends one journal row per replacement.
 
     ``journal`` and ``stats`` are mutated rather than returned so a caller walking a corpus
     can accumulate totals across documents; :func:`redact_inline_text` is the wrapper for
     callers that only want one transcript.
+
+    ``mode`` defaults to ``IDENTIFIERS`` for the same reason
+    :func:`iter_inline_targets` does: :mod:`likhit.privacy.tree` and
+    :func:`redact_inline_text` call this directly, and a change to the package default must
+    not silently change what the tree walker removes.
     """
 
     def sub(rx: re.Pattern[str], placeholder: str, kind: str) -> str:
         def _r(m: re.Match[str]) -> str:
-            val = m.group("val")
+            val, _, _ = _match_value(m)
             digit_count = _accept(val, kind, stats)
             if digit_count is None:
                 return m.group(0)
@@ -272,11 +366,15 @@ def redact(text: str, journal: list[dict], stats: Counter) -> str:
             )
             stats[f"{kind}_redacted"] += 1
             gd = m.groupdict()
-            return m.group("label") + gd.get("sep", "") + placeholder
+            # The label can precede the value (`उमेर ४५`) or follow it (`४५ वर्षको उमेर`), so
+            # the replacement is rebuilt from whichever groups this branch filled.
+            if gd.get("val") is not None:
+                return m.group("label") + (gd.get("sep") or "") + placeholder
+            return placeholder + m.group("label2")
 
         return rx.sub(_r, text)
 
-    for kind, pattern, placeholder in INLINE_PATTERNS:
+    for kind, pattern, placeholder, _ in _rules_for(mode):
         text = sub(pattern, placeholder, kind)
     return text
 

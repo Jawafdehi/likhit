@@ -88,7 +88,7 @@ def redact_text(text: str, *, mode: RedactionMode = DEFAULT_MODE) -> RedactedTex
     journal: list[dict] = []
     stats: Counter = Counter()
 
-    redacted = _redact_inline(text, journal, stats)
+    redacted = _redact_inline(text, journal, stats, mode)
 
     redacted, table_targets, table_stats = redact_table_text(redacted)
     stats.update(table_stats)
