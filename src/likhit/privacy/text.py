@@ -11,14 +11,16 @@ this package's problem.
 The passes run inline → tables → contact. Order is **not** a correctness requirement between
 the first two -- they cannot shrink each other's candidate set, and
 :mod:`likhit.privacy.tree` documents the measurement -- but contact runs last on purpose: it
-matches bare digit runs rather than a label, so running it against text the first two have
-already reduced means it can only ever see what they left. The placeholders they write carry
-no digits and no ``@``, so none of the contact patterns can match one.
+matches mostly bare digit runs rather than a label, so running it against text the first two
+have already reduced means it can only ever see what they left. The placeholders they write
+carry no digits and no ``@``, so none of the contact patterns can match one -- including
+``phone_labelled``, whose label alternation *does* appear inside ``[REDACTED:PHONE-NO]`` but
+whose value must open with a digit, and the character after the marker's label is ``-``.
 
 ⚠️ **Known gap: the table pass covers only citizenship and date of birth.**
 :func:`likhit.privacy.redact_tables.scan` decides a cell's kind from
-``_label_kinds``, which knows those two and nothing else, so a PAN, bank account or age held
-in a table *cell away from its label* is not removed even at
+``_label_kinds``, which knows those two and nothing else, so a PAN, bank account, age or
+passport held in a table *cell away from its label* is not removed even at
 :data:`~likhit.privacy.modes.RedactionMode.STRICT`. The inline pass still catches every one
 of them that sits beside its own label. Measured over the 13 CIAA transcripts: **zero**
 occurrences of the uncovered shape, which is why this is recorded as a limit rather than

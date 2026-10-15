@@ -62,7 +62,8 @@ class RedactionMode(str, Enum):
     #: :data:`IDENTIFIERS` plus mobile numbers, landlines and email addresses.
     CONTACT = "contact"
 
-    #: Everything this package can remove: :data:`CONTACT` plus PAN, bank account and age.
+    #: Everything this package can remove: :data:`CONTACT` plus PAN, bank account, age and
+    #: passport.
     #:
     #: ⚠️ **"Everything it can remove" is not "all personal data", and the gap is names.**
     #: A person's name is the most identifying thing in these documents and nothing here

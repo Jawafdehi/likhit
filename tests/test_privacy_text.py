@@ -186,6 +186,27 @@ def test_a_labelled_phone_does_not_double_count_a_nepali_mobile():
     assert result.text.count("[REDACTED:PHONE-NO]") == 1
 
 
+def test_no_contact_pattern_matches_inside_a_placeholder():
+    """🛑 The contact pass runs LAST, on text the inline and table passes have already
+    rewritten, so it reads their placeholders.
+
+    `phone_labelled`'s label alternation genuinely occurs inside `[REDACTED:PHONE-NO]`; what
+    stops it is that a value must open with a digit and the next character is `-`. That is a
+    property of two patterns agreeing, not a guarantee, so it is pinned: a contact target
+    landing inside a placeholder would splice a replacement into another one and produce a
+    corrupted marker rather than a redaction.
+    """
+
+    from likhit.privacy.contact import iter_contact_targets
+    from likhit.privacy.placeholders import ALL
+
+    for marker in ALL:
+        for tail in ("", " ९८४१२३४५६७", "1234567", " 1234567"):
+            text = marker + tail
+            inside = [t for t in iter_contact_targets(text) if t.start < len(marker)]
+            assert not inside, f"{marker!r} + {tail!r} matched at {inside}"
+
+
 def test_no_mode_removes_a_name():
     """🛑 Pinned as a promise, not an omission.
 
