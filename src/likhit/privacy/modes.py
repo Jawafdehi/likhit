@@ -105,8 +105,12 @@ _ORDER: tuple[RedactionMode, ...] = (
 #: redact-by-default whose default leaves the largest category is a label rather than a
 #: safeguard, so the default errs toward removing too much.
 #:
-#: ⚠️ **Provisional.** Promoting phone, email, PAN and bank account from detected to removed
-#: is the scope decision in ``docs/2026-09-25-pii-redaction-pipeline/PLAN.md`` §1, which is a
-#: board/DRN call. If that adjudication lands differently, this line moves and nothing else
-#: changes -- which is the whole reason the tier is one named constant.
+#: **Approved by Ashwini Subedi, 15 October 2026**, as the default for this package: remove
+#: everything detectable, accepting the company-PAN and bank-account-as-evidence costs above.
+#: Recorded here with a date and a name because "who widened the removal set, and when" is
+#: the second question an incident asks.
+#:
+#: ⚠️ The formal §1 record in ``docs/2026-09-25-pii-redaction-pipeline/PLAN.md`` should be
+#: updated to match. If it ever lands differently, this line moves and nothing else changes --
+#: which is the whole reason the tier is one named constant.
 DEFAULT_MODE = RedactionMode.STRICT

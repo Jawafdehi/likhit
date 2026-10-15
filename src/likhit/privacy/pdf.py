@@ -60,8 +60,24 @@ class PageClass(str, Enum):
 
     #: Unicode Devanagari text. Redactable by this module today.
     UNICODE = "unicode"
-    #: A text layer that is not Unicode Devanagari -- a legacy pre-Unicode font. Needs
-    #: likhit's decode mapped back to glyph rectangles before anything can be located.
+    #: A text layer that is not Unicode Devanagari -- a legacy pre-Unicode font.
+    #:
+    #: 🛑 **likhit already decodes these; what is missing is provenance, not decoding.**
+    #: ``decode_with_legacy_map`` is string-to-string, so which glyph produced which output
+    #: character is discarded -- and that mapping is exactly what redaction needs.
+    #:
+    #: The good news, measured against ``npttf2utf``'s Preeti table: **every value this
+    #: package removes is a digit run, and digits decode 1:1 and are never reordered.** All
+    #: ten Devanagari digits come from the shifted number row ``!@#$%^&*()``, each to a
+    #: single distinct codepoint, and neither the ``pre-rules`` nor the ``post-rules``
+    #: reordering groups mentions a digit at all. The one-to-many complexity -- 56 of 136
+    #: entries -- is consonant ligatures, which only ever occur in the *labels*. So the
+    #: k-th decoded digit corresponds to the k-th digit-producing glyph, and the glyph
+    #: rectangles are already correct on these pages (1,245 of them on ``samples/nirnaya.pdf``
+    #: page 1, every one with a bbox).
+    #:
+    #: This class therefore refuses because the work is **unbuilt, not impossible**, and
+    #: refusing is the only safe state until it is built.
     LEGACY = "legacy"
     #: No text layer, but ink on the page. Needs bounding-box OCR.
     SCANNED = "scanned"
