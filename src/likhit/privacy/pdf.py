@@ -158,14 +158,46 @@ class PdfRedactionReport:
 
 
 def _targets(text: str, mode: RedactionMode, stats: Counter) -> list:
-    """Every target in ``text`` for ``mode``, sorted by position."""
+    """Every target in ``text`` for ``mode``, sorted by position and de-duplicated.
+
+    🛑 **The two passes run against the same offsets here, unlike in
+    :mod:`likhit.privacy.text`.** There, inline runs first and the contact pass sees its
+    *output*, so a value already replaced by a placeholder carries no digits and cannot match
+    twice. A PDF has no intermediate text to hand on: both passes read one glyph map, so one
+    value can be claimed by both -- a citizenship number that happens to open `98` is a
+    citizenship target and a mobile target over the identical span.
+
+    Left alone that is not a disclosure (the rectangle is applied either way) but it is a
+    **false record**: the same removal is counted twice in ``values_removed``, written twice
+    to ``span_shapes`` and annotated twice. The journal is how this pass's precision is
+    measured, so a count that double-reports is worse than no count.
+
+    ⚠️ Only a target **fully covered** by one already accepted is dropped. A merely
+    overlapping one is kept, because dropping it could leave the uncovered part of its span
+    in the file -- the one outcome this module exists to prevent. Boundary assertions on both
+    detectors make a partial overlap unreachable today; this is the safe behaviour if that
+    ever stops being true, rather than an assumption that it cannot.
+    """
 
     found: list = []
     if mode.removes_identifiers:
         found.extend(iter_inline_targets(text, stats, mode))
     if mode.removes_contact:
         found.extend(iter_contact_targets(text, stats))
-    return sorted(found, key=lambda target: target.start)
+
+    # Longest-first within a position, so the widest span is the one that gets to cover the
+    # narrower duplicates nested inside it rather than the other way round.
+    found.sort(key=lambda target: (target.start, -(target.end - target.start)))
+    kept: list = []
+    for target in found:
+        if any(
+            accepted.start <= target.start and target.end <= accepted.end
+            for accepted in kept
+        ):
+            stats[f"{target.kind}_refused_duplicate_span"] += 1
+            continue
+        kept.append(target)
+    return kept
 
 
 def page_glyph_map(page: fitz.Page) -> tuple[str, list[fitz.Rect | None]]:
@@ -391,11 +423,24 @@ def redact_pdf(
         # document whose other pages cannot be read is not a redacted document.
         if report.blocked_pages:
             classes = sorted({row["page_class"] for row in report.blocked_pages})
-            raise ValueError(
-                f"{len(report.blocked_pages)} of {report.pages} pages are {', '.join(classes)}"
-                " and cannot be redacted by this module; refusing the document rather than "
-                "emitting one whose unreadable pages were passed through unchanged"
-            )
+            if not dry_run:
+                raise ValueError(
+                    f"{len(report.blocked_pages)} of {report.pages} pages are "
+                    f"{', '.join(classes)} and cannot be redacted by this module; refusing "
+                    "the document rather than emitting one whose unreadable pages were "
+                    "passed through unchanged"
+                )
+            # ⚠️ A dry run **reports** the blockage instead of raising it, and that is the
+            # difference between a refusal and a measurement. Rule 2 protects the written
+            # artifact; a dry run writes nothing, so there is nothing to protect -- while
+            # "which of these 1,283 pages can this tool actually read" is the question
+            # anyone pointing it at a corpus has to answer first, and raising made
+            # `blocked_pages` unreachable: every report a caller could hold had it empty.
+            #
+            # Redaction is not attempted. The page census IS the answer here, and counting
+            # whatever the detectors scrape off a garbled legacy page would put numbers in
+            # the journal that mean nothing.
+            return report
 
         for page in doc:
             removed = _redact_page(page, mode, report)

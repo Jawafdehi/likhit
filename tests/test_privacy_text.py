@@ -86,6 +86,106 @@ def test_age_anchors_on_umer_and_not_on_varsha():
         assert "[REDACTED:AGE]" in redact_text(line, mode=RedactionMode.STRICT).text
 
 
+#: Page 1 of `samples/aarop-patra.pdf`, the line that carried an Indian national's details in
+#: Latin script inside Nepali prose. Every English-labelled value here survived `strict`
+#: before the label alternations carried their English forms.
+BILINGUAL_LINE = (
+    "सम्पर्क नं.९८५१३३९९९९ का भारतीय नागरीक Deepak Anand "
+    "(Passport No. Z4362932/India र K9838300/India, "
+    "Date of Birth: 27 August 1979)  Mobile Number: 919971766006"
+)
+
+
+def test_english_labelled_values_are_removed_at_strict():
+    """🛑 The regression this exists to prevent is a *correlated* miss.
+
+    Nepali-only labels do not fail at random -- they fail on exactly the people whose details
+    were written in English, which in this corpus means foreign nationals. On this real line
+    `strict` removed 1 of 5 values and reported success.
+    """
+
+    result = redact_text(BILINGUAL_LINE, mode=RedactionMode.STRICT)
+
+    for value in ("Z4362932", "K9838300", "27 August 1979", "919971766006"):
+        assert value not in result.text, f"{value} survived the widest tier"
+    assert "९८५१३३९९९९" not in result.text, "the Nepali-labelled mobile still goes"
+    # The labels themselves are evidence and are kept -- a transcript saying a passport
+    # number was removed is a record; one with the field name gone is a hole.
+    for label in ("Passport No.", "Date of Birth:", "Mobile Number:"):
+        assert label in result.text
+    # The issuing country is research data, not an identifier.
+    assert result.text.count("/India") == 2
+
+
+def test_both_passports_go_when_one_label_covers_two():
+    """🛑 The second value in a list is the miss that looks most like a success.
+
+    `Passport No. A र B` labels only the first. Taking it and leaving the second puts a
+    visible redaction on the page beside the identifier it did not remove.
+    """
+
+    result = redact_text(BILINGUAL_LINE, mode=RedactionMode.STRICT)
+    assert result.text.count("[REDACTED:PASSPORT-NO]") == 2
+
+
+def test_the_passport_connector_is_not_a_label_on_its_own():
+    """⚠️ `र` is simply "and". It must never reach a passport-shaped token by itself, or
+    every cheque and voucher reference on the page becomes a redaction target."""
+
+    unlabelled = "बिल नं. मा उल्लेख भएको र AB1234567 बमोजिम"
+    assert "AB1234567" in redact_text(unlabelled, mode=RedactionMode.STRICT).text
+
+
+def test_english_labels_do_not_widen_what_counts_as_a_value():
+    """English widens the *label* alternation only; the three guards are untouched.
+
+    Each case below is refused by a guard, reached through an English label -- so the guard
+    is doing the work, not the label.
+    """
+
+    # Guard 2, age floor: a single digit beside `उमेर`/`Age` is a count in a welfare table
+    # far more often than a person being identified.
+    assert "7" in redact_text("Age 7", mode=RedactionMode.STRICT).text
+    # Guard 2, date floor: four digits is a year, not a date of birth.
+    assert "1979" in redact_text("Date of Birth: 1979", mode=RedactionMode.STRICT).text
+    # Guard 2, passport digit bound: too short to be a passport number.
+    assert "Z412" in redact_text("Passport No. Z412", mode=RedactionMode.STRICT).text
+    # Guard 3, amount cue: the window ran into a money column.
+    assert "रु" in redact_text("Age रु ४५", mode=RedactionMode.STRICT).text
+
+
+def test_passport_is_outside_the_adjudicated_identifiers_scope():
+    """🛑 `identifiers` means "the scope I was authorised for". A caller who picks it must
+    not silently get a third class of removal -- see `redact.INLINE_RULES`."""
+
+    line = "Passport No. Z4362932"
+    assert "Z4362832" not in redact_text(line, mode=RedactionMode.STRICT).text
+    assert "Z4362932" in redact_text(line, mode=RedactionMode.IDENTIFIERS).text
+    assert "Z4362932" in redact_text(line, mode=RedactionMode.CONTACT).text
+
+
+def test_an_international_phone_is_removed_at_contact():
+    """`signals.MOBILE` anchors on a Nepali 97/98 opening, so a foreign number in an
+    international format is invisible to it. The label is what finds this one."""
+
+    line = "Mobile Number: 919971766006"
+    assert "919971766006" not in redact_text(line, mode=RedactionMode.CONTACT).text
+    assert "919971766006" in redact_text(line, mode=RedactionMode.IDENTIFIERS).text
+    assert "Mobile Number:" in redact_text(line, mode=RedactionMode.CONTACT).text
+
+
+def test_a_labelled_phone_does_not_double_count_a_nepali_mobile():
+    """⚠️ `सम्पर्क ९८५१२३४५६७` matches the labelled rule AND `MOBILE` over the same digits.
+
+    The shape pattern wins and the overlap guard drops the duplicate, so one value is one
+    removal -- the journal is how this pass's precision is measured.
+    """
+
+    result = redact_text("सम्पर्क ९८५१२३४५६७", mode=RedactionMode.CONTACT)
+    assert result.values_removed == 1
+    assert result.text.count("[REDACTED:PHONE-NO]") == 1
+
+
 def test_no_mode_removes_a_name():
     """🛑 Pinned as a promise, not an omission.
 
@@ -204,6 +304,36 @@ def test_save_cli_writes_nothing_if_redaction_raises(tmp_path, monkeypatch):
 def test_every_mode_is_reachable_from_the_save_cli(mode):
     args = build_parser().parse_args(["in.pdf", "--redact", mode.value])
     assert args.redact is mode
+
+
+def test_help_advertises_the_values_the_parser_accepts():
+    """🛑 `--help` listed `{RedactionMode.NONE,...}` -- which are exactly the strings the
+    parser REJECTS -- while never showing the ones that work.
+
+    A `str`-valued `Enum` inherits `Enum.__str__`, and argparse renders both its choices list
+    and its "invalid choice" error through `str()`.
+    """
+
+    help_text = build_parser().format_help()
+    for mode in RedactionMode:
+        assert f"RedactionMode.{mode.name}" not in help_text
+    assert "none" in help_text and "identifiers" in help_text
+
+    # Every advertised value must actually parse.
+    for mode in RedactionMode:
+        assert (
+            build_parser().parse_args(["in.pdf", "--redact", str(mode)]).redact is mode
+        )
+
+
+def test_the_save_cli_help_describes_the_actual_default():
+    """The help text named `identifiers`' scope while the default was `strict`, so it
+    understated what the command removes -- the one direction a privacy default must not be
+    wrong in."""
+
+    help_text = build_parser().format_help()
+    assert str(DEFAULT_MODE) in help_text
+    assert "passport" in help_text
 
 
 def test_save_cli_redacts_unless_told_otherwise():

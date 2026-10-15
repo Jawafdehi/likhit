@@ -192,6 +192,78 @@ def test_a_scanned_page_blocks_the_document_and_writes_nothing(tmp_path):
     assert not out.exists(), "a refusal must leave no partial artifact behind"
 
 
+def test_a_dry_run_reports_blocked_pages_instead_of_raising(tmp_path):
+    """🛑 `blocked_pages` was unreachable: the only code path that filled it raised on the
+    next line, so every report a caller could hold had it empty.
+
+    A dry run writes nothing, so rule 2 has no artifact to protect -- while "which of these
+    pages can this tool actually read" is the first question anyone pointing it at a corpus
+    has to answer.
+    """
+
+    source = tmp_path / "scan.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 50, 50))
+    pixmap.set_rect(pixmap.irect, (128, 128, 128))
+    page.insert_image(fitz.Rect(72, 72, 172, 172), pixmap=pixmap)
+    doc.save(source)
+    doc.close()
+
+    report = redact_pdf(source, None, mode=RedactionMode.STRICT, dry_run=True)
+
+    assert report.blocked_pages == [{"page": 1, "page_class": "scanned"}]
+    assert report.pages_by_class["scanned"] == 1
+    # Redaction is not attempted on a blocked document, so these stay zero rather than
+    # carrying whatever the detectors scraped off an unreadable page.
+    assert report.values_removed == 0
+
+    # The write path still refuses -- the dry run is a measurement, not a permission.
+    out = tmp_path / "out.pdf"
+    with pytest.raises(ValueError, match="scanned"):
+        redact_pdf(source, out, mode=RedactionMode.STRICT)
+    assert not out.exists()
+
+
+def test_the_cli_does_not_exit_zero_on_a_dry_run_it_could_not_read(tmp_path):
+    """⚠️ "values removed: 0" for a document whose every page is unreadable must not look
+    like a clean bill of health to a CI step reading the exit code."""
+
+    from likhit.privacy._cli import main as redact_main
+
+    source = tmp_path / "scan.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 50, 50))
+    pixmap.set_rect(pixmap.irect, (128, 128, 128))
+    page.insert_image(fitz.Rect(72, 72, 172, 172), pixmap=pixmap)
+    doc.save(source)
+    doc.close()
+
+    code = redact_main(
+        ["pdf", str(source), "--dry-run", "--journal", str(tmp_path / "j.json")]
+    )
+    assert code == 1
+
+
+def test_one_value_claimed_by_both_passes_is_counted_once(tmp_path):
+    """🛑 In a PDF both passes read ONE glyph map, so a value can be claimed twice.
+
+    Unlike `redact_text`, there is no intermediate text for the contact pass to see the
+    inline pass's placeholders in. A labelled Nepali mobile matches the labelled contact rule
+    and `signals.MOBILE` over the identical span; counting it twice would make the journal --
+    the record this pass's precision is measured from -- disagree with the page.
+    """
+
+    source = tmp_path / "dup.pdf"
+    _make_pdf(source, [MOBILE_LINE])
+
+    report = redact_pdf(source, None, mode=RedactionMode.CONTACT, dry_run=True)
+
+    assert report.values_removed == 1
+    assert len(report.span_shapes) == 1
+
+
 def test_an_encrypted_pdf_is_refused_by_name(tmp_path):
     """Without this guard the failure is a bare `ValueError: document closed or encrypted`
     from inside PyMuPDF, on first page access -- which reads like a corrupt file rather than

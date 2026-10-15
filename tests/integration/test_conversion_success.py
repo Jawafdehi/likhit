@@ -13,6 +13,8 @@ import pytest
 
 from likhit.renderers.markdown import strip_page_anchors
 
+from likhit.privacy import redact_text
+
 from likhit.save_cli import main as save_cli_main
 
 from .conftest import (
@@ -286,7 +288,13 @@ class TestPluginConversion:
 
         output_path = tmp_path / "notice.md"
         exit_code = save_cli_main([str(notice_pdf), "--out", str(output_path)])
-        expected_markdown = _md().convert(str(notice_pdf)).markdown
+        # 🛑 The expected text is the conversion **after redaction**, not the raw conversion.
+        # `likhit-save` redacts by default, so comparing against `md.convert()` asserts that
+        # it does not -- this fixture carries `Passport No.Z4362932`, and the raw-conversion
+        # form of this assertion failed the moment a rule could see it. Writing it this way
+        # keeps what the test is for (the CLI writes the conversion faithfully to a file)
+        # without quietly re-pinning the old unredacted behaviour.
+        expected_markdown = redact_text(_md().convert(str(notice_pdf)).markdown).text
 
         assert exit_code == 0
         assert output_path.exists()
@@ -295,6 +303,10 @@ class TestPluginConversion:
         assert markdown == expected_markdown
         assert "विषय: आरोपपत्र दायर गरिएको।" in markdown
         assert "राष्ट्रिय सूचना प्रविधि केन्द्रद्वारा" in markdown
+        # The redaction is real on this fixture rather than a no-op, so the comparison above
+        # is actually exercising the redacted path.
+        assert "[REDACTED:PASSPORT-NO]" in markdown
+        assert "Z4362932" not in markdown
 
     def test_save_cli_honors_pages_option_for_pdf(self, tmp_path: Path) -> None:
         notice_pdf = TEST_DATA_DIR / "ciaa_pressrelease_sample.pdf"
@@ -305,7 +317,11 @@ class TestPluginConversion:
         exit_code = save_cli_main(
             [str(notice_pdf), "--pages", "1", "--out", str(output_path)]
         )
-        expected_markdown = _md().convert(str(notice_pdf), pages="1").markdown
+        # Redacted, for the same reason as the test above -- this one passes either way only
+        # because page 1 happens to carry no detectable value today.
+        expected_markdown = redact_text(
+            _md().convert(str(notice_pdf), pages="1").markdown
+        ).text
 
         assert exit_code == 0
         assert output_path.exists()

@@ -116,6 +116,11 @@ BANK_ACCOUNT: Final = "[REDACTED:BANK-ACCOUNT-NO]"
 #: rather than a person's -- a loss worth taking in that direction.
 AGE: Final = "[REDACTED:AGE]"
 
+#: ⚠️ An identity-document number of the same class as :data:`CITIZENSHIP`, but removed only
+#: at ``strict`` -- see :data:`likhit.privacy.redact.INLINE_RULES` for why the adjudicated
+#: ``identifiers`` scope is not quietly widened to hold it.
+PASSPORT: Final = "[REDACTED:PASSPORT-NO]"
+
 ALL: Final = (
     CITIZENSHIP,
     DATE_OF_BIRTH,
@@ -128,6 +133,7 @@ ALL: Final = (
     PAN,
     BANK_ACCOUNT,
     AGE,
+    PASSPORT,
 )
 
 #: Matches any registered placeholder.

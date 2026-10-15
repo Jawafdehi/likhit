@@ -3,7 +3,7 @@
 🛑 **Redaction is on by default here, and producing unredacted text is the thing you have to
 ask for.** That is a deliberate reversal of the usual library instinct, and it is a
 behavioural change for anyone who used this command before: ``likhit-save report.pdf`` now
-writes a transcript with citizenship numbers and dates of birth removed. The reasoning is
+writes a transcript redacted to :data:`~likhit.privacy.modes.DEFAULT_MODE`. The reasoning is
 that this command's output is a *file*, and a file outlives the invocation that made it --
 nobody reading ``report.md`` six months later can tell whether redaction was considered. The
 safe default is the one where forgetting produces the harmless outcome.
@@ -54,9 +54,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=list(RedactionMode),
         default=DEFAULT_MODE,
         help=(
-            "Removal tier applied to the converted text before it is written. "
-            f"Default '{DEFAULT_MODE.value}' removes citizenship numbers and dates of "
-            "birth. 'contact' also removes mobile, landline and email. "
+            "Removal tier applied to the converted text before it is written, widest "
+            f"last: 'identifiers' (citizenship numbers, dates of birth), 'contact' (adds "
+            f"mobile, landline, email), '{DEFAULT_MODE}' (default; adds PAN, bank "
+            "account, age, passport). Labels are matched in Nepali and English. "
             "'none' writes the transcript unredacted -- say so deliberately."
         ),
     )

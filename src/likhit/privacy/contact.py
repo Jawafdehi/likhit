@@ -16,6 +16,19 @@ checkable statement rather than two independent guesses.
 ⚠️ **This is a scope expansion and it is gated.** Nothing here runs unless a caller asks for
 :data:`~likhit.privacy.modes.RedactionMode.CONTACT`. See that module for why.
 
+⚠️ **Known limit: a label covering a list takes only the first number.** The CIAA annual
+reports print their masthead as `फोन नं.: ५२६२१८०` and then `५२६२२४७` on the next line, under
+the one label. ``phone_labelled`` removes the first and nothing reaches the second.
+:mod:`likhit.privacy.redact` solves the same shape for passports with an explicit conjunction
+(`र`, `and`, `,`), and that is deliberately **not** copied here: a phone continuation would
+have to join across a bare line break, which in these documents is also what separates a
+label from the column of *figures* under it. A rule that walked it would eat an audit table.
+
+Measured over the 13 CIAA transcripts this is **2 occurrences, both of them the Commission's
+own switchboard** -- institutional contact details printed in a masthead, which are closer to
+provenance than to personal data. Recorded as a limit rather than closed with a pattern whose
+failure mode is worse than the gap.
+
 The placeholders these emit were already registered in :mod:`likhit.privacy.placeholders`
 before any module in this package emitted them -- they were written by the OAG release's
 out-of-tree contact pass, 287 occurrences across 104 of its 6,234 transcripts. Spelled exactly
@@ -32,7 +45,7 @@ from dataclasses import dataclass
 from .placeholders import EMAIL as EMAIL_PLACEHOLDER
 from .placeholders import PHONE as PHONE_PLACEHOLDER
 from ..devanagari import ANY_DIGITS
-from .signals import EMAIL, LANDLINE, MOBILE
+from .signals import EMAIL, LANDLINE, MOBILE, PHONE_LABELLED
 
 
 @dataclass(frozen=True)
@@ -40,9 +53,11 @@ class ContactTarget:
     """One contact value, located in the text it was found in.
 
     Shaped to match :class:`likhit.privacy.redact.InlineTarget` -- ``start``/``end``/``kind``
-    and a ``placeholder`` -- so a caller driving both can treat them as one sequence. The
-    identifier targets keep their label and replace only the value; a contact value **is** the
-    whole match, because there is no label to keep.
+    and a ``placeholder`` -- so a caller driving both can treat them as one sequence.
+
+    ``start``/``end`` are the offsets of the **value**, as they are there. For the three
+    shape-anchored patterns the value is the whole match, because there is no label to keep;
+    for ``phone_labelled`` it is the ``val`` group, and the label it was found by is kept.
     """
 
     start: int
@@ -60,10 +75,20 @@ class ContactTarget:
 #: change the result -- the two shapes cannot both match the same span, since a landline
 #: requires a literal `-` where a mobile admits only a space -- but the order is fixed so the
 #: journal's row order is stable across runs.
+#:
+#: 🛑 **``phone_labelled`` is applied last, and that position is deliberate.** It is the only
+#: pattern here anchored on a label rather than on the number's own shape, so it overlaps the
+#: three above wherever a Nepali number is *also* labelled -- `सम्पर्क ९८५१२३४५६७` matches
+#: both it and :data:`~likhit.privacy.signals.MOBILE`. Running it last means the calibrated
+#: shape patterns win those spans and the overlap guard below drops the duplicate, so this
+#: rule only ever picks up what they could not see: a foreign number in an international
+#: format, which has no 97/98 opening. Measured on ``samples/aarop-patra.pdf``: it adds
+#: exactly the one Indian mobile on page 1 and changes nothing else.
 CONTACT_PATTERNS = (
     ("mobile", MOBILE),
     ("landline", LANDLINE),
     ("email", EMAIL),
+    ("phone_labelled", PHONE_LABELLED),
 )
 
 #: Built from the shared class rather than spelled out: this corpus mixes Devanagari and
@@ -97,14 +122,21 @@ def iter_contact_targets(
     taken: list[tuple[int, int]] = []
     for kind, pattern in CONTACT_PATTERNS:
         for match in pattern.finditer(text):
-            start, end = match.span()
+            # 🛑 The span is the `val` group where a pattern has one, never the whole match.
+            # A label-anchored pattern matches `Mobile Number: 919971766006` entire; removing
+            # that span would delete the label too, and this package keeps labels -- a
+            # transcript that says a phone number was removed is evidence, one with the field
+            # name gone is just a hole. Patterns without the group are the number itself.
+            start, end = (
+                match.span("val") if "val" in pattern.groupindex else match.span()
+            )
             if any(
                 start < seen_end and seen_start < end for seen_start, seen_end in taken
             ):
                 counters[f"{kind}_refused_overlap"] += 1
                 continue
             taken.append((start, end))
-            value = match.group(0)
+            value = text[start:end]
             # `_targeted`, not `_redacted`: this function selects, it does not remove. The
             # distinction is not pedantry -- `redact`'s `{kind}_redacted` counts replacements
             # actually written, and a selector that incremented the same key would inflate

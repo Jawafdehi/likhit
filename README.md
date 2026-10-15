@@ -182,16 +182,16 @@ result.text, result.journal, result.values_removed
 | `none` | nothing — output is byte-identical to the input |
 | `identifiers` | citizenship numbers, dates of birth |
 | `contact` | the above, plus mobile, landline, email |
-| `strict` *(default)* | the above, plus PAN, bank account, age |
+| `strict` *(default)* | the above, plus PAN, bank account, age, passport |
 
 Measured over the 13 CIAA annual-report transcripts, by tier:
 
 | tier | values removed | high-precision signals remaining |
 |---|---:|---|
-| *(none)* | — | bank 32, citizenship 37, DOB 39, email 32, landline 8, mobile 39, PAN 7 |
-| `identifiers` | 50 | bank 32, citizenship 33, DOB 10, email 32, landline 8, mobile 39, PAN 7 |
-| `contact` | 129 | bank 32, citizenship 33, DOB 10, PAN 7 |
-| `strict` | **201** | citizenship 33, DOB 10 |
+| *(none)* | — | bank 32, citizenship 37, DOB 39, email 32, labelled-phone 21, landline 8, mobile 39, PAN 7 |
+| `identifiers` | 50 | bank 32, citizenship 33, DOB 11, email 32, labelled-phone 21, landline 8, mobile 39, PAN 7 |
+| `contact` | 131 | bank 32, citizenship 33, DOB 11, labelled-phone 2, PAN 7 |
+| `strict` | **203** | citizenship 33, DOB 11, labelled-phone 2 |
 
 > **What is left at `strict` is mostly not personal data.** The residual `citizenship` and
 > `date_of_birth` counts are the scanner's wide tier matching prose: 10 of them are
@@ -199,6 +199,30 @@ Measured over the 13 CIAA annual-report transcripts, by tier:
 > of the rest are four-digit years in sentences like `नागरिकता लिएकोमा मिति २०७०`. The
 > scanner is deliberately wider than the remover, and that gap is meant to be disclosed
 > rather than chased.
+>
+> The two remaining `labelled-phone` hits are both the Commission's **own switchboard** in
+> the report masthead, where one label covers two numbers on consecutive lines and only the
+> first is reachable — see `likhit.privacy.contact` for why a continuation rule is not the
+> fix.
+
+### Bilingual by requirement, not by courtesy
+
+Every label alternation matches its **English** form as well as its Nepali one, and passport
+numbers and internationally-formatted phone numbers have rules of their own.
+
+This is a correctness property rather than a nicety. These documents are bilingual, and the
+English is where the *foreign* parties are written: page 1 of `samples/aarop-patra.pdf` is
+Nepali prose carrying, in Latin script, one Indian national's `Passport No. Z4362932`,
+`Date of Birth: 27 August 1979` and `Mobile Number: 919971766006`. With Nepali-only labels,
+`strict` removed the Nepali-labelled mobile two clauses earlier and left all four of those.
+
+> 🛑 A Nepali-only rule does not fail at random. It fails on exactly the people whose details
+> were written in English — which in this corpus means foreign nationals and anyone
+> transcribed from an English-language document — so the removal set acquires a shape nobody
+> chose. That is why this is listed as a defect rather than as coverage.
+
+English widens what counts as a **label** and nothing else: every value still runs the same
+three guards, so a wider label cannot admit a wider value.
 
 > 🛑 **No tier removes names, and that is a decision rather than a gap.** Nothing detects a
 > Nepali name reliably — the only signals are `श्री` followed by a non-institution token
@@ -263,7 +287,14 @@ accepts:
   nobody and deletes the finding. `strict` removes it anyway; use `--redact contact` where
   the account numbers are the evidence.
 
-Age is anchored on `उमेर` and never on `वर्ष` alone. A `वर्ष`-adjacent rule matches **413**
+> **Passport numbers sit at `strict`, not at `identifiers`** — and that is not a judgement
+> that they are less personal. A passport number is plainly an identity-document number of
+> the same class as a citizenship number. But `identifiers` *is* the formally adjudicated
+> scope, and that adjudication names two classes; a caller choosing it is choosing "the scope
+> I was authorised for", so quietly adding a third would break the only promise that tier
+> makes. Moving it is one line in `redact.INLINE_RULES` if the §1 decision lands that way.
+
+Age is anchored on `उमेर`/`Age` and never on `वर्ष` or `years` alone. A `वर्ष`-adjacent rule matches **413**
 spans across the CIAA corpus and most of them are *durations* — `# वर्षको लागि रु #,#` is a
 contract term, `प्रमाणपत्र जारी भएको # वर्षभित्र` a deadline, `सेवा प्रवेश गरेको ## वर्षमा`
 years of service. Removing those would delete the financial evidence the corpus exists for.

@@ -83,3 +83,30 @@ def test_scanning_is_independent_of_prior_redaction() -> None:
         "the placeholder is being counted as a citizenship number, which would make the "
         "scan report personal data that has already been removed"
     )
+
+
+def test_a_placeholder_is_not_its_own_label() -> None:
+    """🛑 The marker this package writes **spells out the kind it replaced**, so a label
+    alternation matching that word reads its own redaction as a finding.
+
+    The case above has no digits near the placeholder, so it passed even while this was
+    broken. This is the shape that actually occurs: `[REDACTED:CITIZENSHIP-NO]` followed a
+    few tokens later by an ordinary year. Measured over the 13 CIAA transcripts it was +3
+    phantom citizenship signals, and the direction is what makes it serious -- redacting a
+    document made its "remaining personal data" count go **up**, in the one report published
+    beside the corpus as evidence the redaction worked.
+    """
+
+    # No label of its own anywhere -- the only thing resembling one is the marker, so any
+    # count here is the scanner reading its own output.
+    for text in (
+        "[REDACTED:CITIZENSHIP-NO]) मा निजको जन्ममिति २०१५",
+        "[REDACTED:CITIZENSHIP-NO] को र 2046",
+    ):
+        assert scan_text(text)[0]["citizenship"] == 0, text
+
+    # The same collision, latent, for every other marker that names its kind. `\bPAN\b`
+    # matches inside `[REDACTED:PAN-NO]`; it simply never had a digit run close enough
+    # behind it in this corpus to fire.
+    assert scan_text("[REDACTED:PAN-NO] मिति २०७५०१२३")[0]["pan"] == 0
+    assert scan_text("[REDACTED:PASSPORT-NO] AB1234567")[0]["passport"] == 0

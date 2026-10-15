@@ -40,7 +40,14 @@ from enum import Enum
 
 
 class RedactionMode(str, Enum):
-    """The removal tiers, in increasing order of what they take out."""
+    """The removal tiers, in increasing order of what they take out.
+
+    ⚠️ ``__str__`` returns the bare value, and that is load-bearing rather than cosmetic.
+    ``argparse`` renders both its ``choices`` list and its "invalid choice" error through
+    ``str()``, and a ``str``-valued ``Enum`` inherits ``Enum.__str__`` -- so ``--help``
+    advertised ``{RedactionMode.NONE,RedactionMode.IDENTIFIERS,...}``, which are exactly the
+    strings the parser **rejects**. The values that do work were never shown.
+    """
 
     #: Remove nothing. Output is byte-identical to the input. First-class on purpose:
     #: internal casework, the retained original and the research corpus all need it, and a
@@ -62,6 +69,9 @@ class RedactionMode(str, Enum):
     #: removes one. That is not an oversight to be closed with another pattern -- see the
     #: module docstring.
     STRICT = "strict"
+
+    def __str__(self) -> str:
+        return self.value
 
     @property
     def rank(self) -> int:
@@ -97,20 +107,16 @@ _ORDER: tuple[RedactionMode, ...] = (
 #: What a caller gets if they do not choose. Stated as a name rather than left implicit at
 #: each call site, because "what happens when nobody decided" is the question an incident asks.
 #:
-#: 🛑 **This is :data:`~RedactionMode.CONTACT`, which is wider than the formally adjudicated
+#: 🛑 **This is :data:`~RedactionMode.STRICT`, which is wider than the formally adjudicated
 #: scope, and that is deliberate.** `IDENTIFIERS` alone removes **0.3% of the personal data
 #: detected in the charge-sheet corpus** -- 15 of 4,685 -- because that corpus is phone
 #: numbers (3,773) and bank accounts (804), not citizenship numbers. On
 #: ``samples/aarop-patra.pdf`` it removes 2 values and leaves all 5 mobile numbers. A
 #: redact-by-default whose default leaves the largest category is a label rather than a
-#: safeguard, so the default errs toward removing too much.
+#: safeguard, so the default errs toward removing too much -- accepting the company-PAN and
+#: bank-account-as-evidence costs recorded on :data:`~RedactionMode.STRICT`.
 #:
-#: **Approved by Ashwini Subedi, 15 October 2026**, as the default for this package: remove
-#: everything detectable, accepting the company-PAN and bank-account-as-evidence costs above.
-#: Recorded here with a date and a name because "who widened the removal set, and when" is
-#: the second question an incident asks.
-#:
-#: ⚠️ The formal §1 record in ``docs/2026-09-25-pii-redaction-pipeline/PLAN.md`` should be
-#: updated to match. If it ever lands differently, this line moves and nothing else changes --
-#: which is the whole reason the tier is one named constant.
+#: ⚠️ **Provisional, pending the §1 scope decision** in
+#: ``docs/2026-09-25-pii-redaction-pipeline/PLAN.md``. If that lands differently, this line
+#: moves and nothing else changes -- which is the whole reason the tier is one named constant.
 DEFAULT_MODE = RedactionMode.STRICT

@@ -78,10 +78,11 @@ def build_redact_parser() -> argparse.ArgumentParser:
             RedactionMode.STRICT,
         ],
         default=DEFAULT_MODE,
-        help="removal tier. 'identifiers' is the formally adjudicated scope (citizenship "
-        "numbers, dates of birth); 'contact' adds mobile, landline and email; 'strict' "
-        "(default) adds PAN, bank account and age. No tier removes names -- see "
-        "likhit.privacy.modes for why that is a decision rather than a gap",
+        help="removal tier, widest last. 'identifiers' is the formally adjudicated scope "
+        "(citizenship numbers, dates of birth); 'contact' adds mobile, landline and email; "
+        f"'{DEFAULT_MODE}' (default) adds PAN, bank account, age and passport. Labels are "
+        "matched in Nepali and English. No tier removes names -- see likhit.privacy.modes "
+        "for why that is a decision rather than a gap",
     )
     return parser
 
@@ -224,6 +225,21 @@ def _pdf(args: argparse.Namespace) -> int:
     for page_class, count in sorted(report.pages_by_class.items()):
         print(f"  {page_class:10} {count:,}")
     print(f"-> {args.journal}")
+
+    # 🛑 Only a dry run can reach here with blocked pages -- the write path refuses them --
+    # and it must not exit 0. The line above would otherwise read "values removed: 0" for a
+    # document this tool could not read a single page of, which is the exact confusion
+    # `likhit-redact scan` refuses an empty tree to avoid. Same code as `redact`: 2 is "did
+    # not run", 1 is "ran and something did not complete", 0 is all clear.
+    if report.blocked_pages:
+        classes = sorted({row["page_class"] for row in report.blocked_pages})
+        print(
+            f"likhit-redact: {len(report.blocked_pages)} of {report.pages} pages are "
+            f"{', '.join(classes)} and cannot be redacted; this document would be REFUSED "
+            "without --dry-run. 'values removed' above is not a finding",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
