@@ -9,6 +9,67 @@ This file starts at 0.1.8. For earlier releases, see the
 [commit history](https://github.com/Jawafdehi/likhit/commits/main/) and the
 [git tags](https://github.com/Jawafdehi/likhit/tags).
 
+## [0.2.0] - 2026-10-16
+
+Two new subpackages, and the first release to reach PyPI since 0.1.7 — 0.1.8
+was tagged but never published, so everything in that entry ships here too.
+
+Releases are now cut automatically: merging a version bump to `main` tags it
+and publishes it. See [docs/publishing.md](docs/publishing.md).
+
+### Changed
+
+- **`likhit-save` now redacts transcripts by default**, at the `strict` tier.
+  Conversion previously always wrote the unredacted text, and redaction was
+  only reachable by converting first and then running `likhit-redact` over the
+  result — so the unredacted artifact was always written to disk first. Passing
+  `--redact none` restores the old behaviour exactly, and is logged at WARNING
+  rather than refused. No tier removes personal names; see
+  `likhit.privacy.modes` for why that is a deliberate limit and not a gap.
+
+### Added
+
+- **`likhit.privacy`** and the `likhit-redact` CLI — removal of personal data
+  from transcripts, over four tiers (`none`, `identifiers`, `contact`,
+  `strict`). `likhit-redact pdf` takes a PDF and writes a genuinely redacted
+  PDF; `likhit-redact scan` reports without writing; `likhit-redact redact`
+  writes a redacted copy of a tree.
+- **`likhit.quality`** and the `likhit-audit` CLI — transcript quality
+  auditing, scoring a converted tree so bad extractions can be found without
+  reading them.
+- `likhit[quality]` and `likhit[privacy]` extras. Both are currently empty and
+  install nothing extra; they name the separable surfaces so a downstream
+  requirements file can record which part of the package it depends on.
+- Rendered Markdown is anchored to its source pages, so a line in the
+  transcript can be traced back to the page it came from.
+- OCR acceptance checks, and documented OCR runs both locally and against
+  Bedrock.
+
+### Fixed
+
+Roughly sixty extraction fixes, overwhelmingly in the legacy-font PDF path.
+The themes, rather than the list:
+
+- **Legacy-map selection.** Which Preeti-family map wins is no longer decided
+  by dictionary ordering, font names alone, or a raw garble ratio; the Latin-
+  side vetoes, the stranded-bracket tell and word-structure checks all feed the
+  choice. Fonts whose CMap is embedded, inline in a descendant dictionary, or
+  outline-keyed (Kalimati, Lohit-Devanagari, Mangal, Kokila) now resolve.
+- **Garble measurement.** Ordinary Nepali, ASCII list markers, acronyms and
+  bare digits no longer read as garble, and unmappable CIDs are marked rather
+  than silently destroyed so the heuristics can still see them.
+- **Tables and layout.** Ruled frames no longer make a page emit everything
+  twice, swallowed sub-tables keep their rows and columns, erased numeric cell
+  boundaries are rebuilt from glyph origins, and page furniture is stripped by
+  line rather than by paragraph.
+- **Legacy `.doc`.** Anchored on LibreOffice, with the profile path built as a
+  proper file URI and system `antiword` pinned to UTF-8.
+
+### Internal
+
+- The test suite runs in 21s parallel (was 136s serial), with more tests and no
+  coverage removed. Every tuning constant in `src/` is now pinned by a test.
+
 ## [0.1.8] - 2026-08-06
 
 The extraction-quality release: three classes of Nepali PDF that previously

@@ -7,12 +7,23 @@
 # [tool.hatch.build.targets.sdist] in pyproject.toml, which pins the sdist
 # contents instead of taking hatchling's everything-not-gitignored default —
 # see the note there before changing it.
+#
+# This stays the entry point for publishing — PyPI's Trusted Publisher for
+# `likhit` names this file, and it cannot name a reusable workflow — so the
+# upload is not factored out and shared. release.yml drives it via
+# `workflow_dispatch` once it has pushed the tag; see the header there for why
+# a pushed tag alone cannot trigger this.
 name: Publish to PyPI
 
 on:
   push:
     tags:
       - "v*"
+  # Dispatched by release.yml with `--ref <tag>`, and available by hand to
+  # re-run a release that failed partway. The ref MUST be a `v*` tag: every
+  # job below is gated on that, so dispatching against a branch builds and
+  # tests, then publishes nothing.
+  workflow_dispatch: {}
 
 concurrency:
   group: pypi-publish-${{ github.ref }}
