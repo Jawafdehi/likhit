@@ -29,6 +29,7 @@ import re
 from collections import Counter
 
 from ..devanagari import ANY_DIGITS
+from .placeholders import PLACEHOLDER_PATTERN
 
 
 # --- high-precision: an occurrence is evidence on its own -------------------
@@ -41,9 +42,102 @@ MOBILE = re.compile(
 LANDLINE = re.compile(
     rf"(?<![{ANY_DIGITS}])[०0][{ANY_DIGITS}]-[{ANY_DIGITS}]{{6,7}}(?![{ANY_DIGITS}])"
 )
+# 🛑 **A phone number that :data:`MOBILE` cannot see, found by its label instead.** `MOBILE`
+# anchors on the 97/98 opening of a *Nepali* number, so a foreign one in an international
+# format is invisible to it -- and these documents carry them. Page 1 of
+# ``samples/aarop-patra.pdf`` reads `Mobile Number: 919971766006`, an Indian number written
+# with its country code, which every pattern above leaves in place.
+#
+# 🛑🛑 **Label-anchored, never a bare digit run.** The reason is the one
+# :mod:`likhit.privacy.redact` gives for all of its rules: a free-floating 7-15 digit pattern
+# would match figures out of a financial table, and this project's redaction history is 572
+# real hits against **11,215 non-secret values clobbered**. The label is what makes the
+# adjacent digits a phone number.
+#
+# ⚠️ The value window admits at most ONE separator between digits. A looser
+# `[\s\-]*` lets the window run out of the number and swallow the next figure on the line.
+#
+# ⚠️ **A label glued to the end of a longer word is not a label**, and the two scripts need
+# different guards to say so. Without one, `Himobile 1234567` was a labelled phone number.
+#
+# 🛑 ``\b`` works for the Latin forms and is **silently useless** for the Devanagari ones.
+# Python's ``\w`` follows ``str.isalnum()``, and a Devanagari vowel sign is category ``Mn``
+# -- not alphanumeric -- so ``\b`` *succeeds* between `को` and `सम्पर्क` and `कोसम्पर्क` kept
+# matching. The script-range lookbehind is what actually holds there.
+_PHONE_LABEL_LATIN = r"mobile|cell(?:ular)?|phone|tel(?:ephone)?|contact|fax"
+_PHONE_LABEL_DEVA = r"सम्पर्क|मोबाइल|फोन|दूरभाष"
+_PHONE_LABEL_SUFFIX = r"(?:\s*(?:no\.?|number|#|नं\.?|नम्बर))?"
+PHONE_LABEL = (
+    rf"(?:\b(?:{_PHONE_LABEL_LATIN})"
+    rf"|(?<![ऀ-ॿ])(?:{_PHONE_LABEL_DEVA}))"
+    rf"{_PHONE_LABEL_SUFFIX}"
+)
+
+# 🛑 **Whitespace is admitted ONLY between a country code and the number, and this is the
+# whole safety argument for the rule.** A value window that let `[\s-]` separate any two
+# digits ran straight out of the number and into whatever figure came next: `फोन नं.:
+# ९८४१२३४५६७ २०७५` matched `९८४१२३४५६७ २०७५` as one 14-digit "phone number" and deleted the
+# year, and `Phone: 1234567 2075 2076` took both. That is the 11,215-non-secret-values
+# failure reproduced exactly, by a rule added to prevent a disclosure.
+#
+# A Nepali mobile hid it during testing: `MOBILE` matches those first and the overlap guard
+# then drops the over-captured span, so the bug was only reachable on a number `MOBILE`
+# cannot see -- which is precisely the set this rule exists for.
+#
+# Hyphens stay free (`01-4123456`, `9851-234567`); only the space is constrained. A number
+# written `+91 99717 66006`, with a space mid-number, is therefore missed. That is the
+# deliberate direction: this rule's job is the number `MOBILE` cannot see, and a miss is
+# recoverable where a deleted audit figure is not.
+#: 🛑 **At most one line break between the label and its value.** A bare ``\s*`` binds a label
+#: to a number any distance away so long as only whitespace lies between, and in text
+#: extracted from a PDF that reaches across blank lines into the next block:
+#: `फोन नं.:\n\n\n२०७५०१२३` redacted a *date* as a phone number. One break is required
+#: rather than zero, because the real case needs it -- the CIAA masthead prints
+#: `फोन नं.:` and its number on the following line.
+_LABEL_VALUE_GAP = r"[^\S\n]*[:ः]?[^\S\n]*\n?[^\S\n]*"
+
+PHONE_LABELLED = re.compile(
+    rf"(?:{PHONE_LABEL}){_LABEL_VALUE_GAP}"
+    rf"(?P<val>\+?(?:[{ANY_DIGITS}]{{1,3}}\s)?[{ANY_DIGITS}](?:-?[{ANY_DIGITS}]){{6,14}})"
+    rf"(?![{ANY_DIGITS}])",
+    re.I,
+)
+# 🛑 **A passport number is Latin-prefixed, so no digit-only pattern can reach it.** Page 1
+# of ``samples/aarop-patra.pdf`` carries `Passport No. Z4362932/India` and `K9838300/India`
+# -- an identity-document number of the same class as a citizenship number, and the clearest
+# single case of this package seeing only what is labelled in Nepali.
+PASSPORT_LABELLED = re.compile(
+    rf"(?:passport|राहदानी)\s*(?:no\.?|number|नं\.?|नम्बर)?\s*[:ः]?\s*"
+    rf"(?P<val>[A-Z]{{1,2}}[{ANY_DIGITS}]{{6,9}})(?![{ANY_DIGITS}])",
+    re.I,
+)
 # Labelled identifiers: the label is what makes the adjacent digits personal.
+#
+# ⚠️ **Each label alternation carries its English form as well as its Nepali one.** These
+# documents are bilingual -- a charge sheet naming a foreign national writes that person's
+# details in English in the middle of otherwise Nepali prose -- and a scanner that reads only
+# the Nepali label reports "no personal data" over a page that is carrying it in Latin script.
+# That is the same failure the module docstring describes for a legacy-font page: a zero that
+# is a blind spot rather than a finding.
 LABELLED = {
-    "citizenship": re.compile(rf"नागरिकता[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}}"),
+    "citizenship": re.compile(
+        rf"(?:नागरिकता|citizenship)[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}}", re.I
+    ),
+    # 🛑 **`pan` is detected here and removed nowhere**, which is the decision rather than a
+    # gap: a PAN is a *business registration* number, public by design, and removing a
+    # contractor's PAN from a procurement finding deletes the identifier a reader needs to
+    # check the claim against the public register. See `redact.INLINE_RULES`.
+    #
+    # 🛑 **Case-sensitive, and the acronym is the reason.** Adding `re.I` for the English
+    # suffix also makes `\bPAN\b` match the ordinary English word -- `frying pan 123456789`
+    # was a match. The corpus has 7 uppercase `PAN` and 0 lowercase, so the flag buys nothing
+    # and costs a whole false-positive class.
+    #
+    # 🛑🛑 **No Devanagari abbreviation alternation, deliberately.** A draft matched
+    # `प\.?ा\.?न\.?`, which has 0 occurrences in the corpus in its dotted form and whose
+    # undotted reading is `पान` -- betel leaf, an ordinary word appearing 4 times. It matched
+    # `पान १२३४५६७८९` as a PAN. An invented label form does not merely fail to help; here it
+    # would inflate a published count, and in a remover it would be a new way to delete data.
     "pan": re.compile(
         rf"(?:स्थायी\s*लेखा\s*(?:नम्बर|नं)|\bPAN\b)[^\n]{{0,30}}?[{ANY_DIGITS}]{{6,}}"
     ),
@@ -52,8 +146,12 @@ LABELLED = {
         re.I,
     ),
     "date_of_birth": re.compile(
-        rf"जन्म\s*(?:मिति|दर्ता)[^\n]{{0,30}}?[{ANY_DIGITS}]{{4,}}"
+        rf"(?:जन्म\s*(?:मिति|दर्ता)|date\s*of\s*birth|\bd\.?o\.?b\.?)"
+        rf"[^\n]{{0,30}}?[{ANY_DIGITS}]{{4,}}",
+        re.I,
     ),
+    "passport": PASSPORT_LABELLED,
+    "phone_labelled": PHONE_LABELLED,
 }
 
 # --- name-shaped: needs a denominator --------------------------------------
@@ -71,7 +169,34 @@ NAME_FIELD = re.compile(r"(?:^|\n)\s*नाम\s*[:ः]\s*(\S+)")
 
 
 def scan_text(t: str) -> tuple[Counter, Counter]:
-    """Return ``(high_precision, name_shaped)`` counters. Never any matched text."""
+    """Return ``(high_precision, name_shaped)`` counters. Never any matched text.
+
+    🛑 **Registered placeholders are stripped first, because this scanner can otherwise
+    detect its own redactions.** The markers this package writes spell out the kind they
+    replaced -- ``[REDACTED:CITIZENSHIP-NO]``, ``[REDACTED:PAN-NO]`` -- and several label
+    alternations here match on exactly those words. With a case-insensitive `citizenship`
+    alternative, `[REDACTED:CITIZENSHIP-NO]) ... २०१५` is a citizenship hit: the label is the
+    redaction marker and the "value" is a year four tokens away. Measured over the 13 CIAA
+    transcripts, that was **+3 phantom citizenship signals** on redacted text.
+
+    That is not a cosmetic over-count. This scanner's output is the *disclosure* -- the
+    report published beside the corpus saying what personal data remains -- so a redaction
+    that makes the "remaining" number go **up** turns the one artifact a reader checks the
+    redaction against into an argument that it failed.
+
+    ⚠️ ``\\bPAN\\b`` had the same collision latent against ``[REDACTED:PAN-NO]`` and happened
+    not to fire only because no 6-digit run followed one closely enough. Stripping handles
+    the class rather than the instance.
+
+    🛑 **Blanked to its own width, not collapsed.** Every labelled pattern here is
+    *distance*-bounded -- ``[^\\n]{0,40}?`` between a label and its digits -- so replacing a
+    25-character marker with one space pulls everything after it 24 characters closer and can
+    invent a hit that the unredacted text did not have: ``फोन [REDACTED:EMAIL] 1234567``
+    scored a labelled phone that way. Same-width blanking removes the word without moving
+    anything, which keeps every window measuring the distance it was calibrated against.
+    """
+
+    t = PLACEHOLDER_PATTERN.sub(lambda m: " " * len(m.group(0)), t)
     hp = Counter()
     hp["email"] = len(EMAIL.findall(t))
     hp["mobile"] = len(MOBILE.findall(t))

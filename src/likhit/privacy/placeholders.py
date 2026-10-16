@@ -95,6 +95,34 @@ PHONE: Final = "[REDACTED:PHONE-NO]"
 TABLE_PHONE: Final = "[REDACTED:TABLE-PHONE-NO]"
 EMAIL: Final = "[REDACTED:EMAIL]"
 
+#: 🛑 **Registered but never emitted by this package.** A PAN is a *business registration*
+#: number, public by design, so no tier removes one -- see
+#: :data:`likhit.privacy.redact.INLINE_RULES`. It stays registered because the earlier
+#: out-of-tree pass wrote this marker, and text carrying it must still be recognised by
+#: :func:`strip_placeholders` and :func:`contains_placeholder`; dropping it would make an
+#: already-redacted transcript read as unredacted.
+PAN: Final = "[REDACTED:PAN-NO]"
+
+#: ⚠️ Removed only in ``strict``, and it is a real trade rather than caution for its own
+#: sake: a bank account cited as the evidence of a transfer **is** the claim, so removing it
+#: protects nobody and deletes the finding. ``strict`` removes it anyway; use ``contact``
+#: where the account numbers are the evidence.
+BANK_ACCOUNT: Final = "[REDACTED:BANK-ACCOUNT-NO]"
+
+#: ⚠️ Anchored on `उमेर` (the word "age") and never on `वर्ष` alone. Measured over the 13 CIAA
+#: transcripts: a `वर्ष`-adjacent rule matches **413** spans of which 230 are not even
+#: age-shaped, and the plausible-looking remainder is mostly *durations* -- `# वर्षको लागि रु
+#: #,#` (a contract term), `प्रमाणपत्र जारी भएको # वर्षभित्र` (a deadline), `सेवा प्रवेश गरेको
+#: ## वर्षमा` (years of service). Removing those deletes the financial evidence the corpus
+#: exists for. The `उमेर` anchor matches **20**, of which 2 are a statutory retirement age
+#: rather than a person's -- a loss worth taking in that direction.
+AGE: Final = "[REDACTED:AGE]"
+
+#: ⚠️ An identity-document number of the same class as :data:`CITIZENSHIP`, but removed only
+#: at ``strict`` -- see :data:`likhit.privacy.redact.INLINE_RULES` for why the adjudicated
+#: ``identifiers`` scope is not quietly widened to hold it.
+PASSPORT: Final = "[REDACTED:PASSPORT-NO]"
+
 ALL: Final = (
     CITIZENSHIP,
     DATE_OF_BIRTH,
@@ -104,6 +132,10 @@ ALL: Final = (
     PHONE,
     TABLE_PHONE,
     EMAIL,
+    PAN,
+    BANK_ACCOUNT,
+    AGE,
+    PASSPORT,
 )
 
 #: Matches any registered placeholder.

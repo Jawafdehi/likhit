@@ -34,6 +34,9 @@ was once broken, and each is documented there with what it cost.
 from __future__ import annotations
 
 from . import placeholders
+from .contact import ContactTarget, iter_contact_targets
+from .modes import DEFAULT_MODE, RedactionMode
+from .pdf import PageClass, PdfRedactionReport, classify_text_layer, redact_pdf
 from .placeholders import (
     ALL as PLACEHOLDERS,
 )
@@ -41,18 +44,31 @@ from .placeholders import (
     contains_placeholder,
     strip_placeholders,
 )
-from .redact import redact_inline_text
+from .redact import InlineTarget, iter_inline_targets, redact_inline_text
 from .redact_tables import redact_table_text
 from .signals import scan_text
+from .text import RedactedText, redact_text
 from .tree import RedactionReport, redact_tree
 
 __all__ = [
+    "DEFAULT_MODE",
     "PLACEHOLDERS",
+    "ContactTarget",
+    "InlineTarget",
+    "PageClass",
+    "PdfRedactionReport",
+    "RedactedText",
+    "RedactionMode",
     "RedactionReport",
+    "classify_text_layer",
     "contains_placeholder",
+    "iter_contact_targets",
+    "iter_inline_targets",
     "placeholders",
     "redact_inline_text",
+    "redact_pdf",
     "redact_table_text",
+    "redact_text",
     "redact_tree",
     "scan_text",
     "strip_placeholders",

@@ -19,6 +19,8 @@ import unicodedata
 from collections import Counter
 from pathlib import Path
 
+from .modes import DEFAULT_MODE, RedactionMode
+from .pdf import redact_pdf
 from .signals import scan_text
 from .tree import redact_tree
 
@@ -51,6 +53,36 @@ def build_redact_parser() -> argparse.ArgumentParser:
         help="run the table pass -- a value in a cell away from its label -- instead of "
         "the inline pass. The two are independent and either order works; run both to "
         "cover identifiers held inline AND in table cells",
+    )
+
+    pdf = sub.add_parser(
+        "pdf", help="write a redacted copy of ONE PDF; refuses if it cannot read a page"
+    )
+    pdf.add_argument("pdf", type=Path)
+    pdf.add_argument(
+        "--out",
+        type=Path,
+        help="redacted PDF to write; refused if it exists. Omit only with --dry-run",
+    )
+    pdf.add_argument("--journal", type=Path, required=True)
+    pdf.add_argument("--dry-run", action="store_true")
+    pdf.add_argument(
+        "--mode",
+        type=RedactionMode,
+        # `none` is excluded here, not forgotten: `redact_pdf` refuses it, because writing a
+        # file named as a redacted derivative that is byte-identical to its source is a
+        # different and worse thing than a function returning its argument.
+        choices=[
+            RedactionMode.IDENTIFIERS,
+            RedactionMode.CONTACT,
+            RedactionMode.STRICT,
+        ],
+        default=DEFAULT_MODE,
+        help="removal tier, widest last. 'identifiers' is the formally adjudicated scope "
+        "(citizenship numbers, dates of birth); 'contact' adds mobile, landline and email; "
+        f"'{DEFAULT_MODE}' (default) adds bank account, age and passport. Labels are "
+        "matched in Nepali and English. No tier removes names -- see likhit.privacy.modes "
+        "for why that is a decision rather than a gap",
     )
     return parser
 
@@ -160,9 +192,62 @@ def _redact(args: argparse.Namespace) -> int:
     return 1 if report.failed_documents else 0
 
 
+def _pdf(args: argparse.Namespace) -> int:
+    if args.journal.exists():
+        print(f"likhit-redact: refusing to overwrite {args.journal}", file=sys.stderr)
+        return 2
+    try:
+        report = redact_pdf(args.pdf, args.out, mode=args.mode, dry_run=args.dry_run)
+    except ValueError as exc:
+        # Exit 2, the same refusal code `redact` uses: this is "did not run", not "ran and
+        # something was skipped". Every raise in `likhit.privacy.pdf` happens before anything
+        # is written, so a refusal here never leaves a partial artifact behind.
+        print(f"likhit-redact: {exc}", file=sys.stderr)
+        return 2
+
+    payload = report.as_dict()
+    payload |= {
+        "source": str(args.pdf),
+        "out": None if args.dry_run else str(args.out),
+        "dry_run": bool(args.dry_run),
+        "mode": args.mode.value,
+    }
+    args.journal.parent.mkdir(parents=True, exist_ok=True)
+    args.journal.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    print(
+        f"pages: {report.pages:,}  changed: {report.pages_changed:,}  "
+        f"values removed: {report.values_removed:,}  "
+        f"rectangles: {report.rects_applied:,}  mode: {args.mode.value}"
+    )
+    for page_class, count in sorted(report.pages_by_class.items()):
+        print(f"  {page_class:10} {count:,}")
+    print(f"-> {args.journal}")
+
+    # 🛑 Only a dry run can reach here with blocked pages -- the write path refuses them --
+    # and it must not exit 0. The line above would otherwise read "values removed: 0" for a
+    # document this tool could not read a single page of, which is the exact confusion
+    # `likhit-redact scan` refuses an empty tree to avoid. Same code as `redact`: 2 is "did
+    # not run", 1 is "ran and something did not complete", 0 is all clear.
+    if report.blocked_pages:
+        classes = sorted({row["page_class"] for row in report.blocked_pages})
+        print(
+            f"likhit-redact: {len(report.blocked_pages)} of {report.pages} pages are "
+            f"{', '.join(classes)} and cannot be redacted; this document would be REFUSED "
+            "without --dry-run. 'values removed' above is not a finding",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_redact_parser().parse_args(argv)
-    return _scan(args) if args.command == "scan" else _redact(args)
+    if args.command == "scan":
+        return _scan(args)
+    return _pdf(args) if args.command == "pdf" else _redact(args)
 
 
 if __name__ == "__main__":  # pragma: no cover

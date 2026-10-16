@@ -166,9 +166,157 @@ destination exists or is the source. Documents with nothing to redact are copied
 byte-for-byte rather than rewritten, and the journal records value *shapes* — lengths, digit
 counts, separator presence — never a matched digit.
 
-Scope is narrow on purpose: citizenship numbers and dates of birth. Mobile numbers, personal
-PANs and email addresses are *detected and disclosed* rather than removed, because their
-adjudication left undecided cases and over-redaction costs more than it saves.
+### Redaction modes
+
+A mode names a **policy tier**, not a pass. One call runs whichever passes the tier needs:
+
+```python
+from likhit.privacy import redact_text
+
+result = redact_text(markdown)                  # redacts — this is the default
+result.text, result.journal, result.values_removed
+```
+
+| mode | removes |
+|---|---|
+| `none` | nothing — output is byte-identical to the input |
+| `identifiers` | citizenship numbers, dates of birth |
+| `contact` | the above, plus mobile, landline, email |
+| `strict` *(default)* | the above, plus bank account, age, passport |
+
+Measured over the 13 CIAA annual-report transcripts, by tier:
+
+| tier | values removed | high-precision signals remaining |
+|---|---:|---|
+| *(none)* | — | bank 32, citizenship 37, DOB 39, email 32, labelled-phone 21, landline 8, mobile 39, PAN 7 |
+| `identifiers` | 50 | bank 32, citizenship 33, DOB 10, email 32, labelled-phone 21, landline 8, mobile 39, PAN 7 |
+| `contact` | 131 | bank 32, citizenship 33, DOB 10, labelled-phone 2, PAN 7 |
+| `strict` | **195** | citizenship 33, DOB 10, labelled-phone 2, PAN 7 |
+
+> **What is left at `strict` is mostly not personal data.** The residual `citizenship` and
+> `date_of_birth` counts are the scanner's wide tier matching prose: 10 of them are
+> `नागरिकता ऐन, २०६३` — the **Citizenship Act** and its year, a statute citation — and most
+> of the rest are four-digit years in sentences like `नागरिकता लिएकोमा मिति २०७०`. The
+> scanner is deliberately wider than the remover, and that gap is meant to be disclosed
+> rather than chased.
+>
+> The two remaining `labelled-phone` hits are both the Commission's **own switchboard** in
+> the report masthead, where one label covers two numbers on consecutive lines and only the
+> first is reachable — see `likhit.privacy.contact` for why a continuation rule is not the
+> fix.
+>
+> The 7 remaining `PAN` hits are **meant to be there**: no tier removes a PAN. See below.
+
+### The line the tiers draw: a person, not a company
+
+> 🛑 **No tier removes a PAN, and that is a decision rather than a gap.** A PAN is a
+> *business registration* number and is public by design — printed on invoices, filed with
+> the registrar, searchable. No pattern can tell a company PAN from a sole trader's, so a
+> rule that removed either would remove both, and removing a contractor's PAN from a
+> procurement finding deletes the one identifier a reader can use to check the claim against
+> the public register. PANs are **detected and disclosed** instead: the scanner counts them,
+> so a corpus report still says how many are present.
+
+That is the distinction the widest tier is built on. `strict` means *remove the personal
+details* — citizenship number, date of birth, phone, email, bank account, age, passport —
+not *remove every identifier*. Data about a **person** goes; data about a **company** stays,
+because in an accountability corpus the company identifiers are the finding.
+
+### Bilingual by requirement, not by courtesy
+
+Every label alternation matches its **English** form as well as its Nepali one, and passport
+numbers and internationally-formatted phone numbers have rules of their own.
+
+This is a correctness property rather than a nicety. These documents are bilingual, and the
+English is where the *foreign* parties are written: page 1 of `samples/aarop-patra.pdf` is
+Nepali prose carrying, in Latin script, one Indian national's `Passport No. Z4362932`,
+`Date of Birth: 27 August 1979` and `Mobile Number: 919971766006`. With Nepali-only labels,
+`strict` removed the Nepali-labelled mobile two clauses earlier and left all four of those.
+
+> 🛑 A Nepali-only rule does not fail at random. It fails on exactly the people whose details
+> were written in English — which in this corpus means foreign nationals and anyone
+> transcribed from an English-language document — so the removal set acquires a shape nobody
+> chose. That is why this is listed as a defect rather than as coverage.
+
+English widens what counts as a **label** and nothing else: every value still runs the same
+three guards, so a wider label cannot admit a wider value.
+
+> 🛑 **No tier removes names, and that is a decision rather than a gap.** Nothing detects a
+> Nepali name reliably — the only signals are `श्री` followed by a non-institution token
+> (**2,179** hits across those 13 transcripts) and a filled `नाम:` field (**0**). Removing
+> parties *other than the accused* needs role assignment — वादी/प्रतिवादी versus witness
+> versus relative — which is a modelling project, not a pattern. And for an accountability
+> corpus, stripping the names of prosecuted officials would invert the product.
+
+> 🛑 **Redaction is the default, and unredacted output is what you ask for.**
+> `likhit-save report.pdf` writes a redacted transcript; `likhit-save report.pdf --redact none`
+> writes the unredacted one and says so at WARNING. The reasoning is that this command's
+> output is a *file*, and a file outlives the invocation that made it — nobody reading
+> `report.md` six months later can tell whether redaction was considered. The safe default is
+> the one where forgetting produces the harmless outcome.
+>
+> `--redact none` is a legitimate thing to want — the retained original, internal casework and
+> the research corpus all need it — so it is one flag and not a fight.
+
+Redaction **fails closed**: if a pass raises, nothing is written. Falling through to the
+unredacted text it was asked to clean is the one outcome worse than not converting at all.
+
+### PDF in, redacted PDF out
+
+```bash
+likhit-redact pdf aarop-patra.pdf --out redacted.pdf --journal redaction.json --mode contact
+```
+
+This is a **true removal**, not a drawn box: the value is gone from the extracted text and
+from the file's bytes. Only the value is removed — the label beside it is kept, because
+redaction is located from the detector's own character offsets mapped to per-glyph rectangles
+rather than by searching the page for the value's digits.
+
+> 🛑 **It refuses any PDF it cannot read, and that is the point.** Only a page whose text
+> layer is Unicode Devanagari can be redacted today. A page carrying a legacy pre-Unicode font
+> decodes to Latin-looking bytes, so the detectors find almost nothing in it — measured on two
+> CIAA annual reports, the raw text layer yields **1 and 4** high-precision hits where
+> `likhit`'s decoded output yields **16 and 62**, and in both cases the only survivors are the
+> ASCII email addresses. "No personal data found" on such a page is not a finding, so those
+> pages refuse the document rather than being passed through unchanged. A pure scan refuses
+> for the same reason: it needs bounding-box OCR, which `likhit`'s LLM-vision OCR cannot
+> provide because it returns text without coordinates.
+
+Document metadata, XMP and embedded attachments are scrubbed too — a document redacted only
+where someone looked is worse than one nobody redacted. Saves are always full saves with
+`garbage=4`, never incremental: an incremental save appends a revision and leaves the original
+content recoverable inside the same file.
+
+### Scope
+
+`identifiers` is the formally adjudicated scope — citizenship numbers and dates of birth —
+and it is narrow on purpose: anchoring on the *label* means a bare digit run can never match,
+so a financial table cannot be touched.
+
+Everything above it is a widening: the default removes the personal details rather than only
+the two adjudicated classes, because `identifiers` alone removes 0.3% of the personal data
+detected in the charge-sheet corpus. The one cost it knowingly accepts:
+
+- **A bank account cited as the evidence of a transfer *is* the claim.** Removing it protects
+  nobody and deletes the finding. `strict` removes it anyway; use `--redact contact` where
+  the account numbers are the evidence.
+
+PANs were the other candidate for that list and are **not removed at all** — see
+[the line the tiers draw](#the-line-the-tiers-draw-a-person-not-a-company).
+
+> **Passport numbers sit at `strict`, not at `identifiers`** — and that is not a judgement
+> that they are less personal. A passport number is plainly an identity-document number of
+> the same class as a citizenship number. But `identifiers` *is* the formally adjudicated
+> scope, and that adjudication names two classes; a caller choosing it is choosing "the scope
+> I was authorised for", so quietly adding a third would break the only promise that tier
+> makes.
+
+Age is anchored on `उमेर`/`Age` and never on `वर्ष` or `years` alone. A `वर्ष`-adjacent rule matches **413**
+spans across the CIAA corpus and most of them are *durations* — `# वर्षको लागि रु #,#` is a
+contract term, `प्रमाणपत्र जारी भएको # वर्षभित्र` a deadline, `सेवा प्रवेश गरेको ## वर्षमा`
+years of service. Removing those would delete the financial evidence the corpus exists for.
+The `उमेर` anchor matches **20**, of which 2 are a statutory retirement age rather than a
+person's.
 
 ### What likhit does
 
