@@ -123,6 +123,21 @@ LABELLED = {
     "citizenship": re.compile(
         rf"(?:नागरिकता|citizenship)[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}}", re.I
     ),
+    # 🛑 **`pan` is detected here and removed nowhere**, which is the decision rather than a
+    # gap: a PAN is a *business registration* number, public by design, and removing a
+    # contractor's PAN from a procurement finding deletes the identifier a reader needs to
+    # check the claim against the public register. See `redact.INLINE_RULES`.
+    #
+    # 🛑 **Case-sensitive, and the acronym is the reason.** Adding `re.I` for the English
+    # suffix also makes `\bPAN\b` match the ordinary English word -- `frying pan 123456789`
+    # was a match. The corpus has 7 uppercase `PAN` and 0 lowercase, so the flag buys nothing
+    # and costs a whole false-positive class.
+    #
+    # 🛑🛑 **No Devanagari abbreviation alternation, deliberately.** A draft matched
+    # `प\.?ा\.?न\.?`, which has 0 occurrences in the corpus in its dotted form and whose
+    # undotted reading is `पान` -- betel leaf, an ordinary word appearing 4 times. It matched
+    # `पान १२३४५६७८९` as a PAN. An invented label form does not merely fail to help; here it
+    # would inflate a published count, and in a remover it would be a new way to delete data.
     "pan": re.compile(
         rf"(?:स्थायी\s*लेखा\s*(?:नम्बर|नं)|\bPAN\b)[^\n]{{0,30}}?[{ANY_DIGITS}]{{6,}}"
     ),

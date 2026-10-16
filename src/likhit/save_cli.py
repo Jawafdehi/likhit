@@ -56,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Removal tier applied to the converted text before it is written, widest "
             f"last: 'identifiers' (citizenship numbers, dates of birth), 'contact' (adds "
-            f"mobile, landline, email), '{DEFAULT_MODE}' (default; adds PAN, bank "
+            f"mobile, landline, email), '{DEFAULT_MODE}' (default; adds bank "
             "account, age, passport). Labels are matched in Nepali and English. "
             "'none' writes the transcript unredacted -- say so deliberately."
         ),

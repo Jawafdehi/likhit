@@ -95,16 +95,18 @@ PHONE: Final = "[REDACTED:PHONE-NO]"
 TABLE_PHONE: Final = "[REDACTED:TABLE-PHONE-NO]"
 EMAIL: Final = "[REDACTED:EMAIL]"
 
-#: The ``strict`` tier -- personal financial identifiers and age. Emitted by
-#: :mod:`likhit.privacy.redact`'s label-anchored pass.
-#:
-#: ⚠️ :data:`PAN` and :data:`BANK_ACCOUNT` are removed only in ``strict``, and that is a real
-#: trade rather than caution for its own sake. A **company** PAN is public business
-#: registration data, and a bank account cited as the evidence of a transfer **is** the claim
-#: -- removing it does not protect anyone, it deletes the finding. Neither pattern can tell a
-#: company PAN from a personal one, so ``strict`` knowingly over-removes in exchange for
-#: catching the personal ones.
+#: 🛑 **Registered but never emitted by this package.** A PAN is a *business registration*
+#: number, public by design, so no tier removes one -- see
+#: :data:`likhit.privacy.redact.INLINE_RULES`. It stays registered because the earlier
+#: out-of-tree pass wrote this marker, and text carrying it must still be recognised by
+#: :func:`strip_placeholders` and :func:`contains_placeholder`; dropping it would make an
+#: already-redacted transcript read as unredacted.
 PAN: Final = "[REDACTED:PAN-NO]"
+
+#: ⚠️ Removed only in ``strict``, and it is a real trade rather than caution for its own
+#: sake: a bank account cited as the evidence of a transfer **is** the claim, so removing it
+#: protects nobody and deletes the finding. ``strict`` removes it anyway; use ``contact``
+#: where the account numbers are the evidence.
 BANK_ACCOUNT: Final = "[REDACTED:BANK-ACCOUNT-NO]"
 
 #: ⚠️ Anchored on `उमेर` (the word "age") and never on `वर्ष` alone. Measured over the 13 CIAA

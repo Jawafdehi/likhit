@@ -35,19 +35,41 @@ def test_the_default_is_not_none():
     assert DEFAULT_MODE is not RedactionMode.NONE
 
 
-def test_strict_removes_everything_the_package_can_remove():
+def test_strict_removes_every_personal_detail_it_can():
     result = redact_text(WIDE_SAMPLE, mode=RedactionMode.STRICT)
-    for value in ("३०१२४५६७८", "०१२३४५६७८९०१", "४५", "९८५१२३४५६७"):
+    for value in ("०१२३४५६७८९०१", "९८५१२३४५६७"):
         assert value not in result.text
+    # ⚠️ Asserted against the label, not the bare digits: `४५` is also a substring of the
+    # PAN, which `strict` deliberately keeps, so `"४५" not in text` would fail for a
+    # reason that has nothing to do with the age.
+    assert "उमेर ४५" not in result.text
+    assert "[REDACTED:AGE]" in result.text
     assert "उमेर" in result.text, "the age label is kept; only the number goes"
     assert "खाता नं." in result.text
 
 
-def test_contact_does_not_reach_pan_bank_or_age():
+def test_no_tier_removes_a_pan():
+    """🛑 Pinned as a promise, not an omission -- the one identifier `strict` leaves.
+
+    A PAN identifies a *business* and is public by design: printed on invoices, filed with
+    the registrar, searchable. It is frequently the only handle tying a procurement finding
+    to a registered contractor, so removing it protects nobody and costs the reader the
+    check. The line the tiers draw is between data about a person and data about a company.
+    """
+
+    for mode in RedactionMode:
+        result = redact_text(WIDE_SAMPLE, mode=mode)
+        assert "३०१२४५६७८" in result.text, f"{mode} removed a PAN"
+        assert "[REDACTED:PAN-NO]" not in result.text
+
+    # Still *disclosed* -- a corpus report must say how many are present.
+    assert scan_text(PAN)[0]["pan"] == 1
+
+
+def test_contact_does_not_reach_bank_or_age():
     """The tiers must be nested, not overlapping -- `contact` is below `strict`."""
 
     result = redact_text(WIDE_SAMPLE, mode=RedactionMode.CONTACT)
-    assert "३०१२४५६७८" in result.text
     assert "०१२३४५६७८९०१" in result.text
     assert "उमेर ४५" in result.text
 

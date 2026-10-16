@@ -182,7 +182,7 @@ result.text, result.journal, result.values_removed
 | `none` | nothing — output is byte-identical to the input |
 | `identifiers` | citizenship numbers, dates of birth |
 | `contact` | the above, plus mobile, landline, email |
-| `strict` *(default)* | the above, plus PAN, bank account, age, passport |
+| `strict` *(default)* | the above, plus bank account, age, passport |
 
 Measured over the 13 CIAA annual-report transcripts, by tier:
 
@@ -191,7 +191,7 @@ Measured over the 13 CIAA annual-report transcripts, by tier:
 | *(none)* | — | bank 32, citizenship 37, DOB 39, email 32, labelled-phone 21, landline 8, mobile 39, PAN 7 |
 | `identifiers` | 50 | bank 32, citizenship 33, DOB 10, email 32, labelled-phone 21, landline 8, mobile 39, PAN 7 |
 | `contact` | 131 | bank 32, citizenship 33, DOB 10, labelled-phone 2, PAN 7 |
-| `strict` | **203** | citizenship 33, DOB 10, labelled-phone 2 |
+| `strict` | **195** | citizenship 33, DOB 10, labelled-phone 2, PAN 7 |
 
 > **What is left at `strict` is mostly not personal data.** The residual `citizenship` and
 > `date_of_birth` counts are the scanner's wide tier matching prose: 10 of them are
@@ -204,6 +204,23 @@ Measured over the 13 CIAA annual-report transcripts, by tier:
 > the report masthead, where one label covers two numbers on consecutive lines and only the
 > first is reachable — see `likhit.privacy.contact` for why a continuation rule is not the
 > fix.
+>
+> The 7 remaining `PAN` hits are **meant to be there**: no tier removes a PAN. See below.
+
+### The line the tiers draw: a person, not a company
+
+> 🛑 **No tier removes a PAN, and that is a decision rather than a gap.** A PAN is a
+> *business registration* number and is public by design — printed on invoices, filed with
+> the registrar, searchable. No pattern can tell a company PAN from a sole trader's, so a
+> rule that removed either would remove both, and removing a contractor's PAN from a
+> procurement finding deletes the one identifier a reader can use to check the claim against
+> the public register. PANs are **detected and disclosed** instead: the scanner counts them,
+> so a corpus report still says how many are present.
+
+That is the distinction the widest tier is built on. `strict` means *remove the personal
+details* — citizenship number, date of birth, phone, email, bank account, age, passport —
+not *remove every identifier*. Data about a **person** goes; data about a **company** stays,
+because in an accountability corpus the company identifiers are the finding.
 
 ### Bilingual by requirement, not by courtesy
 
@@ -276,23 +293,23 @@ content recoverable inside the same file.
 and it is narrow on purpose: anchoring on the *label* means a bare digit run can never match,
 so a financial table cannot be touched.
 
-Everything above it is a **provisional** widening, pending the PII-redaction scope decision
-recorded in Jawafdehi's internal planning notes (September 2026, §1). If that lands
-differently, `modes.DEFAULT_MODE` moves and nothing else changes. Two costs it knowingly
-accepts:
+Everything above it is a widening: the default removes the personal details rather than only
+the two adjudicated classes, because `identifiers` alone removes 0.3% of the personal data
+detected in the charge-sheet corpus. The one cost it knowingly accepts:
 
-- **A company PAN is public business registration data**, and no pattern can tell one from a
-  personal PAN. `strict` removes both.
 - **A bank account cited as the evidence of a transfer *is* the claim.** Removing it protects
   nobody and deletes the finding. `strict` removes it anyway; use `--redact contact` where
   the account numbers are the evidence.
+
+PANs were the other candidate for that list and are **not removed at all** — see
+[the line the tiers draw](#the-line-the-tiers-draw-a-person-not-a-company).
 
 > **Passport numbers sit at `strict`, not at `identifiers`** — and that is not a judgement
 > that they are less personal. A passport number is plainly an identity-document number of
 > the same class as a citizenship number. But `identifiers` *is* the formally adjudicated
 > scope, and that adjudication names two classes; a caller choosing it is choosing "the scope
 > I was authorised for", so quietly adding a third would break the only promise that tier
-> makes. Moving it is one line in `redact.INLINE_RULES` if the §1 decision lands that way.
+> makes.
 
 Age is anchored on `उमेर`/`Age` and never on `वर्ष` or `years` alone. A `वर्ष`-adjacent rule matches **413**
 spans across the CIAA corpus and most of them are *durations* — `# वर्षको लागि रु #,#` is a

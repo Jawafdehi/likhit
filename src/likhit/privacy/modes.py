@@ -62,8 +62,11 @@ class RedactionMode(str, Enum):
     #: :data:`IDENTIFIERS` plus mobile numbers, landlines and email addresses.
     CONTACT = "contact"
 
-    #: Everything this package can remove: :data:`CONTACT` plus PAN, bank account, age and
+    #: Everything this package can remove: :data:`CONTACT` plus bank account, age and
     #: passport.
+    #:
+    #: ⚠️ **Not PAN.** A PAN is a business registration number, public by design; it is
+    #: detected and disclosed, never removed. See :data:`likhit.privacy.redact.INLINE_RULES`.
     #:
     #: ⚠️ **"Everything it can remove" is not "all personal data", and the gap is names.**
     #: A person's name is the most identifying thing in these documents and nothing here
@@ -114,10 +117,14 @@ _ORDER: tuple[RedactionMode, ...] = (
 #: numbers (3,773) and bank accounts (804), not citizenship numbers. On
 #: ``samples/aarop-patra.pdf`` it removes 2 values and leaves all 5 mobile numbers. A
 #: redact-by-default whose default leaves the largest category is a label rather than a
-#: safeguard, so the default errs toward removing too much -- accepting the company-PAN and
-#: bank-account-as-evidence costs recorded on :data:`~RedactionMode.STRICT`.
+#: safeguard, so the default errs toward removing too much -- accepting the
+#: bank-account-as-evidence cost recorded on
+#: :data:`likhit.privacy.placeholders.BANK_ACCOUNT`.
 #:
-#: ⚠️ **Provisional, pending the §1 scope decision** in
-#: ``docs/2026-09-25-pii-redaction-pipeline/PLAN.md``. If that lands differently, this line
-#: moves and nothing else changes -- which is the whole reason the tier is one named constant.
+#: 🛑 **The line that is NOT drawn here is PAN**, and it is the one case where "remove
+#: everything detectable" was the wrong instinct. A PAN identifies a *business*, is public by
+#: design, and is frequently the only handle a reader has to tie a procurement finding to a
+#: registered contractor. Removing it protects nobody and costs the reader the check. So the
+#: default is "remove the personal details" rather than "remove every identifier", and the
+#: distinction is between data about a *person* and data about a *company*.
 DEFAULT_MODE = RedactionMode.STRICT

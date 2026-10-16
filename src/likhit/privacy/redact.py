@@ -51,7 +51,6 @@ from .placeholders import (
     BANK_ACCOUNT,
     CITIZENSHIP,
     DATE_OF_BIRTH,
-    PAN,
     PASSPORT,
 )
 
@@ -256,22 +255,6 @@ VALUE_SEPARATOR = re.compile(rf"[{_VALUE_SEPARATORS}]")
 AMOUNT_CUE = re.compile(r"रकम|जम्मा|खर्च|बजेट|राजस्व|बेरुजु|रु")
 
 
-#: 🛑 **Case-sensitive, and the acronym is the reason.** An earlier version carried ``re.I``
-#: for the English ``no``/``number`` suffix, which also made ``\bPAN\b`` match the ordinary
-#: English word -- ``frying pan 123456789`` was a match. The corpus has **7** uppercase
-#: ``PAN`` and **0** lowercase, so the flag bought nothing and cost a whole false-positive
-#: class. Case-insensitivity is now scoped inline to the suffix that needs it.
-#:
-#: 🛑🛑 **There is deliberately no Devanagari abbreviation alternation.** A draft matched
-#: ``प\.?ा\.?न\.?``, which has **0** occurrences in the corpus in its dotted form and whose
-#: undotted reading is ``पान`` -- betel leaf, an ordinary word appearing **4** times. It
-#: matched ``पान १२३४५६७८९`` as a PAN number. Invented label forms do not merely fail to
-#: help; each one is a new way to delete real data.
-PAN_LABEL_VALUE = re.compile(
-    r"(?P<label>(?:स्थायी\s*लेखा\s*(?:नम्बर|नं\.?)|\bPAN\b)"
-    r"(?:\s*(?:नम्बर|नं\.?|(?i:no\.?|number)))?)"
-    rf"(?P<sep>\s*[:ः]?\s*)(?P<val>{_value_window(_CIT_LEGACY_SEPARATORS, 3, 20)})"
-)
 #: 🛑 A bank account value may open with a short uppercase Latin code -- a branch or product
 #: prefix -- and `खाता नं. MM##########` is a real example from the CIAA corpus. It is the one
 #: account the digits-only value window missed (1 of 44), and missing it is systematic rather
@@ -326,7 +309,6 @@ AGE_LABEL_VALUE = re.compile(
 DIGIT_BOUNDS = {
     "citizenship": (7, 16),
     "date_of_birth": (5, 10),
-    "pan": (6, 14),
     "bank_account": (6, 20),
     "age": (2, 3),
     "passport": (6, 9),
@@ -373,7 +355,16 @@ INLINE_RULES = (
         DATE_OF_BIRTH,
         RedactionMode.IDENTIFIERS,
     ),
-    ("pan", PAN_LABEL_VALUE, PAN, RedactionMode.STRICT),
+    # 🛑 **`pan` is deliberately absent at every tier.** A PAN is a *business registration*
+    # number and is public by design -- printed on invoices, filed with the registrar,
+    # searchable. No pattern can tell a company PAN from a sole trader's, so a rule that
+    # removed either would remove both, and removing a contractor's PAN from a procurement
+    # finding deletes the one identifier a reader can use to check the claim against the
+    # public register. It is **detected and disclosed** instead, by
+    # ``signals.LABELLED["pan"]`` -- which is where the pattern and its calibration live, so
+    # nothing here is left half-wired. :data:`~likhit.privacy.placeholders.PAN` stays
+    # registered so text redacted by the earlier out-of-tree pass is still recognised by
+    # ``strip_placeholders`` and ``contains_placeholder``.
     ("bank_account", BANK_LABEL_VALUE, BANK_ACCOUNT, RedactionMode.STRICT),
     ("age", AGE_LABEL_VALUE, AGE, RedactionMode.STRICT),
     ("passport", PASSPORT_LABEL_VALUE, PASSPORT, RedactionMode.STRICT),

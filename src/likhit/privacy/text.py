@@ -19,7 +19,7 @@ whose value must open with a digit, and the character after the marker's label i
 
 ⚠️ **Known gap: the table pass covers only citizenship and date of birth.**
 :func:`likhit.privacy.redact_tables.scan` decides a cell's kind from
-``_label_kinds``, which knows those two and nothing else, so a PAN, bank account, age or
+``_label_kinds``, which knows those two and nothing else, so a bank account, age or
 passport held in a table *cell away from its label* is not removed even at
 :data:`~likhit.privacy.modes.RedactionMode.STRICT`. The inline pass still catches every one
 of them that sits beside its own label. Measured over the 13 CIAA transcripts: **zero**
