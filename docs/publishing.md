@@ -1,29 +1,79 @@
 # Publishing
 
-`likhit` uses a tag-driven PyPI release flow with GitHub Actions Trusted Publishing.
+`likhit` releases to PyPI automatically. **Merging a version bump to `main` is
+the whole release.** There is no manual tagging step, and you should not create
+release tags by hand.
 
-## Release Process
+## Cutting a release
 
-1. Update the package version in `pyproject.toml`.
-2. Commit that change.
-3. Create a matching git tag such as `v0.1.1`.
-4. Push the commit and tag to GitHub (`https://github.com/Jawafdehi/likhit/`).
+1. Bump the version. `uv version` re-locks, and `uv.lock` records `likhit`'s own
+   version, so both files go in the commit:
 
-Example:
+   ```bash
+   uv version --bump minor      # or: patch / major, or an explicit 0.2.0
+   ```
 
-```bash
-uv version --bump patch
-git add pyproject.toml uv.lock
-git commit -m "Bump version to 0.1.1"
-git tag v0.1.1
-git push origin main --follow-tags
-```
+2. Add a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`. This is required —
+   the release fails without it, and it becomes the GitHub Release notes.
 
-`uv version` re-locks the project, and `uv.lock` records `likhit`'s own version,
-so both files must go in the bump commit — otherwise CI's `uv sync --locked`
-fails on the release tag with a stale lockfile.
+3. Open a PR with `pyproject.toml`, `uv.lock` and `CHANGELOG.md`, and merge it.
 
-Use `uv version --bump patch --dry-run` to see the new version without writing it.
+Use `uv version --bump patch --dry-run` to see the new version without writing
+it.
 
-The publish workflow verifies that the git tag matches the version in
-`pyproject.toml` before uploading to PyPI, then builds with `uv build`.
+Everything after the merge is automatic:
+
+| | |
+|---|---|
+| `release.yml` | Reads the version, refuses a stale `uv.lock` or a missing changelog entry, pushes the `vX.Y.Z` tag, triggers the publish, and creates the GitHub Release. |
+| `pypi-publish.yml` | Re-runs lint and tests, builds with `uv build`, checks the tag matches `pyproject.toml`, and uploads to PyPI. |
+
+If the version in `pyproject.toml` is unchanged, `release.yml` finds the tag
+already exists and does nothing. Ordinary merges to `main` never publish.
+
+## When something goes wrong
+
+Both workflows are idempotent and safe to re-run.
+
+- **Release failed before the tag was pushed** (stale lockfile, missing
+  changelog entry): fix it on `main` in a normal PR. The merge re-runs
+  `release.yml`.
+- **Tag was pushed but the publish failed**: re-run `pypi-publish.yml` from the
+  Actions tab against the `vX.Y.Z` **tag**, not a branch — every job in it is
+  gated on a `v*` ref, so dispatching it against a branch tests and builds but
+  publishes nothing. The upload uses `skip-existing`, so re-running a release
+  that already reached PyPI is harmless.
+- **Version number is already on PyPI**: PyPI will not accept a re-upload. Bump
+  to the next version; a burned number cannot be reused. (0.1.2–0.1.5 were
+  burned this way, which is why PyPI jumps 0.1.1 → 0.1.6.)
+
+## How it is wired, and why
+
+Publishing uses [PyPI Trusted
+Publishing](https://docs.pypi.org/trusted-publishers/) over OIDC through the
+`pypi` GitHub environment. There is no PyPI token stored anywhere — the
+repository has no Actions secrets, and it should stay that way.
+
+The two-workflow split looks redundant and is not:
+
+- The Trusted Publisher registered on PyPI names **`pypi-publish.yml`**, so the
+  upload has to happen in that file. It cannot be factored into a reusable
+  workflow shared with `release.yml` either — PyPI [cannot name a reusable
+  workflow](https://docs.pypi.org/trusted-publishers/troubleshooting/) as a
+  Trusted Publisher.
+- `release.yml` therefore has to *reach* `pypi-publish.yml`, and it cannot do
+  that by pushing a tag. A tag pushed with the default `GITHUB_TOKEN` does not
+  raise a `push: tags` event, so the publish would silently never run.
+  `workflow_dispatch` is explicitly exempt from that rule, so that is the
+  bridge. `release.yml` then waits for the dispatched run to appear and fails
+  if it does not.
+
+That silent-no-trigger failure is not hypothetical: `v0.1.8` was tagged on
+origin in August 2026 and never published, leaving PyPI stuck on 0.1.7 from May
+— five months and ~80 commits behind `main`.
+
+### If the trusted publisher is ever reconfigured
+
+Keep the workflow filename as `pypi-publish.yml` and the environment as `pypi`.
+Renaming either breaks publishing with an OIDC error that reads like a
+permissions problem.

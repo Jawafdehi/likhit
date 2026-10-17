@@ -1,0 +1,188 @@
+# SPDX-License-Identifier: Hippocratic-3.0
+
+# Release-on-version-bump. Merging a `version = "X.Y.Z"` change into main is
+# now the whole release ritual: this workflow tags it and gets it onto PyPI.
+# Nobody has to run `git tag` by hand any more, which is how v0.1.8 ended up
+# tagged on origin but never published.
+#
+# Why this workflow *dispatches* pypi-publish.yml instead of just uploading
+# here, which would plainly be shorter:
+#
+#   * PyPI Trusted Publishing matches on a specific workflow filename, and
+#     `likhit`'s registered publisher names pypi-publish.yml. Uploading from
+#     release.yml would need a second publisher registered on PyPI before it
+#     could ever work. Factoring the upload into a reusable workflow shared by
+#     both is not an option either — PyPI cannot name a reusable workflow as a
+#     Trusted Publisher at all
+#     (https://docs.pypi.org/trusted-publishers/troubleshooting/).
+#   * So pypi-publish.yml has to stay the entry point, and this workflow has to
+#     reach it. It cannot do that by pushing a tag: a tag pushed with the
+#     default GITHUB_TOKEN does not raise a `push: tags` event, by design, so
+#     the publish would silently never run. `workflow_dispatch` is explicitly
+#     exempt from that rule — dispatch events "always create workflow runs" —
+#     so that is the bridge used here.
+#
+# The tag is still pushed, because the tag is what the release *is*: it is what
+# `verify-release-version` checks against, what the GitHub Release hangs off,
+# and what a human can `git checkout` later. It just no longer carries the
+# trigger.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    # The version lives in pyproject.toml, so a release is impossible without
+    # touching it. Every other push to main skips this workflow entirely.
+    paths:
+      - "pyproject.toml"
+  # Manual re-run, for when a release half-happened: the guards below are all
+  # idempotent, so re-dispatching picks up wherever the previous attempt died.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Serialised, not cancelled: two overlapping runs would race to create the same
+# tag, and cancelling a run mid-release could leave a tag pushed with no
+# publish dispatched.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # push the tag, create the GitHub Release
+      actions: write # dispatch pypi-publish.yml
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Tags are needed to answer "has this version already shipped?".
+          fetch-depth: 0
+
+      - name: Read the declared version
+        id: version
+        run: |
+          VERSION=$(python3 -c 'import tomllib, pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "pyproject.toml declares $VERSION"
+
+      - name: Decide whether this version is new
+        id: decide
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG already exists — this push did not bump the version. Nothing to release."
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+            echo "$TAG does not exist yet — releasing."
+          fi
+
+      # Pre-flight. Both of these would otherwise fail *after* the tag is
+      # pushed, stranding an unpublished tag — exactly the state this workflow
+      # exists to prevent. uv.lock records likhit's own version, so a bump that
+      # forgets to re-lock dies in pypi-publish.yml's `uv sync --locked`.
+      - name: Check uv.lock agrees with pyproject.toml
+        if: steps.decide.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          LOCKED=$(python3 - <<'PY'
+          import re, pathlib
+          lock = pathlib.Path("uv.lock").read_text()
+          m = re.search(r'^name = "likhit"\nversion = "([^"]+)"', lock, re.MULTILINE)
+          print(m.group(1) if m else "")
+          PY
+          )
+          if [ "$LOCKED" != "$VERSION" ]; then
+            echo "::error title=Stale uv.lock::uv.lock records likhit $LOCKED but pyproject.toml declares $VERSION. Run 'uv version $VERSION' (it re-locks) and commit uv.lock."
+            exit 1
+          fi
+          echo "uv.lock agrees: $LOCKED"
+
+      - name: Check CHANGELOG has an entry for this version
+        if: steps.decide.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if ! grep -qE "^## \[$VERSION\]" CHANGELOG.md; then
+            echo "::error title=Missing changelog entry::CHANGELOG.md has no '## [$VERSION]' section. Releases are public; add one before bumping."
+            exit 1
+          fi
+          echo "CHANGELOG.md documents $VERSION"
+
+      - name: Create and push the tag
+        if: steps.decide.outputs.new == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $VERSION"
+          git push origin "$TAG"
+
+      - name: Dispatch the PyPI publish
+        if: steps.decide.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh workflow run pypi-publish.yml --ref "$TAG"
+
+      # Belt and braces. If the dispatch is ever rejected the release must fail
+      # loudly here, rather than leaving a tag that looks released and a PyPI
+      # that is months behind.
+      - name: Confirm the publish run started
+        if: steps.decide.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # Matched on head_sha rather than the tag name: the tag points at
+          # exactly this commit, and head_sha is unambiguous where a dispatch
+          # run's head_branch is not.
+          for _ in $(seq 1 15); do
+            sleep 4
+            URL=$(gh run list --workflow pypi-publish.yml --event workflow_dispatch \
+                    --limit 20 --json url,headSha \
+                    --jq "[.[] | select(.headSha == \"$GITHUB_SHA\")][0].url // empty")
+            if [ -n "$URL" ]; then
+              echo "Publishing $TAG: $URL" >> "$GITHUB_STEP_SUMMARY"
+              echo "Publish run started: $URL"
+              exit 0
+            fi
+          done
+          echo "::error title=Publish never started::Tag $TAG was pushed but no pypi-publish run appeared. Re-run pypi-publish.yml manually against $TAG."
+          exit 1
+
+      - name: Create the GitHub Release
+        if: steps.decide.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Lift this version's section out of the changelog, stopping at the
+          # next '## [' heading, so the release notes stay single-sourced.
+          python3 - <<'PY' > release-notes.md
+          import os, pathlib, re
+
+          version = os.environ["VERSION"]
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          pattern = rf"^## \[{re.escape(version)}\].*?(?=^## \[|\Z)"
+          match = re.search(pattern, text, re.MULTILINE | re.DOTALL)
+          body = match.group(0) if match else f"See CHANGELOG.md for {version}."
+          # Drop the version heading itself; the release is already titled.
+          body = re.sub(r"^## .*\n", "", body, count=1).strip()
+          print(body)
+          PY
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file release-notes.md \
+            --verify-tag
