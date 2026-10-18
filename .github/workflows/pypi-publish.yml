@@ -144,8 +144,17 @@ jobs:
       # So a local `twine check` cannot clear this step: uvx resolves a current
       # twine, the action does not. When bumping hatchling or the metadata
       # version, check this pin too.
+      #
+      # ⚠️ This pin MUST be the dereferenced COMMIT sha, not the sha of the
+      # annotated tag object. Unlike the JS actions above, this is a Docker
+      # action: it pulls ghcr.io/pypa/gh-action-pypi-publish:<sha>, and those
+      # image tags exist only for commits. `gh api .../git/ref/tags/v1.14.2
+      # --jq .object.sha` returns the TAG OBJECT and fails here with a bare
+      # `manifest unknown` from Docker, long after checkout has accepted the
+      # ref as valid. Resolve it with `git ls-remote <url> 'refs/tags/<tag>^{}'`
+      # and confirm the image really exists before trusting the pin.
       - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@a892a5a61159132606e93a2fa6f4358831b04d26 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           verbose: true
           skip-existing: true
