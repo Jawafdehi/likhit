@@ -134,8 +134,18 @@ jobs:
         with:
           name: python-package-distributions
           path: dist/
+      # Pinned at v1.14.2 or newer, NOT v1.13.0: this action runs its own
+      # bundled twine inside a container, and v1.13.0's was too old to parse
+      # `Metadata-Version: 2.5`, which current hatchling emits. That rejected
+      # the 0.2.0 wheel outright — "'2.5' is not a valid metadata version" —
+      # after tests, build and `uvx twine check` had all passed. v1.14.2
+      # updates the bundled twine to v7, which accepts 2.5.
+      #
+      # So a local `twine check` cannot clear this step: uvx resolves a current
+      # twine, the action does not. When bumping hatchling or the metadata
+      # version, check this pin too.
       - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
+        uses: pypa/gh-action-pypi-publish@a892a5a61159132606e93a2fa6f4358831b04d26 # v1.14.2
         with:
           verbose: true
           skip-existing: true
