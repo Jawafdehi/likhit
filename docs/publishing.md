@@ -43,6 +43,12 @@ Both workflows are idempotent and safe to re-run.
   gated on a `v*` ref, so dispatching it against a branch tests and builds but
   publishes nothing. The upload uses `skip-existing`, so re-running a release
   that already reached PyPI is harmless.
+- **Publish fails on `InvalidDistribution` / "not a valid metadata version"**:
+  the `pypa/gh-action-pypi-publish` pin has gone stale. That action runs its
+  own bundled twine inside a container, so it can reject a wheel that `uv
+  build` produced and that a local `uvx twine check` passed — uvx resolves a
+  current twine, the action does not. Bump the pin. This bit 0.2.0: hatchling
+  emits `Metadata-Version: 2.5` and the then-pinned v1.13.0 predated twine 7.
 - **Version number is already on PyPI**: PyPI will not accept a re-upload. Bump
   to the next version; a burned number cannot be reused. (0.1.2–0.1.5 were
   burned this way, which is why PyPI jumps 0.1.1 → 0.1.6.)
