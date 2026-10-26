@@ -1,5 +1,5 @@
 """Redact a PDF into a redacted PDF, under the same discipline :mod:`likhit.privacy.tree`
-applies to a directory of transcripts -- plus three rules a PDF needs and text does not.
+applies to a directory of transcripts -- plus four rules a PDF needs and text does not.
 
 🛑 **1. Never in place, and never an incremental save.** The first half is
 :mod:`~likhit.privacy.tree`'s rule 1. The second is specific to this format and is the easiest
@@ -16,9 +16,23 @@ not evidence of no personal data, and emitting the page unchanged would be the f
 whole module exists to prevent. Those pages refuse the document. This is the same argument
 ``likhit-redact scan`` already makes about an empty tree.
 
-🛑 **3. PII lives outside the content stream.** Metadata, XMP and embedded attachments survive
-every redaction annotation ever applied. They are scrubbed here, because a document redacted
-in the only place anyone looked is worse than one nobody redacted.
+🛑 **3. PII lives outside the content stream.** Metadata, XMP, embedded attachments,
+annotations, form fields and bookmarks all survive every redaction annotation ever applied,
+because none of them is in the stream the annotation covers. They are swept here, because a
+document redacted in the only place anyone looked is worse than one nobody redacted. The
+transcript passes never see these surfaces at all -- conversion reads the page -- so this
+module is the only place in the package that can.
+
+🛑 **4. A removal is visible.** ``Page.add_redact_annot`` fills with **white** unless told
+otherwise, so the default output is a document with silent gaps in it: the value is genuinely
+gone, and a reader cannot tell whether we removed something, the scanner dropped a line, or
+the court left the field blank. That is the wrong default anywhere and a worse one in an
+accountability archive, where the published document is evidence and an unexplained hole in
+it is a question nobody can answer. NSA's *Redacting with Confidence* makes the same point
+from the other side -- if deletion disturbs the layout, put filler of comparable size in its
+place -- and every court redaction guideline assumes a mark a reader can see. So every
+rectangle is filled with :data:`REDACTION_FILL`, which is black, and the shape of the mark
+carries what the gap could not: that a removal happened, and roughly how much.
 
 What this module does **not** do yet is the other two page classes: legacy-encoded text needs
 likhit's own font decode plumbed through to glyph rectangles, and a pure scan needs
@@ -39,6 +53,26 @@ import fitz
 from .contact import iter_contact_targets
 from .modes import DEFAULT_MODE, RedactionMode
 from .redact import iter_inline_targets
+from .text import redact_text
+
+#: What a removed value is replaced with on the page: an opaque black rectangle, module
+#: rule 4.
+#:
+#: 🛑 **The default is white, and white is indistinguishable from "nothing was here".**
+#: ``add_redact_annot(rect)`` with no ``fill`` paints the span in white and leaves the page
+#: looking untouched. The redaction is real either way -- the glyphs are gone from the
+#: content stream -- so this is not a disclosure, it is a *legibility* defect, which is why
+#: it survived a review that was looking for leaks.
+#:
+#: ⚠️ **No text label is written into the box, and that is a deliberate limit rather than a
+#: later nicety.** ``add_redact_annot(text=...)`` renders with a base-14 font, which has no
+#: Devanagari, so a Nepali marker comes out as a row of empty boxes; and a Latin one
+#: (`[REDACTED]`, 10 characters) does not fit the span of the 10-digit value it replaces, so
+#: PyMuPDF shrinks it until it does or clips it. A clipped label is worse than no label: it
+#: looks like a rendering fault in our output rather than a statement about it. The typed
+#: marker lives where it can be set in full -- `[REDACTED:PHONE-NO]` in the transcript -- and
+#: the box says *that* a removal happened, with the journal saying of what kind.
+REDACTION_FILL = (0.0, 0.0, 0.0)
 
 #: Devanagari, as a character class. A page's ratio of these to its total characters is what
 #: separates a page likhit never needed to touch from one whose bytes are a legacy font.
@@ -135,6 +169,11 @@ class PdfRedactionReport:
     pages_changed: int = 0
     values_removed: int = 0
     rects_applied: int = 0
+    #: Values removed from annotations, form fields and bookmarks. Counted apart from
+    #: :attr:`values_removed`, which is the page count and is what ``rects_applied`` pairs
+    #: with -- a value taken out of a sticky note has no rectangle and changed no page.
+    outside_content_removed: int = 0
+    annotations_deleted: int = 0
     counters: Counter = field(default_factory=Counter)
     #: One row per removed value: kind and shape, never the value. Same rule as
     #: :mod:`likhit.privacy.tree` -- a record of what was removed has to be publishable
@@ -150,6 +189,8 @@ class PdfRedactionReport:
             "pages_changed": self.pages_changed,
             "values_removed": self.values_removed,
             "rects_applied": self.rects_applied,
+            "outside_content_removed": self.outside_content_removed,
+            "annotations_deleted": self.annotations_deleted,
             "counters": dict(sorted(self.counters.items())),
             "blocked_pages": self.blocked_pages,
             "span_shapes": self.span_shapes,
@@ -305,6 +346,7 @@ def _redact_page(
         to_redact.extend(_merge_rects(span))
         report.span_shapes.append(
             {
+                "surface": "page",
                 "page": page.number + 1,
                 "kind": target.kind,
                 "value_chars_removed": target.end - target.start,
@@ -317,7 +359,7 @@ def _redact_page(
     # annotation is the documented performance trap and the usual cause of a loop that
     # redacts only its last iteration.
     for rect in to_redact:
-        page.add_redact_annot(rect)
+        page.add_redact_annot(rect, fill=REDACTION_FILL)
     page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS)
 
     report.rects_applied += len(to_redact)
@@ -331,6 +373,137 @@ def _scrub_document_metadata(doc: fitz.Document) -> None:
     doc.del_xml_metadata()
     for name in reversed(doc.embfile_names()):
         doc.embfile_del(name)
+
+
+def _annotation_text(annot: fitz.Annot) -> str:
+    """The free text a reader can get out of one annotation.
+
+    ``content`` is the note body and ``subject`` its one-line heading; both are typed by
+    whoever made the annotation and both are where a phone number ends up. ``title`` is
+    **not** read: PyMuPDF puts the annotation's author there, and an author is a name -- the
+    one class no tier removes (see :mod:`likhit.privacy.modes`). Reading it would find
+    nothing this package would act on and would put a name through the detectors.
+    """
+
+    info = annot.info or {}
+    return "\n".join(str(info.get(key) or "") for key in ("content", "subject"))
+
+
+def _sweep_outside_content(
+    doc: fitz.Document, mode: RedactionMode, report: PdfRedactionReport
+) -> None:
+    """Rule 3, for the three surfaces that hold *text* rather than document properties.
+
+    Annotations, form-field values and bookmark titles are not in any page's content stream,
+    so :func:`_redact_page` cannot see them and ``apply_redactions`` does not touch them. A
+    sticky note reading "call him on 98XXXXXXXX" survives a redaction that removed the same
+    number from the page beneath it. NSA's *Redacting with Confidence* makes verifying that
+    comments are gone a step of its own, which is the shape of a mistake people keep making.
+
+    🛑 **An annotation carrying a value is deleted whole, not rewritten.** Rewriting
+    ``content`` leaves the annotation's *appearance stream* -- the pre-rendered picture of
+    itself that a viewer draws -- holding the old text until something regenerates it, and
+    whether ``Annot.update()`` can regenerate it depends on the annotation's type. Deleting
+    takes the appearance with it and asks no questions. The cost is that an innocuous
+    sentence wrapped around a phone number goes too; the journal records that it happened,
+    and an annotation is commentary layered onto the record rather than the record.
+
+    ⚠️ **Field values and bookmark titles are redacted in place instead, because neither has
+    an appearance this module would be guessing about:** a widget's is regenerated by
+    ``update()`` on every supported field type, and a bookmark has none -- it is a string in
+    the outline tree. They also carry structure worth keeping, where a note does not: a
+    cleared form field is still a form, and a redacted bookmark still navigates.
+    """
+
+    for page in doc:
+        # Collected first, deleted second: `delete_annot` relinks the annotation chain it is
+        # iterating, so deleting mid-walk silently skips whatever followed the deleted one.
+        doomed = []
+        for annot in page.annots():
+            targets = _targets(_annotation_text(annot), mode, Counter())
+            if targets:
+                doomed.append((annot, targets))
+        for annot, targets in doomed:
+            for target in targets:
+                report.counters["annotation_targeted"] += 1
+                report.span_shapes.append(
+                    {
+                        "surface": "annotation",
+                        "page": page.number + 1,
+                        "kind": target.kind,
+                        "value_chars_removed": target.end - target.start,
+                        "value_digit_count": target.digit_count,
+                        "value_had_separators": target.had_separators,
+                    }
+                )
+            page.delete_annot(annot)
+            report.annotations_deleted += 1
+            report.outside_content_removed += len(targets)
+
+        for widget in page.widgets() or ():
+            value = widget.field_value
+            if not isinstance(value, str) or not value:
+                continue
+            result = redact_text(value, mode=mode)
+            if not result.changed:
+                continue
+            widget.field_value = result.text
+            widget.update()
+            report.counters["form_field_targeted"] += len(result.journal)
+            report.outside_content_removed += len(result.journal)
+            for row in result.journal:
+                report.span_shapes.append(
+                    {"surface": "form_field", "page": page.number + 1, **row}
+                )
+
+    toc = doc.get_toc(simple=True)
+    rewritten, removed_in_toc = [], 0
+    for level, title, target_page in toc:
+        result = redact_text(title or "", mode=mode)
+        removed_in_toc += len(result.journal)
+        for row in result.journal:
+            report.span_shapes.append({"surface": "bookmark", "page": None, **row})
+        rewritten.append([level, result.text, target_page])
+    if removed_in_toc:
+        doc.set_toc(rewritten)
+        report.counters["bookmark_targeted"] += removed_in_toc
+        report.outside_content_removed += removed_in_toc
+
+
+def _verify_outside_content(doc: fitz.Document, mode: RedactionMode) -> None:
+    """Re-read the three text surfaces of the written file and refuse on any survivor.
+
+    The page check next to this one reads the content stream and would pass a document whose
+    every removed number is still sitting in a bookmark. Checking the surfaces a pass writes
+    to is the only way its own failure becomes visible: ``Widget.update()`` can decline to
+    take a value, and ``set_toc`` can decline a tree, and neither raises where the caller is
+    looking.
+
+    ⚠️ Every page is checked here, not just the redactable ones. A page's *class* describes
+    its glyph layer; an annotation is a string hanging off the page object and is equally
+    readable whatever the page beneath it is made of.
+    """
+
+    for page in doc:
+        for annot in page.annots():
+            if _targets(_annotation_text(annot), mode, Counter()):
+                raise ValueError(
+                    f"verification failed: an annotation on page {page.number + 1} still "
+                    "carries a value in the removal set after redaction"
+                )
+        for widget in page.widgets() or ():
+            value = widget.field_value
+            if isinstance(value, str) and _targets(value, mode, Counter()):
+                raise ValueError(
+                    f"verification failed: form field {widget.field_name!r} on page "
+                    f"{page.number + 1} still carries a value in the removal set"
+                )
+    for _level, title, _page in doc.get_toc(simple=True):
+        if _targets(title or "", mode, Counter()):
+            raise ValueError(
+                "verification failed: a bookmark title still carries a value in the "
+                "removal set after redaction"
+            )
 
 
 def _verify(data: bytes, mode: RedactionMode, checked_pages: frozenset[int]) -> None:
@@ -368,6 +541,7 @@ def _verify(data: bytes, mode: RedactionMode, checked_pages: frozenset[int]) -> 
                     f"verification failed: {len(residue)} value(s) of kind {kinds} remain on "
                     f"page {page.number + 1} after redaction"
                 )
+        _verify_outside_content(doc, mode)
 
 
 def redact_pdf(
@@ -466,6 +640,15 @@ def redact_pdf(
             if removed:
                 report.pages_changed += 1
                 report.values_removed += removed
+
+        # Rule 3. After the pages, because adding redaction annotations puts entries in the
+        # same chain this walks -- ours are consumed by `apply_redactions` above, so by here
+        # every annotation left on a page is the document's own.
+        #
+        # ⚠️ Before the dry-run return, so a measurement counts these surfaces too. The
+        # mutations are in-memory and this document is never written on that path; a census
+        # that silently omitted every sticky note would be the wrong number to plan with.
+        _sweep_outside_content(doc, mode, report)
 
         if dry_run:
             return report
