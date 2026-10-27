@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
@@ -1062,6 +1063,12 @@ def generate(
 
         documents: list[dict[str, Any]] = []
         unavailable_sources: list[str] = []
+        # Hosts that have already proven unreachable this run. Without this, a
+        # single institution being down costs attempts x timeout PER DOCUMENT it
+        # publishes -- 11 of the 18 public sources are on ciaa.gov.np, so the
+        # first version of this change turned a 6-minute red into a 25-minute
+        # timeout. One host is probed once.
+        down_hosts: set[str] = set()
         for spec in catalog["documents"]:
             if spec["origin"] == "public-institutional" and not include_public:
                 continue
@@ -1070,6 +1077,18 @@ def generate(
             # only corpus the generator can build with no network access, which
             # is what test_generator_writes_complete_synthetic_artifact uses.
             if spec["origin"] == "synthetic" and not include_synthetic:
+                continue
+            host = urllib.parse.urlparse(spec.get("url", "")).hostname
+            if (
+                spec["origin"] == "public-institutional"
+                and host in down_hosts
+                and _cached_public_source(spec, source_cache) is None
+            ):
+                print(
+                    f"warning: {host} already unreachable, skipping {spec['id']} "
+                    "without retrying"
+                )
+                unavailable_sources.append(spec["id"])
                 continue
             try:
                 source = _materialize_source(spec, staging / "documents", source_cache)
@@ -1088,6 +1107,8 @@ def generate(
                 if spec["origin"] != "public-institutional":
                     raise
                 print(f"warning: source unavailable, skipping {spec['id']}: {exc}")
+                if host:
+                    down_hosts.add(host)
                 unavailable_sources.append(spec["id"])
                 continue
             data = source.read_bytes()

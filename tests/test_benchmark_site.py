@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 from typing import Any
 
 import fitz
@@ -2588,3 +2589,61 @@ def test_a_cached_source_is_served_without_the_network(tmp_path: pathlib.Path) -
         raise AssertionError("the network must not be touched for a cached source")
 
     assert generator._download_public_source(spec, cache, open_url=refuse) == payload
+
+
+def test_one_unreachable_host_is_probed_once_not_once_per_document(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first cut of this change made the build WORSE, and this pins the fix.
+
+    11 of the 18 public sources are on ciaa.gov.np. Making a failed download
+    non-fatal meant the build paid attempts x timeout for every one of them
+    instead of aborting at the first, which turned a 6-minute red into a
+    25-minute job timeout. A host that has already refused is skipped without
+    being retried.
+    """
+    requested: list[str] = []
+
+    def refuse_download(spec: dict[str, Any], _cache: object, **_kw: object) -> bytes:
+        requested.append(spec["url"])
+        raise RuntimeError(f"{spec['id']} download failed from {spec['url']}")
+
+    catalog = {
+        "schema_version": 1,
+        "configurations": {},
+        "documents": [
+            {
+                "id": f"down-{index}",
+                "kind": "pdf",
+                "origin": "public-institutional",
+                "title": f"Down {index}",
+                "url": f"https://down.example.com/{index}.pdf",
+                "sha256": "0" * 64,
+                "runs": [],
+            }
+            for index in range(3)
+        ],
+    }
+    monkeypatch.setattr(generator, "_load_catalog", lambda: catalog)
+    # The downloader is stubbed rather than the network, because
+    # `_download_public_source` binds `urllib.request.urlopen` as a DEFAULT
+    # argument — patching the module attribute afterwards does nothing, which is
+    # how an earlier version of this test passed while requesting nothing at all.
+    # What is under test here is generate()'s host short-circuit; the
+    # retry-and-give-up path has its own test above.
+    monkeypatch.setattr(generator, "_download_public_source", refuse_download)
+
+    artifact = generator.generate(
+        tmp_path / "out",
+        include_synthetic=False,
+        commit="a" * 40,
+        ref="test",
+        run_case=_fake_run,
+    )
+
+    assert artifact["summary"]["documents"] == 0
+    assert artifact["summary"]["unavailable_sources"] == 3
+    # The host was probed ONCE. The other two documents on it never reached the
+    # downloader at all, which is the whole point: at 3 attempts x 120s each,
+    # paying that per document is what blew the 25-minute job timeout.
+    assert requested == ["https://down.example.com/0.pdf"]
