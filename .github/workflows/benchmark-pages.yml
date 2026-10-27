@@ -38,6 +38,18 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
 
+      # The public sources are hash-pinned government PDFs, so a cached copy is
+      # the same bytes the build would have downloaded. Without this the gate was
+      # only as reliable as the least reliable government web server: ciaa.gov.np
+      # was unreachable from 25 October 2026 and took every benchmark run with it.
+      - name: Restore cached public sources
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .benchmark/sources
+          key: benchmark-sources-${{ hashFiles('site/catalog.json') }}
+          restore-keys: |
+            benchmark-sources-
+
       - name: Test benchmark generator
         run: uv run pytest tests/test_benchmark_site.py
 
@@ -57,6 +69,7 @@ jobs:
         run: |
           uv run python site/generate.py \
             --output _site \
+            --source-cache .benchmark/sources \
             --junit .benchmark/integration.xml \
             --skip-synthetic \
             --snapshot site/snapshot.json \

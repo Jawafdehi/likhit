@@ -110,6 +110,8 @@ def test_generator_writes_complete_synthetic_artifact(
     # available only the plain Likhit run of each executes -- the 14 OCR runs are
     # skipped, not failed.
     assert artifact["summary"] == {
+        # Synthetic-only build: nothing is fetched, so nothing can be unavailable.
+        "unavailable_sources": 0,
         "documents": 7,
         "runs": 7,
         "pass": 3,
@@ -2520,3 +2522,69 @@ def test_detail_pane_declares_one_grid_row_per_visible_child() -> None:
         f"{len(tracks)} grid rows for {len(flowing)} in-flow children "
         f"({', '.join(flowing)})"
     )
+
+
+def _returning(data: bytes):
+    def opener(_request: object, *, timeout: int) -> io.BytesIO:
+        assert timeout == 120
+        return io.BytesIO(data)
+
+    return opener
+
+
+def test_a_verified_download_populates_the_cache(tmp_path: pathlib.Path) -> None:
+    """A cache nothing writes to is a cache that never helps.
+
+    It only ever held what a maintainer put there by hand, so every CI run
+    fetched every source live and the gate was only as reliable as the least
+    reliable government web server.
+    """
+    payload = b"%PDF-1.4 cached\n"
+    spec = {
+        "id": "probe-doc",
+        "kind": "pdf",
+        "url": "https://example.com/probe.pdf",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    cache = tmp_path / "sources"
+
+    generator._download_public_source(spec, cache, open_url=_returning(payload))
+
+    assert (cache / "probe-doc.pdf").read_bytes() == payload
+
+
+def test_a_corrupted_download_is_not_cached(tmp_path: pathlib.Path) -> None:
+    """Caching before the checksum check would pin the corruption in place."""
+    spec = {
+        "id": "probe-doc",
+        "kind": "pdf",
+        "url": "https://example.com/probe.pdf",
+        "sha256": hashlib.sha256(b"the real bytes").hexdigest(),
+    }
+    cache = tmp_path / "sources"
+
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        generator._download_public_source(
+            spec, cache, open_url=_returning(b"not those bytes")
+        )
+
+    assert not (cache / "probe-doc.pdf").exists()
+
+
+def test_a_cached_source_is_served_without_the_network(tmp_path: pathlib.Path) -> None:
+    """The point of the cache: an outage costs nothing once it is warm."""
+    payload = b"%PDF-1.4 warm\n"
+    spec = {
+        "id": "probe-doc",
+        "kind": "pdf",
+        "url": "https://example.com/probe.pdf",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    cache = tmp_path / "sources"
+    cache.mkdir()
+    (cache / "probe-doc.pdf").write_bytes(payload)
+
+    def refuse(_request: object, *, timeout: int) -> object:
+        raise AssertionError("the network must not be touched for a cached source")
+
+    assert generator._download_public_source(spec, cache, open_url=refuse) == payload
