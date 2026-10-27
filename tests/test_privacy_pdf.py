@@ -396,3 +396,166 @@ def test_targets_agree_with_redact_on_the_corpus_samples(tmp_path):
     assert refusals, "this fixture must exercise at least one guard refusal"
     assert {k: v for k, v in stats.items() if "refused" in k} == refusals
     assert sum(v for k, v in stats.items() if k.endswith("_targeted")) == len(journal)
+
+
+# ---------------------------------------------------------------------------
+# Rule 4: a removal is visible.
+# ---------------------------------------------------------------------------
+
+MOBILE_VALUE = "९८५१२३४५६७"
+
+
+def _ink_ratio(path, rect) -> float:
+    """Fraction of dark pixels inside ``rect``, which is how a mark is told from a gap."""
+
+    with fitz.open(path) as doc:
+        pixmap = doc[0].get_pixmap(clip=rect, dpi=150)
+    samples, stride = pixmap.samples, pixmap.n
+    pixels = len(samples) // stride
+    dark = sum(1 for i in range(0, len(samples), stride) if samples[i] < 50)
+    return dark / pixels
+
+
+def test_a_removed_value_leaves_a_mark_a_reader_can_see(tmp_path):
+    """🛑 The regression this pins is **not** a leak: the value is gone either way.
+
+    It is that PyMuPDF fills a redaction with white unless told otherwise, so the page came
+    out with a silent hole in it -- indistinguishable, to a reader, from a scanner dropping
+    a line or a court leaving a field blank. See this module's rule 4.
+    """
+
+    source = tmp_path / "mobile.pdf"
+    _make_pdf(source, [MOBILE_LINE])
+    with fitz.open(source) as doc:
+        boxes = doc[0].search_for(MOBILE_VALUE)
+    assert boxes, "fixture must put the value on the page where it can be located"
+    span = boxes[0]
+
+    destination = tmp_path / "mobile.redacted.pdf"
+    redact_pdf(source, destination, mode=RedactionMode.STRICT)
+
+    assert _ink_ratio(destination, span) > 0.9, "the span must be painted, not emptied"
+    assert _ink_ratio(source, span) < 0.9, "the fixture must not be black to begin with"
+
+
+def test_the_fill_is_opaque_black():
+    """The constant is asserted directly as well: the pixel test above would pass just as
+    happily on any dark colour, and the choice of colour is the policy."""
+
+    from likhit.privacy.pdf import REDACTION_FILL
+
+    assert REDACTION_FILL == (0.0, 0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Rule 3: the text surfaces outside the content stream.
+# ---------------------------------------------------------------------------
+
+
+def _make_pdf_with(path, lines: list[str], *, note=None, field=None, toc=None) -> None:
+    """``_make_pdf`` plus the surfaces that are not in any content stream.
+
+    Built and saved in one pass: PyMuPDF refuses a non-incremental save back over the file
+    it opened, and an incremental one is what this module's rule 1 forbids.
+    """
+
+    base = path.with_name(path.stem + ".base.pdf")
+    _make_pdf(base, lines)
+    with fitz.open(base) as doc:
+        if note is not None:
+            annot = doc[0].add_text_annot(fitz.Point(300, 300), note)
+            annot.update()
+        if field is not None:
+            widget = fitz.Widget()
+            widget.field_name = "contact"
+            widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+            widget.rect = fitz.Rect(300, 400, 500, 420)
+            widget.field_value = field
+            doc[0].add_widget(widget)
+        if toc is not None:
+            doc.set_toc(toc)
+        doc.save(str(path))
+
+
+def test_an_annotation_carrying_a_value_is_deleted(tmp_path):
+    """A sticky note is not in any content stream, so `apply_redactions` never saw it."""
+
+    source = tmp_path / "noted.pdf"
+    _make_pdf_with(source, [CITIZENSHIP_LINE], note=f"witness {MOBILE_LINE}")
+
+    destination = tmp_path / "noted.redacted.pdf"
+    report = redact_pdf(source, destination, mode=RedactionMode.STRICT)
+
+    with fitz.open(destination) as doc:
+        assert list(doc[0].annots()) == [], "the annotation must not survive"
+    assert report.annotations_deleted == 1
+    assert report.outside_content_removed == 1
+    assert report.counters["annotation_targeted"] == 1
+    assert {row["surface"] for row in report.span_shapes} == {"page", "annotation"}
+
+
+def test_an_annotation_with_nothing_in_the_removal_set_survives(tmp_path):
+    """⚠️ The sweep deletes whole annotations, so over-reach here costs a reader real text.
+    Deletion has to be driven by a detector hit, not by the annotation existing."""
+
+    source = tmp_path / "innocent.pdf"
+    _make_pdf_with(source, [CITIZENSHIP_LINE], note="हेर्नुहोस् अनुसूची ३")
+
+    destination = tmp_path / "innocent.redacted.pdf"
+    report = redact_pdf(source, destination, mode=RedactionMode.STRICT)
+
+    with fitz.open(destination) as doc:
+        assert len(list(doc[0].annots())) == 1
+    assert report.annotations_deleted == 0
+
+
+def test_a_form_field_value_is_redacted_in_place(tmp_path):
+    """A widget keeps its structure -- a cleared field is still a field -- so unlike an
+    annotation it is rewritten rather than deleted."""
+
+    source = tmp_path / "form.pdf"
+    _make_pdf_with(source, [CITIZENSHIP_LINE], field="Contact 9851234567")
+
+    destination = tmp_path / "form.redacted.pdf"
+    report = redact_pdf(source, destination, mode=RedactionMode.STRICT)
+
+    with fitz.open(destination) as doc:
+        values = [widget.field_value for widget in doc[0].widgets()]
+    assert values, "the field itself must survive; only its value is removed"
+    assert "9851234567" not in values[0]
+    assert "[REDACTED:PHONE-NO]" in values[0]
+    assert report.counters["form_field_targeted"] == 1
+
+
+def test_a_bookmark_title_is_redacted(tmp_path):
+    source = tmp_path / "toc.pdf"
+    _make_pdf_with(source, [CITIZENSHIP_LINE], toc=[[1, f"जाहेरवाला {MOBILE_VALUE}", 1]])
+
+    destination = tmp_path / "toc.redacted.pdf"
+    report = redact_pdf(source, destination, mode=RedactionMode.STRICT)
+
+    with fitz.open(destination) as doc:
+        titles = [row[1] for row in doc.get_toc(simple=True)]
+    assert titles, "the outline must still navigate"
+    assert MOBILE_VALUE not in titles[0]
+    assert "[REDACTED:PHONE-NO]" in titles[0]
+    assert report.counters["bookmark_targeted"] == 1
+
+
+def test_verification_refuses_when_the_sweep_does_not_run(tmp_path, monkeypatch):
+    """🛑 The verifier has to be able to fail, or it is decoration.
+
+    Neutralising the sweep is the only way to produce the output it exists to catch: a file
+    whose pages are clean and whose annotations are not.
+    """
+
+    import likhit.privacy.pdf as pdf_module
+
+    source = tmp_path / "unswept.pdf"
+    _make_pdf_with(source, [CITIZENSHIP_LINE], note=f"witness {MOBILE_LINE}")
+
+    monkeypatch.setattr(pdf_module, "_sweep_outside_content", lambda *a, **k: None)
+    destination = tmp_path / "unswept.redacted.pdf"
+    with pytest.raises(ValueError, match="annotation on page 1 still carries"):
+        redact_pdf(source, destination, mode=RedactionMode.STRICT)
+    assert not destination.exists(), "a refusal writes nothing"

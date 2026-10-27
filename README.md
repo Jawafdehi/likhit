@@ -267,10 +267,18 @@ unredacted text it was asked to clean is the one outcome worse than not converti
 likhit-redact pdf aarop-patra.pdf --out redacted.pdf --journal redaction.json --mode contact
 ```
 
-This is a **true removal**, not a drawn box: the value is gone from the extracted text and
-from the file's bytes. Only the value is removed — the label beside it is kept, because
-redaction is located from the detector's own character offsets mapped to per-glyph rectangles
-rather than by searching the page for the value's digits.
+This is a **true removal** *and* a drawn box: the value is gone from the extracted text and
+from the file's bytes, and a black rectangle is left where it stood. Only the value is
+removed — the label beside it is kept, because redaction is located from the detector's own
+character offsets mapped to per-glyph rectangles rather than by searching the page for the
+value's digits.
+
+> The mark is not decoration. PyMuPDF fills a redaction with **white** unless told otherwise,
+> which removes the value and leaves a page a reader cannot interpret: an unexplained gap
+> reads the same as a scanner dropping a line or a court leaving a field blank. The box says
+> that a removal happened and roughly how much; the journal says of what kind; and the
+> transcript carries the typed marker (`[REDACTED:PHONE-NO]`) that will not fit inside a
+> ten-digit span in a font that has no Devanagari.
 
 > 🛑 **It refuses any PDF it cannot read, and that is the point.** Only a page whose text
 > layer is Unicode Devanagari can be redacted today. A page carrying a legacy pre-Unicode font
@@ -286,6 +294,15 @@ Document metadata, XMP and embedded attachments are scrubbed too — a document 
 where someone looked is worse than one nobody redacted. Saves are always full saves with
 `garbage=4`, never incremental: an incremental save appends a revision and leaves the original
 content recoverable inside the same file.
+
+The same rule reaches the three surfaces that hold text but sit outside every page's content
+stream, where `apply_redactions` cannot see them: **annotations**, **form-field values** and
+**bookmark titles**. A sticky note reading "call him on 98…" otherwise survives a redaction
+that removed the same number from the page beneath it. An annotation carrying a value is
+deleted whole rather than rewritten — rewriting its text leaves its pre-rendered appearance
+stream holding the old string — while a field value and a bookmark title are redacted in
+place, since neither has an appearance this would be guessing about. The written file is then
+re-read and refuses if anything in the removal set survived on any of them.
 
 ### Scope
 
