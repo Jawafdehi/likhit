@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
@@ -268,6 +269,18 @@ def _download_public_source(
         raise ValueError(
             f"{spec['id']} checksum mismatch: expected {spec['sha256']}, got {digest}"
         )
+    if cached is None and source_cache is not None:
+        # Populate the cache the reader above already knows how to use. Without
+        # this it only ever holds what a maintainer put there by hand, so every
+        # CI run fetched every source live and the gate was only as reliable as
+        # the least reliable government web server. Written after the checksum
+        # check, so a corrupted download is never cached.
+        try:
+            source_cache.mkdir(parents=True, exist_ok=True)
+            (source_cache / f"{spec['id']}.{spec['kind']}").write_bytes(data)
+        except OSError as exc:
+            # A cache we cannot write is a slower build, not a failed one.
+            print(f"warning: could not cache {spec['id']}: {exc}")
     return data
 
 
@@ -1049,6 +1062,13 @@ def generate(
         missing_runs: list[str] = []
 
         documents: list[dict[str, Any]] = []
+        unavailable_sources: list[str] = []
+        # Hosts that have already proven unreachable this run. Without this, a
+        # single institution being down costs attempts x timeout PER DOCUMENT it
+        # publishes -- 11 of the 18 public sources are on ciaa.gov.np, so the
+        # first version of this change turned a 6-minute red into a 25-minute
+        # timeout. One host is probed once.
+        down_hosts: set[str] = set()
         for spec in catalog["documents"]:
             if spec["origin"] == "public-institutional" and not include_public:
                 continue
@@ -1058,7 +1078,39 @@ def generate(
             # is what test_generator_writes_complete_synthetic_artifact uses.
             if spec["origin"] == "synthetic" and not include_synthetic:
                 continue
-            source = _materialize_source(spec, staging / "documents", source_cache)
+            host = urllib.parse.urlparse(spec.get("url", "")).hostname
+            if (
+                spec["origin"] == "public-institutional"
+                and host in down_hosts
+                and _cached_public_source(spec, source_cache) is None
+            ):
+                print(
+                    f"warning: {host} already unreachable, skipping {spec['id']} "
+                    "without retrying"
+                )
+                unavailable_sources.append(spec["id"])
+                continue
+            try:
+                source = _materialize_source(spec, staging / "documents", source_cache)
+            except RuntimeError as exc:
+                # Only a download that ran out of attempts raises RuntimeError
+                # here; a checksum mismatch or an oversized body is a ValueError
+                # and still fails the build, because those say the source is
+                # WRONG rather than merely absent.
+                #
+                # A public institution's web server being down is not a defect in
+                # this package, and failing the gate on it means every PR goes red
+                # for as long as the outage lasts -- which is exactly what
+                # ciaa.gov.np did from 25 October 2026. The document drops out of
+                # the artifact and is named in the summary, so the build reports a
+                # thinner corpus rather than pretending to a complete one.
+                if spec["origin"] != "public-institutional":
+                    raise
+                print(f"warning: source unavailable, skipping {spec['id']}: {exc}")
+                if host:
+                    down_hosts.add(host)
+                unavailable_sources.append(spec["id"])
+                continue
             data = source.read_bytes()
             if (
                 spec.get("sha256")
@@ -1163,6 +1215,13 @@ def generate(
                 "blocked": outcomes.count("blocked"),
                 "reference": outcomes.count("reference"),
                 "skipped": skipped_runs,
+                # A COUNT, not the names: schema v1 constrains every summary value
+                # to a non-negative integer, and a list here fails validation. The
+                # names are printed as each source is skipped, which is where an
+                # operator reading a red build looks anyway; moving them into the
+                # artifact would mean bumping the published schema version for a
+                # field nothing consumes yet.
+                "unavailable_sources": len(unavailable_sources),
             },
             "configurations": {
                 name: {
@@ -1258,6 +1317,11 @@ def main(argv: list[str] | None = None) -> int:
         f"generated {summary['documents']} documents and "
         f"{summary['runs']} runs in {args.output}"
     )
+    if summary.get("unavailable_sources"):
+        print(
+            f"warning: {summary['unavailable_sources']} public source(s) could not "
+            "be fetched and are absent from this build (each is named above)"
+        )
     if artifact["measured"]:
         measured = artifact["measured"]
         print(
