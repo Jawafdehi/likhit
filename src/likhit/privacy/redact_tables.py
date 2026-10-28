@@ -39,17 +39,59 @@ from .placeholders import (
 
 # These are narrower than the inline pass on purpose. A table header can govern
 # thousands of cells, so a loose label has a much larger over-redaction radius.
+# 🛑 **Both scripts.** These were Devanagari-only while the inline rules took either,
+# so a table whose header cell reads `Date of Birth` or `Citizenship No.` was invisible to
+# this pass — no label, no candidate, no removal — and the corpus is full of them: the
+# ePassport application forms reproduced inside charge sheets are English-labelled
+# throughout, and they are exactly the documents that tabulate a citizenship number beside
+# a date of birth.
+#
+# ⚠️ The English citizenship form requires a qualifier (`No.`, `Number`, `ID`). A bare
+# `Citizenship` is a column of prose far more often than a column of identifiers, and a
+# header governs every cell beneath it.
 CITIZENSHIP_LABEL = re.compile(
     r"(?:ना\.?\s*प्र\.?\s*नं\.?"
-    r"|नागरिकता(?P<mid>[^|\n]{0,30})(?:प्रमाणपत्र|नम्बर|नं\.?))"
+    r"|नागरिकता(?P<mid>[^|\n]{0,30})(?:प्रमाणपत्र|नम्बर|नं\.?)"
+    r"|citizenship(?:\s*certificate)?\s*(?:no\.?|number|id)\b)",
+    re.I,
 )
-DOB_LABEL = re.compile(r"(?:जन्म\s*(?:मिति|दर्ता\s*मिति|दिन)|जन्ममिति)")
-VALUE_CELL = re.compile(rf"[{AD}][{AD}\-/\.\s]{{3,24}}[{AD}]")
+DOB_LABEL = re.compile(
+    r"(?:जन्म\s*(?:मिति|दर्ता\s*मिति|दिन)|जन्ममिति"
+    r"|date\s*of\s*birth|birth\s*date|\bd\.?o\.?b\.?\b)",
+    re.I,
+)
 
+#: An era marker written INSIDE the value cell — `2016-06-19 BS`. Stripped before the cell
+#: is matched, for the reason :data:`redact.VALUE_PRESTRIP` exists: the cell pattern admits
+#: digits and separators only, so two letters at the end made the whole value undescribable
+#: and the date stayed in the published table.
+VALUE_ERA = re.compile(
+    r"\s*(?:B\.?\s*S\.?|A\.?\s*D\.?|(?:वि|बि|ई|इ)\.?\s*सं?\.?)\s*$", re.I
+)
+#: ⚠️ The inner bound starts at 2, not 3, so a four-character cell can match. A date of
+#: birth given as a bare YEAR — `| जन्म मिति | २०४५ |` — is a whole cell of four digits,
+#: and the old floor of 3 made the pattern itself unable to describe one, before any
+#: digit-count guard was consulted. Each kind's real floor lives in :data:`LIMITS`, which
+#: is where a four-digit value is accepted for dates and still refused for citizenship.
+VALUE_CELL = re.compile(rf"[{AD}][{AD}\-/\.\s]{{2,24}}[{AD}]")
+
+#: 🛑 The date floor is 4 so a bare birth YEAR in a cell is removable, matching what the
+#: inline rules do with `जन्म मिति २००७ साल`. It was 5, which is a length no year can
+#: reach — so a roster column of birth years was found by the scanner, refused by this
+#: pass, and left in the published table.
+#:
+#: ⚠️ Length alone is the wrong test at four digits, and ``test_dob_requires_a_whole_cell``
+#: says so with `१२३४`: a four-digit number is a year only if it READS as one. See
+#: :data:`YEAR_RANGE` — a range check keeps that case refused while admitting २०४५ and 1959.
 LIMITS = {
     "citizenship": (7, 16),
-    "date_of_birth": (5, 10),
+    "date_of_birth": (4, 10),
 }
+
+#: Years a birth date can plausibly carry, covering both calendars the corpus uses —
+#: Bikram Sambat (currently ~2080) and the Christian era. Applied only at four digits,
+#: where the value IS the year and there is no other field to corroborate it.
+YEAR_RANGE = (1900, 2200)
 PLACEHOLDERS = {
     "citizenship": CITIZENSHIP_PLACEHOLDER,
     "date_of_birth": DOB_PLACEHOLDER,
@@ -150,13 +192,17 @@ def _label_kinds(cell: str) -> tuple[str, ...]:
 
 
 def _candidate_shape(cell: str, kind: str) -> CandidateShape | None:
-    core = cell.strip()
+    core = VALUE_ERA.sub("", cell.strip())
     if not VALUE_CELL.fullmatch(core):
         return None
     digit_count = sum(ch.isdigit() for ch in core)
     low, high = LIMITS[kind]
     if not low <= digit_count <= high:
         return None
+    if kind == "date_of_birth" and digit_count == 4 and core.isdigit():
+        # int() reads Devanagari digits as readily as ASCII ones.
+        if not YEAR_RANGE[0] <= int(core) <= YEAR_RANGE[1]:
+            return None
     return CandidateShape(
         digit_count=digit_count,
         had_separators=bool(re.search(r"[-/.\s]", core)),

@@ -120,8 +120,26 @@ PASSPORT_LABELLED = re.compile(
 # That is the same failure the module docstring describes for a legacy-font page: a zero that
 # is a blind spot rather than a finding.
 LABELLED = {
+    # 🛑 **Five digits, not four, and the fourth digit is a YEAR.** Over 106 law-journal
+    # and charge-sheet documents, every four-digit run this signal reached across prose was
+    # a date or a statute year rather than an identifier: `नागरिकता … मिति २०७८/०६/२२`,
+    # `नागरिकतासम्बन्धी दर्ता किताब २०३२/०३३`, `नेपाल नागरिकता ऐन, २०२० / २०६३`. They are
+    # 17 of the signals this scanner reported and 0 of the values any remover can take —
+    # and because the platform's gate refuses a document on a positive scan, each one
+    # refused a document over data that was never there.
+    #
+    # ⚠️ This is the one narrowing in this module that does not hide an exposure, and the
+    # distinction is the whole argument for making it: nothing moves from "counted" to
+    # "uncounted while still present". A four-digit run is not a citizenship number under
+    # this package's own measured bounds (`redact.DIGIT_BOUNDS` floors the class at 7
+    # digits), so no remover was ever going to act on one.
+    #
+    # ⚠️ Not raised to 7 to match that floor: the bound counts a value's digits ACROSS its
+    # separators, while this pattern matches one contiguous run. `१२-३४-५६-७८९०१` is a
+    # 13-digit identifier whose longest run is 5, so a floor of 7 here would stop counting
+    # real numbers. Five keeps every shape the corpus writes.
     "citizenship": re.compile(
-        rf"(?:नागरिकता|citizenship)[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}}", re.I
+        rf"(?:नागरिकता|citizenship)[^\n]{{0,40}}?[{ANY_DIGITS}]{{5,}}", re.I
     ),
     # 🛑 **`pan` is detected here and removed nowhere**, which is the decision rather than a
     # gap: a PAN is a *business registration* number, public by design, and removing a
