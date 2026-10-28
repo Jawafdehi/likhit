@@ -68,7 +68,10 @@ from .placeholders import (
 # occurrences and none of them is an identifier.
 _CIT_LABEL = (
     r"(?:नागरिकता(?:को|मा|का|की)?\s*(?:प्रमाणपत्र|प्र\.?)?\s*(?:नम्बर|नं\.?|न\.?)?"
-    r"|ना\.?\s*प्र\.?\s*नं\.?"
+    # `ना.प्र.प.नं.` -- the `प` of प्रमाणपत्र, written as its own abbreviated field. Without
+    # it the label stops at `ना.प्र.` and the rest has to be crossed as prose, which the gap
+    # (one word) will not do.
+    r"|ना\.?\s*प्र\.?\s*(?:प\.?\s*)?नं\.?"
     r"|citizenship(?:\s*certificate)?(?:\s*(?:no\.?|number))?)"
 )
 # 🛑 The danda U+0964 is a FIELD SEPARATOR inside these values as well as being the Nepali
@@ -112,7 +115,9 @@ _CIT_LEGACY_SEPARATORS = r"\-/\s"
 _VALUE_SEPARATORS = rf"{_DOB_LEGACY_SEPARATORS}{DANDA}"
 
 
-def _value_window(legacy_separators: str, lo: int, hi: int) -> str:
+def _value_window(
+    legacy_separators: str, lo: int, hi: int, digit_bounded: str = DANDA
+) -> str:
     """One value window: a digit, ``lo``--``hi`` inner characters, then a digit.
 
     🛑 **The danda is admitted only where a digit follows it**, unlike every other separator.
@@ -142,11 +147,97 @@ def _value_window(legacy_separators: str, lo: int, hi: int) -> str:
     changes -- one loss, no gain -- so the legacy separators keep the freedom they had.
     """
 
-    return rf"[{AD}](?:[{AD}{legacy_separators}]|{DANDA}(?=[{AD}])){{{lo},{hi}}}[{AD}]"
+    bounded = "|".join(f"{re.escape(c)}(?=[{AD}])" for c in digit_bounded)
+    return rf"[{AD}](?:[{AD}{legacy_separators}]|{bounded}){{{lo},{hi}}}[{AD}]"
+
+
+#: Words that mean the number beside them is money. Guard 3 refuses a *value* carrying one;
+#: :data:`_LABEL_GAP` refuses one in the run between a label and its value. Defined here
+#: rather than beside the other guards because the gap needs it first.
+AMOUNT_CUE = re.compile(r"रकम|जम्मा|खर्च|बजेट|राजस्व|बेरुजु|रु")
+
+#: Words that mean the number after them belongs to a **different field**, so a label
+#: reaching across one has stopped describing its own value.
+#:
+#: 🛑 Found by measurement, not by reading: against 106 control documents carrying these
+#: labels, the widened gap newly removed 20 citizenship values, and the law-journal ones
+#: among them were all dates -- `नागरिकता बनाउन इन्कार गरेको र मिति २०७८/०६/२२` scored the
+#: date as a citizenship number, and `जन्ममिति झूठो विवरण दिई मिति २०६२।११।२८` scored it as
+#: a date of birth. Narrative prose puts a `मिति` between a label and the next number far
+#: more often than charge-sheet tables do, which is why the original measurement over the
+#: charge-sheet shelf alone did not show it.
+#:
+#: ⚠️ `मिति` is safe to veto even for the date rules, whose own labels (`जन्म मिति`,
+#: `जन्ममिति`) contain the word: the label is consumed before the gap begins, so a `मिति`
+#: *inside* the gap is always a second one.
+#: ⚠️ `ऐन` and its neighbours are here because a law's year is not an identifier:
+#: `नेपाल नागरिकता ऐन, २०२० / २०६३` is a citation, and redacting it damages the one thing a
+#: law-journal document is read for.
+_OTHER_FIELD_CUE = re.compile(
+    rf"{AMOUNT_CUE.pattern}|सिफारिस|मिति|गते|जारी|ऐन|नियमावली|धारा|दफा"
+)
+
+#: Punctuation a gap may contain freely. The danda is **not** here: it ends a sentence, and
+#: a label on the far side of one has stopped describing the number in front of it.
+_GAP_PUNCT_CHARS = r":ः,.()/\-–—"
+_GAP_PUNCT = rf"[{_GAP_PUNCT_CHARS}]"
+
+
+#: Everything a label may be separated from its value by.
+#:
+#: 🛑 **This exists because the detector reaches further than the removers did, and the
+#: difference was found-and-left data.** ``signals.LABELLED`` matches a label, then
+#: ``[^\n]{0,30}?``, then the digits; these patterns matched a label, optional colon and
+#: whitespace, and nothing else. Every value sitting behind a word (`खाता नं. क्रमशः
+#: ०१७…`), a comma (`खाता नं, १०४…`), a bracket (`खाता नं. (ZRTKKB…)`) or a long column
+#: gap was therefore *counted by the scanner and kept by the redactor* -- which is the
+#: defect the platform's gate started refusing documents over on 27 October 2026.
+#: Reaching exactly as far as the detector is what makes the two agree: a span either both
+#: see or neither does.
+#:
+#: Three things the gap may never contain, and each is load-bearing:
+#:
+#: * **a digit** -- otherwise the window skips the value it was anchored to and takes the
+#:   *next* number in the sentence,
+#: * **a `|`** -- the cell boundary the citizenship label was already written not to cross,
+#:   kept here rather than restated,
+#: * **another field's cue** (:data:`_OTHER_FIELD_CUE`) -- `खाता नम्बरमा रहेको रकम ५,००,०००`
+#:   is an audit figure, not an account; `नागरिकता सिफारिस ४७` is a count of services
+#:   delivered; `नागरिकता … मिति २०७८/०६/२२` is a date. Guard 3 only inspects the value, so
+#:   without this the widened gap would reach straight past the cue to the number behind it.
+#: 🛑 **Words on the label's own line; across a line break, whitespace only.** Both halves
+#: were measured the hard way. Forbidding the line break outright *lost* 306 bank accounts
+#: the old gap had been removing -- in one document 599 -> 440 -- because the corpus wraps
+#: immediately after the label (`खाता नं.\n0060100000150024`). Allowing words after it is
+#: worse: a label whose value has just been removed is still sitting there, and a gap that
+#: reads on through the next line reaches the NEXT field's number. On a two-line fixture
+#: that is `नागरिकता नं.` taking the mobile from the line below -- a redaction pass eating
+#: an unrelated identifier, which is the exact failure this module's guards exist for.
+#:
+#: ⚠️ `[` is excluded for the same reason, one line down: this package's own placeholders
+#: start with it, and a second pass over already-redacted text would otherwise read across
+#: `[REDACTED:CITIZENSHIP-NO]` -- 26 characters, no digits, well inside the window -- and
+#: take whatever number came after it. Redaction has to be idempotent; re-running the sweep
+#: is normal.
+#: 🛑 **Punctuation freely, and at most ONE word.** A gap of arbitrary prose reaches the
+#: next number in the sentence, and in a law-journal document that number is a date or a
+#: statute year rather than an identifier: measured over 106 control documents, an unlimited
+#: 30-character gap newly removed 20 citizenship values of which 5 were prose crossings --
+#: `नागरिकताको प्रमाणपत्र लिनुभएको छ । आमा फेकनीदेवीले २०४१।११।१६` took a date, and
+#: `नागरिकतासम्बन्धी दर्ता किताब २०३२/०३३` took a register's year.
+#:
+#: One word is what the real gaps need: `खाता नं. क्रमशः ०१७…` ("respectively"),
+#: `Account Number भनी ०२१०१…` ("stating"). Two words is already a sentence.
+_GAP_SPACE = rf"(?:[^\S\n]|{_GAP_PUNCT})*"
+_LABEL_GAP = (
+    rf"(?P<sep>{_GAP_SPACE}"
+    rf"(?:(?!{_OTHER_FIELD_CUE.pattern})[^\s\[|A-Za-z{AD}{_GAP_PUNCT_CHARS}]{{1,12}}{_GAP_SPACE})?"
+    rf"(?:\n{_GAP_SPACE}){{0,2}})"
+)
 
 
 CITIZENSHIP_LABEL_VALUE = re.compile(
-    rf"(?P<label>{_CIT_LABEL}\s*[:ः]?\s*)"
+    rf"(?P<label>{_CIT_LABEL}){_LABEL_GAP}"
     rf"(?P<val>{_value_window(_CIT_LEGACY_SEPARATORS, 3, 24)})",
     re.I,
 )
@@ -154,15 +245,70 @@ CITIZENSHIP_LABEL_VALUE = re.compile(
 #: The date-of-birth label, in both scripts. ``D.O.B`` is admitted with and without its dots
 #: because the corpus writes it both ways; `\bdob\b` alone would also match the English word
 #: nothing else in these documents uses, so the word boundary is what keeps it safe.
+#: 🛑 The **era marker is part of the label**, not something to be crossed as prose.
+#: `जन्म मिति वि.स. २००७` and `जन्म मिति ई.सं. २००४।९।३` name the calendar the date is in
+#: -- Bikram Sambat or the Christian era -- and the corpus writes one often enough that a
+#: gap which will not cross it leaves whole rosters unredacted: one document went from 8
+#: values left to 59 when the gap tightened and the marker had nowhere else to be matched.
+#: ⚠️ The Devanagari markers are **alternatives, not a character class**: `वि` is two
+#: codepoints (व + ि), so `[विबई]` is the set {व, ि, ब, ई} and matches the vowel sign on its
+#: own while matching `वि.स.` not at all.
+_DOB_ERA = r"(?:\s*(?:(?:वि|बि|ई|इ)\.?\s*सं?\.?|B\.?\s*S\.?|A\.?\s*D\.?))?"
 _DOB_LABEL = (
     r"(?:जन्म\s*(?:मिति|दर्ता\s*मिति|दिन)|जन्ममिति"
-    r"|date\s*of\s*birth|birth\s*date|\bd\.o\.b\.?|\bdob\b)"
+    rf"|date\s*of\s*birth|birth\s*date|\bd\.o\.b\.?|\bdob\b){_DOB_ERA}"
 )
 
 DOB_LABEL_VALUE = re.compile(
-    rf"(?P<label>{_DOB_LABEL})"
-    rf"(?P<sep>\s*[:ः]?\s*)"
+    rf"(?P<label>{_DOB_LABEL}){_LABEL_GAP}"
     rf"(?P<val>{_value_window(_DOB_LEGACY_SEPARATORS, 5, 18)})",
+    re.I,
+)
+
+#: 🛑 **A birth YEAR on its own, which is the single largest thing the removers were
+#: leaving.** `जन्म मिति २००७ साल` is how this corpus states a date of birth when it states
+#: only the year, and it is 100 of the 102 date-of-birth values the platform's gate found
+#: still present in text it had already redacted (one roster alone carried 63).
+#:
+#: ⚠️ It needs its own rule because :func:`_value_window` describes a *grouped* value -- a
+#: digit, separators, a digit -- and a bare year has no inner separator to describe. The
+#: digit floor moves to 4 with it; see :data:`DIGIT_BOUNDS`.
+#:
+#: 🛑 **The trailing context is what keeps this from eating a document date.** A four-digit
+#: run behind a birth label is a year only when nothing else claims it, so the rule refuses
+#: one followed by a danda-or-slash date separator (`जन्म मिति २०२०।०४।०१` belongs to
+#: :data:`DOB_LABEL_VALUE`, which removes the whole date rather than its first field).
+#:
+#: ⚠️ Removing it rather than narrowing the scanner is deliberate. The scanner's output is
+#: the disclosure published beside the corpus, so teaching it not to *count* a birth year
+#: would make the residue number fall without any value leaving the text -- the one failure
+#: mode that turns the disclosure into an argument that the redaction worked.
+DOB_YEAR_LABEL_VALUE = re.compile(
+    rf"(?P<label>{_DOB_LABEL}){_LABEL_GAP}"
+    rf"(?P<val>(?<![{AD}{DANDA}/\-.])[{AD}]{{4}}"
+    # …and its month, when the document gives one. `जन्म मिति २०११।२` and
+    # `जन्म मिति 2010/7` are year-and-month dates of birth, too short for the window rules
+    # (which need five inner characters) and too long for a bare year. They were 24 of the
+    # 25 date values still standing after the year rule landed.
+    # 🛑 No whitespace after the separator, for the reason :func:`_value_window` gives at
+    # length: a real date never carries one, and admitting it spans `जन्म मिति २०७७। ३ जना`
+    # and removes a staff count.
+    rf"(?:[{DANDA}/\-.][{AD}]{{1,2}})?)"
+    # Not "no separator may follow" but "no separator that leads to another digit may
+    # follow". A trailing full stop is punctuation (`जन्म मिति २००० ..देखेकोले`); a
+    # separator with a digit behind it means this four-digit run is the first FIELD of a
+    # date, which belongs to the window rules above.
+    rf"(?![^\S\n]*[{AD}])(?![^\S\n]*[{DANDA}/\-.][^\S\n]*[{AD}])"
+    # 🛑 **A range bound is not a birth date.** `जन्म मिति २०७० सम्मको विवरण` is "records of
+    # births up to 2070" -- the year belongs to the query, not to a person, and there is no
+    # individual in the sentence to identify. The window rules never reached these because a
+    # bare year was too short for them; a year rule has to say so itself.
+    # ⚠️ Each cue must end the word, and `\b` cannot say so in Devanagari: Python's `\w`
+    # follows ``str.isalnum()``, which excludes the combining vowel signs, so there is a
+    # word boundary *inside* `सम्मको` (after `ो`) and none at all after `देखि`. The
+    # distinction still has to be made -- a bare `देखि` matches inside `देखिन्छ` ("is
+    # seen"), which is narrative, not a range -- so the test is "no further Devanagari".
+    rf"(?![^\S\n]*(?:सम्म(?:को|मा)?|देखि(?:को)?|भन्दा|अघि|पछि|बीच)(?![ऀ-ॿ]))",
     re.I,
 )
 
@@ -185,7 +331,7 @@ _EN_MONTH = (
 #: ⚠️ The four shapes are the ones that occur; a bare `08/1979` is deliberately not among
 #: them, because a two-field date is far more often a fiscal period than a birth date.
 DOB_ENGLISH_LABEL_VALUE = re.compile(
-    rf"(?P<label>{_DOB_LABEL})(?P<sep>\s*[:ः]?\s*)(?P<val>"
+    rf"(?P<label>{_DOB_LABEL}){_LABEL_GAP}(?P<val>"
     rf"[0-9]{{1,2}}(?:st|nd|rd|th)?\s+{_EN_MONTH}\.?,?\s+[0-9]{{4}}"
     rf"|{_EN_MONTH}\.?\s+[0-9]{{1,2}}(?:st|nd|rd|th)?,?\s+[0-9]{{4}}"
     rf"|[0-9]{{4}}[-/][0-9]{{1,2}}[-/][0-9]{{1,2}}"
@@ -200,7 +346,7 @@ DOB_ENGLISH_LABEL_VALUE = re.compile(
 #: cannot describe it, and ``VALUE_FORBIDDEN`` refuses the letter as surrounding prose.
 #:
 #: The prefix is **part of the identifier** and is removed with it, exactly as
-#: :data:`BANK_LATIN_PREFIX` is for an account number. The trailing `/India` is not, and is
+#: :data:`BANK_LATIN_CODE` is for an account number. The trailing `/India` is not, and is
 #: kept: it is the issuing country, which is research data rather than an identifier, and the
 #: value stops at the last digit.
 #: One passport-shaped token: a 1-2 letter issuer prefix and its digits.
@@ -229,9 +375,10 @@ PASSPORT_LABEL_VALUE = re.compile(
     rf"(?P<val>{_PASSPORT_VALUE}(?:{_PASSPORT_CONNECTOR}{_PASSPORT_VALUE})*)",
     re.I,
 )
-#: As :data:`BANK_LATIN_PREFIX`: stripped before the digits-only guard, and carrying ``re.I``
-#: for the same reason -- the pattern above admits a lowercase prefix, so a strip that did not
-#: would leave one behind for guard 1 to refuse as a non-digit, which is a silent miss.
+#: As :data:`BANK_LATIN_CODE`: stripped before the digits-only guard. It carries ``re.I``
+#: because its class is uppercase-only and the pattern above admits a lowercase prefix, so a
+#: strip without the flag would leave one behind for guard 1 to refuse as a non-digit, which
+#: is a silent miss. (``BANK_LATIN_CODE`` needs no flag: it names both cases outright.)
 PASSPORT_LATIN_PREFIX = re.compile(r"^[A-Z]{1,2}", re.I)
 
 # If any of these sits inside the value we are about to remove, refuse: it means
@@ -252,7 +399,6 @@ VALUE_FORBIDDEN = re.compile(rf"[^{AD}{_VALUE_SEPARATORS}]")
 #: its journal rather than asserted, so a shape field that quietly disagrees with the pattern
 #: that produced it is worse than no field at all.
 VALUE_SEPARATOR = re.compile(rf"[{_VALUE_SEPARATORS}]")
-AMOUNT_CUE = re.compile(r"रकम|जम्मा|खर्च|बजेट|राजस्व|बेरुजु|रु")
 
 
 #: 🛑 A bank account value may open with a short uppercase Latin code -- a branch or product
@@ -270,11 +416,44 @@ AMOUNT_CUE = re.compile(r"रकम|जम्मा|खर्च|बजेट|�
 #: flag here, a lowercase prefix matched the pattern, survived this strip, and was then
 #: refused by guard 1 as a non-digit -- a **silent miss**, the pattern and the guard
 #: disagreeing about the same bytes.
-BANK_LATIN_PREFIX = re.compile(r"^[A-Z]{1,4}", re.I)
+BANK_LATIN_CODE = re.compile(r"[A-Za-z]{1,6}|,")
+
+#: 🛑 **A bank's product code is not always a prefix, and a long account is not always
+#: digits.** `BANK_LATIN_CODE` was written for `खाता नं. MM##########`, where the code
+#: opens the value. The live charge-sheet shelf also writes `041FFN051499703` (code in the
+#: middle), `SA-0000-101030-0000` and `RS-0000-300125-00000` (code, then a *separator*,
+#: which the digit-first window cannot even begin on) and `(ZRTKKB0001356)` in brackets.
+#: 108 of the 136 bank-account values the gate refused on 27 October 2026 were one of these
+#: shapes -- not an edge case, a bank convention, so every account that bank issues is
+#: written this way.
+#:
+#: ⚠️ Admitting Latin runs *inside* the value is a real loosening of guard 1 for this kind,
+#: and it is bounded three ways: the run is at most 6 letters, the class admits **no
+#: Devanagari letter at all** -- so a window still cannot escape into the Nepali prose
+#: around it, which is what guard 1 is there to catch -- and the 6-digit floor plus the
+#: amount cue in :data:`_LABEL_GAP` still have to pass.
+_BANK_VALUE = rf"[A-Za-z]{{0,6}}[{AD}A-Za-z][{AD}A-Za-z\-/,.]{{2,28}}[{AD}]"
+
 BANK_LABEL_VALUE = re.compile(
     r"(?P<label>(?:खाता|बैंक\s*खाता|account)\s*(?:नम्बर|नं\.?|no\.?|number))"
-    rf"(?P<sep>\s*[:ः]?\s*)"
-    rf"(?P<val>[A-Z]{{0,4}}{_value_window(_CIT_LEGACY_SEPARATORS, 3, 24)})",
+    rf"{_LABEL_GAP}"
+    # 🛑 The digit window is offered FIRST and the alphanumeric shape is the fallback.
+    # Alternation is ordered, and leading with `_BANK_VALUE` -- which admits no whitespace --
+    # truncated every value that wraps mid-number, so a span the old pattern removed whole
+    # came back partly redacted. Measured: 306 accounts lost that way before the reorder.
+    # 🛑 `.` joins the bank window as a **digit-bounded** separator, never a free one.
+    # `खाता नम्बर १२३४५६७.५२०३८२३` is one account written with a dot, and the citizenship
+    # separator set stops at the dot -- so the first half was replaced and the second half
+    # left sitting next to the label, which is then exactly what the scanner reports as
+    # residue. 21 of the 37 remaining bank values were this one shape. Free admission would
+    # let the window run past a sentence-ending period into the next number (`खाता नं.
+    # १२३४५६. मिति २०७७`); requiring a digit after the dot makes that unreachable.
+    rf"(?P<val>[A-Z]{{0,4}}"
+    # `,` joins it for the same reason and with the same constraint. Some banks print the
+    # thousands grouping; the digit-bounded form keeps `रु ५,००,०००` unreachable, and
+    # leaving it out truncated a value at the comma -- which then looked like a *second*
+    # account sitting beside an already-redacted one.
+    rf"{_value_window(_CIT_LEGACY_SEPARATORS, 3, 24, DANDA + '.,')}|{_BANK_VALUE})",
     re.I,
 )
 
@@ -308,8 +487,14 @@ AGE_LABEL_VALUE = re.compile(
 #: digits are counted, so the bound describes the digits alone.
 DIGIT_BOUNDS = {
     "citizenship": (7, 16),
-    "date_of_birth": (5, 10),
-    "bank_account": (6, 20),
+    # The floor is 4 for :data:`DOB_YEAR_LABEL_VALUE` -- a year is the whole value when the
+    # document states only a year. No other date rule can produce four digits: both windows
+    # require a digit, separators and a digit, so the floor only ever reaches the year rule.
+    "date_of_birth": (4, 10),
+    # The ceiling is 24 because the corpus holds real 21-digit accounts
+    # (`खाता नं.००४०१९०१३४६४००००००००१`). At 20 they failed guard 2 and were left whole,
+    # which is the worst of both answers: a refusal that keeps the identifier.
+    "bank_account": (6, 24),
     "age": (2, 3),
     "passport": (6, 9),
 }
@@ -324,7 +509,11 @@ DIGIT_BOUNDS = {
 #: would disable guard 1 for that kind entirely, which is the guard standing between this
 #: pass and the 11,215 non-secret values its predecessor clobbered.
 VALUE_PRESTRIP: dict[str, re.Pattern[str]] = {
-    "bank_account": BANK_LATIN_PREFIX,
+    # Latin runs anywhere, not just the opening one -- see :data:`_BANK_VALUE` for the
+    # shapes and for why "letters" is safe to say *here* and nowhere else: the pattern that
+    # produced this value admits no Devanagari letter, so what is being stripped can only be
+    # the bank's own code. The comma is the thousands grouping some banks print.
+    "bank_account": BANK_LATIN_CODE,
     "passport": PASSPORT_LATIN_PREFIX,
     # Month name, ordinal suffix, comma and the abbreviating dot -- an English date's entire
     # non-digit, non-separator content and nothing else.
@@ -355,6 +544,10 @@ INLINE_RULES = (
         DATE_OF_BIRTH,
         RedactionMode.IDENTIFIERS,
     ),
+    # Last of the three date rules, and the order matters here even though it does not
+    # within a kind generally: a full date must be offered to the window rules first, or
+    # the year rule takes its leading field and leaves the rest.
+    ("date_of_birth", DOB_YEAR_LABEL_VALUE, DATE_OF_BIRTH, RedactionMode.IDENTIFIERS),
     # 🛑 **`pan` is deliberately absent at every tier.** A PAN is a *business registration*
     # number and is public by design -- printed on invoices, filed with the registrar,
     # searchable. No pattern can tell a company PAN from a sole trader's, so a rule that
@@ -436,7 +629,7 @@ def _match_values(match: re.Match[str], kind: str) -> list[tuple[str, int, int]]
     ⚠️ **The list is matched as a continuation of the label, never as a free-standing shape.**
     A bare `[A-Z]{1,2}` + digits pattern would also find the second passport, and would also
     find cheque numbers, voucher references and the branch-prefixed bank accounts
-    :data:`BANK_LATIN_PREFIX` exists for. The connector is only reachable inside a match that
+    :data:`BANK_LATIN_CODE` exists for. The connector is only reachable inside a match that
     already began with a real label, so the label still decides.
     """
 
