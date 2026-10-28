@@ -203,3 +203,22 @@ def test_a_full_date_is_taken_whole_not_by_its_first_field() -> None:
     assert _strict("जन्म मिति २०२०।०४।०१ हो") == (
         f"जन्म मिति {placeholders.DATE_OF_BIRTH} हो"
     )
+
+
+@pytest.mark.parametrize(
+    ("text", "removed"),
+    [
+        ("जन्म मिति २००७ साल", True),
+        ("Date of Birth: 1979", True),
+        # Four digits that are not a year. Length stopped being the test here, and
+        # the table pass carries the same bound for the same reason.
+        ("जन्म मिति १२३४ हो", False),
+        ("Date of Birth: 9999", False),
+    ],
+)
+def test_four_digits_are_a_year_only_when_they_read_as_one(
+    text: str, removed: bool
+) -> None:
+    out = _strict(text)
+
+    assert (placeholders.DATE_OF_BIRTH in out) is removed

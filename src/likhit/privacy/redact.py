@@ -485,6 +485,11 @@ AGE_LABEL_VALUE = re.compile(
 #: ``passport`` is 6-9 digits behind a 1-2 letter prefix across the issuers this corpus
 #: carries, and the prefix is not counted -- :data:`VALUE_PRESTRIP` removes it before the
 #: digits are counted, so the bound describes the digits alone.
+#: Years a birth date can plausibly carry, covering both calendars the corpus uses --
+#: Bikram Sambat (currently ~2080) and the Christian era. Applied only at four digits,
+#: where the value IS the year and there is no second field to corroborate it.
+YEAR_RANGE = (1900, 2200)
+
 DIGIT_BOUNDS = {
     "citizenship": (7, 16),
     # The floor is 4 for :data:`DOB_YEAR_LABEL_VALUE` -- a year is the whole value when the
@@ -680,6 +685,15 @@ def _accept(val: str, kind: str, stats: Counter) -> int | None:
     if not (lo <= len(digits) <= hi):
         stats[f"{kind}_refused_length"] += 1
         return None
+    # Guard 2b: at four digits a date of birth IS its year, and length stops being
+    # a test -- `जन्म मिति १२३४` is four digits and no year at all. Only
+    # DOB_YEAR_LABEL_VALUE can produce a four-digit date (both window rules need a
+    # digit, separators and a digit), so this reaches that rule and nothing else.
+    if kind == "date_of_birth" and len(digits) == 4:
+        # int() reads Devanagari digits as readily as ASCII ones.
+        if not YEAR_RANGE[0] <= int(digits) <= YEAR_RANGE[1]:
+            stats[f"{kind}_refused_year"] += 1
+            return None
     # Guard 3: an amount cue inside the value means we mis-scoped.
     if AMOUNT_CUE.search(val):
         stats[f"{kind}_refused_amount_cue"] += 1
