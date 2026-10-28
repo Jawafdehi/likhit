@@ -85,7 +85,7 @@ _CIT_LABEL = (
 # Measured over the 6,234 transcripts of the v19 tree this redactor runs against, this class
 # against the one that omits the danda: **+79 dates of birth in 40 documents and +27
 # citizenship numbers in 12 documents** kept a named private individual's identifier in
-# public text for this reason alone. `जन्म मिति २०२०।०४।०१` is a verbatim example.
+# public text for this reason alone. `जन्म मिति ####।##।##` is a verbatim example.
 #
 # ⚠️ Do not read that +27 as disagreeing with the **41** danda-bearing citizenship numbers
 # the v1.4 release record reports for the same defect. They are **different instruments**:
@@ -124,7 +124,7 @@ def _value_window(
     It is the one separator that is also the sentence terminator, and nothing else constrains
     it to sit between digit groups, so admitting it flatly lets a window leave the identifier,
     cross a sentence boundary and take the next sentence's leading number with it:
-    `जन्म मिति २०७७। ३ जना` spans ``२०७७। ३`` and removes a staff count, and
+    `जन्म मिति ####। # जना` spans ``२०७७। ३`` and removes a staff count, and
     `जन्म मिति २०५८।०९।१२। ४५ वर्ष` spans ``२०५८।०९।१२। ४५`` and removes an age.
 
     Neither guard below can see that. ``VALUE_FORBIDDEN`` is built as the complement of the
@@ -142,7 +142,7 @@ def _value_window(
 
     ⚠️ **Only the danda is constrained, and that asymmetry is deliberate.** Applying the same
     lookahead to `- / .` reads tidier and costs a real identifier: it drops
-    ``ना.प्र.नं.१९१०/ १५७``, a senior citizen's citizenship number carrying a stray space
+    ``ना.प्र.नं.####/ ###``, a senior citizen's citizenship number carrying a stray space
     after the slash, which `main` redacts today. Measured, it is the only span the wider form
     changes -- one loss, no gain -- so the legacy separators keep the freedom they had.
     """
@@ -171,7 +171,7 @@ AMOUNT_CUE = re.compile(r"रकम|जम्मा|खर्च|बजेट|�
 #: `जन्ममिति`) contain the word: the label is consumed before the gap begins, so a `मिति`
 #: *inside* the gap is always a second one.
 #: ⚠️ `ऐन` and its neighbours are here because a law's year is not an identifier:
-#: `नेपाल नागरिकता ऐन, २०२० / २०६३` is a citation, and redacting it damages the one thing a
+#: `नेपाल नागरिकता ऐन, #### / ####` is a citation, and redacting it damages the one thing a
 #: law-journal document is read for.
 _OTHER_FIELD_CUE = re.compile(
     rf"{AMOUNT_CUE.pattern}|सिफारिस|मिति|गते|जारी|ऐन|नियमावली|धारा|दफा"
@@ -201,14 +201,14 @@ _GAP_PUNCT = rf"[{_GAP_PUNCT_CHARS}]"
 #:   *next* number in the sentence,
 #: * **a `|`** -- the cell boundary the citizenship label was already written not to cross,
 #:   kept here rather than restated,
-#: * **another field's cue** (:data:`_OTHER_FIELD_CUE`) -- `खाता नम्बरमा रहेको रकम ५,००,०००`
-#:   is an audit figure, not an account; `नागरिकता सिफारिस ४७` is a count of services
-#:   delivered; `नागरिकता … मिति २०७८/०६/२२` is a date. Guard 3 only inspects the value, so
+#: * **another field's cue** (:data:`_OTHER_FIELD_CUE`) -- `खाता नम्बरमा रहेको रकम #,##,###`
+#:   is an audit figure, not an account; `नागरिकता सिफारिस ##` is a count of services
+#:   delivered; `नागरिकता … मिति ####/##/##` is a date. Guard 3 only inspects the value, so
 #:   without this the widened gap would reach straight past the cue to the number behind it.
 #: 🛑 **Words on the label's own line; across a line break, whitespace only.** Both halves
 #: were measured the hard way. Forbidding the line break outright *lost* 306 bank accounts
 #: the old gap had been removing -- in one document 599 -> 440 -- because the corpus wraps
-#: immediately after the label (`खाता नं.\n0060100000150024`). Allowing words after it is
+#: immediately after the label (`खाता नं.\n################`). Allowing words after it is
 #: worse: a label whose value has just been removed is still sitting there, and a gap that
 #: reads on through the next line reaches the NEXT field's number. On a two-line fixture
 #: that is `नागरिकता नं.` taking the mobile from the line below -- a redaction pass eating
@@ -223,11 +223,11 @@ _GAP_PUNCT = rf"[{_GAP_PUNCT_CHARS}]"
 #: next number in the sentence, and in a law-journal document that number is a date or a
 #: statute year rather than an identifier: measured over 106 control documents, an unlimited
 #: 30-character gap newly removed 20 citizenship values of which 5 were prose crossings --
-#: `नागरिकताको प्रमाणपत्र लिनुभएको छ । आमा फेकनीदेवीले २०४१।११।१६` took a date, and
-#: `नागरिकतासम्बन्धी दर्ता किताब २०३२/०३३` took a register's year.
+#: `नागरिकताको प्रमाणपत्र लिनुभएको छ । आमा <नाम>ले ####।##।##` took a date, and
+#: `नागरिकतासम्बन्धी दर्ता किताब ####/###` took a register's year.
 #:
-#: One word is what the real gaps need: `खाता नं. क्रमशः ०१७…` ("respectively"),
-#: `Account Number भनी ०२१०१…` ("stating"). Two words is already a sentence.
+#: One word is what the real gaps need: `खाता नं. क्रमशः ###…` ("respectively"),
+#: `Account Number भनी ###…` ("stating"). Two words is already a sentence.
 _GAP_SPACE = rf"(?:[^\S\n]|{_GAP_PUNCT})*"
 _LABEL_GAP = (
     rf"(?P<sep>{_GAP_SPACE}"
@@ -246,7 +246,7 @@ CITIZENSHIP_LABEL_VALUE = re.compile(
 #: because the corpus writes it both ways; `\bdob\b` alone would also match the English word
 #: nothing else in these documents uses, so the word boundary is what keeps it safe.
 #: 🛑 The **era marker is part of the label**, not something to be crossed as prose.
-#: `जन्म मिति वि.स. २००७` and `जन्म मिति ई.सं. २००४।९।३` name the calendar the date is in
+#: `जन्म मिति वि.स. ####` and `जन्म मिति ई.सं. ####।#।#` name the calendar the date is in
 #: -- Bikram Sambat or the Christian era -- and the corpus writes one often enough that a
 #: gap which will not cross it leaves whole rosters unredacted: one document went from 8
 #: values left to 59 when the gap tightened and the marker had nowhere else to be matched.
@@ -266,7 +266,7 @@ DOB_LABEL_VALUE = re.compile(
 )
 
 #: 🛑 **A birth YEAR on its own, which is the single largest thing the removers were
-#: leaving.** `जन्म मिति २००७ साल` is how this corpus states a date of birth when it states
+#: leaving.** `जन्म मिति #### साल` is how this corpus states a date of birth when it states
 #: only the year, and it is 100 of the 102 date-of-birth values the platform's gate found
 #: still present in text it had already redacted (one roster alone carried 63).
 #:
@@ -276,7 +276,7 @@ DOB_LABEL_VALUE = re.compile(
 #:
 #: 🛑 **The trailing context is what keeps this from eating a document date.** A four-digit
 #: run behind a birth label is a year only when nothing else claims it, so the rule refuses
-#: one followed by a danda-or-slash date separator (`जन्म मिति २०२०।०४।०१` belongs to
+#: one followed by a danda-or-slash date separator (`जन्म मिति ####।##।##` belongs to
 #: :data:`DOB_LABEL_VALUE`, which removes the whole date rather than its first field).
 #:
 #: ⚠️ Removing it rather than narrowing the scanner is deliberate. The scanner's output is
@@ -286,12 +286,12 @@ DOB_LABEL_VALUE = re.compile(
 DOB_YEAR_LABEL_VALUE = re.compile(
     rf"(?P<label>{_DOB_LABEL}){_LABEL_GAP}"
     rf"(?P<val>(?<![{AD}{DANDA}/\-.])[{AD}]{{4}}"
-    # …and its month, when the document gives one. `जन्म मिति २०११।२` and
-    # `जन्म मिति 2010/7` are year-and-month dates of birth, too short for the window rules
+    # …and its month, when the document gives one. `जन्म मिति ####।#` and
+    # `जन्म मिति ####/#` are year-and-month dates of birth, too short for the window rules
     # (which need five inner characters) and too long for a bare year. They were 24 of the
     # 25 date values still standing after the year rule landed.
     # 🛑 No whitespace after the separator, for the reason :func:`_value_window` gives at
-    # length: a real date never carries one, and admitting it spans `जन्म मिति २०७७। ३ जना`
+    # length: a real date never carries one, and admitting it spans `जन्म मिति ####। # जना`
     # and removes a staff count.
     rf"(?:[{DANDA}/\-.][{AD}]{{1,2}})?)"
     # Not "no separator may follow" but "no separator that leads to another digit may
@@ -299,7 +299,7 @@ DOB_YEAR_LABEL_VALUE = re.compile(
     # separator with a digit behind it means this four-digit run is the first FIELD of a
     # date, which belongs to the window rules above.
     rf"(?![^\S\n]*[{AD}])(?![^\S\n]*[{DANDA}/\-.][^\S\n]*[{AD}])"
-    # 🛑 **A range bound is not a birth date.** `जन्म मिति २०७० सम्मको विवरण` is "records of
+    # 🛑 **A range bound is not a birth date.** `जन्म मिति #### सम्मको विवरण` is "records of
     # births up to 2070" -- the year belongs to the query, not to a person, and there is no
     # individual in the sentence to identify. The window rules never reached these because a
     # bare year was too short for them; a year rule has to say so itself.
@@ -420,9 +420,9 @@ BANK_LATIN_CODE = re.compile(r"[A-Za-z]{1,6}|,")
 
 #: 🛑 **A bank's product code is not always a prefix, and a long account is not always
 #: digits.** `BANK_LATIN_CODE` was written for `खाता नं. MM##########`, where the code
-#: opens the value. The live charge-sheet shelf also writes `041FFN051499703` (code in the
-#: middle), `SA-0000-101030-0000` and `RS-0000-300125-00000` (code, then a *separator*,
-#: which the digit-first window cannot even begin on) and `(ZRTKKB0001356)` in brackets.
+#: opens the value. The live charge-sheet shelf also writes `###FFN#########` (code in the
+#: middle), `SA-####-######-####` and `RS-####-######-#####` (code, then a *separator*,
+#: which the digit-first window cannot even begin on) and `(ZRTKKB#######)` in brackets.
 #: 108 of the 136 bank-account values the gate refused on 27 October 2026 were one of these
 #: shapes -- not an edge case, a bank convention, so every account that bank issues is
 #: written this way.
@@ -492,7 +492,7 @@ DIGIT_BOUNDS = {
     # require a digit, separators and a digit, so the floor only ever reaches the year rule.
     "date_of_birth": (4, 10),
     # The ceiling is 24 because the corpus holds real 21-digit accounts
-    # (`खाता नं.००४०१९०१३४६४००००००००१`). At 20 they failed guard 2 and were left whole,
+    # (`खाता नं.#####################`). At 20 they failed guard 2 and were left whole,
     # which is the worst of both answers: a refusal that keeps the identifier.
     "bank_account": (6, 24),
     "age": (2, 3),

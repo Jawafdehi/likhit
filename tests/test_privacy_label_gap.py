@@ -46,10 +46,10 @@ def _strict(text: str) -> str:
 @pytest.mark.parametrize(
     "text",
     [
-        "खाता नं. क्रमशः ०१७००००००२४५ र",  # "respectively"
-        "Account Number भनी ०२१०१०००००२६६०४१ मा",  # "stating"
-        "खाता नं, १०४०३०३०००५७५३ मा रहेको",  # a comma for a colon
-        "खाता नम्बर (७००४००३९१३३) बाट",  # brackets
+        "खाता नं. क्रमशः १११२२२३३३४४४ र",  # "respectively"
+        "Account Number भनी ११११२२२२३३३३४४४४ मा",  # "stating"
+        "खाता नं, ११२२३३४४५५६६७७ मा रहेको",  # a comma for a colon
+        "खाता नम्बर (११२२३३४४५५६) बाट",  # brackets
     ],
 )
 def test_one_word_or_punctuation_between_label_and_value_is_crossed(text: str) -> None:
@@ -85,7 +85,7 @@ def test_a_value_wrapped_onto_the_next_line_is_still_redacted() -> None:
     back.
     """
 
-    assert placeholders.BANK_ACCOUNT in _strict("खाता नं.\n0060100000150024 मा")
+    assert placeholders.BANK_ACCOUNT in _strict("खाता नं.\n1234567890123456 मा")
 
 
 def test_words_on_the_far_side_of_a_line_break_are_not_crossed() -> None:
@@ -115,9 +115,9 @@ def test_redacting_twice_removes_nothing_the_second_time() -> None:
     next.
     """
 
-    once = _strict("खाता नं. ०१२३४५६७८९० र चेक नं. ९८७६५४३")
+    once = _strict("खाता नं. ११११२२२२३३३ र चेक नं. ९९८८७७६")
     assert once == _strict(once)
-    assert "९८७६५४३" in once
+    assert "९९८८७७६" in once
 
 
 # --- bank accounts are not always digits -------------------------------------
@@ -126,24 +126,24 @@ def test_redacting_twice_removes_nothing_the_second_time() -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "खाता नं. 041FFN051499703 मा",  # the code sits inside the value
-        "खाता नं. SA-0000-101030-0000 मा",  # code, then a separator
-        "खाता नं. १२३४५६७.५२०३८२३ बाट",  # one account written with a dot
-        "खाता नं. २६४,००१९०००४९ मा",  # …and with a comma
-        "खाता नं.००४०१९०१३४६४००००००००१ मा",  # 21 digits, over the old ceiling
+        "खाता नं. 012ABC345678901 मा",  # the code sits inside the value
+        "खाता नं. XY-1111-222222-3333 मा",  # code, then a separator
+        "खाता नं. १११२२२३.३३४४४५५ बाट",  # one account written with a dot
+        "खाता नं. ११२,३३४४५५६६७ मा",  # …and with a comma
+        "खाता नं.१११२२२३३३४४४५५५६६६७७७ मा",  # 21 digits, over the old ceiling
     ],
 )
 def test_a_bank_account_carrying_more_than_digits_is_redacted(text: str) -> None:
     redacted = _strict(text)
     assert placeholders.BANK_ACCOUNT in redacted
-    for run in ("041FFN", "101030", "५२०३८२३", "००१९०००४९", "४६४०००००००१"):
+    for run in ("012ABC", "222222", "३३४४४५५", "३३४४५५६६७", "४४४५५५६६६७७७"):
         assert run not in redacted
 
 
 def test_the_latin_code_goes_with_the_account_not_the_gap() -> None:
-    """`(ZRTKKB0001356)` is one value in brackets, not a word and then a number."""
+    """`(ABCDEF1234567)` is one value in brackets, not a word and then a number."""
 
-    assert _strict("खाता नं. (ZRTKKB0001356) बाट") == (
+    assert _strict("खाता नं. (ABCDEF1234567) बाट") == (
         f"खाता नं. ({placeholders.BANK_ACCOUNT}) बाट"
     )
 
@@ -158,7 +158,7 @@ def test_an_amount_is_not_an_account_however_it_is_written() -> None:
 def test_the_certificate_abbreviation_is_a_label_not_prose() -> None:
     """`ना.प्र.प.नं.` -- the `प` of प्रमाणपत्र, written as its own abbreviated field."""
 
-    assert placeholders.CITIZENSHIP in _strict("ना.प्र.प.नं.९९१।९०७८६ जारी भएको")
+    assert placeholders.CITIZENSHIP in _strict("ना.प्र.प.नं.१११।२२३३४ जारी भएको")
 
 
 # --- a birth year is a date of birth -----------------------------------------
