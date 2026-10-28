@@ -32,6 +32,10 @@ def test_a_year_near_the_label_is_not_a_citizenship_signal(text: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
+        # 🛑 Ten digits across its separators, longest run four. A flat floor of
+        # five stopped counting this, which is the defect that made the exclusion
+        # a SHAPE test rather than a length one.
+        "नागरिकता नं. ११-२२-३३-४४४४ रहेको",
         "नागरिकता नं. ४५२५६ रहेको",  # five digits — short, but a real number
         "नागरिकता प्रमाणपत्र नं. १२-०१-७५-०४५६७ को",
         "Citizenship No. 3515212 issued",

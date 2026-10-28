@@ -68,30 +68,20 @@ DOB_LABEL = re.compile(
 VALUE_ERA = re.compile(
     r"\s*(?:B\.?\s*S\.?|A\.?\s*D\.?|(?:वि|बि|ई|इ)\.?\s*सं?\.?)\s*$", re.I
 )
-#: ⚠️ The inner bound starts at 2, not 3, so a four-character cell can match. A date of
-#: birth given as a bare YEAR — `| जन्म मिति | २०४५ |` — is a whole cell of four digits,
-#: and the old floor of 3 made the pattern itself unable to describe one, before any
-#: digit-count guard was consulted. Each kind's real floor lives in :data:`LIMITS`, which
-#: is where a four-digit value is accepted for dates and still refused for citizenship.
-VALUE_CELL = re.compile(rf"[{AD}][{AD}\-/\.\s]{{2,24}}[{AD}]")
+#: 🛑 **The inner bound stays at 3, and a bare four-digit YEAR is deliberately not a
+#: candidate.** Lowering it to 2 to catch `| जन्म मिति | २०४५ |` enlarges the candidate
+#: set for every row, and a year then COMPETES with the real date beside it: measured on
+#: `| जन्म मिति | राम बहादुर | २०३२/०४/१२ | २०७८ |`, the row went from one candidate
+#: (redacted) to two non-adjacent ones (refused) — so the change meant to remove more
+#: dates of birth kept one that was already being removed. Selecting between candidates
+#: by shape is the prerequisite, and it is not this change.
+VALUE_CELL = re.compile(rf"[{AD}][{AD}\-/\.\s]{{3,24}}[{AD}]")
 
-#: 🛑 The date floor is 4 so a bare birth YEAR in a cell is removable, matching what the
-#: inline rules do with `जन्म मिति २००७ साल`. It was 5, which is a length no year can
-#: reach — so a roster column of birth years was found by the scanner, refused by this
-#: pass, and left in the published table.
 #:
-#: ⚠️ Length alone is the wrong test at four digits, and ``test_dob_requires_a_whole_cell``
-#: says so with `१२३४`: a four-digit number is a year only if it READS as one. See
-#: :data:`YEAR_RANGE` — a range check keeps that case refused while admitting २०४५ and 1959.
 LIMITS = {
     "citizenship": (7, 16),
-    "date_of_birth": (4, 10),
+    "date_of_birth": (5, 10),
 }
-
-#: Years a birth date can plausibly carry, covering both calendars the corpus uses —
-#: Bikram Sambat (currently ~2080) and the Christian era. Applied only at four digits,
-#: where the value IS the year and there is no other field to corroborate it.
-YEAR_RANGE = (1900, 2200)
 PLACEHOLDERS = {
     "citizenship": CITIZENSHIP_PLACEHOLDER,
     "date_of_birth": DOB_PLACEHOLDER,
@@ -199,10 +189,6 @@ def _candidate_shape(cell: str, kind: str) -> CandidateShape | None:
     low, high = LIMITS[kind]
     if not low <= digit_count <= high:
         return None
-    if kind == "date_of_birth" and digit_count == 4 and core.isdigit():
-        # int() reads Devanagari digits as readily as ASCII ones.
-        if not YEAR_RANGE[0] <= int(core) <= YEAR_RANGE[1]:
-            return None
     return CandidateShape(
         digit_count=digit_count,
         had_separators=bool(re.search(r"[-/.\s]", core)),

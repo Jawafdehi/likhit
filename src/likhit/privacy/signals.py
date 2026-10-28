@@ -134,12 +134,25 @@ LABELLED = {
     # this package's own measured bounds (`redact.DIGIT_BOUNDS` floors the class at 7
     # digits), so no remover was ever going to act on one.
     #
-    # ⚠️ Not raised to 7 to match that floor: the bound counts a value's digits ACROSS its
-    # separators, while this pattern matches one contiguous run. `१२-३४-५६-७८९०१` is a
-    # 13-digit identifier whose longest run is 5, so a floor of 7 here would stop counting
-    # real numbers. Five keeps every shape the corpus writes.
+    # ⚠️ **A flat floor of five was the wrong instrument, and it hid real data.** The bound
+    # counts a value's digits ACROSS its separators while this pattern matches one
+    # contiguous run, so `११-२२-३३-४४४४` is a removable 10-digit identifier whose longest
+    # run is 4: raising the floor stopped counting it, and a document carrying one would
+    # have passed the gate reporting a disclosure of zero.
+    #
+    # What is actually being excluded is a YEAR, so the shape is what to test. A four-digit
+    # run opening `१९`/`२०`/`२१` (or their ASCII equivalents) is a date in either calendar;
+    # anything else of four digits is still counted, and five or more always is.
+    #
+    # ⚠️ The residue: a citizenship number whose final group happens to open like a year
+    # (`१२-३४-५६-२०४५`) is not counted. Measured at 0 occurrences in the control corpus,
+    # and the trade is the right way round — a missed count is a weaker disclosure, while a
+    # miscounted year refuses a document over data that is not in it.
     "citizenship": re.compile(
-        rf"(?:नागरिकता|citizenship)[^\n]{{0,40}}?[{ANY_DIGITS}]{{5,}}", re.I
+        rf"(?:नागरिकता|citizenship)[^\n]{{0,40}}?"
+        rf"(?:[{ANY_DIGITS}]{{5,}}"
+        rf"|(?!(?:१९|२०|२१|19|20|21))[{ANY_DIGITS}]{{4}}(?![{ANY_DIGITS}]))",
+        re.I,
     ),
     # 🛑 **`pan` is detected here and removed nowhere**, which is the decision rather than a
     # gap: a PAN is a *business registration* number, public by design, and removing a

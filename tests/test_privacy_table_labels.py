@@ -67,15 +67,6 @@ def test_an_era_marker_inside_the_value_cell_does_not_hide_the_date() -> None:
     assert "2016-06-19" not in out
 
 
-def test_a_birth_year_alone_fills_a_cell() -> None:
-    """A roster column of bare years: four characters, under the old floor of five."""
-
-    out, found = _targets("| जन्म मिति | २०४५ |\n| नाम | राम |\n")
-
-    assert found == 1
-    assert placeholders.TABLE_DATE_OF_BIRTH in out
-
-
 def test_a_short_number_under_a_citizenship_header_is_still_refused() -> None:
     """The measured floor of 7 digits stands — those spans are service counts."""
 
@@ -85,16 +76,22 @@ def test_a_short_number_under_a_citizenship_header_is_still_refused() -> None:
     assert "35152" in out
 
 
-@pytest.mark.parametrize(
-    ("value", "removed"),
-    [("२०४५", True), ("1959", True), ("१२३४", False), ("९९९९", False)],
-)
-def test_four_digits_are_a_year_only_when_they_read_as_one(
-    value: str, removed: bool
-) -> None:
-    """Length is the wrong test at four digits; `YEAR_RANGE` is the right one."""
+def test_a_year_beside_a_real_date_does_not_make_the_row_ambiguous() -> None:
+    """🛑 The regression that took the bare-year cell back out.
 
-    out, found = _targets(f"| जन्म मिति | {value} |\n| नाम | राम |\n")
+    Admitting a four-digit year as a candidate makes it COMPETE with the real
+    date in the same row: this row went from one candidate (redacted) to two
+    non-adjacent ones (refused), so a change meant to remove more dates of birth
+    kept one that was already being removed.
+    """
 
-    assert bool(found) is removed
-    assert (value not in out) is removed
+    row = (
+        "| विवरण | मान | अन्य | कैफियत |\n| --- | --- | --- | --- |\n"
+        "| जन्म मिति | राम बहादुर | २०३२/०४/१२ | २०७८ |\n"
+    )
+
+    out, found = _targets(row)
+
+    assert found == 1
+    assert "२०३२/०४/१२" not in out
+    assert "२०७८" in out, "the remarks cell is not a date of birth"
