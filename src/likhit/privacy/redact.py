@@ -228,17 +228,29 @@ _GAP_PUNCT = rf"[{_GAP_PUNCT_CHARS}]"
 #:
 #: One word is what the real gaps need: `खाता नं. क्रमशः ###…` ("respectively"),
 #: `Account Number भनी ###…` ("stating"). Two words is already a sentence.
+#: Units that follow a COUNT, never an identifier. `नागरिकता लिएका ७८९०१२३ जना` is a
+#: number of people; the `सिफारिस` veto exists for exactly this class and catches it only
+#: when the count is introduced by that one word. Testing what follows the value catches
+#: the construction instead of the vocabulary.
+_COUNTED_UNIT = r"(?![^\S\n]{0,3}(?:जना|वटा|पटक|प्रतिशत|किस्ता|थान))"
+
 _GAP_SPACE = rf"(?:[^\S\n]|{_GAP_PUNCT})*"
 _LABEL_GAP = (
     rf"(?P<sep>{_GAP_SPACE}"
     rf"(?:(?!{_OTHER_FIELD_CUE.pattern})[^\s\[|A-Za-z{AD}{_GAP_PUNCT_CHARS}]{{1,12}}{_GAP_SPACE})?"
-    rf"(?:\n{_GAP_SPACE}){{0,2}})"
+    # ⚠️ Unbounded, because the `\s*` this replaced was. Capping it at two line breaks
+    # was an arbitrary number that quietly narrowed the pass: `खाता नं.\n\n\n<digits>` is
+    # redacted on main and was kept here. What makes a line break safe to cross is that
+    # only WHITESPACE may follow one — a word on the far side is still refused — and that
+    # property does not weaken with the third newline.
+    rf"(?:\n{_GAP_SPACE})*)"
 )
 
 
 CITIZENSHIP_LABEL_VALUE = re.compile(
     rf"(?P<label>{_CIT_LABEL}){_LABEL_GAP}"
-    rf"(?P<val>{_value_window(_CIT_LEGACY_SEPARATORS, 3, 24)})",
+    rf"(?P<val>{_value_window(_CIT_LEGACY_SEPARATORS, 3, 24)})"
+    rf"{_COUNTED_UNIT}",
     re.I,
 )
 
@@ -453,7 +465,8 @@ BANK_LABEL_VALUE = re.compile(
     # thousands grouping; the digit-bounded form keeps `रु ५,००,०००` unreachable, and
     # leaving it out truncated a value at the comma -- which then looked like a *second*
     # account sitting beside an already-redacted one.
-    rf"{_value_window(_CIT_LEGACY_SEPARATORS, 3, 24, DANDA + '.,')}|{_BANK_VALUE})",
+    rf"{_value_window(_CIT_LEGACY_SEPARATORS, 3, 24, DANDA + '.,')}|{_BANK_VALUE})"
+    rf"{_COUNTED_UNIT}",
     re.I,
 )
 
@@ -662,6 +675,24 @@ def _rules_for(mode: RedactionMode) -> tuple:
     return tuple(rule for rule in INLINE_RULES if mode.removes(rule[3]))
 
 
+#: 🛑 **A thousands-grouped amount is not an account number.** `खाता नं. बाट ५,००,०००`
+#: reaches guard 3 with no `रु` anywhere in the value, so the amount cue never fires, and
+#: the comma this branch admits as a bank separator makes the digits look like one span.
+#: The discriminator is the GROUPING: Nepali money is written in groups of two and three
+#: (`#,##,###`), while an account number carries a long unbroken run. A value whose
+#: longest contiguous run is under six digits is an amount.
+#:
+#: ⚠️ Bank only. Citizenship and date values are grouped too, and their own digit bounds
+#: already describe them.
+_MONEY_GROUPED = re.compile(rf"^[{AD}]{{1,3}}(?:,[{AD}]{{2,3}})+(?:\.[{AD}]+)?$")
+
+
+def _is_amount(val: str) -> bool:
+    if not _MONEY_GROUPED.fullmatch(val.strip()):
+        return False
+    return max((len(run) for run in re.findall(rf"[{AD}]+", val)), default=0) < 6
+
+
 def _accept(val: str, kind: str, stats: Counter) -> int | None:
     """The three guards. Returns the value's digit count, or ``None`` if any guard refuses.
 
@@ -697,6 +728,10 @@ def _accept(val: str, kind: str, stats: Counter) -> int | None:
     # Guard 3: an amount cue inside the value means we mis-scoped.
     if AMOUNT_CUE.search(val):
         stats[f"{kind}_refused_amount_cue"] += 1
+        return None
+    # Guard 3b: …or the value is SHAPED like money even with no cue to say so.
+    if kind == "bank_account" and _is_amount(val):
+        stats[f"{kind}_refused_amount_shape"] += 1
         return None
     return len(digits)
 

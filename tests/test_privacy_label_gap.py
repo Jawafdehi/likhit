@@ -222,3 +222,33 @@ def test_four_digits_are_a_year_only_when_they_read_as_one(
     out = _strict(text)
 
     assert (placeholders.DATE_OF_BIRTH in out) is removed
+
+
+# --- what the widened reach must NOT take ------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "must_survive"),
+    [
+        # 🛑 A thousands-grouped amount reaches guard 3 with no `रु` in the value,
+        # so the cue never fires. The grouping is the discriminator: Nepali money
+        # is written `#,##,###`, an account carries a long unbroken run.
+        ("खाता नं. बाट ५,००,००० झिकेको", "५,००,०००"),
+        ("खाता नं. मा १२,३४,५६७ जम्मा", "१२,३४,५६७"),
+        # 🛑 A counted thing. The `सिफारिस` veto covers this class only when that
+        # one word introduces it; testing the trailing unit catches the
+        # construction rather than the vocabulary.
+        ("नागरिकता लिएका ७८९०१२३ जना", "७८९०१२३"),
+        ("नागरिकता नवीकरण ४५२५६७ वटा", "४५२५६७"),
+    ],
+)
+def test_a_counted_or_grouped_number_is_not_an_identifier(
+    text: str, must_survive: str
+) -> None:
+    assert must_survive in _strict(text)
+
+
+def test_a_value_three_line_breaks_below_its_label_is_still_reached() -> None:
+    """The cap was an arbitrary number; `\\s*` never had one."""
+
+    assert placeholders.BANK_ACCOUNT in _strict("खाता नं.\n\n\n१२३४५६७८९० मा")
