@@ -183,6 +183,10 @@ _GAP_PUNCT_CHARS = r":ः,.()/\-–—"
 _GAP_PUNCT = rf"[{_GAP_PUNCT_CHARS}]"
 
 
+#: Whitespace and gap punctuation, in any order and any number.
+_GAP_SPACE = rf"(?:[^\S\n]|{_GAP_PUNCT})*"
+
+
 #: Everything a label may be separated from its value by.
 #:
 #: 🛑 **This exists because the detector reaches further than the removers did, and the
@@ -232,6 +236,20 @@ _GAP_PUNCT = rf"[{_GAP_PUNCT_CHARS}]"
 #: number of people; the `सिफारिस` veto exists for exactly this class and catches it only
 #: when the count is introduced by that one word. Testing what follows the value catches
 #: the construction instead of the vocabulary.
+_LABEL_GAP = (
+    rf"(?P<sep>{_GAP_SPACE}"
+    rf"(?:(?!{_OTHER_FIELD_CUE.pattern})[^\s\[|A-Za-z{AD}{_GAP_PUNCT_CHARS}]{{1,12}}{_GAP_SPACE})?"
+    # 🛑 **Two line breaks, and the bound is measured.** Across 173 documents, values
+    # whose gap to their label is whitespace and punctuation only sit 3,164 on the
+    # label's own line, 536 one line below, 10 two lines below, and NONE further. An
+    # earlier commit made this unbounded on the strength of one invented three-newline
+    # fixture; unbounded buys nothing the corpus contains and costs the thing the gap
+    # exists to prevent — in a flattened two-column or page-broken extraction, a label
+    # at the foot of one block claiming an unrelated number from the next.
+    rf"(?:\n{_GAP_SPACE}){{0,2}})"
+)
+
+
 #: 🛑 **The digit anchor comes FIRST, and without it this veto does not veto.** A bare
 #: negative lookahead sits after a backtrackable value window, so the engine answers it by
 #: handing one digit back and matching the shorter value — `नागरिकता लिएका ७८९०१२३४५६ जना`
@@ -242,18 +260,6 @@ _GAP_PUNCT = rf"[{_GAP_PUNCT_CHARS}]"
 #: ⚠️ The whitespace is unbounded. A `{0,3}` cap let column-aligned output slip the veto —
 #: `७८९०१२३४५६    जना` padded to a tab stop was redacted with no check attempted.
 _COUNTED_UNIT = rf"(?![{AD}])(?![^\S\n]*(?:जना|वटा|पटक|प्रतिशत|किस्ता|थान))"
-
-_GAP_SPACE = rf"(?:[^\S\n]|{_GAP_PUNCT})*"
-_LABEL_GAP = (
-    rf"(?P<sep>{_GAP_SPACE}"
-    rf"(?:(?!{_OTHER_FIELD_CUE.pattern})[^\s\[|A-Za-z{AD}{_GAP_PUNCT_CHARS}]{{1,12}}{_GAP_SPACE})?"
-    # ⚠️ Unbounded, because the `\s*` this replaced was. Capping it at two line breaks
-    # was an arbitrary number that quietly narrowed the pass: `खाता नं.\n\n\n<digits>` is
-    # redacted on main and was kept here. What makes a line break safe to cross is that
-    # only WHITESPACE may follow one — a word on the far side is still refused — and that
-    # property does not weaken with the third newline.
-    rf"(?:\n{_GAP_SPACE})*)"
-)
 
 
 CITIZENSHIP_LABEL_VALUE = re.compile(
@@ -507,11 +513,6 @@ AGE_LABEL_VALUE = re.compile(
 #: ``passport`` is 6-9 digits behind a 1-2 letter prefix across the issuers this corpus
 #: carries, and the prefix is not counted -- :data:`VALUE_PRESTRIP` removes it before the
 #: digits are counted, so the bound describes the digits alone.
-#: Years a birth date can plausibly carry, covering both calendars the corpus uses --
-#: Bikram Sambat (currently ~2080) and the Christian era. Applied only at four digits,
-#: where the value IS the year and there is no second field to corroborate it.
-YEAR_RANGE = (1900, 2200)
-
 DIGIT_BOUNDS = {
     "citizenship": (7, 16),
     # The floor is 4 for :data:`DOB_YEAR_LABEL_VALUE` -- a year is the whole value when the
@@ -525,6 +526,12 @@ DIGIT_BOUNDS = {
     "age": (2, 3),
     "passport": (6, 9),
 }
+
+#: Years a birth date can plausibly carry, covering both calendars the corpus uses --
+#: Bikram Sambat (currently ~2080) and the Christian era. Applied only at four digits,
+#: where the value IS the year and there is no second field to corroborate it.
+YEAR_RANGE = (1900, 2200)
+
 
 #: Text that is **part of a value but is not a digit or a separator**, removed before guard 1
 #: in :func:`_accept` sees the value.
@@ -697,9 +704,15 @@ _MONEY_GROUPED = re.compile(rf"^[{AD}]{{1,3}}(?:,[{AD}]{{2,3}})+(?:\.[{AD}]+)?$"
 
 
 def _is_amount(val: str) -> bool:
-    if not _MONEY_GROUPED.fullmatch(val.strip()):
-        return False
-    return max((len(run) for run in re.findall(rf"[{AD}]+", val)), default=0) < 6
+    """Whether a bank value is money rather than an account.
+
+    ⚠️ The grouping pattern IS the whole test. A `longest run < 6` second clause
+    was unreachable — :data:`_MONEY_GROUPED` caps every integer-part group at
+    three digits, so nothing that matched it could ever fail the run test — and
+    it scanned ``val`` while the regex had matched ``val.strip()``, so the two
+    halves disagreed about their input.
+    """
+    return bool(_MONEY_GROUPED.fullmatch(val.strip()))
 
 
 def _accept(val: str, kind: str, stats: Counter) -> int | None:

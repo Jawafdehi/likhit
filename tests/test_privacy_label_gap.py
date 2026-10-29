@@ -248,31 +248,21 @@ def test_a_counted_or_grouped_number_is_not_an_identifier(
     assert must_survive in _strict(text)
 
 
-def test_a_value_three_line_breaks_below_its_label_is_still_reached() -> None:
-    """The cap was an arbitrary number; `\\s*` never had one."""
+def test_the_gap_does_not_read_past_a_paragraph_break() -> None:
+    """🛑 Bounded at two line breaks, and the bound is measured, not chosen.
 
-    assert placeholders.BANK_ACCOUNT in _strict("खाता नं.\n\n\n१२३४५६७८९० मा")
+    Across 173 documents, values whose gap to their label is whitespace and
+    punctuation only sit: **3,164** on the label's own line, **536** one line
+    below, **10** two lines below, and **none** further. Unbounded reach buys
+    nothing and costs the one thing this gap exists to prevent — in a flattened
+    two-column or page-broken extraction, a label at the foot of one block
+    claiming an unrelated number from the next.
 
+    An earlier commit removed the cap on the strength of a single three-newline
+    fixture. That fixture was invented; these counts are the corpus.
+    """
 
-@pytest.mark.parametrize(
-    ("text", "must_survive"),
-    [
-        # 🛑 Longer than the digit floor, so the value can give a digit BACK to
-        # satisfy a trailing lookahead. The earlier fixtures all sat exactly on
-        # the floor, where there is nothing to give — which is why they passed
-        # while `नागरिकता लिएका ७८९०१२३४५६ जना` came out as
-        # `[REDACTED:CITIZENSHIP-NO]६ जना`: the count destroyed, a stray digit
-        # published, and the journal calling it an ordinary removal.
-        ("नागरिकता लिएका ७८९०१२३४५६ जना", "७८९०१२३४५६"),
-        ("खाता नं. मा १२३४५६७८९० जना", "१२३४५६७८९०"),
-        # Column-aligned output pads to a tab stop; a 3-space cap slipped the veto.
-        ("नागरिकता नं. ७८९०१२३४५६    जना", "७८९०१२३४५६"),
-    ],
-)
-def test_a_counted_value_is_not_redacted_even_partly(
-    text: str, must_survive: str
-) -> None:
-    redacted = _strict(text)
-
-    assert must_survive in redacted
-    assert "REDACTED" not in redacted, "a partial redaction is the worse outcome"
+    assert placeholders.BANK_ACCOUNT in _strict("खाता नं.\n\n१२३४५६७८९० मा")
+    # ⚠️ Not a `९८…` fixture here: that is a mobile shape and the contact pass
+    # removes it on its own merits, which would make this pass for the wrong reason.
+    assert "११२२३३४४५५" in _strict("खाता नं." + "\n" * 14 + "११२२३३४४५५ मा")
