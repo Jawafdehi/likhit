@@ -39,13 +39,45 @@ from .placeholders import (
 
 # These are narrower than the inline pass on purpose. A table header can govern
 # thousands of cells, so a loose label has a much larger over-redaction radius.
+# 🛑 **Both scripts.** These were Devanagari-only while the inline rules took either,
+# so a table whose header cell reads `Date of Birth` or `Citizenship No.` was invisible to
+# this pass — no label, no candidate, no removal — and the corpus is full of them: the
+# ePassport application forms reproduced inside charge sheets are English-labelled
+# throughout, and they are exactly the documents that tabulate a citizenship number beside
+# a date of birth.
+#
+# ⚠️ The English citizenship form requires a qualifier (`No.`, `Number`, `ID`). A bare
+# `Citizenship` is a column of prose far more often than a column of identifiers, and a
+# header governs every cell beneath it.
 CITIZENSHIP_LABEL = re.compile(
     r"(?:ना\.?\s*प्र\.?\s*नं\.?"
-    r"|नागरिकता(?P<mid>[^|\n]{0,30})(?:प्रमाणपत्र|नम्बर|नं\.?))"
+    r"|नागरिकता(?P<mid>[^|\n]{0,30})(?:प्रमाणपत्र|नम्बर|नं\.?)"
+    r"|citizenship(?:\s*certificate)?\s*(?:no\.?|number|id)\b)",
+    re.I,
 )
-DOB_LABEL = re.compile(r"(?:जन्म\s*(?:मिति|दर्ता\s*मिति|दिन)|जन्ममिति)")
+DOB_LABEL = re.compile(
+    r"(?:जन्म\s*(?:मिति|दर्ता\s*मिति|दिन)|जन्ममिति"
+    r"|date\s*of\s*birth|birth\s*date|\bd\.?o\.?b\.?\b)",
+    re.I,
+)
+
+#: An era marker written INSIDE the value cell — `2016-06-19 BS`. Stripped before the cell
+#: is matched, for the reason :data:`redact.VALUE_PRESTRIP` exists: the cell pattern admits
+#: digits and separators only, so two letters at the end made the whole value undescribable
+#: and the date stayed in the published table.
+VALUE_ERA = re.compile(
+    r"\s*(?:B\.?\s*S\.?|A\.?\s*D\.?|(?:वि|बि|ई|इ)\.?\s*सं?\.?)\s*$", re.I
+)
+#: 🛑 **The inner bound stays at 3, and a bare four-digit YEAR is deliberately not a
+#: candidate.** Lowering it to 2 to catch `| जन्म मिति | २०४५ |` enlarges the candidate
+#: set for every row, and a year then COMPETES with the real date beside it: measured on
+#: `| जन्म मिति | राम बहादुर | २०३२/०४/१२ | २०७८ |`, the row went from one candidate
+#: (redacted) to two non-adjacent ones (refused) — so the change meant to remove more
+#: dates of birth kept one that was already being removed. Selecting between candidates
+#: by shape is the prerequisite, and it is not this change.
 VALUE_CELL = re.compile(rf"[{AD}][{AD}\-/\.\s]{{3,24}}[{AD}]")
 
+#:
 LIMITS = {
     "citizenship": (7, 16),
     "date_of_birth": (5, 10),
@@ -150,7 +182,7 @@ def _label_kinds(cell: str) -> tuple[str, ...]:
 
 
 def _candidate_shape(cell: str, kind: str) -> CandidateShape | None:
-    core = cell.strip()
+    core = VALUE_ERA.sub("", cell.strip())
     if not VALUE_CELL.fullmatch(core):
         return None
     digit_count = sum(ch.isdigit() for ch in core)
