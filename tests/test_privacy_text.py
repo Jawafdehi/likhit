@@ -168,8 +168,16 @@ def test_english_labels_do_not_widen_what_counts_as_a_value():
     # Guard 2, age floor: a single digit beside `उमेर`/`Age` is a count in a welfare table
     # far more often than a person being identified.
     assert "7" in redact_text("Age 7", mode=RedactionMode.STRICT).text
-    # Guard 2, date floor: four digits is a year, not a date of birth.
-    assert "1979" in redact_text("Date of Birth: 1979", mode=RedactionMode.STRICT).text
+    # Guard 2, date floor: three digits is not a year.
+    #
+    # ⚠️ This case used to read `Date of Birth: 1979` and assert the year SURVIVED, on the
+    # reasoning that four digits is a year rather than a date of birth. That reading was
+    # reversed on 28 October 2026 and the year is now removed -- see
+    # `test_privacy_label_gap.py`, where the measurement is: a labelled birth year was 100
+    # of the 102 date-of-birth values the platform's gate found still sitting in text this
+    # package had already redacted. The scanner counts one, so the remover has to take it
+    # or the two disagree forever.
+    assert "197" in redact_text("Date of Birth: 197", mode=RedactionMode.STRICT).text
     # Guard 2, passport digit bound: too short to be a passport number.
     assert "Z412" in redact_text("Passport No. Z412", mode=RedactionMode.STRICT).text
     # Guard 3, amount cue: the window ran into a money column.
