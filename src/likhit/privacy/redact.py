@@ -232,7 +232,16 @@ _GAP_PUNCT = rf"[{_GAP_PUNCT_CHARS}]"
 #: number of people; the `सिफारिस` veto exists for exactly this class and catches it only
 #: when the count is introduced by that one word. Testing what follows the value catches
 #: the construction instead of the vocabulary.
-_COUNTED_UNIT = r"(?![^\S\n]{0,3}(?:जना|वटा|पटक|प्रतिशत|किस्ता|थान))"
+#: 🛑 **The digit anchor comes FIRST, and without it this veto does not veto.** A bare
+#: negative lookahead sits after a backtrackable value window, so the engine answers it by
+#: handing one digit back and matching the shorter value — `नागरिकता लिएका ७८९०१२३४५६ जना`
+#: came out as `[REDACTED:CITIZENSHIP-NO]६ जना`, which destroys the count AND publishes a
+#: stray digit, journalled as an ordinary identifier removal. `(?![AD])` forces the value
+#: to its full run, so shortening can no longer satisfy the tail and the whole match fails.
+#:
+#: ⚠️ The whitespace is unbounded. A `{0,3}` cap let column-aligned output slip the veto —
+#: `७८९०१२३४५६    जना` padded to a tab stop was redacted with no check attempted.
+_COUNTED_UNIT = rf"(?![{AD}])(?![^\S\n]*(?:जना|वटा|पटक|प्रतिशत|किस्ता|थान))"
 
 _GAP_SPACE = rf"(?:[^\S\n]|{_GAP_PUNCT})*"
 _LABEL_GAP = (

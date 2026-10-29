@@ -252,3 +252,27 @@ def test_a_value_three_line_breaks_below_its_label_is_still_reached() -> None:
     """The cap was an arbitrary number; `\\s*` never had one."""
 
     assert placeholders.BANK_ACCOUNT in _strict("खाता नं.\n\n\n१२३४५६७८९० मा")
+
+
+@pytest.mark.parametrize(
+    ("text", "must_survive"),
+    [
+        # 🛑 Longer than the digit floor, so the value can give a digit BACK to
+        # satisfy a trailing lookahead. The earlier fixtures all sat exactly on
+        # the floor, where there is nothing to give — which is why they passed
+        # while `नागरिकता लिएका ७८९०१२३४५६ जना` came out as
+        # `[REDACTED:CITIZENSHIP-NO]६ जना`: the count destroyed, a stray digit
+        # published, and the journal calling it an ordinary removal.
+        ("नागरिकता लिएका ७८९०१२३४५६ जना", "७८९०१२३४५६"),
+        ("खाता नं. मा १२३४५६७८९० जना", "१२३४५६७८९०"),
+        # Column-aligned output pads to a tab stop; a 3-space cap slipped the veto.
+        ("नागरिकता नं. ७८९०१२३४५६    जना", "७८९०१२३४५६"),
+    ],
+)
+def test_a_counted_value_is_not_redacted_even_partly(
+    text: str, must_survive: str
+) -> None:
+    redacted = _strict(text)
+
+    assert must_survive in redacted
+    assert "REDACTED" not in redacted, "a partial redaction is the worse outcome"
