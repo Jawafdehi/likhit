@@ -120,6 +120,33 @@ PASSPORT_LABELLED = re.compile(
 # That is the same failure the module docstring describes for a legacy-font page: a zero that
 # is a blind spot rather than a finding.
 LABELLED = {
+    # 🛑 **Left as measured. Three attempts to narrow it were each wrong, in a
+    # different direction, and the reason is that this pattern serves two masters
+    # that disagree:**
+    #
+    # * the platform's gate wants **detector ⊆ remover** — anything reported that
+    #   no rule can remove refuses the document forever, because the sweep runs at
+    #   `on_residue="raise"`;
+    # * the published disclosure wants **detector ⊇ reality** — a real identifier
+    #   that goes uncounted understates what the corpus holds.
+    #
+    # A 5-digit citizenship number sits in the gap: real, and below
+    # `redact.DIGIT_BOUNDS`'s measured floor of 7. What each attempt traded:
+    #
+    # 1. a flat floor of five stopped counting `११-२२-३३-४४४४`, a removable
+    #    10-digit identifier whose longest contiguous run is four;
+    # 2. a year-shape exclusion on bare four-digit runs admitted runs the floor
+    #    refuses, reopening refuse-forever from the other end;
+    # 3. a separator-adjacency rule used `[-/.]`, which is neither the remover's
+    #    set (`- / whitespace` plus the danda) nor a superset of it — measured,
+    #    space- and danda-separated values stopped being counted while
+    #    dot-separated ones became countable-but-unremovable.
+    #
+    # ⚠️ The resolution is not in this file. It is for the GATE to distinguish
+    # residue a rule can remove from data detected and deliberately out of scope
+    # — `materials.redaction.residual_classes` in JawafdehiAPI — and it wants its
+    # own measurement of how many documents each reading refuses. Narrowing this
+    # pattern cannot do it.
     "citizenship": re.compile(
         rf"(?:नागरिकता|citizenship)[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}}", re.I
     ),
