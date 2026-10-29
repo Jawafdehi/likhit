@@ -120,45 +120,8 @@ PASSPORT_LABELLED = re.compile(
 # That is the same failure the module docstring describes for a legacy-font page: a zero that
 # is a blind spot rather than a finding.
 LABELLED = {
-    # 🛑 **Five digits, not four, and the fourth digit is a YEAR.** Over 106 law-journal
-    # and charge-sheet documents, every four-digit run this signal reached across prose was
-    # a date or a statute year rather than an identifier: `नागरिकता … मिति २०७८/०६/२२`,
-    # `नागरिकतासम्बन्धी दर्ता किताब २०३२/०३३`, `नेपाल नागरिकता ऐन, २०२० / २०६३`. They are
-    # 17 of the signals this scanner reported and 0 of the values any remover can take —
-    # and because the platform's gate refuses a document on a positive scan, each one
-    # refused a document over data that was never there.
-    #
-    # ⚠️ This is the one narrowing in this module that does not hide an exposure, and the
-    # distinction is the whole argument for making it: nothing moves from "counted" to
-    # "uncounted while still present". A four-digit run is not a citizenship number under
-    # this package's own measured bounds (`redact.DIGIT_BOUNDS` floors the class at 7
-    # digits), so no remover was ever going to act on one.
-    #
-    # ⚠️ **A flat floor of five was the wrong instrument, and it hid real data.** The bound
-    # counts a value's digits ACROSS its separators while this pattern matches one
-    # contiguous run, so `११-२२-३३-४४४४` is a removable 10-digit identifier whose longest
-    # run is 4: raising the floor stopped counting it, and a document carrying one would
-    # have passed the gate reporting a disclosure of zero.
-    #
-    # What is actually being excluded is a YEAR, so the shape is what to test. A four-digit
-    # run opening `१९`/`२०`/`२१` (or their ASCII equivalents) is a date in either calendar;
-    # anything else of four digits is still counted, and five or more always is.
-    #
-    # ⚠️ The residue: a citizenship number whose final group happens to open like a year
-    # (`१२-३४-५६-२०४५`) is not counted. Measured at 0 occurrences in the control corpus,
-    # and the trade is the right way round — a missed count is a weaker disclosure, while a
-    # miscounted year refuses a document over data that is not in it.
     "citizenship": re.compile(
-        rf"(?:नागरिकता|citizenship)[^\n]{{0,40}}?"
-        rf"(?:[{ANY_DIGITS}]{{5,}}"
-        # …or four digits that are PART OF A SEPARATED VALUE. A bare run of four
-        # can never be removed — `redact.DIGIT_BOUNDS` floors the class at 7
-        # digits across the separators — so counting one reports residue nothing
-        # can act on, and a sweep running at `on_residue="raise"` refuses that
-        # document forever. `११-२२-३३-४४४४` reaches the floor and still counts.
-        rf"|(?<=[\-/.])(?!(?:१९|२०|२१|19|20|21))[{ANY_DIGITS}]{{4}}(?![{ANY_DIGITS}])"
-        rf"|(?!(?:१९|२०|२१|19|20|21))[{ANY_DIGITS}]{{4}}(?=[\-/.][{ANY_DIGITS}]))",
-        re.I,
+        rf"(?:नागरिकता|citizenship)[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}}", re.I
     ),
     # 🛑 **`pan` is detected here and removed nowhere**, which is the decision rather than a
     # gap: a PAN is a *business registration* number, public by design, and removing a
