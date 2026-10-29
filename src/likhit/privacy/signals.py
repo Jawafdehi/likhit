@@ -151,7 +151,13 @@ LABELLED = {
     "citizenship": re.compile(
         rf"(?:नागरिकता|citizenship)[^\n]{{0,40}}?"
         rf"(?:[{ANY_DIGITS}]{{5,}}"
-        rf"|(?!(?:१९|२०|२१|19|20|21))[{ANY_DIGITS}]{{4}}(?![{ANY_DIGITS}]))",
+        # …or four digits that are PART OF A SEPARATED VALUE. A bare run of four
+        # can never be removed — `redact.DIGIT_BOUNDS` floors the class at 7
+        # digits across the separators — so counting one reports residue nothing
+        # can act on, and a sweep running at `on_residue="raise"` refuses that
+        # document forever. `११-२२-३३-४४४४` reaches the floor and still counts.
+        rf"|(?<=[\-/.])(?!(?:१९|२०|२१|19|20|21))[{ANY_DIGITS}]{{4}}(?![{ANY_DIGITS}])"
+        rf"|(?!(?:१९|२०|२१|19|20|21))[{ANY_DIGITS}]{{4}}(?=[\-/.][{ANY_DIGITS}]))",
         re.I,
     ),
     # 🛑 **`pan` is detected here and removed nowhere**, which is the decision rather than a
