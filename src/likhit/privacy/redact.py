@@ -702,7 +702,13 @@ def _rules_for(mode: RedactionMode) -> tuple:
 #:
 #: ⚠️ Bank only. Citizenship and date values are grouped too, and their own digit bounds
 #: already describe them.
-_MONEY_GROUPED = re.compile(rf"^[{AD}]{{1,3}}(?:,[{AD}]{{2,3}})+(?:\.[{AD}]+)?$")
+#: ⚠️ The fractional tail is BOUNDED at two digits, and that is what lets
+#: :func:`_is_amount` be a single test again. An unbounded `\.[AD]+` admitted
+#: `१२,३४,५६७.५२०३८२३` as money — a 7-digit run no amount carries — which is the
+#: whole reason a second "longest run < 6" clause existed, and the reason deleting
+#: that clause as "unreachable" leaked an account. Money is written to two
+#: decimal places; an account with a long tail no longer matches at all.
+_MONEY_GROUPED = re.compile(rf"^[{AD}]{{1,3}}(?:,[{AD}]{{2,3}})+(?:\.[{AD}]{{1,2}})?$")
 
 
 def _is_amount(val: str) -> bool:
