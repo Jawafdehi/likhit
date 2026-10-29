@@ -232,10 +232,6 @@ _GAP_SPACE = rf"(?:[^\S\n]|{_GAP_PUNCT})*"
 #:
 #: One word is what the real gaps need: `खाता नं. क्रमशः ###…` ("respectively"),
 #: `Account Number भनी ###…` ("stating"). Two words is already a sentence.
-#: Units that follow a COUNT, never an identifier. `नागरिकता लिएका ७८९०१२३ जना` is a
-#: number of people; the `सिफारिस` veto exists for exactly this class and catches it only
-#: when the count is introduced by that one word. Testing what follows the value catches
-#: the construction instead of the vocabulary.
 _LABEL_GAP = (
     rf"(?P<sep>{_GAP_SPACE}"
     rf"(?:(?!{_OTHER_FIELD_CUE.pattern})[^\s\[|A-Za-z{AD}{_GAP_PUNCT_CHARS}]{{1,12}}{_GAP_SPACE})?"
@@ -259,6 +255,12 @@ _LABEL_GAP = (
 #:
 #: ⚠️ The whitespace is unbounded. A `{0,3}` cap let column-aligned output slip the veto —
 #: `७८९०१२३४५६    जना` padded to a tab stop was redacted with no check attempted.
+#:
+#: These are units that follow a COUNT, never an identifier. `नागरिकता लिएका ७८९०१२३ जना`
+#: is a number of people; the `सिफारिस` veto exists for exactly this class and catches it
+#: only when the count is introduced by that one word. Testing what FOLLOWS the value
+#: catches the construction instead of the vocabulary — which is why this paragraph belongs
+#: here and not above :data:`_LABEL_GAP`, where it governed what sits BEFORE a value.
 _COUNTED_UNIT = rf"(?![{AD}])(?![^\S\n]*(?:जना|वटा|पटक|प्रतिशत|किस्ता|थान))"
 
 
@@ -706,13 +708,19 @@ _MONEY_GROUPED = re.compile(rf"^[{AD}]{{1,3}}(?:,[{AD}]{{2,3}})+(?:\.[{AD}]+)?$"
 def _is_amount(val: str) -> bool:
     """Whether a bank value is money rather than an account.
 
-    ⚠️ The grouping pattern IS the whole test. A `longest run < 6` second clause
-    was unreachable — :data:`_MONEY_GROUPED` caps every integer-part group at
-    three digits, so nothing that matched it could ever fail the run test — and
-    it scanned ``val`` while the regex had matched ``val.strip()``, so the two
-    halves disagreed about their input.
+    🛑 **Both clauses are load-bearing.** A previous commit deleted the second one
+    as unreachable; it is not. :data:`_MONEY_GROUPED` caps the INTEGER groups at
+    three digits and leaves the fractional tail unbounded (``\\.[AD]+``), so
+    `खाता नं. १२,३४,५६७.५२०३८२३` fullmatches it carrying a 7-digit run — and with
+    the length test gone that account is classified as money and published. The
+    reasoning behind the deletion inspected the integer groups and never executed
+    the pattern, which is the whole lesson: "unreachable" is a claim to run, not
+    to read.
     """
-    return bool(_MONEY_GROUPED.fullmatch(val.strip()))
+    val = val.strip()
+    if not _MONEY_GROUPED.fullmatch(val):
+        return False
+    return max((len(run) for run in re.findall(rf"[{AD}]+", val)), default=0) < 6
 
 
 def _accept(val: str, kind: str, stats: Counter) -> int | None:

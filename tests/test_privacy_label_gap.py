@@ -266,3 +266,42 @@ def test_the_gap_does_not_read_past_a_paragraph_break() -> None:
     # ⚠️ Not a `९८…` fixture here: that is a mobile shape and the contact pass
     # removes it on its own merits, which would make this pass for the wrong reason.
     assert "११२२३३४४५५" in _strict("खाता नं." + "\n" * 14 + "११२२३३४४५५ मा")
+
+
+@pytest.mark.parametrize(
+    ("text", "redacted"),
+    [
+        # 🛑 `_MONEY_GROUPED` leaves the fractional tail unbounded, so this
+        # fullmatches it with a 7-digit run. Without the length clause the
+        # account is classified as money and published. A commit deleted that
+        # clause as unreachable, having reasoned about the integer groups only.
+        ("खाता नं. १२,३४,५६७.५२०३८२३ मा", True),
+        # …while a genuine grouped amount still is not an account.
+        ("खाता नं. बाट ५,००,००० झिकेको", False),
+        ("खाता नं. मा ४५,६७८.९० जम्मा", False),
+    ],
+)
+def test_a_long_fraction_is_an_account_not_an_amount(text: str, redacted: bool) -> None:
+    assert (placeholders.BANK_ACCOUNT in _strict(text)) is redacted
+
+
+@pytest.mark.parametrize(
+    ("text", "must_survive"),
+    [
+        # 🛑 ABOVE the digit floor, which is the only place a regression of the
+        # `(?![AD])` anchor can show: a value sitting exactly on its floor has no
+        # digit to hand back. A commit deleted this block without saying so,
+        # leaving the anchor, the unbounded tab-stop whitespace and the bank
+        # rule's own counted-unit veto with no fixture at all.
+        ("नागरिकता लिएका ७८९०१२३४५६ जना", "७८९०१२३४५६"),
+        ("खाता नं. मा १२३४५६७८९० जना", "१२३४५६७८९०"),
+        ("नागरिकता नं. ७८९०१२३४५६    जना", "७८९०१२३४५६"),
+    ],
+)
+def test_a_counted_value_is_not_redacted_even_partly(
+    text: str, must_survive: str
+) -> None:
+    redacted = _strict(text)
+
+    assert must_survive in redacted
+    assert "REDACTED" not in redacted, "a partial redaction is the worse outcome"
