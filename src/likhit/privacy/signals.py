@@ -42,6 +42,53 @@ MOBILE = re.compile(
 LANDLINE = re.compile(
     rf"(?<![{ANY_DIGITS}])[०0][{ANY_DIGITS}]-[{ANY_DIGITS}]{{6,7}}(?![{ANY_DIGITS}])"
 )
+
+#: Labels after which a number is a **document identifier, not a telephone**.
+#:
+#: 🛑 Nothing about the digits can separate the two. :data:`LANDLINE` is a pure shape match,
+#: `0N-NNNNNN`, and a Nepali driving licence number (`सवारी चालक अनुमतिपत्र`, abbreviated
+#: `स.चा.अ.पत्र`) is exactly that shape. Only the label distinguishes them.
+#:
+#: Measured on the 25th annual report, page 191, which enumerates eleven licences seized in a
+#: licence-tampering case: **six matched :data:`LANDLINE` and five did not.** The five
+#: survivors were not spared by any rule -- they are `००६-`-prefixed, where the digit
+#: lookbehind rejects the match, or five-digit, below the `{6,7}` bound. So the pattern was
+#: destroying an arbitrary majority of a single enumeration whose licence numbers **are the
+#: evidence** in that finding, and leaving the remainder in place beside the holes.
+#:
+#: 🛑 **Applied by both :func:`scan_text` and :mod:`likhit.privacy.contact`.** This package's
+#: contract is that the disclosure and the removal agree about what is present -- see that
+#: module's header on why it imports these patterns rather than restating them. Counting a
+#: licence number as a landline in the published "what remains" report is the same defect as
+#: removing it, so suppressing it in only one place would trade a redaction bug for a
+#: reporting bug.
+#: Horizontal space, optionally crossing **one** line break. The break is not hypothetical:
+#: in the measured sentence one entry reads `…रामशरण श्रीमलको स.चा.अ.पत्र\nनं.०६-४८०२०२`,
+#: with the label ending a line and its `नं.` opening the next. Refusing to cross it left
+#: that one licence removed while the other five were spared -- the arbitrary split this rule
+#: exists to end. Kept explicit rather than widened to `\s*` so the limit stays readable.
+_DOCUMENT_ID_GAP = r"(?:[^\S\n]*\n)?[^\S\n]*"
+
+DOCUMENT_ID_LABEL = re.compile(
+    rf"स\.चा\.अ\.पत्र(?:को)?{_DOCUMENT_ID_GAP}(?:नं|नम्बर)?\.?{_DOCUMENT_ID_GAP}$"
+)
+
+
+def introduced_by_document_id_label(text: str, start: int) -> bool:
+    """Is the value at ``start`` introduced by a :data:`DOCUMENT_ID_LABEL`?
+
+    🛑 **The ``$`` anchor is what confines this, not the 32-character slice.** The pattern
+    must match *ending* at the value, and the gap it allows is a handful of characters, so a
+    licence mentioned earlier in a sentence cannot reach a real phone number later in it --
+    which matters, because these documents put both in one paragraph. The slice is a bounded
+    read, nothing more; widening it to 200 changes no result. Recorded because the obvious
+    reading is the other way round, and a later edit that drops the anchor while keeping the
+    window would look like a narrowing and behave like a removal.
+    """
+
+    return DOCUMENT_ID_LABEL.search(text[max(0, start - 32) : start]) is not None
+
+
 # 🛑 **A phone number that :data:`MOBILE` cannot see, found by its label instead.** `MOBILE`
 # anchors on the 97/98 opening of a *Nepali* number, so a foreign one in an international
 # format is invisible to it -- and these documents carry them. Page 1 of
@@ -227,7 +274,13 @@ def scan_text(t: str) -> tuple[Counter, Counter]:
     hp = Counter()
     hp["email"] = len(EMAIL.findall(t))
     hp["mobile"] = len(MOBILE.findall(t))
-    hp["landline"] = len(LANDLINE.findall(t))
+    # Not `findall`: a licence number has the landline shape, so the count has to consult
+    # the label in front of each match. See :data:`DOCUMENT_ID_LABEL`.
+    hp["landline"] = sum(
+        1
+        for m in LANDLINE.finditer(t)
+        if not introduced_by_document_id_label(t, m.start())
+    )
     for k, rx in LABELLED.items():
         hp[k] = len(rx.findall(t))
 
