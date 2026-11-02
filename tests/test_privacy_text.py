@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from likhit.privacy import RedactionMode, contains_placeholder, redact_text, scan_text
+from likhit.privacy.redact import AGE_LABEL_VALUE
 from likhit.privacy.modes import DEFAULT_MODE
 from likhit.save_cli import build_parser
 
@@ -39,12 +40,13 @@ def test_strict_removes_every_personal_detail_it_can():
     result = redact_text(WIDE_SAMPLE, mode=RedactionMode.STRICT)
     for value in ("०१२३४५६७८९०१", "९८५१२३४५६७"):
         assert value not in result.text
-    # ⚠️ Asserted against the label, not the bare digits: `४५` is also a substring of the
-    # PAN, which `strict` deliberately keeps, so `"४५" not in text` would fail for a
-    # reason that has nothing to do with the age.
-    assert "उमेर ४५" not in result.text
-    assert "[REDACTED:AGE]" in result.text
-    assert "उमेर" in result.text, "the age label is kept; only the number goes"
+    # ⚠️ **The age SURVIVES `strict`, and that is the decision.** This assertion used to
+    # read the other way. `age` was counted against every corpus available -- 36 removals
+    # on the CIAA annual reports, 76 on the Auditor General shelf, 34 on the charge sheets
+    # -- and in essentially every instance the value was a statutory threshold or the age
+    # bar whose breach was the finding. See `likhit.privacy.redact.INLINE_RULES`.
+    assert "उमेर ४५" in result.text
+    assert "[REDACTED:AGE]" not in result.text
     assert "खाता नं." in result.text
 
 
@@ -86,12 +88,19 @@ def test_an_alphanumeric_bank_account_is_removed():
     assert "१२३४५६७८९०" not in result.text
 
 
-def test_age_anchors_on_umer_and_not_on_varsha():
-    """🛑 The measurement behind the age rule, as behaviour.
+def test_age_pattern_anchors_on_umer_and_not_on_varsha():
+    """🛑 The measurement behind the age pattern, kept as a property OF THE PATTERN.
 
     A `वर्ष`-adjacent rule matches 413 spans over the CIAA corpus, mostly durations: a
     contract term, a deadline, years of service. Removing those deletes the financial
     evidence the corpus exists for.
+
+    ⚠️ Asserted against `AGE_LABEL_VALUE` directly, because no tier removes an age any
+    more -- see `likhit.privacy.redact.INLINE_RULES`. Driving it through `redact_text`
+    would now pass for every input including the durations, making a test that proves
+    nothing look like the one that proved this. The pattern is retained so a future corpus
+    can re-enter the rule on its own measurement, and its calibration has to survive the
+    wait.
     """
 
     durations = [
@@ -100,12 +109,16 @@ def test_age_anchors_on_umer_and_not_on_varsha():
         "सेवा प्रवेश गरेको १२ वर्षमा",
     ]
     for line in durations:
-        result = redact_text(line, mode=RedactionMode.STRICT)
-        assert "[REDACTED:AGE]" not in result.text, f"clobbered a duration: {line}"
+        assert not AGE_LABEL_VALUE.search(line), f"would clobber a duration: {line}"
 
-    # Both word orders of a real age ARE removed.
+    # Both word orders of a real age still MATCH the pattern.
     for line in ("निजको उमेर ४५ वर्ष", "४५ वर्षको उमेरका व्यक्ति"):
-        assert "[REDACTED:AGE]" in redact_text(line, mode=RedactionMode.STRICT).text
+        assert AGE_LABEL_VALUE.search(line), line
+
+    # And no tier acts on any of it.
+    for line in [*durations, "निजको उमेर ४५ वर्ष"]:
+        for mode in RedactionMode:
+            assert "[REDACTED:AGE]" not in redact_text(line, mode=mode).text
 
 
 #: Page 1 of `samples/aarop-patra.pdf`, the line that carried an Indian national's details in

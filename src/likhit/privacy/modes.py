@@ -62,8 +62,14 @@ class RedactionMode(str, Enum):
     #: :data:`IDENTIFIERS` plus mobile numbers, landlines and email addresses.
     CONTACT = "contact"
 
-    #: Everything this package can remove: :data:`CONTACT` plus bank account, age and
-    #: passport.
+    #: Everything this package can remove: :data:`CONTACT` plus bank account and passport.
+    #:
+    #: ⚠️ **Not age, and that is measured rather than overlooked.** `age` was removable here
+    #: until it was counted against every corpus available: 36 removals on the CIAA annual
+    #: reports, 76 on the Auditor General shelf, 34 on the charge sheets -- and in
+    #: essentially every instance the value was a statutory threshold or the age bar whose
+    #: breach was the finding, not a fact about a person worth protecting. See
+    #: :data:`likhit.privacy.redact.INLINE_RULES` for the breakdown.
     #:
     #: ⚠️ **Not PAN.** A PAN is a business registration number, public by design; it is
     #: detected and disclosed, never removed. See :data:`likhit.privacy.redact.INLINE_RULES`.
