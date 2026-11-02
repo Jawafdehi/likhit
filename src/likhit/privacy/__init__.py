@@ -33,6 +33,9 @@ was once broken, and each is documented there with what it cost.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
 from . import contact, placeholders, redact
 from .contact import ContactTarget, iter_contact_targets
 from .modes import DEFAULT_MODE, RedactionMode
@@ -50,6 +53,7 @@ from .signals import scan_text
 from .text import RedactedText, redact_text
 from .tree import RedactionReport, redact_tree
 
+
 #: Every kind this package can remove, mapped to the **narrowest tier that removes it**.
 #:
 #: 🛑 **Derived from the rules, never restated.** A consumer that needs to ask "does my
@@ -66,25 +70,55 @@ from .tree import RedactionReport, redact_tree
 #: ``signals.LABELLED["pan"]`` but removed by no tier, so it has no entry here. A caller
 #: computing "classes my tier should have zeroed" from this map therefore excludes it
 #: automatically, instead of needing its own exception list.
-REMOVAL_TIERS: dict[str, RedactionMode] = {}
-for _kind, _pattern, _marker, _minimum in redact.INLINE_RULES:
-    # A kind can carry several rules -- `date_of_birth` has four -- and they could in
-    # principle sit at different tiers. The narrowest wins: the question this map answers is
-    # "from which tier onwards is any of this kind removed?".
-    _seen = REMOVAL_TIERS.get(_kind)
-    if _seen is None or _minimum.rank < _seen.rank:
-        REMOVAL_TIERS[_kind] = _minimum
-for _kind, _pattern in contact.CONTACT_PATTERNS:
-    # The contact pass is gated as a whole by `mode.removes_contact`, so every kind it
-    # yields enters at `CONTACT`. Read off the pass rather than listed, so a fifth contact
-    # pattern is covered the day it is added.
-    REMOVAL_TIERS.setdefault(_kind, RedactionMode.CONTACT)
-del _kind, _pattern, _marker, _minimum, _seen
+#: ⚠️ **Read-only.** This feeds a publishing gate -- a consumer asks it which classes its
+#: tier should have zeroed before deciding whether text is safe to publish. A plain dict
+#: exported from a package is mutable by anything that imports it, and a single stray
+#: ``REMOVAL_TIERS[k] = ...`` anywhere in a process would silently change what every later
+#: gate checks, with no diff to find it in.
+def _build_removal_tiers() -> Mapping[str, RedactionMode]:
+    """Collect every removable kind from the rules that define them.
+
+    🛑 **A function rather than a module-level loop.** The loop form leaks its control
+    variables into the package namespace and needs a trailing ``del`` to clean them up --
+    which raises ``NameError`` *at import time* if either collection is ever empty, because
+    the names the ``del`` lists were never bound. An import-time crash guarding against
+    nothing is a worse failure than the tidiness it buys.
+    """
+
+    tiers: dict[str, RedactionMode] = {}
+
+    def offer(kind: str, minimum: RedactionMode) -> None:
+        # 🛑 **Narrowest wins, and it has to be applied to BOTH sources.** A kind can carry
+        # several rules -- `date_of_birth` has four -- and nothing stops one appearing in
+        # the inline rules *and* in the contact pass. The question this map answers is "from
+        # which tier onwards is any of this kind removed?", so the lowest rank is the only
+        # correct answer.
+        #
+        # ⚠️ An earlier form used `setdefault` for the contact half, which keeps whatever
+        # the inline half wrote. The two sets do not overlap today, so it was latent -- but
+        # it failed in the unsafe direction: an inline rule for a contact kind at a wider
+        # tier would make this map claim the class is not removed at `CONTACT` when the
+        # contact pass removes it there, and a gate would then skip checking its residue.
+        seen = tiers.get(kind)
+        if seen is None or minimum.rank < seen.rank:
+            tiers[kind] = minimum
+
+    for kind, _pattern, _marker, minimum in redact.INLINE_RULES:
+        offer(kind, minimum)
+    for kind, _pattern in contact.CONTACT_PATTERNS:
+        # The contact pass is gated as a whole by `mode.removes_contact`, so every kind it
+        # yields enters at `CONTACT`. Read off the pass rather than listed, so a fifth
+        # contact pattern is covered the day it is added.
+        offer(kind, RedactionMode.CONTACT)
+    return MappingProxyType(tiers)
+
+
+REMOVAL_TIERS: Mapping[str, RedactionMode] = _build_removal_tiers()
 
 __all__ = [
-    "REMOVAL_TIERS",
     "DEFAULT_MODE",
     "PLACEHOLDERS",
+    "REMOVAL_TIERS",
     "ContactTarget",
     "InlineTarget",
     "PageClass",

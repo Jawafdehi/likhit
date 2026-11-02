@@ -141,3 +141,72 @@ def test_pan_is_absent_too() -> None:
     """A PAN identifies a business, is public by design, and no tier removes it."""
 
     assert "pan" not in REMOVAL_TIERS
+
+
+def test_removal_tiers_is_read_only() -> None:
+    """⚠️ It feeds a publishing gate, so a stray write must not reach later callers.
+
+    A plain dict exported from a package is mutable by anything importing it, and a single
+    `REMOVAL_TIERS[k] = ...` would silently change what every later gate checks, with no
+    diff to find it in.
+    """
+
+    with pytest.raises(TypeError):
+        REMOVAL_TIERS["citizenship"] = RedactionMode.STRICT  # type: ignore[index]
+
+
+def test_narrowest_tier_wins_across_both_rule_sources() -> None:
+    """🛑 The inline rules and the contact pass are merged by LOWEST rank, not first-write.
+
+    No kind sits in both collections today, so this is asserted against the builder with a
+    synthetic overlap rather than against the live map -- otherwise the guard is vacuous
+    and would stay vacuous right up until the day it mattered.
+
+    The unsafe direction is specific: `setdefault` on the contact half keeps whatever the
+    inline half wrote, so an inline rule for a contact kind at a *wider* tier would make
+    the map claim that class is not removed at `CONTACT` when the contact pass removes it
+    there -- and a gate reading the map would skip checking its residue.
+    """
+
+    from likhit.privacy import _build_removal_tiers
+    from likhit.privacy import contact as contact_mod
+    from likhit.privacy import redact as redact_mod
+
+    original_inline = redact_mod.INLINE_RULES
+    original_contact = contact_mod.CONTACT_PATTERNS
+    try:
+        # `email` removed by an inline rule at the widest tier, and by the contact pass at
+        # `contact`. The honest answer is `contact`: that is where it starts being removed.
+        redact_mod.INLINE_RULES = (("email", None, None, RedactionMode.STRICT),)
+        contact_mod.CONTACT_PATTERNS = (("email", None),)
+        assert _build_removal_tiers()["email"] is RedactionMode.CONTACT
+
+        # And the reverse order must give the same answer.
+        redact_mod.INLINE_RULES = (("email", None, None, RedactionMode.IDENTIFIERS),)
+        contact_mod.CONTACT_PATTERNS = (("email", None),)
+        assert _build_removal_tiers()["email"] is RedactionMode.IDENTIFIERS
+    finally:
+        redact_mod.INLINE_RULES = original_inline
+        contact_mod.CONTACT_PATTERNS = original_contact
+
+
+def test_building_the_map_survives_an_empty_rule_set() -> None:
+    """⚠️ The module-level loop form raised NameError *at import time* when empty.
+
+    Its trailing `del` listed names that were never bound. An import-time crash guarding
+    against nothing is worse than the tidiness it buys, which is why this is a function.
+    """
+
+    from likhit.privacy import _build_removal_tiers
+    from likhit.privacy import contact as contact_mod
+    from likhit.privacy import redact as redact_mod
+
+    original_inline = redact_mod.INLINE_RULES
+    original_contact = contact_mod.CONTACT_PATTERNS
+    try:
+        redact_mod.INLINE_RULES = ()
+        contact_mod.CONTACT_PATTERNS = ()
+        assert dict(_build_removal_tiers()) == {}
+    finally:
+        redact_mod.INLINE_RULES = original_inline
+        contact_mod.CONTACT_PATTERNS = original_contact
