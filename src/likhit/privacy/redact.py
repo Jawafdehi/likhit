@@ -594,9 +594,18 @@ INLINE_RULES = (
     # nothing here is left half-wired. :data:`~likhit.privacy.placeholders.PAN` stays
     # registered so text redacted by the earlier out-of-tree pass is still recognised by
     # ``strip_placeholders`` and ``contains_placeholder``.
-    ("bank_account", BANK_LABEL_VALUE, BANK_ACCOUNT, RedactionMode.STRICT),
+    ("bank_account", BANK_LABEL_VALUE, BANK_ACCOUNT, RedactionMode.ACCOUNTS),
+    # 🛑 **`age` is the only rule left at `strict`, and that is the whole point of
+    # :data:`~likhit.privacy.modes.RedactionMode.ACCOUNTS` sitting below it.** An age is an
+    # attribute, not an identifier, and in a corpus of accountability findings it is
+    # routinely the *subject* of the finding rather than an incidental detail: a statutory
+    # retirement threshold, a tenure limit, an age bar whose breach is the alleged offence.
+    # Measured at 28/28 wrong on the CIAA annual reports and effectively all statutory on
+    # the Auditor General shelf -- see that mode's docstring for the figures. It stays
+    # removable, because on a charge sheet a defendant's age is ordinary personal data; it
+    # is simply no longer bundled with the identifiers.
     ("age", AGE_LABEL_VALUE, AGE, RedactionMode.STRICT),
-    ("passport", PASSPORT_LABEL_VALUE, PASSPORT, RedactionMode.STRICT),
+    ("passport", PASSPORT_LABEL_VALUE, PASSPORT, RedactionMode.ACCOUNTS),
 )
 
 #: The tiers that remove a given rule, as a set per mode. Derived from :data:`INLINE_RULES`
