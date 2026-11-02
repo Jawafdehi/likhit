@@ -47,7 +47,6 @@ from dataclasses import dataclass
 from ..devanagari import ANY_DIGITS as AD
 from .modes import RedactionMode
 from .placeholders import (
-    AGE,
     BANK_ACCOUNT,
     CITIZENSHIP,
     DATE_OF_BIRTH,
@@ -594,18 +593,41 @@ INLINE_RULES = (
     # nothing here is left half-wired. :data:`~likhit.privacy.placeholders.PAN` stays
     # registered so text redacted by the earlier out-of-tree pass is still recognised by
     # ``strip_placeholders`` and ``contains_placeholder``.
-    ("bank_account", BANK_LABEL_VALUE, BANK_ACCOUNT, RedactionMode.ACCOUNTS),
-    # 🛑 **`age` is the only rule left at `strict`, and that is the whole point of
-    # :data:`~likhit.privacy.modes.RedactionMode.ACCOUNTS` sitting below it.** An age is an
-    # attribute, not an identifier, and in a corpus of accountability findings it is
-    # routinely the *subject* of the finding rather than an incidental detail: a statutory
-    # retirement threshold, a tenure limit, an age bar whose breach is the alleged offence.
-    # Measured at 28/28 wrong on the CIAA annual reports and effectively all statutory on
-    # the Auditor General shelf -- see that mode's docstring for the figures. It stays
-    # removable, because on a charge sheet a defendant's age is ordinary personal data; it
-    # is simply no longer bundled with the identifiers.
-    ("age", AGE_LABEL_VALUE, AGE, RedactionMode.STRICT),
-    ("passport", PASSPORT_LABEL_VALUE, PASSPORT, RedactionMode.ACCOUNTS),
+    ("bank_account", BANK_LABEL_VALUE, BANK_ACCOUNT, RedactionMode.STRICT),
+    # 🛑🛑 **`age` is detected by nothing and removed by no tier, and that is the decision.**
+    # It was removable at `strict` until it was measured. An age is an attribute rather than
+    # an identifier, and in an accountability corpus it is overwhelmingly the *subject* of
+    # the finding rather than an incidental detail about a person. Measured on every corpus
+    # available, it was wrong in essentially every instance and right in none:
+    #
+    # - **CIAA annual reports, 5,864 pages: 36 removals, all wrong.** Twelve are the
+    #   statutory tenure age of CIAA commissioners -- a constitutional provision, not
+    #   anyone's age. The rest are the age bars whose breach IS the finding:
+    #   `[AGE] वर्ष उमेर नाघेका व्यक्तिलाई … नियुक्त`.
+    # - **Auditor General shelf: 76 removals**, effectively all statutory retirement
+    #   thresholds (`कर्मचारीको उमेर ५८ वर्ष पुरा`).
+    # - **Charge sheets: 34 removals.** Around twenty are statutes quoted verbatim
+    #   (`सदस्यको उमेर [AGE] वर्ष पूरा भएमा स्वतः अवकाश हुनेछ`) or the hiring age range a
+    #   teacher appointment allegedly breached; one is an age cited as a *sentencing
+    #   factor*; several are the age on a record, which is the evidence in a
+    #   citizenship-fraud case.
+    #
+    # The residue -- roughly four depositions reading `मेरो उमेर [AGE] वर्ष, पेसा व्यापार`
+    # -- is the only arguably personal use, and there the speaker's name, father's name,
+    # grandfather's name and full address sit in the same sentence and are all kept. An age
+    # removed beside them protects nobody and costs the reader a fact that is frequently
+    # load-bearing.
+    #
+    # ⚠️ :data:`AGE_LABEL_VALUE` is deliberately kept here, and :data:`placeholders.AGE`
+    # stays registered in its own module -- no longer imported into this one, since no
+    # rule writes it. The placeholder matters because text redacted by an earlier pass
+    # must still be recognised
+    # by ``strip_placeholders`` and ``contains_placeholder`` -- the same reason
+    # :data:`placeholders.PAN` stays. The pattern stays because the decision is "this is not
+    # personal data worth removing *from these corpora*", which a future corpus could
+    # revisit with its own measurement; deleting it would make that a rewrite rather than a
+    # one-line re-entry.
+    ("passport", PASSPORT_LABEL_VALUE, PASSPORT, RedactionMode.STRICT),
 )
 
 #: The tiers that remove a given rule, as a set per mode. Derived from :data:`INLINE_RULES`

@@ -62,36 +62,14 @@ class RedactionMode(str, Enum):
     #: :data:`IDENTIFIERS` plus mobile numbers, landlines and email addresses.
     CONTACT = "contact"
 
-    #: :data:`CONTACT` plus the numbers on a person's accounts and papers -- bank account
-    #: and passport -- but **not age**. Every identifier this package removes, and no
-    #: attribute.
+    #: Everything this package can remove: :data:`CONTACT` plus bank account and passport.
     #:
-    #: 🛑 **This tier exists because `age` is the one rule whose precision is a property of
-    #: the corpus rather than of the pattern.** It carries its own measured number, as
-    #: :mod:`likhit.privacy.modes` requires of every tier:
-    #:
-    #: - **CIAA annual reports, 3,854 pages: 28 `age` removals, 28 of them wrong.** Twelve
-    #:   are the statutory tenure age of CIAA commissioners -- a constitutional provision,
-    #:   not a person's age. The rest are the age limits whose breach **is** the finding:
-    #:   `[AGE] वर्ष उमेर नाघेका व्यक्तिलाई … नियुक्त`, `[AGE] वर्ष उमेर हदका कारण … अवकाश`.
-    #:   Removing them takes the substance out of an accountability record.
-    #: - **Auditor General shelf: 76 `age` removals, effectively all statutory retirement
-    #:   thresholds** (`कर्मचारीको उमेर ५८ वर्ष पुरा`).
-    #:
-    #: On the same CIAA pages `bank_account` removes 49, and reading the possessive in front
-    #: of each shows they are substantially real: the accounts of named spouses, a mother, a
-    #: brother and daughters caught in asset-seizure findings -- people who are frequently
-    #: not the accused. Dropping to :data:`CONTACT` to escape `age` would publish all of
-    #: those. So the two cannot be traded against each other, and the tier that separates
-    #: them is the only configuration that fits this corpus.
-    #:
-    #: ⚠️ **Not a licence to skip `age` generally.** On a charge sheet a defendant's age is
-    #: ordinary personal data and :data:`STRICT` remains right there. This tier is for a
-    #: corpus whose ages are statutory, which is a judgement about documents, not about the
-    #: rule.
-    ACCOUNTS = "accounts"
-
-    #: Everything this package can remove: :data:`ACCOUNTS` plus age.
+    #: ⚠️ **Not age, and that is measured rather than overlooked.** `age` was removable here
+    #: until it was counted against every corpus available: 36 removals on the CIAA annual
+    #: reports, 76 on the Auditor General shelf, 34 on the charge sheets -- and in
+    #: essentially every instance the value was a statutory threshold or the age bar whose
+    #: breach was the finding, not a fact about a person worth protecting. See
+    #: :data:`likhit.privacy.redact.INLINE_RULES` for the breakdown.
     #:
     #: ⚠️ **Not PAN.** A PAN is a business registration number, public by design; it is
     #: detected and disclosed, never removed. See :data:`likhit.privacy.redact.INLINE_RULES`.
@@ -124,10 +102,6 @@ class RedactionMode(str, Enum):
     def removes_contact(self) -> bool:
         return self.removes(RedactionMode.CONTACT)
 
-    @property
-    def removes_accounts(self) -> bool:
-        return self.removes(RedactionMode.ACCOUNTS)
-
 
 #: The tier order. Separate from the enum's declaration order because `str`-valued enums have
 #: no inherent ordering and comparing them as strings would sort `contact` before
@@ -136,7 +110,6 @@ _ORDER: tuple[RedactionMode, ...] = (
     RedactionMode.NONE,
     RedactionMode.IDENTIFIERS,
     RedactionMode.CONTACT,
-    RedactionMode.ACCOUNTS,
     RedactionMode.STRICT,
 )
 
