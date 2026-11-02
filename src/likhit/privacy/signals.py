@@ -87,6 +87,8 @@ def introduced_by_document_id_label(text: str, start: int) -> bool:
     """
 
     return DOCUMENT_ID_LABEL.search(text[max(0, start - 32) : start]) is not None
+
+
 # 🛑 **A phone number that :data:`MOBILE` cannot see, found by its label instead.** `MOBILE`
 # anchors on the 97/98 opening of a *Nepali* number, so a foreign one in an international
 # format is invisible to it -- and these documents carry them. Page 1 of

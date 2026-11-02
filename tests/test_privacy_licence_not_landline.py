@@ -82,9 +82,10 @@ def test_the_label_may_sit_hard_against_the_number() -> None:
 
     for spacing in ("नं.०६-४८०२०२", "नं. ०६-४८०२०२", "नं ०६-४८०२०२", "नम्बर ०६-४८०२०२"):
         text = f"प्रतिवादीको स.चा.अ.पत्र {spacing} को वि वर्ग"
-        assert "[REDACTED:PHONE-NO]" not in redact_text(
-            text, mode=RedactionMode.STRICT
-        ).text, spacing
+        assert (
+            "[REDACTED:PHONE-NO]"
+            not in redact_text(text, mode=RedactionMode.STRICT).text
+        ), spacing
 
 
 def test_suppression_is_counted_rather_than_silent() -> None:
@@ -116,7 +117,9 @@ def test_the_helper_is_anchored_to_the_value_start() -> None:
     # The same label, with a real landline later in the same sentence: the label does not
     # end at that value, so it must not suppress it however close the two sit.
     far = "स.चा.अ.पत्र नं. ०६-१४००६८ भनी उल्लेख गरिएको र सोही कार्यालयको ०१-४४१२३४५"
-    assert not introduced_by_document_id_label(far, re.search(r"०१-४४१२३४५", far).start())
+    assert not introduced_by_document_id_label(
+        far, re.search(r"०१-४४१२३४५", far).start()
+    )
 
 
 def test_a_mention_of_licences_does_not_suppress_a_nearby_phone() -> None:
