@@ -45,7 +45,13 @@ from dataclasses import dataclass
 from .placeholders import EMAIL as EMAIL_PLACEHOLDER
 from .placeholders import PHONE as PHONE_PLACEHOLDER
 from ..devanagari import ANY_DIGITS
-from .signals import EMAIL, LANDLINE, MOBILE, PHONE_LABELLED
+from .signals import (
+    EMAIL,
+    LANDLINE,
+    MOBILE,
+    PHONE_LABELLED,
+    introduced_by_document_id_label,
+)
 
 
 @dataclass(frozen=True)
@@ -134,6 +140,12 @@ def iter_contact_targets(
                 start < seen_end and seen_start < end for seen_start, seen_end in taken
             ):
                 counters[f"{kind}_refused_overlap"] += 1
+                continue
+            # A driving licence number has the landline shape and only its label says so.
+            # Refused rather than silently skipped: the counter is what makes a suppression
+            # visible to the same reader who checks `landline_targeted` against the scanner.
+            if kind == "landline" and introduced_by_document_id_label(text, start):
+                counters["landline_refused_document_id"] += 1
                 continue
             taken.append((start, end))
             value = text[start:end]
