@@ -1,31 +1,34 @@
 /* SPDX-License-Identifier: Hippocratic-3.0 */
 
-/* Visual language: soft lavender-tinged paper, tight grotesque display type,
-   lilac as the accent system (red is reserved for failures -- it reads as
-   destructive anywhere else), marigold as the highlight, prayer-flag dots for
-   ornament. Outcome colours stay strictly semantic. Layout mechanics (workspace
-   height, detail-content grid rows, mobile pane switching) are load-bearing and
-   pinned by tests -- reskin freely, restructure carefully. */
+/* Visual language: a product dashboard, not a landing page. Neutral zinc
+   surfaces, hairline borders, compact type and tabular numbers carry the data;
+   lilac is the single accent (red is reserved for failures -- it reads as
+   destructive anywhere else), and outcome colours stay strictly semantic.
+   Layout mechanics (workspace height, detail-content grid rows, mobile pane
+   switching) are load-bearing and pinned by tests -- reskin freely, restructure
+   carefully. */
 
 :root {
   color-scheme: light;
 
-  /* Paper neutrals with a whisper of lavender */
-  --canvas: oklch(98.6% 0.003 300);
-  --surface: oklch(99.7% 0.002 300);
-  --surface-muted: oklch(96.6% 0.004 300);
-  --line: oklch(92.8% 0.005 300);
-  --line-strong: oklch(87% 0.007 300);
-  --ink: oklch(19% 0.014 300);
-  --ink-2: oklch(34% 0.014 300);
-  --ink-muted: oklch(51% 0.016 300);
+  /* Zinc neutrals */
+  --canvas: oklch(98.5% 0.002 286);
+  --surface: oklch(100% 0 0);
+  --surface-muted: oklch(96.8% 0.003 286);
+  --line: oklch(92.2% 0.004 286);
+  --line-strong: oklch(87.1% 0.006 286);
+  --ink: oklch(21% 0.006 286);
+  --ink-2: oklch(37% 0.012 286);
+  --ink-muted: oklch(55.2% 0.014 286);
+  --topbar: oklch(100% 0 0 / 82%);
+  --scrim: oklch(21% 0.006 286 / 55%);
 
-  /* Lilac: the accent system. Red is never a primary here -- it means
-     "something failed" and nothing else. */
-  --pop: oklch(50% 0.16 300);
-  --pop-ink: oklch(99.5% 0.005 300);
-  --pop-soft: oklch(96% 0.024 300);
-  --pop-deep: oklch(42% 0.15 300);
+  /* Lilac: the accent. Red is never a primary here -- it means "something
+     failed" and nothing else. */
+  --pop: oklch(52% 0.17 293);
+  --pop-ink: oklch(99.5% 0.005 293);
+  --pop-soft: oklch(96.5% 0.022 293);
+  --pop-deep: oklch(45% 0.16 293);
 
   /* Marigold: the highlight. From the brand lockup (#E9B949). */
   --marigold: oklch(80% 0.13 85);
@@ -33,23 +36,27 @@
   --marigold-soft: oklch(96.5% 0.055 90);
 
   /* Outcome hues: pass, fail, known issue, waiting/blocked, reference */
-  --green: oklch(52% 0.12 152);
-  --green-soft: oklch(95.8% 0.033 152);
-  --red: oklch(52% 0.18 27);
-  --red-soft: oklch(96% 0.025 27);
-  --amber: oklch(57% 0.11 72);
-  --amber-soft: oklch(96.2% 0.038 85);
-  --hold: oklch(48% 0.008 260);
-  --hold-soft: oklch(95.5% 0.002 260);
-  --blue: oklch(51% 0.13 245);
-  --blue-soft: oklch(95.8% 0.028 245);
-  --teal: oklch(48% 0.09 200);
-  --teal-soft: oklch(95.8% 0.032 200);
-  --rose: oklch(50% 0.11 350);
-  --rose-soft: oklch(96% 0.026 350);
+  --green: oklch(52.7% 0.137 150);
+  --green-soft: oklch(96.2% 0.044 156);
+  --red: oklch(57.7% 0.215 27);
+  --red-soft: oklch(96.4% 0.018 17);
+  --amber: oklch(55.5% 0.146 49);
+  --amber-soft: oklch(96.2% 0.059 95);
+  --hold: oklch(55.2% 0.014 286);
+  --hold-soft: oklch(96.8% 0.003 286);
+  --blue: oklch(54.6% 0.215 263);
+  --blue-soft: oklch(95.1% 0.026 255);
+  --teal: oklch(51.1% 0.096 186);
+  --teal-soft: oklch(95.3% 0.051 181);
+  --rose: oklch(52.5% 0.188 357);
+  --rose-soft: oklch(96.9% 0.015 343);
 
   --shadow: 0 8px 24px oklch(0% 0 0 / 6%);
-  --shadow-xs: 0 1px 2px oklch(0% 0 0 / 4%);
+  --shadow-xs: 0 1px 2px oklch(0% 0 0 / 5%);
+  --shadow-modal: 0 24px 60px oklch(0% 0 0 / 32%);
+
+  --radius: 10px;
+  --radius-sm: 7px;
 
   --sans: "Geist", Inter, "Noto Sans Devanagari", system-ui, -apple-system,
     "Segoe UI", sans-serif;
@@ -59,11 +66,54 @@
 
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 
-  /* Landing sections share one centred measure; the wrap is the design. */
-  --wrap: 1320px;
-  --gutter: 32px;
+  /* Every section shares one centred measure. */
+  --wrap: 1440px;
+  --gutter: 28px;
 
   font-family: var(--sans);
+}
+
+/* Dark is the default for plenty of people who read dashboards all day, so
+   follow the system setting. Only tokens change; no rule needs to know. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --canvas: oklch(14.5% 0.004 286);
+    --surface: oklch(18.5% 0.005 286);
+    --surface-muted: oklch(22.5% 0.006 286);
+    --line: oklch(27.4% 0.006 286);
+    --line-strong: oklch(35% 0.008 286);
+    --ink: oklch(97% 0.002 286);
+    --ink-2: oklch(84% 0.006 286);
+    --ink-muted: oklch(68% 0.012 286);
+    --topbar: oklch(14.5% 0.004 286 / 82%);
+    --scrim: oklch(0% 0 0 / 65%);
+
+    --pop: oklch(68% 0.16 293);
+    --pop-ink: oklch(15% 0.02 293);
+    --pop-soft: oklch(28% 0.07 293);
+    --pop-deep: oklch(78% 0.12 293);
+
+    --marigold-soft: oklch(32% 0.06 85);
+
+    --green: oklch(76% 0.15 152);
+    --green-soft: oklch(27% 0.05 152);
+    --red: oklch(71% 0.17 22);
+    --red-soft: oklch(27% 0.06 22);
+    --amber: oklch(80% 0.14 75);
+    --amber-soft: oklch(29% 0.05 75);
+    --hold: oklch(70% 0.012 286);
+    --hold-soft: oklch(25% 0.006 286);
+    --blue: oklch(74% 0.13 255);
+    --blue-soft: oklch(27% 0.06 255);
+    --teal: oklch(76% 0.1 190);
+    --teal-soft: oklch(27% 0.04 190);
+    --rose: oklch(75% 0.13 355);
+    --rose-soft: oklch(28% 0.05 355);
+
+    --shadow-xs: 0 1px 2px oklch(0% 0 0 / 30%);
+  }
 }
 
 * {
@@ -90,6 +140,7 @@ body {
   color: var(--ink);
   font-size: 14px;
   letter-spacing: 0;
+  font-feature-settings: "cv11", "ss01";
   -webkit-font-smoothing: antialiased;
 }
 
@@ -151,30 +202,6 @@ select:focus-visible {
   }
 }
 
-/* One orchestrated moment on load: the hero settles in top-to-bottom, the
-   verdict follows when its numbers arrive. Everything else stays still. */
-.intro h1 {
-  animation: fade-up 550ms var(--ease-out) both;
-}
-
-.intro-lede {
-  animation: fade-up 550ms var(--ease-out) 70ms both;
-}
-
-.intro-install,
-.intro-usage,
-.intro-links {
-  animation: fade-up 550ms var(--ease-out) 140ms both;
-}
-
-.intro-features li {
-  animation: fade-up 500ms var(--ease-out) both;
-}
-
-.intro-features li:nth-child(2) { animation-delay: 80ms; }
-.intro-features li:nth-child(3) { animation-delay: 160ms; }
-.intro-features li:nth-child(4) { animation-delay: 240ms; }
-
 /* Switching a document, run or tab redraws the body -- a short rise says
    "this content is new" without slowing the switch down. */
 .detail-body > * {
@@ -182,7 +209,6 @@ select:focus-visible {
 }
 
 /* Press feedback on every control that acts immediately. */
-.copy-button:active,
 .command-link:active,
 .status-segments button:active,
 .run-segments button:active,
@@ -194,58 +220,71 @@ select:focus-visible {
 
 .topbar {
   display: grid;
-  grid-template-columns: minmax(190px, 1fr) auto minmax(40px, 1fr);
+  grid-template-columns: minmax(190px, 1fr) auto minmax(190px, 1fr);
   align-items: center;
-  /* Sticky so the build identity stays readable once the page scrolls past the
-     introduction. The workspace height below subtracts this. */
+  /* Sticky so the build identity stays readable once the page scrolls. The
+     workspace height below subtracts this. */
   position: sticky;
   top: 0;
   z-index: 20;
-  height: 58px;
+  height: 56px;
   padding: 0 var(--gutter);
-  background: oklch(100% 0 0 / 80%);
-  backdrop-filter: blur(10px);
+  background: var(--topbar);
+  backdrop-filter: blur(12px) saturate(1.4);
   color: var(--ink);
   border-bottom: 1px solid var(--line);
 }
 
 .brand {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   justify-self: start;
-  gap: 10px;
+  gap: 9px;
   min-width: 0;
   color: inherit;
   text-decoration: none;
 }
 
-.brand span {
-  display: flex;
-  align-items: baseline;
-  gap: 9px;
-  min-width: 0;
-}
-
-.brand strong,
-.brand small {
-  display: block;
-  line-height: 1.15;
+.brand-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  background: var(--ink);
+  color: var(--canvas);
+  font-family: var(--deva-sans);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1;
 }
 
 .brand strong {
-  color: var(--pop-deep);
-  font-size: 1.3rem;
+  font-size: 14px;
   font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.brand-sep {
+  color: var(--line-strong);
+  font-size: 18px;
+  font-weight: 300;
 }
 
 .brand small {
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: 14px;
+  font-weight: 500;
 }
 
+/* The build identity reads as a chip, the way a deployment id does. */
 .run-identity {
   min-width: 0;
   max-width: 55vw;
+  padding: 4px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
   color: var(--ink-muted);
   font-family: var(--mono);
   font-size: 11px;
@@ -260,14 +299,38 @@ select:focus-visible {
   font-family: var(--mono);
 }
 
+.topbar-links {
+  display: flex;
+  align-items: center;
+  justify-self: end;
+  gap: 4px;
+}
+
+.topbar-link {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-muted);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  transition:
+    color 160ms var(--ease-out),
+    background-color 160ms var(--ease-out);
+}
+
+.topbar-link:hover {
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+
 .icon-link,
 .icon-button {
   display: inline-grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: inherit;
   cursor: pointer;
@@ -293,511 +356,135 @@ select:focus-visible {
 }
 
 main {
-  /* Sizes to its content so the introduction and the workspace can both be
-     reached by scrolling. A fixed height here is what hid the dashboard. */
+  /* Sizes to its content so the header, the summary and the workspace can all
+     be reached by scrolling. A fixed height here is what once hid the
+     dashboard. */
   display: flow-root;
 }
 
-/* Landing page: introduction above the benchmark ---------------------------- */
+/* Page header ---------------------------------------------------------------- */
 
-.intro {
-  display: grid;
-  gap: 64px;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
-  align-items: center;
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 32px;
+  flex-wrap: wrap;
   max-width: var(--wrap);
   margin: 0 auto;
-  padding: 88px var(--gutter) 72px;
+  padding: 32px var(--gutter) 0;
 }
 
-.intro h1 {
-  margin: 0 0 20px;
-  font-size: clamp(2.3rem, 3.6vw + 0.5rem, 3.6rem);
-  font-weight: 600;
-  letter-spacing: -0.03em;
-  line-height: 1.04;
-  max-width: 18ch;
-  overflow-wrap: anywhere;
+.page-header-copy {
+  min-width: 0;
+  max-width: 78ch;
 }
 
-.intro .hl {
-  padding-bottom: 0.14em;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='7' viewBox='0 0 22 7'%3E%3Cpath d='M1 4.5 Q 4 1.5 6.5 4 T 12 4 T 17.5 4 T 21.5 3.5' fill='none' stroke='%23E9B949' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E")
-    repeat-x left bottom / 22px 7px;
-}
-
-.intro-lede {
-  margin: 0 0 28px;
-  max-width: 62ch;
-  color: var(--ink-2);
-  font-size: 1.06rem;
-  line-height: 1.65;
-}
-
-.intro-lede strong {
-  color: var(--ink);
-}
-
-.intro-install {
-  display: inline-flex;
-  gap: 12px;
-  align-items: center;
-  padding: 8px 8px 8px 18px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  background: var(--surface);
-}
-
-.intro-install code {
-  color: var(--ink);
-  font-family: var(--mono);
-  font-size: 0.92rem;
-  font-weight: 500;
-}
-
-/* Quiet outline button; the install command's copy button below is the one
-   filled call to action on the page. */
-.copy-button {
-  padding: 5px 15px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--pop-deep);
-  font: inherit;
-  font-size: 0.78rem;
-  font-weight: 500;
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    border-color 160ms var(--ease-out),
-    background-color 160ms var(--ease-out),
-    transform 140ms var(--ease-out);
-}
-
-.copy-button:hover {
-  border-color: var(--pop);
-}
-
-/* Both labels share one grid cell, so the button is sized by the widest label
-   and never moves. "Copy" slides up and out; "Copied" rises in from below. */
-.copy-swap {
-  display: inline-grid;
-  overflow: hidden;
-}
-
-.copy-face {
-  grid-area: 1 / 1;
-  white-space: nowrap;
-  text-align: center;
-  transition:
-    transform 240ms var(--ease-out),
-    opacity 240ms var(--ease-out);
-}
-
-.copy-face-done {
-  transform: translateY(120%);
-  opacity: 0;
-}
-
-.copied .copy-face-resting {
-  transform: translateY(-120%);
-  opacity: 0;
-}
-
-.copied .copy-face-done {
-  transform: translateY(0);
-  opacity: 1;
-}
-
-.intro-install .copy-button {
-  padding: 8px 18px;
-  border: 0;
-  background: var(--pop);
-  color: var(--pop-ink);
-}
-
-.intro-install .copy-button:hover {
-  background: var(--pop-deep);
-}
-
-.intro-usage {
-  margin: 16px 0 26px;
-  max-width: 62ch;
+.eyebrow {
+  margin: 0 0 6px;
   color: var(--ink-muted);
-  font-size: 0.88rem;
-  line-height: 1.7;
+  font-size: 12px;
+  font-weight: 500;
 }
 
-.intro-usage code,
-.intro-lede code,
-.intro-features code {
-  padding: 0.1em 0.36em;
-  border-radius: 4px;
-  background: var(--surface-muted);
-  font-family: var(--mono);
-  font-size: 0.86em;
+.page-header h1 {
+  margin: 0 0 8px;
+  font-size: 1.6rem;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
 }
 
-.intro-links {
+.page-header p:not(.eyebrow) {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.page-header-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 
-.intro-links .command-link {
-  padding: 9px 20px;
-  font-size: 0.88rem;
-}
-
-/* Feature list: quiet editorial rules rather than boxed cards. The lucide
-   icons in the markup are hidden -- the type carries the hierarchy. */
-.intro-features {
-  display: grid;
-  gap: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.intro-features li {
-  display: block;
-  padding: 22px 0 20px;
-  border-top: 1px solid var(--line-strong);
-}
-
-.intro-features li:last-child {
-  padding-bottom: 0;
-}
-
-.intro-features svg {
-  display: none;
-}
-
-.intro-features strong {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin-bottom: 6px;
-  font-size: 0.98rem;
-  font-weight: 600;
-}
-
-.intro-features strong::before {
-  content: "";
-  flex: none;
-  width: 9px;
-  height: 9px;
-  border-radius: 3px;
-  background: var(--pop);
-}
-
-.intro-features li:nth-child(2) strong::before { background: var(--marigold); }
-.intro-features li:nth-child(3) strong::before { background: var(--blue); }
-.intro-features li:nth-child(4) strong::before { background: var(--green); }
-
-.intro-features span {
-  color: var(--ink-muted);
-  font-size: 0.9rem;
-  line-height: 1.6;
-}
-
-/* likhit-save CLI section -------------------------------------------------- */
-
-.cli-section {
-  display: grid;
-  gap: 64px;
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-  align-items: start;
-  max-width: var(--wrap);
-  margin: 0 auto;
-  padding: 0 var(--gutter) 80px;
-}
-
-.cli-copy h2 {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  margin: 0 0 10px;
-  font-size: clamp(1.7rem, 2.4vw, 2.2rem);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: 1.15;
-}
-
-.cli-copy h2 svg {
-  display: none;
-}
-
-.cli-copy p {
-  margin: 0;
-  max-width: 44ch;
-  color: var(--ink-2);
-  font-size: 0.95rem;
-  line-height: 1.65;
-}
-
-.cli-copy code {
-  padding: 0.1em 0.36em;
-  border-radius: 4px;
-  background: var(--surface-muted);
-  font-family: var(--mono);
-  font-size: 0.86em;
-}
-
-.cli-examples {
-  display: grid;
-  gap: 12px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.cli-examples li {
-  display: grid;
-  gap: 6px 14px;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-  transition: border-color 180ms var(--ease-out);
-}
-
-.cli-examples li:hover {
-  border-color: var(--line-strong);
-}
-
-.cli-label {
-  grid-column: 1 / -1;
-  color: var(--ink-muted);
-  font-size: 0.8rem;
-  font-weight: 500;
-}
-
-.cli-examples code {
-  overflow-x: auto;
-  color: var(--ink);
-  font-family: var(--mono);
-  font-size: 0.82rem;
-  white-space: nowrap;
-}
-
-/* OCR configuration recipes ------------------------------------------------ */
-
-.ocr-section {
-  max-width: var(--wrap);
-  margin: 0 auto;
-  padding: 0 var(--gutter) 84px;
-}
-
-.ocr-copy h2 {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  margin: 0 0 10px;
-  font-size: clamp(1.7rem, 2.4vw, 2.2rem);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: 1.15;
-}
-
-.ocr-copy h2 svg {
-  display: none;
-}
-
-.ocr-copy p {
-  margin: 0 0 8px;
-  max-width: 72ch;
-  color: var(--ink-2);
-  font-size: 0.95rem;
-  line-height: 1.65;
-}
-
-.ocr-copy code,
-.ocr-recipe-head code {
-  padding: 0.1em 0.36em;
-  border-radius: 4px;
-  background: var(--surface-muted);
-  font-family: var(--mono);
-  font-size: 0.86em;
-}
-
-.ocr-note {
-  max-width: 72ch;
-}
-
-.ocr-recipes {
-  display: grid;
-  gap: 0;
-  grid-template-columns: minmax(0, 1fr);
-  margin-top: 22px;
-  border-top: 1px solid var(--line-strong);
-}
-
-/* Each recipe is a full-width row -- prose on the left, commands on the right,
-   echoing the CLI section above. Three narrow columns forced 60-character
-   command lines to break mid-URL, which is exactly where a reader is copying
-   from. Full rows give every line room to stay whole. */
-.ocr-recipe {
-  display: grid;
-  position: relative;
-  grid-template-areas:
-    "head code"
-    "note copy";
-  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
-  grid-template-rows: minmax(0, 1fr) auto;
-  gap: 14px 44px;
-  padding: 24px 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.ocr-recipe-head {
-  grid-area: head;
-}
-
-.ocr-recipe-head h3 {
-  margin: 12px 0 6px;
-  font-size: 1.2rem;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-.ocr-recipe-head p {
-  margin: 0;
-  color: var(--ink-muted);
-  font-size: 0.85rem;
-  line-height: 1.6;
-}
-
-.ocr-badge {
-  display: inline-block;
-  padding: 2px 9px;
-  border-radius: 999px;
-  background: var(--blue-soft);
-  color: var(--blue);
-  font-size: 0.68rem;
-  font-weight: 500;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.ocr-badge-free {
-  background: var(--green-soft);
-  color: var(--green);
-}
-
-.ocr-recipe:nth-child(3) .ocr-badge {
-  background: var(--marigold-soft);
-  color: var(--marigold-deep);
-}
-
-.ocr-commands {
-  grid-area: code;
-  margin: 0;
-  padding: 14px 18px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--canvas);
-  color: var(--ink-2);
-  font-family: var(--mono);
-  font-size: 0.78rem;
-  line-height: 1.75;
-  /* Wrap rather than scroll. A model id or base URL that runs past the card edge
-     is invisible in a narrow column, and these commands are the whole point of
-     the section -- a reader should never have to scroll a box to find out what
-     they are being told to run. */
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
-.ocr-copy-button {
-  grid-area: copy;
-  justify-self: start;
-}
-
-.ocr-footnote {
-  grid-area: note;
-  align-self: end;
-  margin: 0;
-  color: var(--ink-muted);
-  font-size: 0.78rem;
-  line-height: 1.6;
-}
-
-/* Benchmark heading ---------------------------------------------------------- */
-
-.benchmark-intro {
-  max-width: var(--wrap);
-  margin: 0 auto;
-  padding: 0 var(--gutter) 8px;
-}
-
-.benchmark-intro h2 {
-  margin: 0 0 12px;
-  font-size: clamp(1.9rem, 2.8vw, 2.5rem);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: 1.1;
-}
-
-.benchmark-intro p {
-  margin: 0;
-  max-width: 62ch;
-  color: var(--ink-2);
-  font-size: 0.95rem;
-  line-height: 1.65;
-}
-
-/* Summary: one verdict, then the results matrix. Typeset like a figure in a
-   report -- hairline rules, no boxes. ---------------------------------------- */
+/* Summary: headline KPI cards, then the documents x configurations matrix. --- */
 
 .summary-strip {
-  display: block;
+  display: grid;
+  gap: 12px;
   min-height: 72px;
   max-width: var(--wrap);
   margin: 0 auto;
-  padding: 26px var(--gutter) 4px;
+  padding: 24px var(--gutter) 0;
 }
 
-.verdict {
-  padding: 20px 0 18px;
-  border-top: 1px solid var(--line-strong);
-  animation: fade-up 450ms var(--ease-out) both;
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
 }
 
-.verdict-head {
+.kpi,
+.matrix-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  animation: fade-up 400ms var(--ease-out) both;
+}
+
+.kpi {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px 24px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  padding: 16px 18px;
 }
 
-.verdict-stat {
+.kpi:nth-child(2) { animation-delay: 50ms; }
+.kpi:nth-child(3) { animation-delay: 100ms; }
+.kpi:nth-child(4) { animation-delay: 150ms; }
+
+.kpi-label {
   margin: 0;
-  color: var(--ink-2);
-  font-size: 1rem;
+  color: var(--ink-muted);
+  font-size: 12.5px;
+  font-weight: 500;
 }
 
-.verdict-stat b {
-  margin-right: 4px;
+.kpi-value {
+  margin: 8px 0 4px;
   color: var(--ink);
-  font-size: 2rem;
+  font-size: 1.85rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   line-height: 1;
 }
 
+.kpi-unit {
+  margin-left: 2px;
+  color: var(--ink-muted);
+  font-size: 1.1rem;
+  font-weight: 500;
+}
 
-/* Proportional outcome bar: 54 runs, one glance. The page's single orchestrated
-   motion -- it sweeps in once, when the numbers arrive. */
+.kpi-context {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+}
+
+/* Proportional outcome bar inside the pass-rate card. It sweeps in once, when
+   the numbers arrive. */
 .verdict-bar {
   display: flex;
   gap: 2px;
-  height: 8px;
-  margin: 16px 0 10px;
+  height: 6px;
+  margin-top: auto;
+  padding-top: 12px;
   animation: sweep 800ms var(--ease-out) 200ms both;
 }
 
@@ -821,21 +508,41 @@ main {
 .seg-blocked { background: var(--line-strong); }
 .seg-fail { background: var(--red); }
 
+.matrix-card {
+  padding: 4px 18px 6px;
+  animation-delay: 200ms;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 24px;
+  flex-wrap: wrap;
+  padding: 12px 0 10px;
+}
+
+.card-head h2 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
 .verdict-legend {
   display: flex;
-  gap: 6px 18px;
+  gap: 6px 16px;
   flex-wrap: wrap;
   color: var(--ink-muted);
-  font-size: 0.78rem;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
 .verdict-legend .lgd i {
   display: inline-block;
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   margin-right: 6px;
-  border-radius: 999px;
+  border-radius: 2px;
 }
 
 .lgd-pass i { background: var(--green); }
@@ -843,7 +550,7 @@ main {
 .lgd-blocked i { background: var(--line-strong); }
 .lgd-fail i { background: var(--red); }
 
-/* Results matrix: one row per configuration, one dot per document. A blocked
+/* Results matrix: one row per configuration, one cell per document. A blocked
    scan reads as the same hollow cell in the same position across rows. */
 .matrix {
   display: block;
@@ -855,18 +562,13 @@ main {
   gap: 16px;
   align-items: center;
   min-width: 0;
-  padding: 11px 0;
+  padding: 10px 0;
   border-top: 1px solid var(--line);
-  animation: fade-up 450ms var(--ease-out) both;
 }
-
-.m-row:nth-child(1) { animation-delay: 90ms; }
-.m-row:nth-child(2) { animation-delay: 160ms; }
-.m-row:nth-child(3) { animation-delay: 230ms; }
 
 .m-label {
   color: var(--ink);
-  font-size: 0.82rem;
+  font-size: 12.5px;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -876,15 +578,15 @@ main {
 .m-dots {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 3px;
 }
 
 .m-dot {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   padding: 0;
   border: 0;
-  border-radius: 4.5px;
+  border-radius: 3px;
   background: var(--surface-muted);
   cursor: pointer;
   transition: transform 140ms var(--ease-out);
@@ -892,10 +594,9 @@ main {
 
 @media (hover: hover) and (pointer: fine) {
   .m-dot:hover {
-    transform: scale(1.3);
+    transform: scale(1.25);
   }
 
-  .copy-button:hover,
   .command-link:hover {
     transform: translateY(-1px);
   }
@@ -918,16 +619,22 @@ main {
 
 .m-tally {
   color: var(--ink-muted);
-  font-size: 0.75rem;
+  font-family: var(--mono);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .summary-skeleton {
-  width: 38%;
-  height: 12px;
-  border-radius: 999px;
-  background: var(--surface-muted);
+  height: 112px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(
+    90deg,
+    var(--surface) 0%,
+    var(--surface-muted) 50%,
+    var(--surface) 100%
+  );
 }
 
 /* Workspace: document list beside the detail pane ---------------------------- */
@@ -935,10 +642,10 @@ main {
 .workspace {
   display: grid;
   grid-template-columns: 384px minmax(0, 1fr);
-  gap: 20px;
+  gap: 12px;
   max-width: var(--wrap);
   margin: 0 auto;
-  padding: 20px var(--gutter) 56px;
+  padding: 12px var(--gutter) 40px;
   /* A definite, viewport-relative height, so the document list and the detail
      pane keep scrolling independently instead of growing the page to the length
      of the longest transcript. 130px is the sticky topbar plus breathing room. */
@@ -959,7 +666,7 @@ main {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-radius: 14px;
+  border-radius: var(--radius);
 }
 
 .integration-banner:empty {
@@ -1036,7 +743,7 @@ main {
 }
 
 .search-field svg {
-  left: 13px;
+  left: 11px;
 }
 
 .select-field svg {
@@ -1046,22 +753,26 @@ main {
 .search-field input,
 .select-field select {
   width: 100%;
-  height: 34px;
+  height: 32px;
   border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--canvas);
-  font-size: 12px;
-  transition: border-color 160ms var(--ease-out);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  font-size: 12.5px;
+  transition:
+    border-color 160ms var(--ease-out),
+    box-shadow 160ms var(--ease-out);
 }
 
 .search-field input:focus-visible,
 .select-field select:focus-visible {
   outline: none;
   border-color: var(--pop);
+  box-shadow: 0 0 0 3px var(--pop-soft);
 }
 
 .search-field input {
-  padding: 0 14px 0 34px;
+  padding: 0 12px 0 32px;
 }
 
 .select-field select {
@@ -1077,57 +788,71 @@ main {
 }
 
 .status-segments {
-  gap: 0;
-  padding: 10px 16px 12px;
+  margin: 10px 16px 12px;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.run-segments > * {
+  flex: 0 0 auto;
+}
+
+/* The filter options share the pane's width rather than scrolling it. */
+.status-segments button {
+  flex: 1 1 auto;
 }
 
 .status-segments button,
 .run-segments button {
   min-width: 0;
-  border: 1px solid var(--line);
-  background: var(--canvas);
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
   color: var(--ink-muted);
   cursor: pointer;
   font-size: 12px;
   font-weight: 500;
+  white-space: nowrap;
   transition:
     color 160ms var(--ease-out),
     background-color 160ms var(--ease-out),
     border-color 160ms var(--ease-out),
+    box-shadow 160ms var(--ease-out),
     transform 140ms var(--ease-out);
 }
 
 .status-segments button {
-  min-height: 30px;
-  padding: 4px 12px;
-  border-right: 0;
+  min-height: 26px;
+  padding: 3px 8px;
 }
 
-.status-segments button:first-child,
-.run-segments button:first-child {
-  border-radius: 999px 0 0 999px;
-  padding-left: 15px;
+.status-segments button:hover,
+.run-segments button:hover {
+  color: var(--ink);
 }
 
-.status-segments button:last-child,
-.run-segments button:last-child {
-  border-right: 1px solid var(--line);
-  border-radius: 0 999px 999px 0;
-  padding-right: 15px;
+/* The track: one tinted strip holding the options. */
+.status-segments,
+.run-segments {
+  gap: 2px;
 }
 
 .status-segments button.active,
 .run-segments button.active {
-  background: var(--pop);
-  color: var(--pop-ink);
-  border-color: var(--pop);
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-xs);
 }
 
 .result-count {
   min-height: 25px;
   padding: 0 16px 8px;
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1143,8 +868,8 @@ main {
   grid-template-columns: 56px minmax(0, 1fr);
   gap: 13px;
   width: 100%;
-  min-height: 96px;
-  padding: 14px 16px;
+  min-height: 88px;
+  padding: 12px 16px;
   border: 0;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
@@ -1172,7 +897,7 @@ main {
   height: 70px;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 5px;
   background: var(--surface-muted);
   color: var(--ink-muted);
   font-size: 10px;
@@ -1208,9 +933,9 @@ main {
 
 .file-type {
   flex: 0 0 auto;
-  padding: 2px 8px;
+  padding: 2px 6px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 4px;
   background: var(--hold-soft);
   color: var(--hold);
   font-family: var(--mono);
@@ -1236,6 +961,7 @@ main {
 }
 
 .result-publisher {
+  display: block;
   margin: 4px 0 9px;
   color: var(--ink-muted);
   font-size: 11px;
@@ -1256,9 +982,10 @@ main {
   align-items: center;
   gap: 4px;
   max-width: 100%;
-  padding: 3px 9px;
-  border-radius: 999px;
-  font-size: 10px;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in oklch, currentColor 18%, transparent);
+  border-radius: 5px;
+  font-size: 10.5px;
   font-weight: 500;
   line-height: 1.1;
 }
@@ -1314,7 +1041,7 @@ main {
 .detail-pane {
   position: relative;
   overflow: hidden;
-  border-radius: 14px;
+  border-radius: var(--radius);
 }
 
 .empty-state {
@@ -1352,8 +1079,8 @@ main {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 18px;
-  min-height: 128px;
-  padding: 26px 28px 16px;
+  min-height: 112px;
+  padding: 22px 28px 14px;
 }
 
 .mobile-back {
@@ -1366,7 +1093,7 @@ main {
 
 .detail-title h1 {
   margin: 0;
-  font-size: clamp(1.4rem, 2.2vw, 1.9rem);
+  font-size: clamp(1.2rem, 1.8vw, 1.5rem);
   font-weight: 600;
   letter-spacing: -0.02em;
   line-height: 1.12;
@@ -1392,14 +1119,15 @@ main {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 34px;
-  padding: 6px 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
+  min-height: 32px;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   background: var(--surface);
+  box-shadow: var(--shadow-xs);
   color: var(--ink-2);
   cursor: pointer;
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 500;
   text-decoration: none;
   white-space: nowrap;
@@ -1410,8 +1138,9 @@ main {
 }
 
 .command-link:hover {
-  border-color: var(--pop);
-  color: var(--pop-deep);
+  border-color: var(--line-strong);
+  background: var(--surface-muted);
+  color: var(--ink);
 }
 
 .command-link svg {
@@ -1420,16 +1149,19 @@ main {
 }
 
 .run-segments {
-  min-height: 48px;
-  padding: 8px 28px 14px;
+  align-self: start;
+  justify-self: start;
+  max-width: calc(100% - 56px);
+  margin: 4px 28px 14px;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
   overflow-x: auto;
 }
 
 .run-segments button {
-  min-height: 31px;
-  padding: 5px 11px;
-  border-right: 0;
-  white-space: nowrap;
+  min-height: 28px;
+  padding: 4px 11px;
 }
 
 .detail-tabs {
@@ -2016,11 +1748,11 @@ main {
   border-radius: 14px;
   background: var(--surface);
   color: var(--ink);
-  box-shadow: 0 24px 60px oklch(23% 0.008 270 / 32%);
+  box-shadow: var(--shadow-modal);
 }
 
 .pdf-modal::backdrop {
-  background: oklch(23% 0.008 270 / 55%);
+  background: var(--scrim);
   backdrop-filter: blur(2px);
 }
 
@@ -2035,10 +1767,6 @@ main {
 /* Responsive ---------------------------------------------------------------- */
 
 @media (max-width: 1120px) {
-  .summary-strip {
-    grid-template-columns: repeat(4, minmax(110px, 1fr));
-  }
-
   /* Side by side, the action buttons squeeze the title into a sliver. */
   .detail-header {
     grid-template-columns: minmax(0, 1fr);
@@ -2102,40 +1830,16 @@ main {
 }
 
 @media (max-width: 980px) {
-  .intro {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 36px;
-    padding: 48px 18px 40px;
+  .page-header {
+    padding: 24px 18px 0;
   }
-
-  .cli-section {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 24px;
-    padding: 0 18px 52px;
-  }
-
-  .ocr-section {
-    padding: 0 18px 56px;
-  }
-
-  .ocr-recipe {
-    grid-template-areas:
-      "head"
-      "code"
-      "copy"
-      "note";
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto;
-    gap: 14px;
-  }
-
-  .benchmark-intro {
-    padding: 0 18px 8px;
-  }
-
 
   .summary-strip {
-    padding: 20px 18px 8px;
+    padding: 20px 18px 0;
+  }
+
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .workspace {
@@ -2150,22 +1854,32 @@ main {
     padding: 0 14px;
   }
 
+  .brand-sep,
   .brand small,
-  .run-identity {
+  .run-identity,
+  .topbar-link {
     display: none;
+  }
+
+  .page-header {
+    padding: 20px 16px 0;
   }
 
   .summary-strip {
     min-height: 64px;
-    padding: 14px 12px 4px;
+    padding: 16px 16px 0;
   }
 
-  .verdict {
-    padding: 16px 0 14px;
+  .kpi-grid {
+    gap: 10px;
   }
 
-  .verdict-stat b {
-    font-size: 1.7rem;
+  .kpi {
+    padding: 14px;
+  }
+
+  .kpi-value {
+    font-size: 1.5rem;
   }
 
   .m-row {
@@ -2184,7 +1898,7 @@ main {
   .workspace {
     display: block;
     height: calc(100vh - 118px);
-    padding: 10px 12px 16px;
+    padding: 10px 16px 16px;
   }
 
   .results-pane,
@@ -2214,8 +1928,7 @@ main {
   }
 
   .status-segments {
-    padding: 8px 12px;
-    overflow-x: auto;
+    margin: 8px 12px;
   }
 
   .status-segments button {
@@ -2267,7 +1980,8 @@ main {
   }
 
   .run-segments {
-    padding: 8px 14px;
+    max-width: calc(100% - 28px);
+    margin: 4px 14px 10px;
   }
 
 

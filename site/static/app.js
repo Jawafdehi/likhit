@@ -213,18 +213,53 @@ function renderSummary() {
     })
     .join("");
 
-  byId("summary-strip").innerHTML = `
-    <div class="verdict">
-      <div class="verdict-head">
-        <p class="verdict-stat">
-          <b>${formatNumber(summary.pass)}</b> of ${formatNumber(total)} runs pass
-        </p>
-      </div>
-      ${total ? `<div class="verdict-bar" role="img" aria-label="${escapeHtml(barLabel)}">${bar}</div>` : ""}
-      <div class="verdict-legend">${legend}</div>
+  // Headline cards first, the way a product dashboard opens: the pass rate is
+  // the number that answers "does this work?", so it leads and carries the bar.
+  const configList = Object.values(configurations);
+  const available = configList.filter((config) => config.available !== false).length;
+  const attention = summary.known_issue + summary.fail;
+  const passRate = total ? Math.round((summary.pass / total) * 100) : 0;
+  const kpi = (label, value, context, extra = "") => `
+    <div class="kpi">
+      <p class="kpi-label">${escapeHtml(label)}</p>
+      <p class="kpi-value">${value}</p>
+      <p class="kpi-context">${context}</p>
+      ${extra}
     </div>
-    <div class="matrix" role="group" aria-label="Results by configuration and document">
-      ${matrix}
+  `;
+
+  byId("summary-strip").innerHTML = `
+    <div class="kpi-grid">
+      ${kpi(
+        "Pass rate",
+        `${passRate}<span class="kpi-unit">%</span>`,
+        `${formatNumber(summary.pass)} of ${formatNumber(total)} runs pass`,
+        total ? `<div class="verdict-bar" role="img" aria-label="${escapeHtml(barLabel)}">${bar}</div>` : "",
+      )}
+      ${kpi(
+        "Documents",
+        formatNumber(documents.length),
+        "real government files",
+      )}
+      ${kpi(
+        "Configurations",
+        formatNumber(configList.length),
+        `${formatNumber(available)} available in this run`,
+      )}
+      ${kpi(
+        "Needs attention",
+        formatNumber(attention),
+        `${formatNumber(summary.known_issue)} known · ${formatNumber(summary.fail)} failed · ${formatNumber(summary.blocked)} blocked`,
+      )}
+    </div>
+    <div class="matrix-card">
+      <div class="card-head">
+        <h2>Runs by configuration</h2>
+        <div class="verdict-legend">${legend}</div>
+      </div>
+      <div class="matrix" role="group" aria-label="Results by configuration and document">
+        ${matrix}
+      </div>
     </div>
   `;
 
@@ -1033,57 +1068,9 @@ function bindControls() {
   });
 }
 
-// The install command is the one thing a visitor is most likely to want to take
-// away, so make it copyable without selecting text. Clipboard access can be
-// refused (insecure origin, denied permission), in which case say so rather than
-// silently pretending it worked.
-// A multi-line setup block is copied from the <pre> it sits beside rather than
-// from a duplicate in a data attribute, so the text shown and the text copied
-// cannot drift apart.
-function copyPayload(button) {
-  if (button.dataset.copy !== undefined) return button.dataset.copy;
-  return button.parentElement?.querySelector("pre")?.textContent ?? "";
-}
-
-function bindCopyButtons() {
-  document.querySelectorAll("[data-copy], [data-copy-block]").forEach((button) => {
-    // Both labels are stacked in one grid cell, so the button's size is fixed
-    // by the widest label and never shifts. On success the resting label slides
-    // up and out while the confirmation rises in from below.
-    const resting = button.textContent.trim();
-    button.innerHTML = `
-      <span class="copy-swap">
-        <span class="copy-face copy-face-resting">${escapeHtml(resting)}</span>
-        <span class="copy-face copy-face-done" aria-hidden="true">Copied</span>
-      </span>
-    `;
-    let timer = 0;
-    button.addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(copyPayload(button));
-        button.querySelector(".copy-face-done").textContent = "Copied";
-      } catch {
-        button.querySelector(".copy-face-done").textContent = "Press ⌘/Ctrl+C";
-      }
-      button.classList.add("copied");
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        button.classList.remove("copied");
-        // The hidden face defines the button's width; once the exit transition
-        // ends, restore it so a long clipboard-failure hint can't keep the
-        // button stretched.
-        window.setTimeout(() => {
-          button.querySelector(".copy-face-done").textContent = "Copied";
-        }, 260);
-      }, 1800);
-    });
-  });
-}
-
 async function initialize() {
   bindControls();
   bindPdfModal();
-  bindCopyButtons();
   try {
     const response = await fetch("./data/results.json");
     if (!response.ok) throw new Error(`Results request failed: ${response.status}`);
