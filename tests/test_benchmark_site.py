@@ -1054,36 +1054,41 @@ def test_every_css_variable_referenced_is_defined() -> None:
     assert not (referenced - defined), sorted(referenced - defined)
 
 
-def test_landing_page_introduces_likhit_above_the_benchmark() -> None:
+def test_page_is_the_benchmark_and_leaves_the_product_pitch_to_jawafdehi() -> None:
+    """The Pages site is the benchmark alone; the product page lives on jawafdehi.org.
+
+    Two copies of the install, CLI and OCR instructions drift apart, and the one
+    on this site was the copy nobody maintained alongside the website.
+    """
+
     index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
     styles = (SITE_DIR / "static" / "styles.css").read_text(encoding="utf-8")
     app = (SITE_DIR / "static" / "app.js").read_text(encoding="utf-8")
 
-    # The introduction precedes the results, not the other way round.
-    assert index.index('class="intro"') < index.index('id="summary-strip"')
+    for retired in ('class="intro"', 'id="cli-title"', 'id="ocr-title"', "data-copy"):
+        assert retired not in index, f"{retired} belongs on jawafdehi.org/likhit"
+    for retired in (".intro", ".cli-", ".ocr-", ".copy-button"):
+        assert retired not in styles, f"{retired} is styled but no longer rendered"
+    assert "bindCopyButtons" not in app
+
+    # The page heading leads into the results, and says where Likhit is explained.
     assert index.index('id="benchmark-title"') < index.index('id="summary-strip"')
+    assert "https://jawafdehi.org/likhit" in index
+    assert "https://github.com/Jawafdehi/likhit" in index
 
-    # It says what Likhit is and how to install it, sourced from the README.
-    assert "MarkItDown" in index
-    assert "pip install likhit" in index
-    assert "enable_plugins=True" in index
-    assert "https://jawafdehi.org/" in index
-    assert "https://pypi.org/project/likhit/" in index
-
-    assert ".intro-features" in styles
-    assert ".benchmark-intro" in styles
-    # Copy-to-clipboard degrades honestly when the clipboard is unavailable.
-    assert "bindCopyButtons();" in app
-    assert "navigator.clipboard.writeText" in app
-    assert "Press ⌘/Ctrl+C" in app
+    # The summary opens with headline cards, then the documents x configurations
+    # matrix that deep-links into runs.
+    assert ".kpi-grid" in styles
+    assert 'class="kpi-grid"' in app
+    assert 'class="matrix"' in app
 
 
 def test_page_scrolls_and_does_not_lock_content_to_the_viewport() -> None:
-    """The page must scroll, now that the introduction sits above the dashboard.
+    """The page must scroll, since the header and summary sit above the workspace.
 
     This was a real defect: the layout was a viewport-locked app shell
     (`body { overflow: hidden }`, `main { height: calc(100% - 58px) }`), so adding
-    the introduction pushed the whole benchmark below the fold with no way to
+    an introduction pushed the whole benchmark below the fold with no way to
     reach it. The page rendered fine in a screenshot, which is exactly why it
     shipped.
     """
@@ -1121,33 +1126,6 @@ def test_page_scrolls_and_does_not_lock_content_to_the_viewport() -> None:
 
     # html/body may set a floor, never a ceiling.
     assert "min-height: 100%" in styles
-
-
-def test_landing_page_documents_the_likhit_save_cli() -> None:
-    """The helper CLI is the shortest path to using Likhit, so the page shows it.
-
-    The commands are pinned against the README so the page cannot drift from the
-    interface the package actually installs.
-    """
-
-    index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
-    styles = (SITE_DIR / "static" / "styles.css").read_text(encoding="utf-8")
-    readme = (SITE_DIR.parent / "README.md").read_text(encoding="utf-8")
-
-    assert "likhit-save" in index
-    assert ".cli-examples" in styles
-
-    # Each flag shown on the page must be one the README documents.
-    for flag in ("--out", "--out-dir", "--pages"):
-        assert flag in index, flag
-        assert flag in readme, f"{flag} is shown on the page but absent from README"
-
-    # The CLI section sits between the introduction and the benchmark.
-    assert index.index('class="intro"') < index.index('id="cli-title"')
-    assert index.index('id="cli-title"') < index.index('id="benchmark-title"')
-
-    # Commands are copyable through the same handler as the install command.
-    assert index.count("cli-copy-button") == 3
 
 
 def test_generated_artifact_validates_against_its_published_schema(
@@ -1883,42 +1861,6 @@ def test_replayed_provenance_lives_in_run_metadata() -> None:
     assert "Published from" in app
 
 
-def test_landing_page_ocr_recipes_use_only_variables_likhit_reads() -> None:
-    """Every variable the page tells people to export must be one Likhit honours.
-
-    Setup instructions that name a variable nothing reads fail silently: OCR
-    simply never engages, and the page is the reason.
-    """
-
-    index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
-    styles = (SITE_DIR / "static" / "styles.css").read_text(encoding="utf-8")
-    converter = (
-        SITE_DIR.parent / "src" / "likhit" / "converters" / "nepali_pdf.py"
-    ).read_text(encoding="utf-8")
-
-    section = index[index.index('id="ocr-title"') : index.index('id="benchmark-title"')]
-    exported = set(re.findall(r"export ([A-Z0-9_]+)=", section))
-    assert exported, "expected the page to show exportable variables"
-    for name in exported:
-        assert name in converter, (
-            f"{name} is shown on the page but Likhit never reads it"
-        )
-
-    # All three backends the benchmark measures are documented, local first.
-    assert "ollama" in section.lower()
-    assert "bedrock" in section.lower()
-    assert "GEMINI_API_KEY" in section
-
-    # Bedrock does not speak the OpenAI API, so the recipe must show a gateway
-    # rather than implying Likhit can reach it directly.
-    assert "litellm" in section.lower()
-    assert "OPENAI_BASE_URL" in section
-
-    assert ".ocr-recipes" in styles
-    assert section.count("data-copy-block") == 3
-    assert index.index('id="cli-title"') < index.index('id="ocr-title"')
-
-
 def test_measured_is_always_emitted_but_optional_in_the_published_schema(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2405,37 +2347,29 @@ def test_usage_proxy_accepts_the_server_roots_the_docs_recommend() -> None:
         assert usage_proxy._upstream_error(upstream) is None, upstream
 
 
-def test_readme_and_landing_page_document_the_same_ocr_backends() -> None:
-    """The page and the README are two copies of the same setup instructions.
+def test_readme_documents_only_ocr_variables_likhit_reads() -> None:
+    """Setup instructions that name a variable nothing reads fail silently.
 
-    Whichever a reader finds first has to work, and a variable renamed in one
-    place has no way of announcing itself in the other.
+    OCR simply never engages, and the README is the reason. The benchmark page no
+    longer carries a copy of these instructions, so the README is the one to pin.
     """
 
     readme = (SITE_DIR.parent / "README.md").read_text(encoding="utf-8")
-    index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
     converter = (
         SITE_DIR.parent / "src" / "likhit" / "converters" / "nepali_pdf.py"
     ).read_text(encoding="utf-8")
 
-    section = index[index.index('id="ocr-title"') : index.index('id="benchmark-title"')]
-    page_variables = set(re.findall(r"export ([A-Z0-9_]+)=", section))
     readme_variables = set(re.findall(r"export ([A-Z0-9_]+)=", readme))
-
-    assert page_variables, "expected the page to show exportable variables"
-    # Everything the page tells people to export is documented in the README too,
-    # and both are variables Likhit actually reads.
-    assert page_variables <= readme_variables, sorted(page_variables - readme_variables)
+    assert readme_variables, "expected the README to show exportable variables"
     for name in readme_variables:
         assert name in converter, (
             f"{name} is documented in the README but Likhit never reads it"
         )
 
-    # Both name the same two concrete deployments, and both are explicit that
-    # Bedrock needs a gateway rather than implying Likhit can reach it directly.
+    # It names the concrete deployments, and is explicit that Bedrock needs a
+    # gateway rather than implying Likhit can reach it directly.
     for marker in ("ollama", "bedrock", "litellm"):
         assert marker in readme.lower(), f"README does not cover {marker}"
-        assert marker in section.lower(), f"landing page does not cover {marker}"
 
     # The README points at the published benchmark, which is where the
     # configurations are actually compared.
