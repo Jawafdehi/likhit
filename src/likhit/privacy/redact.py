@@ -66,7 +66,20 @@ from .placeholders import (
 # delivered, nor across a `|` cell boundary. Those two account for ~2,650 of the
 # occurrences and none of them is an identifier.
 _CIT_LABEL = (
-    r"(?:नागरिकता(?:को|मा|का|की)?\s*(?:प्रमाणपत्र|प्र\.?)?\s*(?:नम्बर|नं\.?|न\.?)?"
+    # ⚠️ **The number marker stays OPTIONAL here, unlike in `signals.LABELLED`.** Requiring
+    # it looked symmetrical and was measured to be pure loss: `_LABEL_GAP` already refuses to
+    # cross `ऐन` or `नियमावली`, so a statute year was never reachable by this rule -- the old
+    # digit floor of 7 was redundant protection against a match that does not occur. The one
+    # thing the requirement did change was dropping
+    # `नागरिकताको प्रमाणपत्रमा २०२४।३।११`, which IS personal data: a second claimed birth
+    # date, in a sentence comparing it with the one on an educational certificate.
+    #
+    # 🛑 So the detector and the remover are deliberately asymmetric for this class, and the
+    # direction is the safe one -- the remover reaches slightly further than the scanner
+    # reports. The gate in `materials.redaction.residual_classes` asks "what did the scanner
+    # still find", so a removal the scanner never counted costs nothing; a detection without
+    # a removal is what strands a document.
+    r"(?:नागरिकता(?:को|मा|का|की)?\s*(?:प्रमाणपत्र|प्र\.?)?\s*(?:नम्बर|नं\.?|न\.)?"
     # `ना.प्र.प.नं.` -- the `प` of प्रमाणपत्र, written as its own abbreviated field. Without
     # it the label stops at `ना.प्र.` and the rest has to be crossed as prose, which the gap
     # (one word) will not do.
@@ -265,7 +278,13 @@ _COUNTED_UNIT = rf"(?![{AD}])(?![^\S\n]*(?:जना|वटा|पटक|प्�
 
 CITIZENSHIP_LABEL_VALUE = re.compile(
     rf"(?P<label>{_CIT_LABEL}){_LABEL_GAP}"
-    rf"(?P<val>{_value_window(_CIT_LEGACY_SEPARATORS, 3, 24)})"
+    # ⚠️ **The window floor is a CHARACTER count, not a digit count, and it binds first.**
+    # `_value_window` builds "a digit, lo-hi inner characters, then a digit", so `lo=3` set a
+    # five-character minimum and refused `नागरिकता नं.२३९५` before `DIGIT_BOUNDS` was ever
+    # consulted. Lowering only the digit floor therefore changed nothing -- measured, the
+    # four short certificate numbers in the CIAA corpus stayed in the text. Both floors are
+    # part of the same decision.
+    rf"(?P<val>{_value_window(_CIT_LEGACY_SEPARATORS, 2, 24)})"
     rf"{_COUNTED_UNIT}",
     re.I,
 )
@@ -515,7 +534,16 @@ AGE_LABEL_VALUE = re.compile(
 #: carries, and the prefix is not counted -- :data:`VALUE_PRESTRIP` removes it before the
 #: digits are counted, so the bound describes the digits alone.
 DIGIT_BOUNDS = {
-    "citizenship": (7, 16),
+    # 🛑 **The floor is 4, not 7, and that depends on `_CIT_LABEL` requiring `नं.`.** Real
+    # certificate numbers in this corpus are routinely short -- `नागरिकता नं.२३९५`,
+    # `प्रमाणपत्र नं. २९९४`, `नं. १०४४९`, `नं.१५१०८७` are 4, 4, 5 and 6 digits -- and a floor
+    # of 7 left every one of them in the published text while the scanner went on reporting
+    # them, which is what stranded 29 of 35 CIAA annual reports behind the residue gate.
+    #
+    # ⚠️ Lowering it alone would have been destructive: with an optional marker, a 4-digit
+    # floor reaches `नागरिकता ऐन, २०६३` and deletes the statute's year. The two changes are
+    # one change.
+    "citizenship": (4, 16),
     # The floor is 4 for :data:`DOB_YEAR_LABEL_VALUE` -- a year is the whole value when the
     # document states only a year. No other date rule can produce four digits: both windows
     # require a digit, separators and a digit, so the floor only ever reaches the year rule.

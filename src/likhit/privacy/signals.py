@@ -194,8 +194,26 @@ LABELLED = {
     # — `materials.redaction.residual_classes` in JawafdehiAPI — and it wants its
     # own measurement of how many documents each reading refuses. Narrowing this
     # pattern cannot do it.
+    # 🛑 **A number marker is required between the label and the digits.** Without one this
+    # read any number within 40 characters of the word "citizenship" as a certificate
+    # number, and over the CIAA annual reports that was overwhelmingly wrong: of 35
+    # detections surviving redaction, 11 were `नागरिकता ऐन, २०६३` -- the Citizenship *Act*'s
+    # year -- around 14 were decision or letter dates, and 6 were real numbers.
+    #
+    # ⚠️ **This narrows the DISCLOSURE, which is normally the wrong lever**, and the
+    # exception is specific. `redact.DOB_YEAR_LABEL_VALUE` records the rule: do not teach
+    # the scanner to stop counting a value that is still in the text, because the residue
+    # number then falls while the data stays. That reasoning assumes the thing counted IS
+    # personal data. A statute's year is not personal data under any reading, so declining
+    # to count it removes a miscount rather than hiding a value -- and the gate in
+    # `materials.redaction.residual_classes` consumes this number to decide whether text is
+    # publishable at all, so a miscount here strands whole documents.
     "citizenship": re.compile(
-        rf"(?:नागरिकता|citizenship)[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}}", re.I
+        rf"(?:नागरिकता(?:को|मा|का|की)?\s*(?:प्रमाणपत्र|प्र\.?)?\s*(?:नम्बर|नं\.?|न\.)"
+        rf"|ना\.?\s*प्र\.?\s*(?:प\.?\s*)?नं\.?"
+        rf"|citizenship(?:\s*certificate)?\s*(?:no\.?|number))"
+        rf"[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}}",
+        re.I,
     ),
     # 🛑 **`pan` is detected here and removed nowhere**, which is the decision rather than a
     # gap: a PAN is a *business registration* number, public by design, and removing a
@@ -268,9 +286,34 @@ def scan_text(t: str) -> tuple[Counter, Counter]:
     invent a hit that the unredacted text did not have: ``फोन [REDACTED:EMAIL] 1234567``
     scored a labelled phone that way. Same-width blanking removes the word without moving
     anything, which keeps every window measuring the distance it was calibrated against.
+
+    🛑🛑 **Blanked to NEWLINES, so a window cannot bridge a redaction.** Same-width spaces
+    fixed the distance but not the crossing: every labelled pattern is bounded by
+    ``[^\\n]``, so a label whose value was removed could still reach *past* the placeholder
+    to the next number on the line and report that instead. Measured, this was the dominant
+    residue on the CIAA annual reports --
+    ``नागरिकता नं.[REDACTED:CITIZENSHIP-NO] मिति २०४४।१०।१७`` scored a citizenship number
+    whose "value" was the certificate's **issue date**, 25 blanked characters away.
+
+    That is the worst shape this scanner has, because the count is consumed by
+    ``materials.redaction.residual_classes`` to decide whether a document may be published
+    at all: the value the label introduced *was* removed, and the document was held back
+    anyway. Newlines preserve the width -- so nothing moves, and the paragraph above still
+    holds -- while terminating every ``[^\\n]``-bounded window at the redaction, which is
+    exactly where it should end. It also retires the ``फोन [REDACTED:EMAIL] 1234567``
+    phantom named above rather than merely bounding it.
+
+    ⚠️ A value that is genuinely still present is unaffected: it is found through its own
+    label, on its own side of the placeholder. Pinned by
+    ``test_a_second_unremoved_value_is_still_detected``.
+
+    ⚠️ This lowers published residue counts without text changing, which is normally the one
+    thing this function must not do -- see ``redact.DOB_YEAR_LABEL_VALUE``. The exception is
+    that the number being dropped was never the label's value; the label's real value is in
+    the placeholder. Declining to count it removes a miscount, not a disclosure.
     """
 
-    t = PLACEHOLDER_PATTERN.sub(lambda m: " " * len(m.group(0)), t)
+    t = PLACEHOLDER_PATTERN.sub(lambda m: "\n" * len(m.group(0)), t)
     hp = Counter()
     hp["email"] = len(EMAIL.findall(t))
     hp["mobile"] = len(MOBILE.findall(t))
