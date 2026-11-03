@@ -377,7 +377,16 @@ def test_targets_agree_with_redact_on_the_corpus_samples(tmp_path):
             # complement of the value classes and search inside the value, so a span that
             # reaches them has already been constrained to digits and separators -- an
             # earlier version of this test asserted all three fire and asserted nothing.
-            "नागरिकता नं. ४५६७८",  # 5 digits, below the floor of 7 -- a service count
+            #
+            # ⚠️ This used to be `नागरिकता नं. ४५६७८`, refused as "5 digits, below the floor
+            # of 7 -- a service count". The floor is 4 now, and the comment did not hold:
+            # measured over the CIAA annual reports, every short value introduced by a
+            # number marker is a certificate number (`नागरिकता नं.२३९५ मिति २०४४।१०।१७`,
+            # `ना.प्र.नं. ७४१०१२¸ डडेलधुरा`), with an issuing office and a named person. A
+            # service count reaches the rule through `सिफारिस` or a `जना` unit, which have
+            # their own vetoes, and never carries `नं.`. So the refusal is taken from the
+            # CEILING instead, which no reading of the corpus disputes.
+            "नागरिकता नं. १२३४५६७८९०१२३४५६७",  # 17 digits, above the ceiling of 16
         ]
     )
     stats: Counter = Counter()
