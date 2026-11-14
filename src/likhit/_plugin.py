@@ -9,6 +9,7 @@ from typing import Any
 
 from markitdown import MarkItDown
 
+from likhit.converters.legacy_font_docx import LegacyFontDocxConverter
 from likhit.converters.nepali_docx import LegacyWordConverter
 from likhit.converters.nepali_pdf import NepaliPdfConverter
 
@@ -20,3 +21,4 @@ def register_converters(markitdown: MarkItDown, **kwargs: Any) -> None:
     del kwargs
     markitdown.register_converter(NepaliPdfConverter(), priority=-2.0)
     markitdown.register_converter(LegacyWordConverter(), priority=-2.0)
+    markitdown.register_converter(LegacyFontDocxConverter(), priority=-2.0)

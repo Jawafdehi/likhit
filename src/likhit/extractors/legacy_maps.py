@@ -940,6 +940,16 @@ def is_legacy_font(font_name: str) -> bool:
     return _match_font(font_name) is not None
 
 
+def legacy_font_name_keys() -> tuple[str, ...]:
+    """The lower-case font-name substrings that route a font to a legacy map.
+
+    For callers that look for a legacy face by name in raw bytes (a Word font table)
+    before they have a font name to pass to :func:`match_legacy_map_name`.
+    """
+
+    return tuple(_REGISTRY)
+
+
 def match_legacy_map_name(font_name: str) -> str | None:
     """Return the map selected by the shipping name matcher, if any."""
 

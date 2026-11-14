@@ -56,6 +56,15 @@ class LegacyWordConverter(DocumentConverter):
 
 
 def _convert_word_document(file_path: str) -> str:
+    # A .doc with runs in a legacy keystroke font (Preeti, PCS NEPALI ...) loses
+    # those fonts on every plain-text path below, so it is converted by font first.
+    # None means "nothing to repair here" and the existing path runs unchanged.
+    from likhit.converters.legacy_font_docx import convert_legacy_font_doc
+
+    repaired_markdown = convert_legacy_font_doc(file_path)
+    if repaired_markdown is not None:
+        return repaired_markdown
+
     structured_markdown = convert_with_detected_structure(file_path)
     if structured_markdown is not None:
         return structured_markdown
