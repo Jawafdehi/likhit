@@ -9,6 +9,22 @@ This file starts at 0.1.8. For earlier releases, see the
 [commit history](https://github.com/Jawafdehi/likhit/commits/main/) and the
 [git tags](https://github.com/Jawafdehi/likhit/tags).
 
+## [Unreleased]
+
+### Fixed
+
+- **Word documents with runs in a legacy keystroke font** (Preeti, PCS NEPALI,
+  Kantipur, Fontasy Himali and the rest of the PDF path's font registry) now
+  convert those runs to Unicode Devanagari. Before, a Kalimati court order with a
+  defendant's name typed in PCS NEPALI came out as `cR%]nfn /fosf] gflt`; it now
+  reads `अच्छेलाल रायको नाति`. The repair keys on the font each run is drawn in
+  (`w:rFonts` with style and theme inheritance), never on the shape of the text, so
+  real English in the same document is untouched. `.docx` goes through a new
+  `LegacyFontDocxConverter`; a legacy `.doc` that names a legacy font is converted
+  to `.docx` with LibreOffice first and repaired the same way, and falls back to
+  the existing plain-text path when LibreOffice is absent or nothing needed
+  repair. Documents without a legacy-font run convert exactly as before.
+
 ## [0.2.0] - 2026-10-16
 
 Two new subpackages, and the first release to reach PyPI since 0.1.7 — 0.1.8
