@@ -243,3 +243,69 @@ def test_doc_needing_libreoffice_falls_back_when_it_is_missing(
 
 def test_missing_file_falls_back() -> None:
     assert convert_legacy_font_doc("/nonexistent/order.doc") is None
+
+
+def raw_run(text: str, rpr: str, tag: str = "w:t") -> str:
+    return f'<w:r><w:rPr>{rpr}</w:rPr><{tag} xml:space="preserve">{escape(text)}</{tag}></w:r>'
+
+
+def test_run_forced_to_complex_script_uses_the_cs_font() -> None:
+    # <w:cs/> draws every character with the cs slot, here Preeti.
+    data = docx(
+        para(
+            raw_run(
+                "cfb]z", '<w:rFonts w:ascii="Times New Roman" w:cs="Preeti"/><w:cs/>'
+            )
+        )
+    )
+    assert "आदेश" in markdown(data)
+
+
+def test_explicit_cs_off_overrides_an_inherited_cs_on() -> None:
+    # Direct w:cs w:val="0" turns complex-script formatting back off, so the
+    # ascii slot (Preeti) draws the keystrokes again.
+    styles_cs_on = docx(
+        para(
+            raw_run(
+                "cfb]z",
+                '<w:rFonts w:ascii="Preeti" w:hAnsi="Preeti" w:cs="Kalimati"/>'
+                '<w:cs w:val="0"/>',
+            )
+        )
+    )
+    assert "आदेश" in markdown(styles_cs_on)
+
+
+def test_deleted_and_retained_text_stay_in_their_own_nodes() -> None:
+    data = docx(
+        para(
+            "<w:del>"
+            + raw_run("cfb]z", '<w:rFonts w:ascii="Preeti"/>', "w:delText")
+            + "</w:del>",
+            raw_run("ldlt", '<w:rFonts w:ascii="Preeti"/>'),
+        )
+    )
+    md = markdown(data)
+    assert "मिति" in md
+    assert "आदेश" not in md
+
+
+def test_plain_docx_is_not_claimed() -> None:
+    stream = io.BytesIO(docx(para(run("आदेश", "Times New Roman"))))
+    stream.seek(3)
+    assert not LegacyFontDocxConverter().accepts(stream, StreamInfo(extension=".docx"))
+    assert stream.tell() == 3
+
+
+def test_render_failure_falls_back_to_the_doc_path(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(self, *args, **kwargs):
+        raise IndexError("pop from empty list")
+
+    monkeypatch.setattr(
+        "likhit.converters.legacy_font_docx.DocxConverter.convert", boom
+    )
+    path = tmp_path / "order.doc"
+    path.write_bytes(docx(para(run("cfb]z", "Preeti"))))
+    assert convert_legacy_font_doc(str(path)) is None

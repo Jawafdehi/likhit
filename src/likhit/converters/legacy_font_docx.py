@@ -2,10 +2,13 @@
 
 Two entry points share :func:`likhit.extractors.docx_legacy_runs.repair_docx_legacy_runs`:
 
-* :class:`LegacyFontDocxConverter` takes ``.docx``. It repairs the package and hands
-  the result to MarkItDown's own ``DocxConverter``, so tables, headings and lists
-  render exactly as they do for any ``.docx``. A document with no legacy-font run
-  goes to ``DocxConverter`` untouched, so its output is what MarkItDown gives today.
+* :class:`LegacyFontDocxConverter` takes a ``.docx`` that names a legacy font. It
+  repairs the package and hands the result to MarkItDown's own ``DocxConverter``, so
+  tables, headings and lists render exactly as they do for any ``.docx``. A package
+  naming no legacy font is not claimed at all and converts exactly as it does
+  without likhit. A repaired package loses markitdown-ocr's image reading, which
+  plain ``DocxConverter`` lacks; legacy-font Word files seen so far carry no
+  images.
 * :func:`convert_legacy_font_doc` takes a legacy ``.doc`` (or a ``.docx`` saved
   with a ``.doc`` name, which is common on the Supreme Court portal). The plain-text
   ``.doc`` extractors (antiword, LibreOffice ``txt``) drop the font of every run, so
@@ -57,12 +60,23 @@ class LegacyFontDocxConverter(DocumentConverter):
         stream_info: StreamInfo,
         **kwargs: Any,
     ) -> bool:
-        del file_stream, kwargs
+        del kwargs
         ext = (stream_info.extension or "").lower()
         mime = (stream_info.mimetype or "").lower()
         if ext:
-            return ext in _DOCX_EXTENSIONS
-        return mime in _DOCX_MIMETYPES
+            if ext not in _DOCX_EXTENSIONS:
+                return False
+        elif mime not in _DOCX_MIMETYPES:
+            return False
+        # Claim only packages that name a legacy font. Everything else is left to
+        # the converter that would have taken it without likhit -- including
+        # markitdown-ocr's image-reading DOCX converter when OCR is configured --
+        # so a document with nothing to repair converts exactly as before.
+        position = file_stream.tell()
+        try:
+            return names_legacy_font(file_stream.read())
+        finally:
+            file_stream.seek(position)
 
     def convert(
         self,
@@ -189,7 +203,11 @@ def convert_legacy_font_doc(file_path: str) -> str | None:
         return None
     if not report.converted:
         return None
-    result = DocxConverter().convert(
-        io.BytesIO(repaired), StreamInfo(extension=".docx")
-    )
+    try:
+        result = DocxConverter().convert(
+            io.BytesIO(repaired), StreamInfo(extension=".docx")
+        )
+    except Exception:  # noqa: BLE001 - a render failure keeps the plain .doc path
+        logger.warning("likhit: rendering the repaired .docx failed", exc_info=True)
+        return None
     return result.markdown

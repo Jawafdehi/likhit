@@ -114,19 +114,42 @@ class DocxLegacyRunReport:
 
 @dataclass(frozen=True)
 class _Fonts:
-    """The two font slots that decide how a keystroke run's characters are drawn."""
+    """The font slots that decide how a keystroke run's characters are drawn."""
 
     ascii: str | None = None
     h_ansi: str | None = None
-    #: ``w:rtl``/``w:cs`` on the run: every character is drawn with the cs font.
-    complex_script: bool = False
+    #: ``w:cs`` font: draws every character of a run forced to complex script.
+    cs: str | None = None
+    #: ``w:rtl`` / ``w:cs`` toggles, tri-state: ``None`` inherits, an explicit
+    #: ``False`` (``w:val="0"``) overrides an inherited ``True``.
+    rtl: bool | None = None
+    cs_forced: bool | None = None
+
+    @property
+    def complex_script(self) -> bool:
+        """``w:rtl``/``w:cs`` in effect: every character is drawn with the cs font."""
+
+        return bool(self.rtl) or bool(self.cs_forced)
 
     def overlay(self, other: "_Fonts") -> "_Fonts":
+        def pick(mine, theirs):
+            return theirs if theirs is not None else mine
+
         return _Fonts(
-            ascii=other.ascii if other.ascii is not None else self.ascii,
-            h_ansi=other.h_ansi if other.h_ansi is not None else self.h_ansi,
-            complex_script=other.complex_script or self.complex_script,
+            ascii=pick(self.ascii, other.ascii),
+            h_ansi=pick(self.h_ansi, other.h_ansi),
+            cs=pick(self.cs, other.cs),
+            rtl=pick(self.rtl, other.rtl),
+            cs_forced=pick(self.cs_forced, other.cs_forced),
         )
+
+
+def _toggle(element: etree._Element | None) -> bool | None:
+    """An OOXML on/off property: absent -> None (inherit), else its value."""
+
+    if element is None:
+        return None
+    return element.get(_w("val"), "1") not in ("0", "false", "off")
 
 
 class _FontResolver:
@@ -172,17 +195,17 @@ class _FontResolver:
                 self._default_paragraph_style = style_id
 
     def _fonts_of(self, rpr: etree._Element) -> _Fonts:
-        complex_script = any(
-            child is not None and child.get(_w("val"), "1") not in ("0", "false", "off")
-            for child in (rpr.find(_RTL), rpr.find(_CS))
-        )
+        rtl = _toggle(rpr.find(_RTL))
+        cs_forced = _toggle(rpr.find(_CS))
         rfonts = rpr.find(_RFONTS)
         if rfonts is None:
-            return _Fonts(complex_script=complex_script)
+            return _Fonts(rtl=rtl, cs_forced=cs_forced)
         return _Fonts(
             ascii=self._theme_or_name(rfonts, "ascii"),
             h_ansi=self._theme_or_name(rfonts, "hAnsi"),
-            complex_script=complex_script,
+            cs=self._theme_or_name(rfonts, "cs"),
+            rtl=rtl,
+            cs_forced=cs_forced,
         )
 
     def _theme_or_name(self, rfonts: etree._Element, slot: str) -> str | None:
@@ -272,10 +295,16 @@ def _pieces_of_text(node: etree._Element, text: str, fonts: _Fonts) -> Iterator[
     """Split one text node into slices by which font draws each character."""
 
     if fonts.complex_script:
-        yield _Piece(node, text, None, None)
-        return
-    ascii_map = _legacy_map(fonts.ascii)
-    h_ansi_map = _legacy_map(fonts.h_ansi)
+        # ``w:rtl``/``w:cs`` force every character onto the complex-script font, so
+        # that slot alone decides -- a keystroke run declared ``w:cs="Preeti"`` plus
+        # ``<w:cs/>`` is drawn in Preeti whatever its ascii slot says.
+        cs_map = _legacy_map(fonts.cs)
+        ascii_map = h_ansi_map = cs_map
+        ascii_font = h_ansi_font = fonts.cs
+    else:
+        ascii_map = _legacy_map(fonts.ascii)
+        h_ansi_map = _legacy_map(fonts.h_ansi)
+        ascii_font, h_ansi_font = fonts.ascii, fonts.h_ansi
     if ascii_map is None and h_ansi_map is None:
         yield _Piece(node, text, None, None)
         return
@@ -284,8 +313,8 @@ def _pieces_of_text(node: etree._Element, text: str, fonts: _Fonts) -> Iterator[
         if _COMPLEX_SCRIPT.match(char):
             return None, None
         if ord(char) < 0x80:
-            return ascii_map, fonts.ascii
-        return h_ansi_map, fonts.h_ansi
+            return ascii_map, ascii_font
+        return h_ansi_map, h_ansi_font
 
     start = 0
     current = slot(text[0]) if text else (None, None)
@@ -319,10 +348,18 @@ def _segments(
 
     paragraph_fonts = resolver.paragraph_fonts(paragraph)
     segment: list[_Piece] = []
+    last_text_tag = None
     for run in _paragraph_runs(paragraph):
         fonts = resolver.run_fonts(run, paragraph_fonts)
         for child in run:
             if child.tag in _TEXT_TAGS:
+                # Deleted (``w:delText``) and retained (``w:t``) text never share a
+                # segment: joining them would move a retained word into a deleted
+                # node, where renderers drop it.
+                if last_text_tag is not None and child.tag != last_text_tag and segment:
+                    yield segment
+                    segment = []
+                last_text_tag = child.tag
                 if child.text:
                     segment.extend(_pieces_of_text(child, child.text, fonts))
             elif child.tag not in _TRANSPARENT_RUN_CHILDREN:
