@@ -11,6 +11,27 @@ This file starts at 0.1.8. For earlier releases, see the
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in multi-pass correction of vision-OCR pages** (`likhit.ocr_postprocess`).
+  Off by default: output is unchanged unless one of these is set.
+  - `LIKHIT_OCR_POSTPROCESS=1` — deterministic rules after the refusal gate: BS
+    dates whose danda was read as a digit (`2078701117` → `2078।01।17`), case-type
+    codes and section spacing, amount figure vs amount in words, repetition loops.
+  - `LIKHIT_OCR_SECOND_READER=tesseract` — a second, free reading from a local
+    `tesseract` (`LIKHIT_OCR_TESSERACT_LANG`, default `nep`). Digit spans the two
+    readings disagree on are settled by value-shape validators; ties keep the first
+    reading and add `<!-- likhit:ocr-review spans=N -->` to the page.
+  - `LIKHIT_OCR_REREAD=1` — ask the page's vision model only about those disputed
+    spans (one extra call per disputed page).
+
+  Measured on 112 scanned Attorney General charge-sheet pages (JAW-51): Azure Read's
+  digit-field recall goes from 82.2% raw to 94.9% with the rules and 95.3% with a
+  Tesseract cross-check added. The benchmark reached 97.3% when the disputed spans
+  were also re-read, but that run used a third reader as well, so the re-read gain
+  for this exact configuration is not yet measured. Callers can also pass an `OcrCorrection` to
+  `_run_page_ocr` directly.
+
 ### Fixed
 
 - **Word documents with runs in a legacy keystroke font** (Preeti, PCS NEPALI,

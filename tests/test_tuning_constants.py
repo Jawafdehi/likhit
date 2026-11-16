@@ -1013,6 +1013,29 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "'I cannot' -- and this guard is the whole reason the module does not fire on "
         "the standard ISA disclaimer",
     ),
+    # -- likhit/ocr_postprocess.py: BS-date repair costs (JAW-51 OCR benchmark) ---
+    # A date token like 2078701117 has several parses; the cheapest unique one wins
+    # and a tie is only flagged. These costs decide between "a separator was read as
+    # a digit" and "a separator was dropped".
+    (
+        "likhit/ocr_postprocess.py",
+        "_DROP_COST",
+    ): (
+        3,
+        "cost of assuming a BS-date separator was dropped entirely. Above the 1-2 of a "
+        "danda read as 1/7/9/6 and below the 3.5 of one read as 8, because on the 112-page "
+        "gold set a dropped separator was more common than an 8 (20798113 is 2079।8।13). "
+        "Measured: date recall 57%->97%, 0 regressions",
+    ),
+    (
+        "likhit/ocr_postprocess.py",
+        "_WEEKDAY_COST",
+    ): (
+        1,
+        "extra cost of reading a trailing weekday (YYYY।MM।DD।W) so a plain three-part "
+        "date wins a tie against a four-part one; a weekday needs a visible separator "
+        "anyway, so this only breaks ties",
+    ),
 }
 
 
