@@ -106,13 +106,19 @@ def _repaired_or_original(data: bytes) -> bytes:
 def names_legacy_font(data: bytes) -> bool:
     """Whether a Word file names a legacy keystroke font anywhere in its bytes.
 
-    Covers both containers: a ``.docx`` names fonts in UTF-8 XML, a Word 97 ``.doc``
-    in UTF-16LE in its font table. The keys are the same lower-case substrings the
+    Covers three containers: a ``.docx`` names fonts in UTF-8 XML, a Word 97 ``.doc``
+    in UTF-16LE in its font table, and an RTF (often saved under a ``.doc`` name) in
+    ASCII in its font table. The keys are the same lower-case substrings the
     font-name router matches on (:func:`likhit.extractors.legacy_maps.legacy_font_name_keys`).
     """
 
     if data.startswith(_ZIP_MAGIC):
         haystacks = [_docx_font_names(data)]
+    elif data.lstrip()[:5] == b"{\\rtf":
+        # An RTF saved with a .doc name (the court-order shelf has them) names its
+        # fonts in ASCII in its font table, not in UTF-16 -- so the Word 97 reading
+        # below never finds them, and a whole-Preeti RTF kept its keystrokes.
+        haystacks = [data.decode("latin-1").lower()]
     else:
         haystacks = [
             data[offset:].decode("utf-16-le", errors="ignore").lower()

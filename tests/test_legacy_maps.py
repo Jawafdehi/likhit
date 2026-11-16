@@ -422,6 +422,14 @@ def test_the_himalb_family_decodes_as_preeti(font, raw, expected):
     assert convert(raw) == expected
 
 
+@pytest.mark.parametrize(
+    "font", ("PCS NEPAL", "PCS NEPALI", "PCSNEPALI", "ABCDEE+PCS NEPAL")
+)
+def test_pcs_nepal_spellings_resolve_to_the_pcs_nepali_map(font):
+    # "PCS NEPAL" (no final I) is how Supreme Court Word files of 2063-2074 name it.
+    assert _match_font(font) == "PCS NEPALI"
+
+
 @pytest.mark.parametrize("font", _HIMALB_SPELLINGS)
 def test_the_himalb_family_resolves_to_the_preeti_map(font):
     assert _match_font(font) == "Preeti"
@@ -539,8 +547,8 @@ def test_no_registry_key_is_a_substring_of_another_with_a_different_map():
     """``_match_font`` returns on the first substring hit, so overlap + disagreement
     would make dict insertion order decide the decoded text.
 
-    Today two keys overlap (``himali`` inside ``fontasy_himali`` and inside
-    ``fontasyhimali``) and both agree on the map, so order is provably NOT
+    Today three keys overlap (``himali`` inside ``fontasy_himali`` and inside
+    ``fontasyhimali``; ``pcs nepal`` inside ``pcs nepali``) and each pair agrees on the map, so order is provably NOT
     load-bearing. This asserts that property instead of a comment claiming it, so
     the day someone adds a key that breaks it, the test names the pair.
     """
@@ -563,7 +571,11 @@ def test_no_registry_key_is_a_substring_of_another_with_a_different_map():
         for longer in _REGISTRY
         if shorter != longer and shorter in longer
     ]
-    assert overlaps == [("himali", "fontasy_himali"), ("himali", "fontasyhimali")]
+    assert sorted(overlaps) == [
+        ("himali", "fontasy_himali"),
+        ("himali", "fontasyhimali"),
+        ("pcs nepal", "pcs nepali"),
+    ]
 
 
 def test_every_registry_target_is_a_real_map():
