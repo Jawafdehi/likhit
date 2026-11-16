@@ -269,6 +269,11 @@ class TestReviewFindings:
         r = cross_check(primary, "१ मिति २०७८।०१।१७ गते बुझेको\nदोस्रो पङ्क्ति")
         assert r.text == "१    मिति २०७८।०१।१७ गते      बुझेको\nदोस्रो पङ्क्ति"
 
+    def test_replacement_never_crosses_a_column_gap(self) -> None:
+        primary = "मिति 2078701117    2079701117 गते"
+        r = cross_check(primary, "मिति २०७८।०१।१७ २०७९।०१।१७ गते")
+        assert "    " in r.text
+
     def test_reread_answer_goes_to_the_disputed_occurrence(self) -> None:
         r = cross_check("पहिलो 100 दोस्रो 100 जना", "पहिलो 100 दोस्रो 200 जना")
         assert len(r.disagreements) == 1

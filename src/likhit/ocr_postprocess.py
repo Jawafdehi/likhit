@@ -1067,8 +1067,8 @@ def cross_check(
 
     def replace(i1: int, i2: int, b: list[str], why: str) -> None:
         s, e = spans[i1][0], spans[i2 - 1][1]
-        if "\n" in primary[s:e]:
-            return  # never merge lines
+        if re.search(r"\n|\t| {2}", primary[s:e]):
+            return  # never merge lines or close a column gap (_split_ocr_columns needs it)
         events.append((s, e, " ".join(b), None))
         fixed.append(OcrFlag("cross-check", "fixed", primary[s:e], " ".join(b), why, s))
 
