@@ -109,7 +109,16 @@ DANDA = "\u0964"
 #: The separators a date value admitted before the danda was added, each free to sit anywhere
 #: inside the window. Left exactly as they were -- see :func:`_value_window` for why
 #: constraining them too would be a regression rather than a tidy-up.
-_DOB_LEGACY_SEPARATORS = r"\-/\.\s"
+#:
+#: 🛑 **The en dash and em dash are here too, as hyphens, and leaving them out kept the
+#: value.** Word's autocorrect turns a typed ``-`` between digit groups into ``–``, so the
+#: Supreme Court's Word orders write accounts as ``खाता नं.१९–००००४–०`` and
+#: ``खाता नं ५१–०१–५४२–६३५०१२–०१–०५``. With only ``-`` admitted, the window stopped at the
+#: first dash, fell under the digit floor, and the whole number stayed in the published text
+#: -- and the scanner, which wants an unbroken run of digits, never reported it either. Found
+#: in 25 published court-order transcripts (JAW-49). A dash between digit groups is never
+#: sentence punctuation, so it takes the hyphen's freedom rather than the danda's lookahead.
+_DOB_LEGACY_SEPARATORS = r"\-–—/\.\s"
 
 #: Citizenship numbers deliberately do NOT admit `.`, unlike dates. Measured on the same
 #: tree: admitting it changes nothing at all -- 0 further values in 0 documents -- because
@@ -117,7 +126,7 @@ _DOB_LEGACY_SEPARATORS = r"\-/\.\s"
 #: Left out so the value window cannot run past a sentence-ending period into prose: a
 #: widening with no measured benefit is still a widening. A subset of the date set, which
 #: :data:`VALUE_FORBIDDEN` depends on and a test asserts.
-_CIT_LEGACY_SEPARATORS = r"\-/\s"
+_CIT_LEGACY_SEPARATORS = r"\-–—/\s"
 
 #: Every non-digit character a value may contain, derived from the widest legacy set so it
 #: cannot drift from it. One fragment, shared by :data:`VALUE_FORBIDDEN` and
@@ -479,7 +488,17 @@ BANK_LATIN_CODE = re.compile(r"[A-Za-z]{1,6}|,")
 #: Devanagari letter at all** -- so a window still cannot escape into the Nepali prose
 #: around it, which is what guard 1 is there to catch -- and the 6-digit floor plus the
 #: amount cue in :data:`_LABEL_GAP` still have to pass.
-_BANK_VALUE = rf"[A-Za-z]{{0,6}}[{AD}A-Za-z][{AD}A-Za-z\-/,.]{{2,28}}[{AD}]"
+#:
+#: 🛑 **The opening code may stand apart from the digits by one space.** The court orders
+#: write ``खाता नं. KL 2035931``, ``खाता नं. Md 2216599`` and ``खाता नं TD ०७३२०५`` -- a
+#: branch or product code, a space, then the number -- and with no whitespace admitted the
+#: window could not begin on the code, while the digit window could not begin on a letter,
+#: so the account stayed. One space and at most three letters, and never ``Rs``, so an amount
+#: written in English (``खाता नं. Rs 500000``) still cannot be taken for an account.
+_BANK_VALUE = (
+    rf"(?:(?![Rr][Ss][^A-Za-z])[A-Za-z]{{1,3}}[^\S\n](?=[{AD}]))?"
+    rf"[A-Za-z]{{0,6}}[{AD}A-Za-z][{AD}A-Za-z\-–—/,.]{{2,28}}[{AD}]"
+)
 
 BANK_LABEL_VALUE = re.compile(
     r"(?P<label>(?:खाता|बैंक\s*खाता|account)\s*(?:नम्बर|नं\.?|no\.?|number))"

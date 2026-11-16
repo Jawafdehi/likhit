@@ -37,6 +37,11 @@ This file starts at 0.1.8. For earlier releases, see the
 - **Legacy fonts in two more Word shapes** (JAW-49). An RTF saved under a `.doc`
   name now has its font table read, so a whole-Preeti RTF is converted instead of
   published as keystrokes; and `PCS NEPAL` (no final I) routes to the PCS NEPALI map.
+- **Two account and identifier shapes the strict tier left public** (JAW-49). The
+  en dash and em dash Word's autocorrect puts between digit groups now separate a value
+  like a hyphen (`खाता नं.१९–००००४–०`), and a bank code may stand one space apart from its
+  digits (`खाता नं. KL 2035931`). The en-dash accounts were in published court-order
+  transcripts, because the scanner did not report them either.
 - **Word documents with runs in a legacy keystroke font** (Preeti, PCS NEPALI,
   Kantipur, Fontasy Himali and the rest of the PDF path's font registry) now
   convert those runs to Unicode Devanagari. Before, a Kalimati court order with a
