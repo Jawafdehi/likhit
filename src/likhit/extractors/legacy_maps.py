@@ -59,6 +59,12 @@ _REGISTRY: dict[str, str] = {
     # "HimalBold" -- _match_font strips a ",Bold" suffix and matches on a substring.
     "himalb": "Preeti",
     "kantipur": "Kantipur",
+    # The court-order shelf also spells it without the final I: "PCS NEPAL" names the
+    # same face (same keystroke layout) in Supreme Court Word files of 2063-2074, e.g.
+    # 074-CI-0775, whose runs in that name decode to clean prose under PCS NEPALI and
+    # to digit-mangled text under Preeti. A substring of "pcs nepali", so it also
+    # catches that spelling -- harmless, both route to the same map.
+    "pcs nepal": "PCS NEPALI",
     "pcs nepali": "PCS NEPALI",
     "pcs_nepali": "PCS NEPALI",
     "pcsnepali": "PCS NEPALI",

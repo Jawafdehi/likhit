@@ -213,6 +213,14 @@ def test_names_legacy_font_reads_a_word97_font_table() -> None:
     assert not names_legacy_font(b"\xd0\xcf\x11\xe0" + "Kalimati".encode("utf-16-le"))
 
 
+def test_names_legacy_font_reads_an_rtf_font_table() -> None:
+    # Supreme Court 070-WH-0012 is an RTF saved as .doc, whole document in Preeti.
+    rtf = rb"{\rtf1\ansi{\fonttbl{\f0\fnil Preeti;}{\f1\froman Times New Roman;}}\f0 ;jf]{Rr cbfnt}"
+    assert names_legacy_font(rtf)
+    assert names_legacy_font(b"\r\n" + rtf)
+    assert not names_legacy_font(rb"{\rtf1\ansi{\fonttbl{\f0\froman Kalimati;}}\f0 x}")
+
+
 def test_names_legacy_font_reads_docx_xml() -> None:
     assert names_legacy_font(docx(para(run("x", "Preeti"))))
     assert not names_legacy_font(docx(para(run("x", "Times New Roman"))))
