@@ -163,7 +163,7 @@ class OcrCorrection:
       spans (needs ``second_reader``). Off by default because it is a second paid call.
 
     Measured on 112 scanned charge-sheet pages (JAW-51): Azure Read 82.2% digit-field
-    recall raw, 94.9% with the rules, 95.3% with a Tesseract cross-check added, and 97.3%
+    recall raw, 94.9% with the rules, 95.2% with a Tesseract cross-check added, and 97.3%
     in a run that also used a third reader and re-read the disputed spans.
     """
 

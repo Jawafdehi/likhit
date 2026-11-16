@@ -208,7 +208,11 @@ class TestCrossCheck:
     def test_equal_shapes_become_a_disagreement_not_a_guess(self) -> None:
         r = cross_check("खाता नं. ०४५०००००२७६० मा", "खाता नं. ०४५००००००२७६० मा")
         assert r.text == "खाता नं. ०४५०००००२७६० मा"
-        assert r.disagreements == [Disagreement("०४५०००००२७६०", "०४५००००००२७६०")]
+        assert [(d.primary, d.secondary) for d in r.disagreements] == [
+            ("०४५०००००२७६०", "०४५००००००२७६०")
+        ]
+        d = r.disagreements[0]
+        assert r.text[d.start : d.end] == "०४५०००००२७६०"
 
     def test_spacing_only_differences_are_not_disputes(self) -> None:
         r = cross_check("रु. ३, ८५,०००/- बुझाएको", "रु. ३,८५,०००।- बुझाएको")
@@ -226,6 +230,58 @@ class TestCrossCheck:
         primary = "| क | ख |\n|---|---|\nमिति 2078701117 गते"
         r = cross_check(primary, "| क | ख |\n|---|---|\nमिति २०७८।०१।१७ गते")
         assert r.text.split("\n")[:2] == ["| क | ख |", "|---|---|"]
+
+
+class TestReviewFindings:
+    """Cases raised in review of the likhit port (PR #126)."""
+
+    def test_fiscal_year_needs_context(self) -> None:
+        out, flags = repair_dates("खाता नं. 2081182")
+        assert out == "खाता नं. 2081182"
+        assert flags[0].action == "flag" and flags[0].replacement == "2081/82"
+
+    def test_repeated_digit_coefficients(self) -> None:
+        r = parse_amount_words("11 लाख")
+        assert r is not None and r[0] == 1100000
+        r = parse_amount_words("22 हजार 333")
+        assert r is not None and r[0] == 22333
+
+    def test_non_decimal_digits_do_not_raise(self) -> None:
+        postprocess("रु. 100 (² रुपैयाँ)")
+        postprocess("मिति 2078²1117 गते")
+        assert parse_reread_answer('{"²": "x", "1": "y"}') == {1: "y"}
+
+    def test_rupee_word_closes_the_rupee_part(self) -> None:
+        assert parse_amount_words("एक लाख रुपैयाँ पच्चीस पैसा") == (100000, 25, False)
+
+    def test_amount_decimals_are_compared_exactly(self) -> None:
+        r = cross_check("रु. 1,000.01 मात्र", "रु. 1,000.1 मात्र")
+        assert [(d.primary, d.secondary) for d in r.disagreements] == [
+            ("1,000.01", "1,000.1")
+        ]
+
+    def test_a_word_never_replaces_a_value(self) -> None:
+        r = cross_check("मिति 2078701117 गते", "मिति स्वीकृत गते")
+        assert r.text == "मिति 2078701117 गते"
+
+    def test_column_whitespace_is_kept_on_a_corrected_line(self) -> None:
+        primary = "१    मिति 2078701117 गते      बुझेको\nदोस्रो पङ्क्ति"
+        r = cross_check(primary, "१ मिति २०७८।०१।१७ गते बुझेको\nदोस्रो पङ्क्ति")
+        assert r.text == "१    मिति २०७८।०१।१७ गते      बुझेको\nदोस्रो पङ्क्ति"
+
+    def test_reread_answer_goes_to_the_disputed_occurrence(self) -> None:
+        r = cross_check("पहिलो 100 दोस्रो 100 जना", "पहिलो 100 दोस्रो 200 जना")
+        assert len(r.disagreements) == 1
+        text, left = apply_rereads(r.text, r.disagreements, {1: "200"})
+        assert text == "पहिलो 100 दोस्रो 200 जना"
+        assert left == []
+
+    def test_unanswered_positions_follow_earlier_edits(self) -> None:
+        r = cross_check("क 2,00,000 ख 3,00,000 ग", "क 2,50,000 ख 3,80,000 ग")
+        assert len(r.disagreements) == 2
+        text, left = apply_rereads(r.text, r.disagreements, {1: "2,50,000"})
+        assert text == "क 2,50,000 ख 3,00,000 ग"
+        assert [text[d.start : d.end] for d in left] == ["3,00,000"]
 
 
 class TestReread:
@@ -252,7 +308,14 @@ class TestReread:
         d = [Disagreement("१,५०,०००", "१,८०,०००"), Disagreement("२४", "३४")]
         text, left = apply_rereads("रु. १,५०,००० र २४ जना", d, {1: "१,८०,०००"})
         assert text == "रु. १,८०,००० र २४ जना"
-        assert left == [d[1]]
+        assert [(x.primary, text[x.start : x.end]) for x in left] == [("२४", "२४")]
+
+    def test_ambiguous_unlocated_span_is_left_alone(self) -> None:
+        text, left = apply_rereads(
+            "१०० र १००", [Disagreement("१००", "२००")], {1: "२००"}
+        )
+        assert text == "१०० र १००"
+        assert len(left) == 1
 
 
 # ---------------------------------------------------------------------------

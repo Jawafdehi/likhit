@@ -129,7 +129,7 @@ def _parse_date_body(rest: str) -> list[_Parse]:
             s = rest[i : i + length]
             if (
                 len(s) == length
-                and s.isdigit()
+                and s.isdecimal()
                 and lo <= int(s) <= hi
                 and not (length == 2 and s == "00")
             ):
@@ -212,13 +212,16 @@ def repair_dates(
         # every run of leading space-separated chunks; the cheapest parse wins (longer wins a tie)
         for n in range(len(chunks), 0, -1):
             piece = " ".join(chunks[:n])
-            if not piece[-1:].translate(_TO_ASCII).isdigit():
+            if not piece[-1:].translate(_TO_ASCII).isdecimal():
                 continue
             raw = piece.replace(" ", "").translate(_TO_ASCII)
             year, rest = raw[:4], raw[4:]
             if not rest:
                 break
-            if all(c in _EXPLICIT_SEP or c.isdigit() for c in rest) and len(rest) <= 10:
+            if (
+                all(c in _EXPLICIT_SEP or c.isdecimal() for c in rest)
+                and len(rest) <= 10
+            ):
                 if not (_YEAR_MIN <= int(year) <= _YEAR_MAX):
                     break
                 fy = _fiscal(year, rest)
@@ -273,6 +276,19 @@ def repair_dates(
             if sepc in _EXPLICIT_SEP:
                 continue  # already fine
             new = _script(f"{year}/{tail}", dev)
+            if require_context and not _has_date_cue(text, start, end):
+                # '2081182' with no आ.व./सम्वत/साल next to it may be an account number
+                flags.append(
+                    OcrFlag(
+                        "date",
+                        "flag",
+                        piece,
+                        new,
+                        "fiscal-year-like token without date context",
+                        start,
+                    )
+                )
+                continue
             out.append(text[last:start] + new)
             last = end
             flags.append(
@@ -517,9 +533,11 @@ def _lev1(a: str, b: str) -> bool:
 
 def _word_value(tok: str) -> set[int] | None:
     """Number value of a word, or None. Fuzzy (edit distance 1 on the folded key) only when unambiguous."""
+    if (
+        tok.isdecimal()
+    ):  # before folding: _hfold collapses repeated letters, so '11' -> '1'
+        return {int(tok)}
     k = _hfold(tok)
-    if k.isdigit():
-        return {int(k)}
     if k in _WORD_KEY:
         return _WORD_KEY[k]
     if len(k) >= 4:
@@ -568,9 +586,10 @@ def parse_amount_words(s: str) -> tuple[int, int | None, bool] | None:
                 last_scale = sc
             pending = None
         elif k in _FILLER:
-            if k in _RUPEE and pending is not None:
-                cur += pending
-                pending = None
+            if k in _RUPEE:
+                if pending is not None:
+                    cur += pending
+                    pending = None
                 rupee_end = True
         elif k in _PAISA:
             nxt = _word_value(toks[i + 1]) if i + 1 < len(toks) else None
@@ -985,10 +1004,17 @@ def _cores(toks: list[str]) -> list[str]:
     return [c for c in _R_CORE.findall(_key(" ".join(toks))) if re.search(r"\d", c)]
 
 
+_DATE_CORE = re.compile(r"^\d{4}[/।|.\-]\d{1,2}[/।|.\-]\d{1,2}(?:[/।|.\-]\d{1,2})?$")
+
+
 def _canon(cores: list[str]) -> list[str]:
-    """Separator- and leading-zero-insensitive form: 2078/01/7 == 2078।1।07."""
+    """Comparison form. Dates ignore separator style and leading zeros
+    (2078/01/7 == 2078।1।07); every other value -- amounts above all -- is compared
+    exactly, so 1,000.01 and 1,000.1 stay different."""
     return [
-        re.sub(r"(?<!\d)0+(?=\d)", "", re.sub(r"[/।|.\-]", "/", c)).rstrip("/")
+        re.sub(r"(?<!\d)0+(?=\d)", "", re.sub(r"[/।|.\-]", "/", c))
+        if _DATE_CORE.match(c)
+        else c
         for c in cores
     ]
 
@@ -999,10 +1025,16 @@ def _has_digit(toks: list[str]) -> bool:
 
 @dataclass(frozen=True)
 class Disagreement:
-    """A span two readings disagree on that no validator could settle."""
+    """A span two readings disagree on that no validator could settle.
+
+    ``start``/``end`` locate the disputed occurrence in ``CrossCheckResult.text``
+    (-1 when unknown), so a re-read answer replaces that occurrence and not an
+    earlier identical one."""
 
     primary: str
     secondary: str
+    start: int = -1
+    end: int = -1
 
 
 @dataclass
@@ -1019,21 +1051,31 @@ def cross_check(
     only when it validates better (digits) or ``third`` agrees with it (2-of-3 vote).
 
     Digit spans whose values validate equally and still differ become
-    ``Disagreement``s -- never guessed. Spans where one side holds no comparable value
-    (a word read as digits) are noise and are skipped.
+    ``Disagreement``s -- never guessed. A span is replaced in place: whitespace
+    outside it (column gaps, indentation, line breaks) is kept byte for byte, and a
+    span that would cross a line break is never replaced.
     """
-    lines = primary.split("\n")
-    at = [(li, t) for li, ln in enumerate(lines) for t in ln.split()]
+    spans = [(m.start(), m.end()) for m in re.finditer(r"\S+", primary)]
+    at = [primary[s:e] for s, e in spans]
     bt = secondary.split()
-    ka, kb = [_key(t) for _, t in at], [_key(t) for t in bt]
+    ka, kb = [_key(t) for t in at], [_key(t) for t in bt]
     cnorm = re.sub(r"\s+", "", _key(third)) if third is not None else None
     sm = difflib.SequenceMatcher(None, ka, kb, autojunk=False)
-    repl: dict[int, tuple[int, list[str]]] = {}
-    res = CrossCheckResult("")
+    # (primary char start, end, replacement text or None for a dispute, payload)
+    events: list[tuple[int, int, str | None, Disagreement | None]] = []
+    fixed: list[OcrFlag] = []
+
+    def replace(i1: int, i2: int, b: list[str], why: str) -> None:
+        s, e = spans[i1][0], spans[i2 - 1][1]
+        if "\n" in primary[s:e]:
+            return  # never merge lines
+        events.append((s, e, " ".join(b), None))
+        fixed.append(OcrFlag("cross-check", "fixed", primary[s:e], " ".join(b), why, s))
+
     for op, i1, i2, j1, j2 in sm.get_opcodes():
         if op != "replace" or i2 - i1 > max_span or j2 - j1 > max_span:
             continue
-        a, b = [t for _, t in at[i1:i2]], bt[j1:j2]
+        a, b = at[i1:i2], bt[j1:j2]
         a_in = b_in = False
         if cnorm is not None:
             a_in, b_in = "".join(ka[i1:i2]) in cnorm, "".join(kb[j1:j2]) in cnorm
@@ -1042,64 +1084,37 @@ def cross_check(
                 continue  # same numbers; only spacing or attached words differ
             # score token by token (measured: joining tokens first lost 0.4 points)
             ca, cb = _cores(a), _cores(b)
+            if not ca or not cb:
+                continue  # one side holds no value at all: nothing comparable
             sa, sb = sum(map(value_shape_score, ca)), sum(map(value_shape_score, cb))
             if sb > sa:
-                repl[i1] = (i2, b)
-                res.fixed.append(
-                    OcrFlag(
-                        "cross-check",
-                        "fixed",
-                        " ".join(a),
-                        " ".join(b),
-                        "second reading validates",
-                    )
-                )
+                replace(i1, i2, b, "second reading validates")
                 continue
             la, lb = len("".join(ca)), len("".join(cb))
-            if sa != sb or not ca or not cb or min(la, lb) < 0.6 * max(la, lb):
+            if sa != sb or min(la, lb) < 0.6 * max(la, lb):
                 continue  # primary validates better, or one side is noise
             if b_in and not a_in:
-                repl[i1] = (i2, b)
-                res.fixed.append(
-                    OcrFlag(
-                        "cross-check",
-                        "fixed",
-                        " ".join(a),
-                        " ".join(b),
-                        "2-of-3 vote (digits)",
-                    )
-                )
+                replace(i1, i2, b, "2-of-3 vote (digits)")
                 continue
-            res.disagreements.append(Disagreement(" ".join(a), " ".join(b)))
+            s, e = spans[i1][0], spans[i2 - 1][1]
+            events.append((s, e, None, Disagreement(primary[s:e], " ".join(b))))
         elif b_in and not a_in:
-            repl[i1] = (i2, b)
-            res.fixed.append(
-                OcrFlag(
-                    "cross-check",
-                    "fixed",
-                    " ".join(a),
-                    " ".join(b),
-                    "2-of-3 vote (words)",
-                )
-            )
-    out: list[list[str]] = [[] for _ in lines]
-    touched: set[int] = set()
-    i = 0
-    while i < len(at):
-        li = at[i][0]
-        if i in repl:
-            end, toks = repl[i]
-            out[li].extend(toks)
-            touched.update(at[k][0] for k in range(i, end))
-            i = end
+            replace(i1, i2, b, "2-of-3 vote (words)")
+    out: list[str] = []
+    disputes: list[Disagreement] = []
+    last = shift = 0
+    for s, e, new, d in sorted(events, key=lambda ev: ev[0]):
+        out.append(primary[last:s])
+        if d is not None:
+            disputes.append(Disagreement(d.primary, d.secondary, s + shift, e + shift))
+            out.append(primary[s:e])
         else:
-            out[li].append(at[i][1])
-            i += 1
-    # untouched lines stay byte-identical (markdown tables, indentation)
-    res.text = "\n".join(
-        " ".join(out[li]) if li in touched else ln for li, ln in enumerate(lines)
-    )
-    return res
+            assert new is not None
+            out.append(new)
+            shift += len(new) - (e - s)
+        last = e
+    out.append(primary[last:])
+    return CrossCheckResult("".join(out), fixed, disputes)
 
 
 # ---------------------------------------------------------------------------
@@ -1134,7 +1149,7 @@ def parse_reread_answer(answer: str) -> dict[int, str]:
         return {}
     out: dict[int, str] = {}
     for k, v in obj.items():
-        if isinstance(v, str) and v.strip() and str(k).isdigit():
+        if isinstance(v, str) and v.strip() and str(k).isdecimal():
             out[int(k)] = v.strip()
     return out
 
@@ -1142,17 +1157,45 @@ def parse_reread_answer(answer: str) -> dict[int, str]:
 def apply_rereads(
     text: str, disagreements: list[Disagreement], answers: dict[int, str]
 ) -> tuple[str, list[Disagreement]]:
-    """Substitute each answered span (first occurrence of the primary reading).
-    Returns the new text and the disagreements still unresolved."""
+    """Substitute each answered span at its own position (``start``/``end`` from
+    ``cross_check``). Without a position, only a primary reading that occurs exactly
+    once is replaced. Anything else stays unresolved. Returns the new text and the
+    disagreements still unresolved, with positions valid in the new text."""
+    located: list[tuple[int, int, int, Disagreement]] = []  # (start, end, item no, d)
     left: list[Disagreement] = []
     for i, d in enumerate(disagreements, 1):
-        v = answers.get(i)
-        if v and d.primary in text:
-            if v != d.primary:
-                text = text.replace(d.primary, v, 1)
+        start, end = d.start, d.end
+        if start < 0 and text.count(d.primary) == 1:
+            start = text.index(d.primary)
+            end = start + len(d.primary)
+        if start >= 0 and text[start:end] == d.primary:
+            located.append((start, end, i, d))
         else:
             left.append(d)
-    return text, left
+    edits: list[tuple[int, int]] = []  # (position, length change)
+    for start, end, i, d in sorted(located, key=lambda x: x[0], reverse=True):
+        v = answers.get(i)
+        if not v:
+            left.append(Disagreement(d.primary, d.secondary, start, end))
+            continue
+        if v != d.primary:
+            text = text[:start] + v + text[end:]
+            edits.append((start, len(v) - (end - start)))
+    # positions of the unresolved ones, moved past the edits that came before them
+    moved = [
+        Disagreement(
+            d.primary,
+            d.secondary,
+            d.start + sum(dl for pos, dl in edits if pos < d.start)
+            if d.start >= 0
+            else -1,
+            d.end + sum(dl for pos, dl in edits if pos < d.start)
+            if d.start >= 0
+            else -1,
+        )
+        for d in left
+    ]
+    return text, sorted(moved, key=lambda d: d.start)
 
 
 def tesseract_reading(

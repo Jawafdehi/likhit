@@ -26,7 +26,7 @@ This file starts at 0.1.8. For earlier releases, see the
     spans (one extra call per disputed page).
 
   Measured on 112 scanned Attorney General charge-sheet pages (JAW-51): Azure Read's
-  digit-field recall goes from 82.2% raw to 94.9% with the rules and 95.3% with a
+  digit-field recall goes from 82.2% raw to 94.9% with the rules and 95.2% with a
   Tesseract cross-check added. The benchmark reached 97.3% when the disputed spans
   were also re-read, but that run used a third reader as well, so the re-read gain
   for this exact configuration is not yet measured. Callers can also pass an `OcrCorrection` to
