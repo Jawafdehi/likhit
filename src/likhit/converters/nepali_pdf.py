@@ -8,7 +8,7 @@ emitting Markdown.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import io
 import logging
@@ -44,6 +44,14 @@ from likhit.handlers.content_blocks import build_content_blocks
 from likhit.handlers.two_column_layout import TwoColumnLayoutHandler
 from likhit.models import ParagraphBlock, TableBlock
 from likhit.ocr_acceptance import classify_ocr_response
+from likhit.ocr_postprocess import (
+    apply_rereads,
+    cross_check,
+    parse_reread_answer,
+    postprocess,
+    reread_prompt,
+    tesseract_reading,
+)
 from likhit.pdf_page_analysis import (
     _is_vowel_poor_latin_token,
 )
@@ -136,6 +144,107 @@ class _PageOcrResult:
     #: kind of failure it was; see `_needs_ocr_reason`. Defaulted so the many
     #: tests that build this positionally with two arguments still do.
     declined_pages: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class OcrCorrection:
+    """Opt-in multi-pass correction of accepted vision-OCR page text.
+
+    All off by default, so `_run_page_ocr` returns exactly what it always did unless
+    a caller (or the environment, see `_ocr_correction_from_env`) turns a pass on:
+
+    * ``rules`` -- `likhit.ocr_postprocess.postprocess`: BS-date repair, case and
+      section numbers, amount figure vs words, repetition loops.
+    * ``second_reader`` -- a second, independent reading of the same rendered page
+      (PNG bytes -> text or None). Digit spans the two readings disagree on are
+      settled by value-shape validators; ties are kept as the primary reading and
+      counted in a ``likhit:ocr-review`` marker on the page.
+    * ``reread`` -- ask the page's own vision service only about the still-disputed
+      spans (needs ``second_reader``). Off by default because it is a second paid call.
+
+    Measured on 112 scanned charge-sheet pages (JAW-51): Azure Read 82.2% digit-field
+    recall raw, 94.9% with the rules, 95.2% with a Tesseract cross-check added, and 97.3%
+    in a run that also used a third reader and re-read the disputed spans.
+    """
+
+    rules: bool = False
+    second_reader: Callable[[bytes], str | None] | None = None
+    reread: bool = False
+
+    @property
+    def active(self) -> bool:
+        return self.rules or self.second_reader is not None
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ocr_correction_from_env() -> OcrCorrection:
+    """``LIKHIT_OCR_POSTPROCESS=1`` turns on the rules; ``LIKHIT_OCR_SECOND_READER=tesseract``
+    adds a local Tesseract reading (``LIKHIT_OCR_TESSERACT_LANG``, default ``nep``);
+    ``LIKHIT_OCR_REREAD=1`` re-reads disputed spans. Unset means off."""
+    second: Callable[[bytes], str | None] | None = None
+    reader = os.getenv("LIKHIT_OCR_SECOND_READER", "").strip().lower()
+    if reader == "tesseract":
+        lang = os.getenv("LIKHIT_OCR_TESSERACT_LANG", "nep")
+
+        def _tesseract(png: bytes) -> str | None:
+            return tesseract_reading(png, lang=lang)
+
+        second = _tesseract
+    elif reader:
+        logger.warning(
+            "Ignoring unknown LIKHIT_OCR_SECOND_READER=%r (supported: tesseract)",
+            reader,
+        )
+    return OcrCorrection(
+        rules=_env_flag("LIKHIT_OCR_POSTPROCESS"),
+        second_reader=second,
+        reread=_env_flag("LIKHIT_OCR_REREAD"),
+    )
+
+
+def _correct_page_text(
+    text: str,
+    rendered: bytes,
+    ocr_service: LLMVisionOCRService,
+    correction: OcrCorrection,
+) -> tuple[str, int]:
+    """Apply the enabled passes to one accepted page; return (text, disputed spans left).
+
+    Never raises: a failing second reader or re-read leaves the text as the earlier
+    passes made it, because the primary transcription was already accepted.
+    """
+    if correction.rules:
+        text = postprocess(text).text
+    if correction.second_reader is None:
+        return text, 0
+    try:
+        second = correction.second_reader(rendered)
+    except Exception:  # noqa: BLE001 - a second opinion must never fail the page
+        logger.warning(
+            "OCR: second reader failed; keeping the primary reading", exc_info=True
+        )
+        return text, 0
+    if not second or not second.strip():
+        return text, 0
+    if correction.rules:
+        second = postprocess(second).text
+    checked = cross_check(text, second)
+    text, disputed = checked.text, checked.disagreements
+    if disputed and correction.reread:
+        try:
+            answer = ocr_service.extract_text(
+                io.BytesIO(rendered), prompt=reread_prompt(disputed)
+            )
+            if not answer.error:
+                text, disputed = apply_rereads(
+                    text, disputed, parse_reread_answer(answer.text)
+                )
+        except Exception:  # noqa: BLE001 - same: the re-read is an optional improvement
+            logger.warning("OCR: re-read of disputed spans failed", exc_info=True)
+    return text, len(disputed)
 
 
 class NepaliPdfConverter(DocumentConverter):
@@ -598,6 +707,8 @@ def _run_page_ocr(
     raw: bytes,
     ocr_service: LLMVisionOCRService,
     page_numbers: Sequence[int],
+    *,
+    correction: OcrCorrection | None = None,
 ) -> _PageOcrResult:
     """OCR each page, keeping only responses that actually transcribed it.
 
@@ -617,6 +728,8 @@ def _run_page_ocr(
     text_by_page: dict[int, str] = {}
     failures: list[tuple[int, str]] = []
     declined: list[int] = []
+    if correction is None:
+        correction = _ocr_correction_from_env()
     doc = fitz.open(stream=raw, filetype="pdf")
 
     try:
@@ -654,6 +767,18 @@ def _run_page_ocr(
                 # no downstream quality check can tell it from a transcription.
                 declined.append(page_number)
                 failures.append((page_number, f"OCR declined: {acceptance.reason()}"))
+                continue
+
+            if correction.active:
+                # After the refusal gate, never before: a decline must not be
+                # "corrected" into something that looks like a transcription.
+                extracted_text, disputed = _correct_page_text(
+                    extracted_text, rendered, ocr_service, correction
+                )
+                page_text = _format_full_page_ocr_text(extracted_text)
+                if disputed:
+                    page_text += f"\n\n<!-- likhit:ocr-review spans={disputed} -->"
+                text_by_page[page_number] = page_text
                 continue
 
             text_by_page[page_number] = _format_full_page_ocr_text(extracted_text)
