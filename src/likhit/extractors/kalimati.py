@@ -662,6 +662,24 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
         gid_to_correct = {**from_cmap, **inferred}
 
         derived = _analyze_gsub(font, glyph_order, gid_to_correct)
+        # A glyph GSUB can build is not a guess, so its inferred value is dropped and
+        # GSUB is read again: otherwise the guess is what every larger ligature built
+        # on that glyph reads as its component. Kalimati's e-matra + repha ligature
+        # (glyph00566) is the case -- metric-guessed as a bare `े`, it took the repha
+        # out of `ेर्ँ` (glyph00590) and `ेर्ं` (glyph00591) as well as its own.
+        overridden = set(inferred) & set(derived)
+        if overridden:
+            inferred = {
+                gid: value for gid, value in inferred.items() if gid not in overridden
+            }
+            # GSUB's own reading stands in for the dropped guess, so a single
+            # substitution that starts from one of these glyphs still resolves.
+            gid_to_correct = {
+                **from_cmap,
+                **inferred,
+                **{gid: derived[gid] for gid in overridden},
+            }
+            derived = _analyze_gsub(font, glyph_order, gid_to_correct)
         # A subset can keep its cmap and still have GSUB stripped, and GSUB is
         # where the conjuncts and half-forms live -- so the base letters resolve
         # from the cmap above while every conjunct stays unmapped. A reference
@@ -670,12 +688,21 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
         # already answered.
         reference = _reference_correction_map(font, skip=set(from_cmap) | set(derived))
 
-        full_map = dict(derived)
-        full_map.update(inferred)
+        # 🛑 GSUB outranks an inferred value, the same way the reference does below:
+        # a ligature rule is an exact reading of the program, a metric match is a
+        # guess about a shape. The order used to be the other way round, and it lost
+        # the repha on every `र्ने`: Kalimati ligates `े` + repha into one glyph
+        # (glyph00566, GSUB `uni0947 glyph00091 -> glyph00566`), whose metrics sit
+        # close enough to the bare `े` that _infer_mark_variants claimed it -- and
+        # that guess then overwrote GSUB's `ेर्`. `गर्ने` came out as `गने` across
+        # 479 of 739 Law Commission PDFs (JAW-53). `ै`/`ी`/`ो` + repha were never
+        # hit only because their ligatures fall outside the metric distance cap.
+        full_map = dict(inferred)
+        full_map.update(derived)
         # `guessed` is maintained in lockstep with the precedence below rather than
         # recomputed from it, so a future change to the order cannot leave provenance
         # describing a composition that no longer happens.
-        guessed = set(inferred) - set(from_cmap)
+        guessed = set(inferred) - set(from_cmap) - set(derived)
         # An outline match is exact -- identical contours are the same drawing --
         # where _infer_mark_variants only matched a glyph's metrics against five
         # candidate marks. So the reference outranks an inferred value, and never
@@ -1089,6 +1116,27 @@ def _collect_trace_fallback_map(
     return fallback
 
 
+def _matra_repha_marked(value: str) -> str | None:
+    """``ेर्`` -> ``े`` + repha marker, keeping a trailing ``ँ``/``ं``; else ``None``.
+
+    One glyph drawing a dependent vowel with a repha (and sometimes a nasal mark) over
+    it -- Kalimati's glyph00566 ``ेर्``, 590 ``ेर्ँ``, 591 ``ेर्ं``, 567 ``ैर्``. The
+    matra stays where the glyph is; the repha must move to the front of its cluster,
+    which only happens if it is handed to :func:`reorder_devanagari` as the marker.
+    ``ि`` is excluded: it is pre-base and has its own marker.
+    """
+
+    if (
+        len(value) in (3, 4)
+        and value[1:3] == _RA + _VIRAMA
+        and _is_devanagari_matra(value[0])
+        and value[0] != _IKAR
+        and (len(value) == 3 or value[3] in "\u0901\u0902")
+    ):
+        return value[0] + _PUA_REPH + value[3:]
+    return None
+
+
 def _patch_single_cmap(
     doc: fitz.Document,
     to_unicode_xref: int,
@@ -1105,6 +1153,12 @@ def _patch_single_cmap(
         if gid not in correction_map:
             continue
         correct_value = correction_map[gid]
+        if pdf_value == correct_value and _matra_repha_marked(correct_value):
+            # Authored right, but still in visual order: the repha is drawn after
+            # its cluster and only moves if it reaches the reorder as the marker.
+            # Not counted as a correction -- the value itself was not wrong.
+            patched_map[gid] = _matra_repha_marked(correct_value)
+            continue
         if pdf_value == correct_value or _is_ra_virama_swap(pdf_value, correct_value):
             continue
         if (
@@ -1112,7 +1166,10 @@ def _patch_single_cmap(
             and gid == _CONTEXTUAL_NE_GID
             and _font_name_matches_family(font_name, "kalimati")
             and pdf_value == "\u0928\u0947"
-            and correct_value == "\u0947"
+            # Bare `े` was the value this glyph used to be given; `ेर्` is what its
+            # GSUB rule says it is (see _get_font_correction_map). Either way an
+            # authored `ने` keeps its in-band provenance exactly as before.
+            and correct_value in ("\u0947", "\u0947\u0930\u094d")
         ):
             # This glyph means bare e-matra in ordinary contexts, but the authored
             # CMap proves its consonant on the measured `र्` + glyph sequence.
@@ -1122,6 +1179,12 @@ def _patch_single_cmap(
             patched_map[gid] = _PUA_REPH
         elif correct_value == _IKAR and pdf_value != _IKAR:
             patched_map[gid] = _PUA_IKAR
+        elif _matra_repha_marked(correct_value) is not None:
+            # A matra-plus-repha ligature: mark it for the reorder from the derived
+            # matra, whatever was authored -- Law Commission 12431 authors
+            # glyph00566 as `न`, and an authored `ै` must not displace GSUB's `े`.
+            # Written raw, the repha would stay where the glyph is drawn: `गनेर्`.
+            patched_map[gid] = _matra_repha_marked(correct_value)
         elif (
             len(correct_value) >= 2
             and correct_value.endswith(_RA + _VIRAMA)
@@ -1141,6 +1204,8 @@ def _patch_single_cmap(
             patched_map[gid] = _PUA_REPH
         elif correct_value == _IKAR:
             patched_map[gid] = _PUA_IKAR
+        elif _matra_repha_marked(correct_value) is not None:
+            patched_map[gid] = _matra_repha_marked(correct_value)
         else:
             patched_map[gid] = correct_value
 

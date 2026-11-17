@@ -34,6 +34,12 @@ This file starts at 0.1.8. For earlier releases, see the
 
 ### Fixed
 
+- **The repha over `र्ने` and its siblings is kept in Kalimati PDFs** (JAW-53). Kalimati
+  ligates `े` + repha into one glyph (glyph00566, GSUB `uni0947 glyph00091`), and the
+  repair let a metric guess of bare `े` outrank that GSUB reading, so `गर्ने` came out
+  `गने` in 479 of 739 Law Commission PDFs and in court-order PDFs too. GSUB now outranks
+  the guess, also as a component of larger ligatures (`ेर्ँ`, `ेर्ं`), and a matra +
+  repha value is always handed to the reorder as a marker.
 - **Legacy fonts in two more Word shapes** (JAW-49). An RTF saved under a `.doc`
   name now has its font table read, so a whole-Preeti RTF is converted instead of
   published as keystrokes; and `PCS NEPAL` (no final I) routes to the PCS NEPALI map.
