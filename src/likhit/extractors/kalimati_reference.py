@@ -581,7 +581,12 @@ OUTLINE_TO_UNICODE: dict[str, str] = {
     "0d2eab482502b16a": "\u0948",  # cid 560 uni0948 (cmap) -> ै  devanagari vowel sign ai
     "04d7c55d0e21c268": "\u0901",  # cid 561 uni0901 (cmap) -> ँ  devanagari sign candrabindu
     "18746a95bf26ef5c": "\u0902",  # cid 562 uni0902 (cmap) -> ं  devanagari sign anusvara
-    "3fd07f4e711020cd": "\u0947",  # cid 566 glyph00566 (inferred) -> े  devanagari vowel sign e
+    # cid 566 is the `े` + repha ligature (GSUB `uni0947 glyph00091 -> glyph00566`, read
+    # from the Kalimati embedded in Law Commission PDFs, JAW-53). The derivation that
+    # built this table recorded it as an inferred bare `े`, because a metric guess
+    # used to outrank GSUB in _get_font_correction_map; corrected by hand to the
+    # GSUB reading, in the same notation as its siblings 567-574.
+    "3fd07f4e711020cd": "\u0947\u0930\u094d",  # cid 566 glyph00566 (gsub) -> ेर्  devanagari vowel sign e + devanagari letter ra + devanagari sign virama
     "2ed8ee430c945ac9": "\u0948\u0930\u094d",  # cid 567 glyph00567 (gsub) -> ैर्  devanagari vowel sign ai + devanagari letter ra + devanagari sign virama
     "a9e08a101b2971b9": "\u0940\u0930\u094d",  # cid 568 glyph00568 (gsub) -> ीर्  devanagari vowel sign ii + devanagari letter ra + devanagari sign virama
     "6f62eb820bd1acd7": "\u0940\u0930\u094d",  # cid 569 glyph00569 (gsub) -> ीर्  devanagari vowel sign ii + devanagari letter ra + devanagari sign virama

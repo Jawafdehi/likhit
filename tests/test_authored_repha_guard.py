@@ -314,13 +314,25 @@ def test_provenance_follows_the_reconstruction_precedence(
 
         gid 1  the font's own cmap                        exact    -> not guessed
         gid 2  reference table, overriding an inference    exact    -> not guessed
-        gid 3  inference, overriding GSUB                  GUESS    -> guessed
+        gid 3  GSUB, overriding an inference               exact    -> not guessed
         gid 4  reference table alone                       exact    -> not guessed
+        gid 5  inference alone                             GUESS    -> guessed
+
+    Gid 3 was "inference, overriding GSUB" until JAW-53: that order let a metric
+    guess of bare `े` overwrite GSUB's `ेर्` for Kalimati's e-matra + repha ligature,
+    and dropped the repha from every `र्ने`. See test_kalimati_e_reph_ligature.py.
     """
 
     class FakeFont:
         def getGlyphOrder(self):  # noqa: N802 - fontTools spelling
-            return ["gid0", "uni0915", "glyph00002", "glyph00003", "glyph00004"]
+            return [
+                "gid0",
+                "uni0915",
+                "glyph00002",
+                "glyph00003",
+                "glyph00004",
+                "glyph00005",
+            ]
 
         def close(self) -> None:
             return None
@@ -333,7 +345,7 @@ def test_provenance_follows_the_reconstruction_precedence(
     monkeypatch.setattr("fontTools.ttLib.TTFont", lambda *a, **k: FakeFont())
     monkeypatch.setattr(kalimati, "_safe_get_best_cmap", lambda _f: {0x0915: "uni0915"})
     monkeypatch.setattr(
-        kalimati, "_infer_mark_variants", lambda _f, _o, _c: {2: IKAR, 3: EKAR}
+        kalimati, "_infer_mark_variants", lambda _f, _o, _c: {2: IKAR, 3: EKAR, 5: EKAR}
     )
     monkeypatch.setattr(kalimati, "_analyze_gsub", lambda _f, _o, _c: {3: "ख्"})
     monkeypatch.setattr(
@@ -344,8 +356,8 @@ def test_provenance_follows_the_reconstruction_precedence(
 
     built = kalimati._get_font_correction_map(FakeDoc(), 1)  # type: ignore[arg-type]
 
-    assert built == {1: "क", 2: "ी", 3: EKAR, 4: "ग"}
-    assert kalimati._reconstruction_guesses(built) == {3}
+    assert built == {1: "क", 2: "ी", 3: "ख्", 4: "ग", 5: EKAR}
+    assert kalimati._reconstruction_guesses(built) == {5}
 
 
 def test_simple_font_translation_re_expresses_provenance_in_character_codes(
