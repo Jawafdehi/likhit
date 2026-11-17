@@ -184,3 +184,43 @@ def test_a_ligature_built_on_a_gsub_glyph_reads_gsub_not_the_guess(
 
     assert merged.get(5) == _E_REPH
     assert merged.get(4) == _E_REPH + "\u0901"
+
+
+def test_a_displaced_authored_matra_yields_to_the_gsub_matra() -> None:
+    """Authored ``ै`` on the ``ेर्`` ligature: the derived ``े`` wins, repha kept."""
+
+    patched = _patched({0x236: "\u0948"}, {0x236: _E_REPH})
+    assert kalimati.reorder_devanagari(f"गन{patched[0x236]}") == "गर्ने"
+
+
+def test_a_single_substitution_from_an_overridden_glyph_still_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rerun reads GSUB's value for a dropped guess, so ``5 -> 4`` keeps resolving."""
+
+    font = _build_font(character_map={0x0915: "g3"})
+    compiled = BytesIO()
+    font.save(compiled)
+    monkeypatch.setattr(
+        kalimati,
+        "_infer_mark_variants",
+        lambda font, glyph_order, gid_to_correct: {5: "\u0947"},
+    )
+
+    def fake_gsub(font, glyph_order, gid_to_correct):
+        out = {5: _E_REPH}
+        if 5 in gid_to_correct:  # single substitution 5 -> 4 needs a reading for 5
+            out[4] = gid_to_correct[5]
+        return out
+
+    monkeypatch.setattr(kalimati, "_analyze_gsub", fake_gsub)
+    doc = fitz.open(stream=_pdf_embedding(compiled.getvalue()), filetype="pdf")
+    try:
+        merged: dict[int, str] = {}
+        for info in doc[0].get_fonts(full=True):
+            if info[2] == "Type0":
+                merged.update(kalimati._get_font_correction_map(doc, info[0]))
+    finally:
+        doc.close()
+
+    assert merged.get(4) == _E_REPH

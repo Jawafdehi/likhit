@@ -672,7 +672,13 @@ def _get_font_correction_map(doc: fitz.Document, type0_xref: int) -> dict[int, s
             inferred = {
                 gid: value for gid, value in inferred.items() if gid not in overridden
             }
-            gid_to_correct = {**from_cmap, **inferred}
+            # GSUB's own reading stands in for the dropped guess, so a single
+            # substitution that starts from one of these glyphs still resolves.
+            gid_to_correct = {
+                **from_cmap,
+                **inferred,
+                **{gid: derived[gid] for gid in overridden},
+            }
             derived = _analyze_gsub(font, glyph_order, gid_to_correct)
         # A subset can keep its cmap and still have GSUB stripped, and GSUB is
         # where the conjuncts and half-forms live -- so the base letters resolve
@@ -1173,6 +1179,12 @@ def _patch_single_cmap(
             patched_map[gid] = _PUA_REPH
         elif correct_value == _IKAR and pdf_value != _IKAR:
             patched_map[gid] = _PUA_IKAR
+        elif _matra_repha_marked(correct_value) is not None:
+            # A matra-plus-repha ligature: mark it for the reorder from the derived
+            # matra, whatever was authored -- Law Commission 12431 authors
+            # glyph00566 as `न`, and an authored `ै` must not displace GSUB's `े`.
+            # Written raw, the repha would stay where the glyph is drawn: `गनेर्`.
+            patched_map[gid] = _matra_repha_marked(correct_value)
         elif (
             len(correct_value) >= 2
             and correct_value.endswith(_RA + _VIRAMA)
@@ -1181,12 +1193,6 @@ def _patch_single_cmap(
             and pdf_value[0] != _IKAR
         ):
             patched_map[gid] = pdf_value[0] + _PUA_REPH
-        elif _matra_repha_marked(correct_value) is not None:
-            # A matra-plus-repha ligature whose authored value is not a matra at all
-            # (Law Commission 12431 authors glyph00566 as `न`). Written raw, the repha
-            # would stay where the glyph is drawn -- `गनेर्` -- so mark it for the
-            # reorder exactly as the branch above does, from the derived matra.
-            patched_map[gid] = _matra_repha_marked(correct_value)
         else:
             patched_map[gid] = correct_value
         corrections += 1
