@@ -81,6 +81,13 @@ def test_an_authored_consonant_on_the_ligature_still_yields_the_repha() -> None:
     assert kalimati.reorder_devanagari(f"गन{patched[0x236]}") == "गर्ने"
 
 
+def test_an_authored_value_that_is_already_right_is_still_reordered() -> None:
+    """Authored ``ेर्`` equals the reading, but the glyph is still in visual order."""
+
+    patched = _patched({0x236: _E_REPH}, {0x236: _E_REPH})
+    assert kalimati.reorder_devanagari(f"गन{patched[0x236]}") == "गर्ने"
+
+
 def test_an_authored_ne_keeps_its_contextual_provenance() -> None:
     """The other producer, which authors glyph00566 as ``ने``, is unchanged."""
 

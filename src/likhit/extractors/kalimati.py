@@ -1147,6 +1147,12 @@ def _patch_single_cmap(
         if gid not in correction_map:
             continue
         correct_value = correction_map[gid]
+        if pdf_value == correct_value and _matra_repha_marked(correct_value):
+            # Authored right, but still in visual order: the repha is drawn after
+            # its cluster and only moves if it reaches the reorder as the marker.
+            # Not counted as a correction -- the value itself was not wrong.
+            patched_map[gid] = _matra_repha_marked(correct_value)
+            continue
         if pdf_value == correct_value or _is_ra_virama_swap(pdf_value, correct_value):
             continue
         if (
