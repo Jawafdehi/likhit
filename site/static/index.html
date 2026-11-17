@@ -27,293 +27,49 @@
   <body>
     <header class="topbar">
       <a class="brand" href="./" aria-label="Likhit benchmark home">
-        <span>
-          <strong>Likhit</strong>
-          <small>document benchmark</small>
-        </span>
+        <span class="brand-mark" aria-hidden="true">ल</span>
+        <strong>Likhit</strong>
+        <span class="brand-sep" aria-hidden="true">/</span>
+        <small>Benchmark</small>
       </a>
       <div class="run-identity" id="run-identity" aria-live="polite">
         Loading benchmark…
       </div>
-      <a
-        class="icon-link"
-        href="https://github.com/Jawafdehi/likhit"
-        title="Open GitHub repository"
-        aria-label="Open GitHub repository"
-      >
-        <i data-lucide="github" aria-hidden="true"></i>
-      </a>
+      <nav class="topbar-links" aria-label="Likhit">
+        <a class="topbar-link" href="https://jawafdehi.org/likhit">About Likhit</a>
+        <a class="topbar-link" href="https://pypi.org/project/likhit/">PyPI</a>
+        <a
+          class="icon-link"
+          href="https://github.com/Jawafdehi/likhit"
+          title="Open GitHub repository"
+          aria-label="Open GitHub repository"
+        >
+          <i data-lucide="github" aria-hidden="true"></i>
+        </a>
+      </nav>
     </header>
 
     <main>
-      <section class="intro" aria-labelledby="intro-title">
-        <div class="intro-copy">
-          <h1 id="intro-title">
-            Nepali documents, converted <span class="hl">faithfully</span>
-          </h1>
-          <p class="intro-lede">
-            <strong>Likhit</strong> is
-            <a href="https://jawafdehi.org/">Jawafdehi's</a> public
-            <a href="https://github.com/microsoft/markitdown">MarkItDown</a>
-            plugin for Nepal-specific document support. It adds Nepali PDF
-            repair, layout-aware Markdown assembly, optional OCR for
-            image-dominant pages, and legacy <code>.doc</code> support. For PDFs
-            it evaluates several extraction paths and returns the best result
-            rather than trusting one fixed pipeline.
-          </p>
-
-          <div class="intro-install">
-            <code>pip install likhit</code>
-            <button
-              class="copy-button"
-              type="button"
-              data-copy="pip install likhit"
-              aria-label="Copy install command"
-            >
-              Copy
-            </button>
-          </div>
-
-          <p class="intro-usage">
-            Then enable plugins when you convert:
-            <code>MarkItDown(enable_plugins=True)</code>, or from the CLI
-            <code>markitdown --use-plugins document.pdf</code>.
-          </p>
-
-          <div class="intro-links">
-            <a class="command-link" href="https://github.com/Jawafdehi/likhit">
-              <i data-lucide="github" aria-hidden="true"></i> Source
-            </a>
-            <a class="command-link" href="https://pypi.org/project/likhit/">
-              <i data-lucide="package" aria-hidden="true"></i> PyPI
-            </a>
-            <a class="command-link" href="https://jawafdehi.org/">
-              <i data-lucide="globe" aria-hidden="true"></i> Jawafdehi
-            </a>
-          </div>
-        </div>
-
-        <ul class="intro-features">
-          <li>
-            <i data-lucide="wrench" aria-hidden="true"></i>
-            <div>
-              <strong>Devanagari repair</strong>
-              <span
-                >Recovers conjuncts and matras that ordinary extraction turns
-                into replacement characters.</span
-              >
-            </div>
-          </li>
-          <li>
-            <i data-lucide="table" aria-hidden="true"></i>
-            <div>
-              <strong>Layout-aware Markdown</strong>
-              <span
-                >Reconstructs reading order and tables instead of emitting a
-                flat character dump.</span
-              >
-            </div>
-          </li>
-          <li>
-            <i data-lucide="scan-text" aria-hidden="true"></i>
-            <div>
-              <strong>OCR when needed</strong>
-              <span
-                >Falls back to a vision model on image-only pages, which no text
-                layer can serve.</span
-              >
-            </div>
-          </li>
-          <li>
-            <i data-lucide="file-clock" aria-hidden="true"></i>
-            <div>
-              <strong>Legacy formats</strong>
-              <span
-                >Reads the <code>.doc</code> and Preeti-era files government
-                archives are actually made of.</span
-              >
-            </div>
-          </li>
-        </ul>
-      </section>
-
-      <section class="cli-section" aria-labelledby="cli-title">
-        <div class="cli-copy">
-          <h2 id="cli-title">
-            <i data-lucide="terminal" aria-hidden="true"></i>
-            Convert from the command line
-          </h2>
+      <section class="page-header" aria-labelledby="benchmark-title">
+        <div class="page-header-copy">
+          <p class="eyebrow">Document conversion benchmark</p>
+          <h1 id="benchmark-title">Benchmark</h1>
           <p>
-            The package installs <code>likhit-save</code>, a helper that runs
-            MarkItDown with the plugin enabled and writes the Markdown out for
-            you — no Python needed.
+            Every result below comes from a real, published Government of Nepal
+            document — no synthetic fixtures. Each one is converted three ways,
+            recorded on a machine where all three OCR backends work, and replayed
+            here. Pick a document to read what Likhit extracted, compare the
+            configurations, and check the assertions that gate the build.
           </p>
         </div>
-
-        <ul class="cli-examples">
-          <li>
-            <span class="cli-label">One file</span>
-            <code>likhit-save notice.pdf --out notice.md</code>
-            <button
-              class="copy-button cli-copy-button"
-              type="button"
-              data-copy="likhit-save notice.pdf --out notice.md"
-              aria-label="Copy command: convert one file"
-            >
-              Copy
-            </button>
-          </li>
-          <li>
-            <span class="cli-label">Many files</span>
-            <code>likhit-save a.pdf b.pdf --out-dir converted/</code>
-            <button
-              class="copy-button cli-copy-button"
-              type="button"
-              data-copy="likhit-save a.pdf b.pdf --out-dir converted/"
-              aria-label="Copy command: convert many files"
-            >
-              Copy
-            </button>
-          </li>
-          <li>
-            <span class="cli-label">Page range</span>
-            <code>likhit-save report.pdf --pages 2-4 --out pages.md</code>
-            <button
-              class="copy-button cli-copy-button"
-              type="button"
-              data-copy="likhit-save report.pdf --pages 2-4 --out pages.md"
-              aria-label="Copy command: convert a page range"
-            >
-              Copy
-            </button>
-          </li>
-        </ul>
-      </section>
-
-      <section class="ocr-section" aria-labelledby="ocr-title">
-        <div class="ocr-copy">
-          <h2 id="ocr-title">
-            <i data-lucide="scan-text" aria-hidden="true"></i>
-            Turn on OCR for scanned pages
-          </h2>
-          <p>
-            Plenty of published records are page images with no usable text layer
-            — nothing but a vision model can read them. Likhit adds an OCR
-            candidate when it finds such a page <em>and</em> OCR is configured.
-            It talks to any endpoint that speaks the OpenAI chat API, so the same
-            three variables cover a model on your own machine, Bedrock behind a
-            gateway, or a hosted API.
-          </p>
-          <p class="ocr-note">
-            <code>OPENAI_BASE_URL</code> points at the endpoint,
-            <code>OPENAI_API_KEY</code> authenticates to it, and
-            <code>MARKITDOWN_OCR_MODEL</code> names the model. Leave them unset
-            and Likhit still converts — it just records that a page needed OCR
-            and carries on with the text it could extract.
-          </p>
+        <div class="page-header-actions">
+          <a class="command-link" href="https://jawafdehi.org/likhit">
+            <i data-lucide="book-open" aria-hidden="true"></i> What is Likhit?
+          </a>
+          <a class="command-link" href="https://github.com/Jawafdehi/likhit">
+            <i data-lucide="github" aria-hidden="true"></i> Source
+          </a>
         </div>
-
-        <div class="ocr-recipes">
-          <article class="ocr-recipe">
-            <header class="ocr-recipe-head">
-              <span class="ocr-badge ocr-badge-free">No API cost</span>
-              <h3>A model on your own machine</h3>
-              <p>
-                Ollama, llama.cpp or vLLM — all three serve an OpenAI-compatible
-                endpoint, and no page image leaves the machine.
-              </p>
-            </header>
-            <pre class="ocr-commands">ollama pull qwen2.5vl:7b
-
-# Ollama ignores the key; the client refuses to start without one
-export OPENAI_API_KEY=ollama
-export OPENAI_BASE_URL=http://127.0.0.1:11434/v1
-export MARKITDOWN_OCR_MODEL=qwen2.5vl:7b
-
-likhit-save scanned-notice.pdf --out notice.md</pre>
-            <button
-              class="copy-button ocr-copy-button"
-              type="button"
-              data-copy-block
-              aria-label="Copy the local OCR setup"
-            >
-              Copy
-            </button>
-          </article>
-
-          <article class="ocr-recipe">
-            <header class="ocr-recipe-head">
-              <span class="ocr-badge">AWS</span>
-              <h3>Bedrock, through a gateway</h3>
-              <p>
-                Bedrock does not speak the OpenAI API, so run a translating proxy
-                in front of it. The proxy picks up your AWS credentials the usual
-                way — <code>AWS_PROFILE</code>, environment variables or an
-                instance role — and Likhit only ever sees an OpenAI endpoint.
-              </p>
-            </header>
-            <pre class="ocr-commands">pip install 'litellm[proxy]'
-litellm --model bedrock/anthropic.claude-sonnet-5
-
-# whatever you configured the proxy to accept
-export OPENAI_API_KEY=local-proxy-key
-export OPENAI_BASE_URL=http://127.0.0.1:4000/v1
-export MARKITDOWN_OCR_MODEL=bedrock/anthropic.claude-sonnet-5
-
-likhit-save scanned-notice.pdf --out notice.md</pre>
-            <button
-              class="copy-button ocr-copy-button"
-              type="button"
-              data-copy-block
-              aria-label="Copy the Bedrock OCR setup"
-            >
-              Copy
-            </button>
-            <p class="ocr-footnote">
-              Any vision-capable model your account has enabled will do — swap
-              the model id for the one you have access to.
-            </p>
-          </article>
-
-          <article class="ocr-recipe">
-            <header class="ocr-recipe-head">
-              <span class="ocr-badge">Hosted</span>
-              <h3>A hosted API</h3>
-              <p>
-                Point at any OpenAI-compatible provider. For Gemini, set the
-                Google key alone and Likhit selects Google's OpenAI-compatible
-                base URL for you.
-              </p>
-            </header>
-            <pre class="ocr-commands">export OPENAI_API_KEY=your-api-key
-export OPENAI_BASE_URL=https://api.example.com/v1
-export MARKITDOWN_OCR_MODEL=your-vision-model
-
-# or Gemini, where the base URL is filled in for you
-export GEMINI_API_KEY=your-gemini-key
-export GEMINI_MODEL=gemini-2.5-flash</pre>
-            <button
-              class="copy-button ocr-copy-button"
-              type="button"
-              data-copy-block
-              aria-label="Copy the hosted OCR setup"
-            >
-              Copy
-            </button>
-          </article>
-        </div>
-      </section>
-
-      <section class="benchmark-intro" aria-labelledby="benchmark-title">
-        <h2 id="benchmark-title">Benchmark</h2>
-        <p>
-          Every result below comes from a real, published government document —
-          no synthetic fixtures. Each one is converted three ways, recorded on a
-          machine where all three OCR backends work, and replayed here; the
-          banner below says when. Pick a document to read what Likhit extracted,
-          compare the configurations, and check the assertions that gate the
-          build.
-        </p>
       </section>
 
       <section class="summary-strip" id="summary-strip" aria-label="Run summary">
