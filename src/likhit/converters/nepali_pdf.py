@@ -55,6 +55,7 @@ from likhit.ocr_postprocess import (
 from likhit.pdf_page_analysis import (
     _is_vowel_poor_latin_token,
 )
+from likhit.surya_ocr import surya_service_from_env
 
 # Imported rather than redefined. These used to exist twice -- once here and once in
 # the renderer, byte-identical -- and both copies decided the same question about the
@@ -1150,6 +1151,14 @@ def _build_ocr_service(
             client=llm_client,
             model=str(llm_model),
             default_prompt=str(llm_prompt) if llm_prompt is not None else None,
+        )
+
+    engine = os.getenv("LIKHIT_OCR_ENGINE", "").strip().lower()
+    if engine == "surya":
+        return surya_service_from_env()
+    if engine:
+        logger.warning(
+            "Ignoring unknown LIKHIT_OCR_ENGINE=%r (supported: surya)", engine
         )
 
     api_key, model, base_url = _resolve_ocr_env()

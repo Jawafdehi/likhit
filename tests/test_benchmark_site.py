@@ -2414,9 +2414,11 @@ def test_readme_and_landing_page_document_the_same_ocr_backends() -> None:
 
     readme = (SITE_DIR.parent / "README.md").read_text(encoding="utf-8")
     index = (SITE_DIR / "static" / "index.html").read_text(encoding="utf-8")
-    converter = (
-        SITE_DIR.parent / "src" / "likhit" / "converters" / "nepali_pdf.py"
-    ).read_text(encoding="utf-8")
+    converter = "\n".join(
+        (SITE_DIR.parent / "src" / "likhit" / rel).read_text(encoding="utf-8")
+        # the OCR engines' own settings live beside the converter that reads the rest
+        for rel in ("converters/nepali_pdf.py", "surya_ocr.py")
+    )
 
     section = index[index.index('id="ocr-title"') : index.index('id="benchmark-title"')]
     page_variables = set(re.findall(r"export ([A-Z0-9_]+)=", section))

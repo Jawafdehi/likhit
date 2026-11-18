@@ -427,6 +427,61 @@ export MARKITDOWN_OCR_MODEL="bedrock/anthropic.claude-sonnet-5"
 Any vision-capable model your account has enabled will do; swap the model id for
 one you have access to.
 
+#### Recipe: Surya 2.5 for scanned Nepali, on your own machine
+
+[Surya 2.5](https://github.com/datalab-to/surya) is an open-weight OCR model. On 9
+scanned Attorney General charge-sheet pages from the JAW-51 gold set it read 97.7% of
+digit fields (86 of 88) and 96.9% of person names, against about 82% / 84% for
+Tesseract `nep` on the full 112-page set. It needs its
+own request (a fixed prompt, image first) and answers in HTML, so it is a separate
+engine rather than a `MARKITDOWN_OCR_MODEL`:
+
+```bash
+# llama.cpp, with the GGUF and mmproj from Datalab's Surya 2.5 release
+llama-server -m surya-2.5-Q8_0.gguf --mmproj surya-2.5-mmproj.gguf \
+  --jinja --special --ctx-size 16384 --host 127.0.0.1 --port 8080
+
+export LIKHIT_OCR_ENGINE=surya
+export LIKHIT_SURYA_BASE_URL="http://127.0.0.1:8080/v1"
+# optional, recommended: rules + a free Tesseract cross-check that flags digit disputes
+export LIKHIT_OCR_POSTPROCESS=1
+export LIKHIT_OCR_SECOND_READER=tesseract
+likhit-save scanned-charge-sheet.pdf --out charge-sheet.md
+```
+
+Optional: `LIKHIT_SURYA_MODEL` (default `datalab-to/surya-ocr-2.5`; llama-server
+accepts any name), `LIKHIT_SURYA_API_KEY` (only if your server checks one),
+`LIKHIT_SURYA_MAX_TOKENS` (default 12288; a page that hits it is treated as failed,
+not kept half-read) and `LIKHIT_SURYA_TIMEOUT` (seconds, default 1800). An explicit
+`llm_client` passed to `convert()` still wins over `LIKHIT_OCR_ENGINE`.
+
+`likhit` resizes each page the way Surya's own client does and turns the answer into
+text: headings, paragraphs and Markdown tables; signature and picture blocks are
+dropped. Speed: on a CPU it is minutes per page (1–12 min on a shared 8-core host),
+so for more than a handful of pages run the server on a GPU. The weights are free for
+organisations under $5M in revenue or funding (modified OpenRAIL-M); check the
+licence for anything larger.
+
+#### Checking the OCR: rules and a Tesseract cross-check
+
+Three switches, all off by default, apply to any OCR engine after the refusal gate:
+
+```bash
+export LIKHIT_OCR_POSTPROCESS=1          # BS dates, case/section numbers, amounts, loops
+export LIKHIT_OCR_SECOND_READER=tesseract  # a free second reading (needs `tesseract` + `nep`)
+export LIKHIT_OCR_TESSERACT_LANG=nep     # the default
+export LIKHIT_OCR_REREAD=1               # ask the vision model about disputed spans
+```
+
+Digit spans the two readings disagree on are settled only when one side is a
+well-formed value (a valid BS date, correct lakh grouping, a case-number shape) and
+the other is not. Anything else keeps the first reading and is counted in a
+`<!-- likhit:ocr-review spans=N -->` marker on the page, for a person to check.
+Surya cannot answer a free-form question, so with `LIKHIT_OCR_ENGINE=surya` the
+re-read is skipped and disputed spans stay in that marker. On the same 9 pages, Surya
+plus the rules and a Tesseract check flagged 21 spans (about 2 a page), and both of
+Surya's digit misses were among them; nothing was changed by a guess.
+
 #### When OCR actually runs
 
 `likhit` adds an OCR candidate only for pages whose text layer cannot serve them

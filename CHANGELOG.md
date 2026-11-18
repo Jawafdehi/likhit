@@ -13,6 +13,20 @@ This file starts at 0.1.8. For earlier releases, see the
 
 ### Added
 
+- **Surya 2.5 as an OCR engine** (`likhit.surya_ocr`, JAW-51). Off by default.
+  `LIKHIT_OCR_ENGINE=surya` plus `LIKHIT_SURYA_BASE_URL` (an OpenAI-compatible Surya
+  server, e.g. llama.cpp's `llama-server`) sends each scanned page with Surya's own
+  prompt, image first, resized like Surya's client, and turns its HTML answer
+  (Surya 2.5's compact block headers or `<div>` blocks) into text with Markdown
+  headings and tables. The answer then goes through the same refusal gate as any
+  other engine, and through the rules and Tesseract cross-check when those are turned
+  on (`LIKHIT_OCR_POSTPROCESS=1`, `LIKHIT_OCR_SECOND_READER=tesseract`; without them
+  there is no digit-review marker). Disputed digit spans are flagged in the
+  `likhit:ocr-review` marker, and the re-read is skipped because Surya only
+  transcribes. A page that hits `LIKHIT_SURYA_MAX_TOKENS` fails instead of being kept
+  half-read. Optional: `LIKHIT_SURYA_MODEL`, `LIKHIT_SURYA_API_KEY`,
+  `LIKHIT_SURYA_TIMEOUT`. No new dependencies.
+
 - **Opt-in multi-pass correction of vision-OCR pages** (`likhit.ocr_postprocess`).
   Off by default: output is unchanged unless one of these is set.
   - `LIKHIT_OCR_POSTPROCESS=1` — deterministic rules after the refusal gate: BS
