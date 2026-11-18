@@ -443,6 +443,9 @@ llama-server -m surya-2.5-Q8_0.gguf --mmproj surya-2.5-mmproj.gguf \
 
 export LIKHIT_OCR_ENGINE=surya
 export LIKHIT_SURYA_BASE_URL="http://127.0.0.1:8080/v1"
+# optional, recommended: rules + a free Tesseract cross-check that flags digit disputes
+export LIKHIT_OCR_POSTPROCESS=1
+export LIKHIT_OCR_SECOND_READER=tesseract
 likhit-save scanned-charge-sheet.pdf --out charge-sheet.md
 ```
 

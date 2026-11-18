@@ -140,10 +140,13 @@ class _HtmlToText(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.lines: list[str] = []
         self.buf: list[str] = []
-        self.row: list[str] | None = None
+        # A row is (text, colspan, rowspan) per cell, laid out on a grid when it ends.
+        self.row: list[tuple[str, int, int]] | None = None
         self.cell: list[str] | None = None
+        self.span = (1, 1)  # the open cell's (colspan, rowspan)
+        self.carried: dict[int, int] = {}  # column -> rows still covered by a rowspan
         self.rows_in_table = 0
-        self.ignore = 0  # inside <math> annotations, <style>, <script>
+        self.ignore = 0  # inside <style>, <script>
 
     def _flush(self) -> None:
         text = re.sub(r"[ \t]+", " ", "".join(self.buf)).strip()
@@ -151,18 +154,75 @@ class _HtmlToText(HTMLParser):
             self.lines.append(text)
         self.buf = []
 
+    # Surya 2.5's compact answers leave out </td>, </th> and </tr> (its own decoder
+    # puts them back), so a cell or row also ends where the next one starts, and both
+    # end with the table. Without this a compact table vanishes from the page text.
+    def _end_cell(self) -> None:
+        if self.cell is None:
+            return
+        text = re.sub(r"\s+", " ", "".join(self.cell)).strip().replace("|", "\\|")
+        if self.row is None:
+            self.row = []
+        self.row.append((text, *self.span))
+        self.cell = None
+
+    def _end_row(self) -> None:
+        self._end_cell()
+        if self.row is None:
+            return
+        # Lay the cells out on a grid, so a rowspan from an earlier row or a colspan
+        # leaves an empty column instead of shifting later values left.
+        out: list[str] = []
+        carried: dict[int, int] = {}
+        col = 0
+        for text, colspan, rowspan in self.row:
+            while self.carried.get(col, 0) > 0:
+                carried[col] = self.carried[col] - 1
+                out.append("")
+                col += 1
+            for k in range(colspan):
+                out.append(text if k == 0 else "")
+                if rowspan > 1:
+                    carried[col] = rowspan - 1
+                col += 1
+        while any(n > 0 for c, n in self.carried.items() if c >= col):
+            if self.carried.get(col, 0) > 0:
+                carried[col] = self.carried[col] - 1
+            out.append("")
+            col += 1
+        self.carried = {c: n for c, n in carried.items() if n > 0}
+        if any(out):
+            self.lines.append("| " + " | ".join(out) + " |")
+            if self.rows_in_table == 0:
+                self.lines.append("|" + " --- |" * len(out))
+            self.rows_in_table += 1
+        self.row = None
+
+    def _end_table(self) -> None:
+        self._end_row()
+        self.carried = {}
+
+    @staticmethod
+    def _span(attrs: list[tuple[str, str | None]], name: str) -> int:
+        value = dict(attrs).get(name) or "1"
+        return max(1, min(int(value), 50)) if value.isdigit() else 1
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in ("style", "script"):
             self.ignore += 1
         elif tag == "table":
+            self._end_table()
             self._flush()
             self.rows_in_table = 0
         elif tag == "tr":
+            self._end_row()
             self.row = []
         elif tag in ("td", "th"):
+            self._end_cell()
             self.cell = []
-        elif tag == "br" and self.cell is not None:
-            self.cell.append(" ")
+            self.span = (self._span(attrs, "colspan"), self._span(attrs, "rowspan"))
+        elif tag in ("thead", "tbody", "tfoot"):
+            self._end_row()
         elif tag in self._BREAK and self.cell is not None:
             # a block inside a cell (<td><p>१२</p><p>३४</p></td>) is a word break,
             # or two numbers would merge into a third, wrong one
@@ -175,18 +235,12 @@ class _HtmlToText(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag in ("style", "script"):
             self.ignore = max(0, self.ignore - 1)
-        elif tag in ("td", "th") and self.cell is not None:
-            cell = re.sub(r"\s+", " ", "".join(self.cell)).strip()
-            if self.row is not None:
-                self.row.append(cell.replace("|", "\\|"))
-            self.cell = None
-        elif tag == "tr" and self.row is not None:
-            if any(self.row):
-                self.lines.append("| " + " | ".join(self.row) + " |")
-                if self.rows_in_table == 0:
-                    self.lines.append("|" + " --- |" * len(self.row))
-                self.rows_in_table += 1
-            self.row = None
+        elif tag in ("td", "th"):
+            self._end_cell()
+        elif tag == "tr":
+            self._end_row()
+        elif tag == "table":
+            self._end_table()
         elif tag in self._BREAK and self.cell is not None:
             self.cell.append(" ")
         elif tag in self._BREAK:
@@ -201,6 +255,7 @@ class _HtmlToText(HTMLParser):
             self.buf.append(data)
 
     def text(self) -> str:
+        self._end_table()  # a truncated answer may stop inside a table
         self._flush()
         return "\n".join(self.lines)
 

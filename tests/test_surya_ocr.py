@@ -125,6 +125,28 @@ class TestAnswerToText:
         )
         assert surya_answer_to_text(answer).splitlines()[2] == "| १२ ३४ |"
 
+    def test_compact_table_without_closing_tags_keeps_its_cells(self) -> None:
+        # Surya 2.5's compact form leaves out </td>, </th> and </tr>
+        answer = "<|Table|><|1|><|2|><|3|><|4|><table><tr><th>विवरण<th>रकम<tr><td>जम्मा<td>१००</table>"
+        assert surya_answer_to_text(answer).splitlines() == [
+            "| विवरण | रकम |",
+            "| --- | --- |",
+            "| जम्मा | १०० |",
+        ]
+
+    def test_merged_cells_keep_values_in_their_columns(self) -> None:
+        answer = (
+            "<table><tr><th>विवरण</th><th>२०७९</th><th>२०८०</th></tr>"
+            '<tr><td rowspan="2">रकम</td><td>१</td><td>२</td></tr>'
+            "<tr><td>३</td><td>४</td></tr>"
+            '<tr><td colspan="2">जम्मा</td><td>१०</td></tr></table>'
+        )
+        assert surya_answer_to_text(answer).splitlines()[2:] == [
+            "| रकम | १ | २ |",
+            "|  | ३ | ४ |",
+            "| जम्मा |  | १० |",
+        ]
+
     def test_box_tokens_and_fences_are_removed(self) -> None:
         answer = "```html\n<|Text|><|1|><|2|><|3|><|4|><p>क<|box|><|1|><|2|><|3|><|4|>ख</p>\n```"
         assert surya_answer_to_text(answer) == "कख"
