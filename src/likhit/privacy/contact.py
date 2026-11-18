@@ -49,6 +49,8 @@ from .signals import (
     EMAIL,
     LANDLINE,
     MOBILE,
+    MOBILE_AFTER_NAME_DIGIT,
+    MOBILE_EXTRA_DIGIT,
     PHONE_LABELLED,
     introduced_by_document_id_label,
 )
@@ -92,6 +94,10 @@ class ContactTarget:
 #: exactly the one Indian mobile on page 1 and changes nothing else.
 CONTACT_PATTERNS = (
     ("mobile", MOBILE),
+    # The two near-miss mobile shapes (JAW-74), disjoint from MOBILE by their digit
+    # boundaries -- see their definitions in `signals`.
+    ("mobile", MOBILE_AFTER_NAME_DIGIT),
+    ("mobile", MOBILE_EXTRA_DIGIT),
     ("landline", LANDLINE),
     ("email", EMAIL),
     ("phone_labelled", PHONE_LABELLED),

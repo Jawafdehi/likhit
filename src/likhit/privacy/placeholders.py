@@ -123,6 +123,15 @@ AGE: Final = "[REDACTED:AGE]"
 #: ``identifiers`` scope is not quietly widened to hold it.
 PASSPORT: Final = "[REDACTED:PASSPORT-NO]"
 
+#: Identity-document numbers other than a passport or citizenship certificate, each removed at
+#: ``strict`` by :mod:`likhit.privacy.redact`: an Indian voter ID (EPIC), an Aadhaar number, a
+#: refugee identity card and a phone's IMEI. Found on the JAW-73 charge sheet and the JAW-74
+#: verdicts.
+VOTER_ID: Final = "[REDACTED:VOTER-ID-NO]"
+AADHAAR: Final = "[REDACTED:AADHAAR-NO]"
+REFUGEE_ID: Final = "[REDACTED:REFUGEE-ID-NO]"
+IMEI: Final = "[REDACTED:IMEI-NO]"
+
 ALL: Final = (
     CITIZENSHIP,
     DATE_OF_BIRTH,
@@ -136,6 +145,10 @@ ALL: Final = (
     BANK_ACCOUNT,
     AGE,
     PASSPORT,
+    VOTER_ID,
+    AADHAAR,
+    REFUGEE_ID,
+    IMEI,
 )
 
 #: Matches any registered placeholder.

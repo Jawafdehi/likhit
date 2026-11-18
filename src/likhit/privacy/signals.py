@@ -30,6 +30,18 @@ from collections import Counter
 
 from ..devanagari import ANY_DIGITS
 from .placeholders import PLACEHOLDER_PATTERN
+from .redact import (
+    CIT_ABBREVIATED_LABEL,
+    EMPTY_CELL_WRAP,
+    AADHAAR_LABEL_VALUE,
+    BANK_NAME_VALUE,
+    BANK_TRAILING_LABEL_VALUE,
+    CITIZENSHIP_ISSUED_IN_NAME_VALUE,
+    IMEI_LABEL_VALUE,
+    REFUGEE_ID_LABEL_VALUE,
+    VOTER_ID_LABEL_VALUE,
+    count_rule_values,
+)
 
 
 # --- high-precision: an occurrence is evidence on its own -------------------
@@ -37,6 +49,29 @@ EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # Nepali mobile: 10 digits opening 97/98, either script, optional separators.
 MOBILE = re.compile(
     rf"(?<![{ANY_DIGITS}])[९9][७८78][\s-]?[{ANY_DIGITS}]{{8}}(?![{ANY_DIGITS}])"
+)
+
+#: 🛑 **A mobile number glued to a contact name plus one stray digit.** WhatsApp and Viber
+#: contact names copied into a verdict (JAW-74) come out as ``NAME2`` followed directly by
+#: the number -- ``HARI KC2##########`` -- so the ten digits sit behind an eleventh, and
+#: :data:`MOBILE`'s digit lookbehind refuses them. The lookbehind here requires a Latin letter
+#: (or ``_``) then exactly one digit, so the number is found and the name's digit is kept.
+#:
+#: ⚠️ It is not "any 97/98 run behind one digit": that is what an account or amount looks
+#: like. The letter before the stray digit is what says this is a name with a number on it.
+MOBILE_AFTER_NAME_DIGIT = re.compile(
+    rf"(?<=[A-Za-z_][{ANY_DIGITS}])[९9][७८78][{ANY_DIGITS}]{{8}}(?![{ANY_DIGITS}])"
+)
+
+#: 🛑 **A mobile number typed with one digit too many**, identified by the word after it.
+#: ``###########  न.को मोवाईल प्रयोग गर्ने`` ("who uses mobile no. …") in a JAW-74 verdict is
+#: an eleven-digit 98-number, so :data:`MOBILE`'s ten-digit shape stops short and refuses it.
+#: Eleven digits alone are an account as often as a phone, so the rule needs the following
+#: *phone* word -- every spelling of मोबाइल the corpus uses, फोन or सिम -- to accept one.
+MOBILE_EXTRA_DIGIT = re.compile(
+    rf"(?<![{ANY_DIGITS}])[९9][७८78][{ANY_DIGITS}]{{9}}(?![{ANY_DIGITS}])"
+    r"(?=[^\S\n]*(?:नं?\.?|नम्बर)?[^\S\n]*(?:को)?[^\S\n]*"
+    r"(?:मोबाइल|मोबाईल|मोवाईल|मोवाइल|फोन|सिम))"
 )
 # Kathmandu-style landline 01-4XXXXXX and the generic 0N-NNNNNNN shape.
 LANDLINE = re.compile(
@@ -209,10 +244,18 @@ LABELLED = {
     # `materials.redaction.residual_classes` consumes this number to decide whether text is
     # publishable at all, so a miscount here strands whole documents.
     "citizenship": re.compile(
-        rf"(?:नागरिकता(?:को|मा|का|की)?\s*(?:प्रमाणपत्र|प्र\.?)?\s*(?:नम्बर|नं\.?|न\.)"
-        rf"|ना\.?\s*प्र\.?\s*(?:प\.?\s*)?नं\.?"
+        rf"(?:(?:नागरिकता(?:को|मा|का|की)?\s*(?:प्रमाणपत्र|प्र\.?)?\s*(?:नम्बर|नं\.?|न\.)"
+        rf"|{CIT_ABBREVIATED_LABEL}"
         rf"|citizenship(?:\s*certificate)?\s*(?:no\.?|number))"
-        rf"[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}}",
+        rf"[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}}"
+        # 🛑 The abbreviated label's own reach, as `redact.CITIZENSHIP_ABBREVIATED_LABEL_VALUE`
+        # removes it: a three-digit serial (`ना.प्र.नं.###`) and a value that a table's
+        # empty-cell row break has moved onto the next line. Offered second, so a label the
+        # first branch already counts is counted once.
+        rf"|{CIT_ABBREVIATED_LABEL}(?:[^\S\n]*[:ः]?[^\S\n]*|{EMPTY_CELL_WRAP})"
+        # Three digits, or a short first group and a separator (`##/#####`): the value
+        # opens the same way the remover's window does.
+        rf"(?:[{ANY_DIGITS}]{{3,}}|[{ANY_DIGITS}]{{1,2}}[\-/–—][{ANY_DIGITS}]))",
         re.I,
     ),
     # 🛑 **`pan` is detected here and removed nowhere**, which is the decision rather than a
@@ -234,7 +277,7 @@ LABELLED = {
         rf"(?:स्थायी\s*लेखा\s*(?:नम्बर|नं)|\bPAN\b)[^\n]{{0,30}}?[{ANY_DIGITS}]{{6,}}"
     ),
     "bank_account": re.compile(
-        rf"(?:खाता\s*(?:नम्बर|नं)|account\s*(?:no|number))[^\n]{{0,30}}?[{ANY_DIGITS}]{{6,}}",
+        rf"(?:खाता\s*(?:नम्बर|नं|न\.)|account\s*(?:no|number))[^\n]{{0,30}}?[{ANY_DIGITS}]{{6,}}",
         re.I,
     ),
     "date_of_birth": re.compile(
@@ -244,6 +287,23 @@ LABELLED = {
     ),
     "passport": PASSPORT_LABELLED,
     "phone_labelled": PHONE_LABELLED,
+}
+
+#: Kinds counted through their removal rules rather than a separate detector pattern.
+#:
+#: 🛑 These rules (JAW-73, JAW-74) are label- or frame-anchored as tightly as the remover
+#: itself, so a looser detector would only add values no rule removes -- found-and-left
+#: residue that refuses a document forever at the publishing gate. Counting through the
+#: remover keeps the two in step: a value is reported exactly when a ``strict`` pass would
+#: still take it. ``citizenship`` and ``bank_account`` keep their :data:`LABELLED` patterns
+#: and ADD these counts; the four identity-card kinds are counted here alone.
+RULE_COUNTED: dict[str, tuple[re.Pattern[str], ...]] = {
+    "citizenship": (CITIZENSHIP_ISSUED_IN_NAME_VALUE,),
+    "bank_account": (BANK_NAME_VALUE, BANK_TRAILING_LABEL_VALUE),
+    "voter_id": (VOTER_ID_LABEL_VALUE,),
+    "aadhaar": (AADHAAR_LABEL_VALUE,),
+    "refugee_id": (REFUGEE_ID_LABEL_VALUE,),
+    "imei": (IMEI_LABEL_VALUE,),
 }
 
 # --- name-shaped: needs a denominator --------------------------------------
@@ -316,7 +376,14 @@ def scan_text(t: str) -> tuple[Counter, Counter]:
     t = PLACEHOLDER_PATTERN.sub(lambda m: "\n" * len(m.group(0)), t)
     hp = Counter()
     hp["email"] = len(EMAIL.findall(t))
-    hp["mobile"] = len(MOBILE.findall(t))
+    # The two near-miss mobile shapes are disjoint from MOBILE and from each other: each
+    # refuses a digit on the side the others need one, so adding the counts never counts one
+    # number twice.
+    hp["mobile"] = (
+        len(MOBILE.findall(t))
+        + len(MOBILE_AFTER_NAME_DIGIT.findall(t))
+        + len(MOBILE_EXTRA_DIGIT.findall(t))
+    )
     # Not `findall`: a licence number has the landline shape, so the count has to consult
     # the label in front of each match. See :data:`DOCUMENT_ID_LABEL`.
     hp["landline"] = sum(
@@ -326,6 +393,9 @@ def scan_text(t: str) -> tuple[Counter, Counter]:
     )
     for k, rx in LABELLED.items():
         hp[k] = len(rx.findall(t))
+    # Shapes whose detector IS their remover -- see `redact.count_rule_values`.
+    for k, patterns in RULE_COUNTED.items():
+        hp[k] += count_rule_values(t, patterns)
 
     ns = Counter()
     shri_total = shri_personal = 0

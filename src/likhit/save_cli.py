@@ -57,7 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Removal tier applied to the converted text before it is written, widest "
             f"last: 'identifiers' (citizenship numbers, dates of birth), 'contact' (adds "
             f"mobile, landline, email), '{DEFAULT_MODE}' (default; adds bank "
-            "account, age, passport). Labels are matched in Nepali and English. "
+            "account, age, passport, Indian voter ID and Aadhaar, refugee card, phone IMEI). "
+            "Labels are matched in Nepali and English. "
             "'none' writes the transcript unredacted -- say so deliberately."
         ),
     )

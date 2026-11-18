@@ -80,7 +80,8 @@ def build_redact_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MODE,
         help="removal tier, widest last. 'identifiers' is the formally adjudicated scope "
         "(citizenship numbers, dates of birth); 'contact' adds mobile, landline and email; "
-        f"'{DEFAULT_MODE}' (default) adds bank account and passport. Labels are "
+        f"'{DEFAULT_MODE}' (default) adds bank account, passport, Indian voter ID and "
+        "Aadhaar, refugee card and phone IMEI numbers. Labels are "
         "matched in Nepali and English. No tier removes names -- see likhit.privacy.modes "
         "for why that is a decision rather than a gap",
     )

@@ -47,10 +47,14 @@ from dataclasses import dataclass
 from ..devanagari import ANY_DIGITS as AD
 from .modes import RedactionMode
 from .placeholders import (
+    AADHAAR,
     BANK_ACCOUNT,
     CITIZENSHIP,
     DATE_OF_BIRTH,
+    IMEI,
     PASSPORT,
+    REFUGEE_ID,
+    VOTER_ID,
 )
 
 
@@ -80,12 +84,26 @@ _CIT_LABEL = (
     # still find", so a removal the scanner never counted costs nothing; a detection without
     # a removal is what strands a document.
     r"(?:नागरिकता(?:को|मा|का|की)?\s*(?:प्रमाणपत्र|प्र\.?)?\s*(?:नम्बर|नं\.?|न\.)?"
-    # `ना.प्र.प.नं.` -- the `प` of प्रमाणपत्र, written as its own abbreviated field. Without
-    # it the label stops at `ना.प्र.` and the rest has to be crossed as prose, which the gap
-    # (one word) will not do.
-    r"|ना\.?\s*प्र\.?\s*(?:प\.?\s*)?नं\.?"
     r"|citizenship(?:\s*certificate)?(?:\s*(?:no\.?|number))?)"
 )
+
+#: The abbreviated certificate label, ``ना.प्र.नं.``, with its own rule
+#: (:data:`CITIZENSHIP_ABBREVIATED_LABEL_VALUE`) because it reaches values the spelled-out
+#: label must not.
+#:
+#: ``ना.प्र.प.नं.`` -- the ``प`` of प्रमाणपत्र, written as its own abbreviated field. Without
+#: it the label stops at ``ना.प्र.`` and the rest has to be crossed as prose, which the gap
+#: (one word) will not do.
+#:
+#: 🛑 **The label is matched as the PDF delivers it, not as it was typed.** Kathmandu District
+#: Court's charge-sheet PDFs (JAW-73) render every ``ना.प्र.नं.`` as ``ना.प्रर्.नं.``: the
+#: font's repha glyph lands after the conjunct, so the text layer carries a stray ``र्``.
+#: Fourteen citizenship numbers in one charge sheet sat behind that label and none was
+#: removed, at ``strict``. The same artefact moves the repha in front of ``नं``
+#: (``र्नं.``), and the verdicts (JAW-74) write the marker without its anusvara
+#: (``ना.प्र.न.####/####``). Each of those is a tolerated artefact here, and nothing wider:
+#: ``र्`` is admitted only in the two places the font puts it.
+CIT_ABBREVIATED_LABEL = r"ना\.?\s*प्र(?:र्)?\.?\s*(?:प\.?\s*)?(?:र्)?नं?\.?"
 # 🛑 The danda U+0964 is a FIELD SEPARATOR inside these values as well as being the Nepali
 # sentence terminator, and leaving it out of the value class was a measured privacy defect
 # rather than a cosmetic gap. Nepali writes a date as `२०२०।०४।०१` -- danda between the digit
@@ -298,6 +316,130 @@ CITIZENSHIP_LABEL_VALUE = re.compile(
     re.I,
 )
 
+#: 🛑 **A table row break whose crossed cells are all EMPTY.** A charge sheet laid out as a
+#: two-column table wraps a long line inside its cell, and the extractor emits the wrap as a
+#: new row: ``(ना.प्र.नं. |  |\n| ##/#####)``. The label ends one row and its value opens the
+#: next, with nothing between them but pipes and whitespace.
+#:
+#: ⚠️ Crossing a ``|`` is what :data:`_LABEL_GAP` refuses, and that refusal stays: a cell
+#: boundary with *text* in the crossed cells is a different field. This gap admits a row
+#: break only when every cell it crosses is empty, so it cannot reach a number in another
+#: column, and it crosses exactly one line break.
+EMPTY_CELL_WRAP = r"[^\S\n]*(?:\|[^\S\n]*)+\n(?:[^\S\n]*\|)*[^\S\n]*"
+
+#: The abbreviated label's own rule. See :data:`CIT_ABBREVIATED_LABEL` for the label forms.
+#:
+#: 🛑 **Its value floor is three digits, not four** (:data:`RULE_DIGIT_BOUNDS`). The JAW-73
+#: charge sheet lists its accused as ``<name> (ना.प्र.नं.###)`` -- old district certificates
+#: carry three-digit serials -- and every one stayed in the text under the four-digit floor
+#: of the spelled-out label. The floor is safe here for the reason it is not safe there:
+#: this label always carries its number marker, so it cannot reach ``नागरिकता ऐन, २०६३``
+#: or a count the way an optional-marker label can.
+CITIZENSHIP_ABBREVIATED_LABEL_VALUE = re.compile(
+    rf"(?P<label>{CIT_ABBREVIATED_LABEL})(?:{_LABEL_GAP}|{EMPTY_CELL_WRAP})"
+    rf"(?P<val>{_value_window(_CIT_LEGACY_SEPARATORS, 1, 24)})"
+    rf"{_COUNTED_UNIT}",
+)
+
+#: 🛑 **A citizenship number with no label in front of it, identified by the sentence around
+#: it.** Kathmandu District Court verdicts (JAW-74) describe a seized certificate as
+#: ``…कार्यालयबाट जारी भएको ######/### नम्बरको <name>को नाममा जारी भएको नागरिकताको प्रतिलिपि``
+#: -- "the citizenship certificate no. ######/### issued in <name>'s name". The number is
+#: followed, not preceded, by what makes it personal.
+#:
+#: ⚠️ Every part of that frame is required, and the ``नागरिकता`` at its end is what keeps
+#: it narrow: ``जारी भएको … नम्बरको`` alone also describes a letter, a licence or a
+#: vehicle, and only the closing word says this one is a citizenship certificate.
+CITIZENSHIP_ISSUED_IN_NAME_VALUE = re.compile(
+    r"(?P<label>जारी\s*भएको[^\S\n]*\n?[^\S\n]*)"
+    rf"(?P<val>{_value_window(_CIT_LEGACY_SEPARATORS, 2, 24)})"
+    rf"(?=\s*नम्[बव]रको\s[^।\n|]{{0,40}}?को\s*नाममा\s*(?:जारी\s*भएको\s*)?नागरिकता)",
+)
+
+#: 🛑 **A refugee identity card number.** The JAW-74 verdict concerns a fake Bhutanese-refugee
+#: resettlement scheme and tabulates its victims, noting against one of them
+#: ``शरणार्थी परिचय पत्र`` with ``द.नं. ###-########`` -- the card's registration number --
+#: in the cell below. That is an identity-document number of the same class as a
+#: citizenship number, and nothing removed it.
+#:
+#: ⚠️ ``द.नं.`` (``दर्ता नम्बर``, "registration number") is **never a label on its own**: it
+#: is how every letter's dispatch register number is written, which is public filing data.
+#: Only the refugee-card words before it make the number personal, so the rule starts there.
+#: On the label's own line the marker is optional. Across a line break it is REQUIRED, and
+#: at most one break is crossed: the verdict's table wraps the label at the foot of one row
+#: and puts ``द.नं. …`` in the same column of the next, with other columns' wrapped text
+#: (``(२)``) in between, so the crossed cells cannot be required to be empty here.
+REFUGEE_ID_LABEL_VALUE = re.compile(
+    r"(?P<label>(?:शरणार्थी\s*परिचय\s*-?\s*पत्र(?:को)?|refugee\s*(?:id(?:entity)?|card)"
+    r"(?:\s*card)?)"
+    r"(?:[^\S\n]*(?:(?:द\.?\s*नं\.?|दर्ता\s*(?:नं\.?|नम्बर)|नं\.?|नम्बर|no\.?|number)"
+    r"[^\S\n]*[:ः]?[^\S\n]*)?"
+    r"|[^\n]{0,200}\n[^\n]{0,200}?(?:द\.?\s*नं\.?|दर्ता\s*(?:नं\.?|नम्बर))[^\S\n]*[:ः]?[^\S\n]*))"
+    rf"(?P<val>{_value_window(_CIT_LEGACY_SEPARATORS, 3, 24)})"
+    rf"{_COUNTED_UNIT}",
+    re.I,
+)
+
+#: 🛑 **An Indian Voter ID (EPIC) number** -- three Latin letters and seven digits. The JAW-73
+#: charge sheet identifies an Indian national by ``भारतिय निवार्चन आयोग कार्ड नं. XGV#######``
+#: ("Election Commission of India card no."), exactly as it identifies Nepali nationals by
+#: citizenship number, and no rule reached it.
+#:
+#: ⚠️ Label-anchored, never a bare shape: three capitals and seven digits is also how some
+#: vehicle, voucher and file references are written. The anchor is "commission card number"
+#: (``आयोग कार्ड नं.``) rather than the commission's name, because the PDF's own text layer
+#: -- which :mod:`likhit.privacy.pdf` redacts against -- garbles निर्वाचन beyond any
+#: spelling (``मर्नवािार्न``) and ``कार्ड नं.`` into ``काडा र्नं.``; the name is matched when
+#: it is legible, in both the right and the corpus's misspelt form (``निवार्चन``), and
+#: ``मतदाता परिचयपत्र`` is the Nepali name for the same card.
+_VOTER_ID_LABEL = (
+    r"(?:(?:(?:निर्वाचन|निवार्चन|निर्बाचन)\s*)?आयोग(?:को)?\s*(?:परिचय\s*)?"
+    r"(?:का(?:र्)?डा?|-?\s*पत्र)\s*(?:र्)?(?:नं?\.?|नम्बर)?"
+    r"|मतदाता\s*परिचय\s*-?\s*(?:पत्र|कार्ड)\s*(?:नं\.?|नम्बर)?"
+    r"|(?:voter\s*(?:id(?:entity)?\s*)?(?:card)?|\bEPIC)\s*(?:no\.?|number)?)"
+)
+VOTER_ID_LABEL_VALUE = re.compile(
+    rf"(?P<label>{_VOTER_ID_LABEL})(?P<sep>[^\S\n]*[:ः]?[^\S\n]*)"
+    rf"(?P<val>(?<![A-Za-z])[A-Z]{{3}}[{AD}]{{7}})(?![{AD}A-Za-z])",
+    re.I,
+)
+
+#: 🛑 **An Aadhaar number** -- India's twelve-digit national identity number, written in
+#: groups of four. The JAW-73 charge sheet carries two, as ``भारतिय आधार कार्ड नं.
+#: #### #### ####`` and, through the same font artefact :data:`CIT_ABBREVIATED_LABEL`
+#: describes, ``आधार काडा र्नं. #### ########``.
+#:
+#: ⚠️ ``आधार`` alone is the ordinary word "basis" (``के आधारमा``, "on what basis") and is
+#: everywhere in these documents, so the label requires ``कार्ड`` after it. The value must be
+#: exactly twelve digits, in groups of four or not grouped, so neither an amount nor a case
+#: number can satisfy it.
+_AADHAAR_LABEL = (
+    r"(?:आधार\s*का(?:र्)?डा?\s*(?:र्)?(?:नं?\.?|नम्बर)?"
+    r"|aadhaa?r(?:\s*card)?\s*(?:no\.?|number)?)"
+)
+AADHAAR_LABEL_VALUE = re.compile(
+    rf"(?P<label>{_AADHAAR_LABEL})(?P<sep>[^\S\n]*[:ः]?[^\S\n]*)"
+    rf"(?P<val>(?<![{AD}])[{AD}]{{4}}(?:[^\S\n]?-?[^\S\n]?[{AD}]{{4}}){{2}}"
+    rf"|(?<![{AD}])[{AD}]{{4}}[^\S\n]?-?[^\S\n]?[{AD}]{{8}})(?![{AD}])",
+    re.I,
+)
+
+#: 🛑 **A phone's IMEI number** -- fifteen digits that identify one handset, and through it one
+#: person. The JAW-74 verdict lists every phone seized from the accused by IMEI, as
+#: ``IMEI No.###############/###############`` (one per SIM slot), ``IME नम्बर ###…`` and
+#: ``IMEI No.(Slot-1):-###…``.
+#:
+#: ⚠️ **Uppercase only**, with no ``re.I``: ``IME`` is also the name of a Nepali bank
+#: (Global IME), but a bank name is not followed directly by fifteen digits, and the fixed
+#: fifteen-digit value is what holds the rule. The second number after ``/`` is reached as a
+#: continuation, never on its own, as :data:`PASSPORT_LABEL_VALUE` reaches a second passport.
+_IMEI_VALUE = rf"(?<![{AD}])[{AD}]{{2}}-?[{AD}]{{6}}-?[{AD}]{{6}}-?[{AD}](?![{AD}])"
+IMEI_LABEL_VALUE = re.compile(
+    r"(?P<label>\bIMEI?\b[^\S\n]*\n?[^\S\n]*(?:No\.?|Number|नम्बर|नं\.?)?[^\S\n]*"
+    rf"(?:\([^\S\n]*Slot[^\S\n]*-?[^\S\n]*[{AD}][^\S\n]*\))?[^\S\n]*[:ः]?[^\S\n]*-?[^\S\n]*)"
+    rf"(?P<val>{_IMEI_VALUE}(?:[^\S\n]*/[^\S\n]*{_IMEI_VALUE})*)",
+)
+
 #: The date-of-birth label, in both scripts. ``D.O.B`` is admitted with and without its dots
 #: because the corpus writes it both ways; `\bdob\b` alone would also match the English word
 #: nothing else in these documents uses, so the word boundary is what keeps it safe.
@@ -501,7 +643,9 @@ _BANK_VALUE = (
 )
 
 BANK_LABEL_VALUE = re.compile(
-    r"(?P<label>(?:खाता|बैंक\s*खाता|account)\s*(?:नम्बर|नं\.?|no\.?|number))"
+    # `न.` is the label with its anusvara dropped -- `खाता न.##############` in the JAW-74
+    # verdicts. The dot is required, so `खाता नभएको` ("has no account") is not a label.
+    r"(?P<label>(?:खाता|बैंक\s*खाता|account)\s*(?:नम्बर|नं\.?|न\.|no\.?|number))"
     rf"{_LABEL_GAP}"
     # 🛑 The digit window is offered FIRST and the alphanumeric shape is the fallback.
     # Alternation is ordered, and leading with `_BANK_VALUE` -- which admits no whitespace --
@@ -522,6 +666,39 @@ BANK_LABEL_VALUE = re.compile(
     rf"{_value_window(_CIT_LEGACY_SEPARATORS, 3, 24, DANDA + '.,')}|{_BANK_VALUE})"
     rf"{_COUNTED_UNIT}",
     re.I,
+)
+
+#: 🛑 **An account number written straight after the bank's name, with no account label.**
+#: The JAW-74 verdicts write ``कुमारी बैंक लि.को ################ न.को खातामा``,
+#: ``नेपाल ईनभेष्टमेन्ट बैक लि. ##############`` and ``…बैकमा रहेको बैंक खातामा\n####``: the
+#: bank names the account and the label, if any, comes after the number or not at all.
+#:
+#: ⚠️ **The value is one unbroken run of at least nine digits**, and that is what keeps money
+#: and cheque numbers out. An amount is written grouped (``रु.##,##,###``) and always carries
+#: a separator by then; a cheque number is reached only through ``चेक नं.``, which this
+#: label does not cross; and a value followed by a rupee cue is refused outright. A run
+#: that continues through ``.`` or ``,`` into more digits is the integer part of an amount
+#: (``123456789.00 रुपैयाँ``) and is refused before the rupee cue is even consulted.
+_BANK_NAME = r"(?:बैंक|बैक|bank)"
+BANK_NAME_VALUE = re.compile(
+    rf"(?P<label>{_BANK_NAME}(?:[^\S\n]*\n?[^\S\n]*(?:लि(?:मिटेड)?|ltd)\.?)?(?:[^\S\n]*(?:को|मा))?"
+    r"(?:[^\S\n]*खाता(?:मा)?)?)"
+    r"(?P<sep>[^\S\n]*\n?[^\S\n]*)"
+    rf"(?P<val>(?<![{AD}])[{AD}]{{9,24}})(?![{AD}]|[,.][{AD}])"
+    r"(?![^\S\n]*(?:रु|रुपैयाँ|रुपैया|/-|।-|लाख|करोड))",
+    re.I,
+)
+
+#: 🛑 **An account number whose label comes AFTER it.** ``################ न.को खातामा``
+#: ("into the account no. …") and ``################ नं. मा ट्रान्सफर`` ("transferred to
+#: no. …") are how the JAW-74 verdicts write an account they have already introduced.
+#:
+#: ⚠️ Again one unbroken run of nine or more digits, the number marker (``न.``/``नं.``) is
+#: required, and the words after it must say *account* or *transfer*: a bare
+#: ``######### नं.`` is not enough, because a case or file reference is written the same way.
+BANK_TRAILING_LABEL_VALUE = re.compile(
+    rf"(?P<val>(?<![{AD}\-/.])[{AD}]{{9,24}})(?![{AD}])"
+    r"(?P<label>[^\S\n]*नं?\.[^\S\n]*(?:को[^\S\n]*खाता|मा[^\S\n]*ट्रान्सफर))",
 )
 
 #: 🛑 **Age anchors on `उमेर`, never on `वर्ष` alone** -- see :data:`placeholders.AGE` for the
@@ -573,6 +750,25 @@ DIGIT_BOUNDS = {
     "bank_account": (6, 24),
     "age": (2, 3),
     "passport": (6, 9),
+    # Fixed-length national numbers: an EPIC is three letters (stripped by VALUE_PRESTRIP)
+    # and seven digits, an Aadhaar twelve digits, an IMEI fifteen. Anything else behind
+    # those labels is not one.
+    "voter_id": (7, 7),
+    "aadhaar": (12, 12),
+    "imei": (15, 15),
+    # A refugee card's registration number is a district-style prefix and a serial
+    # (`###-########`); the floor keeps a bare count out, the ceiling a run of table digits.
+    "refugee_id": (5, 16),
+}
+
+#: Per-RULE bounds that override :data:`DIGIT_BOUNDS` for one pattern of a kind.
+#:
+#: 🛑 Exists for one rule: :data:`CITIZENSHIP_ABBREVIATED_LABEL_VALUE`, whose label always
+#: carries its number marker and whose real values include three-digit serials. Lowering
+#: the citizenship floor for the whole kind would hand that floor to the spelled-out label
+#: too, whose marker is optional -- see the 🛑 note on ``DIGIT_BOUNDS["citizenship"]``.
+RULE_DIGIT_BOUNDS: dict[re.Pattern[str], tuple[int, int]] = {
+    CITIZENSHIP_ABBREVIATED_LABEL_VALUE: (3, 16),
 }
 
 #: Years a birth date can plausibly carry, covering both calendars the corpus uses --
@@ -597,6 +793,9 @@ VALUE_PRESTRIP: dict[str, re.Pattern[str]] = {
     # the bank's own code. The comma is the thousands grouping some banks print.
     "bank_account": BANK_LATIN_CODE,
     "passport": PASSPORT_LATIN_PREFIX,
+    # The EPIC's three-letter series code, and nothing else: the pattern admits Latin
+    # letters only in that position.
+    "voter_id": re.compile(r"^[A-Z]{3}", re.I),
     # Month name, ordinal suffix, comma and the abbreviating dot -- an English date's entire
     # non-digit, non-separator content and nothing else.
     "date_of_birth": re.compile(rf"{_EN_MONTH}|st|nd|rd|th|,", re.I),
@@ -619,6 +818,18 @@ VALUE_PRESTRIP: dict[str, re.Pattern[str]] = {
 #: ``docs/2026-09-25-pii-redaction-pipeline/PLAN.md`` §1 lands that way.
 INLINE_RULES = (
     ("citizenship", CITIZENSHIP_LABEL_VALUE, CITIZENSHIP, RedactionMode.IDENTIFIERS),
+    (
+        "citizenship",
+        CITIZENSHIP_ABBREVIATED_LABEL_VALUE,
+        CITIZENSHIP,
+        RedactionMode.IDENTIFIERS,
+    ),
+    (
+        "citizenship",
+        CITIZENSHIP_ISSUED_IN_NAME_VALUE,
+        CITIZENSHIP,
+        RedactionMode.IDENTIFIERS,
+    ),
     ("date_of_birth", DOB_LABEL_VALUE, DATE_OF_BIRTH, RedactionMode.IDENTIFIERS),
     (
         "date_of_birth",
@@ -641,6 +852,8 @@ INLINE_RULES = (
     # registered so text redacted by the earlier out-of-tree pass is still recognised by
     # ``strip_placeholders`` and ``contains_placeholder``.
     ("bank_account", BANK_LABEL_VALUE, BANK_ACCOUNT, RedactionMode.STRICT),
+    ("bank_account", BANK_NAME_VALUE, BANK_ACCOUNT, RedactionMode.STRICT),
+    ("bank_account", BANK_TRAILING_LABEL_VALUE, BANK_ACCOUNT, RedactionMode.STRICT),
     # 🛑🛑 **`age` is detected by nothing and removed by no tier, and that is the decision.**
     # It was removable at `strict` until it was measured. An age is an attribute rather than
     # an identifier, and in an accountability corpus it is overwhelmingly the *subject* of
@@ -675,6 +888,14 @@ INLINE_RULES = (
     # revisit with its own measurement; deleting it would make that a rewrite rather than a
     # one-line re-entry.
     ("passport", PASSPORT_LABEL_VALUE, PASSPORT, RedactionMode.STRICT),
+    # Identity-document numbers of the same class as a passport, at the same tier and for
+    # the same reason it sits there: `IDENTIFIERS` is the adjudicated scope and names two
+    # classes. Found on the JAW-73 charge sheet (an Indian national's voter ID and Aadhaar
+    # number) and the JAW-74 verdicts (a refugee card number, seized phones' IMEIs).
+    ("voter_id", VOTER_ID_LABEL_VALUE, VOTER_ID, RedactionMode.STRICT),
+    ("aadhaar", AADHAAR_LABEL_VALUE, AADHAAR, RedactionMode.STRICT),
+    ("refugee_id", REFUGEE_ID_LABEL_VALUE, REFUGEE_ID, RedactionMode.STRICT),
+    ("imei", IMEI_LABEL_VALUE, IMEI, RedactionMode.STRICT),
 )
 
 #: The tiers that remove a given rule, as a set per mode. Derived from :data:`INLINE_RULES`
@@ -722,6 +943,8 @@ VALUE_GROUPS = ("val", "val2", "val3")
 #: value any relief from the digit bounds or the amount cue.
 VALUE_ITEMS: dict[str, re.Pattern[str]] = {
     "passport": re.compile(_PASSPORT_VALUE, re.I),
+    # One IMEI per SIM slot, `###…/###…` under one label.
+    "imei": re.compile(_IMEI_VALUE),
 }
 
 
@@ -807,8 +1030,16 @@ def _is_amount(val: str) -> bool:
     return max((len(run) for run in re.findall(rf"[{AD}]+", val)), default=0) < 6
 
 
-def _accept(val: str, kind: str, stats: Counter) -> int | None:
+def _accept(
+    val: str,
+    kind: str,
+    stats: Counter,
+    bounds: tuple[int, int] | None = None,
+) -> int | None:
     """The three guards. Returns the value's digit count, or ``None`` if any guard refuses.
+
+    ``bounds`` overrides :data:`DIGIT_BOUNDS` for the kind; callers pass the rule's entry in
+    :data:`RULE_DIGIT_BOUNDS`, which is ``None`` for every rule but one.
 
     Shared by :func:`redact` and :func:`iter_inline_targets` rather than written twice: the
     guards are what make this pass safe, and this project's redaction history is 572 real hits
@@ -826,7 +1057,7 @@ def _accept(val: str, kind: str, stats: Counter) -> int | None:
         return None
     digits = re.sub(rf"[^{AD}]", "", val)
     # Guard 2: plausible identifier length -- see DIGIT_BOUNDS.
-    lo, hi = DIGIT_BOUNDS[kind]
+    lo, hi = DIGIT_BOUNDS[kind] if bounds is None else bounds
     if not (lo <= len(digits) <= hi):
         stats[f"{kind}_refused_length"] += 1
         return None
@@ -869,14 +1100,22 @@ def iter_inline_targets(
     """
 
     counters: Counter = Counter() if stats is None else stats
+    # Two rules of one kind can reach the same value (a bank-name account that is also
+    # followed by `न.को खाता`); `redact` removes it once, so it is one target here too.
+    yielded: set[tuple[int, int]] = set()
     for kind, pattern, _, _ in _rules_for(mode):
         for match in pattern.finditer(text):
             # One match can carry several values -- see `_match_values`. Each is guarded on
             # its own, so one value failing a guard never suppresses its neighbour.
             for val, start, end in _match_values(match, kind):
-                digit_count = _accept(val, kind, counters)
+                digit_count = _accept(
+                    val, kind, counters, RULE_DIGIT_BOUNDS.get(pattern)
+                )
                 if digit_count is None:
                     continue
+                if (start, end) in yielded:
+                    continue
+                yielded.add((start, end))
                 # `_targeted`, not `_redacted` -- see the note in `likhit.privacy.contact`.
                 # The `*_refused_*` counters ARE shared with `redact`, because they are the
                 # guards' own verdicts and the two must agree on those.
@@ -888,6 +1127,39 @@ def iter_inline_targets(
                     digit_count=digit_count,
                     had_separators=bool(VALUE_SEPARATOR.search(val)),
                 )
+
+
+def count_rule_values(text: str, patterns: tuple[re.Pattern[str], ...]) -> int:
+    """How many values ``patterns`` would remove from ``text``, guards included.
+
+    🛑 **For the scanner, so the residue check and the remover cannot disagree.** The
+    identifier rules added for JAW-73/JAW-74 (voter ID, Aadhaar, refugee card, IMEI, the
+    unlabelled citizenship number, the bank-name account) have no older, looser detector to
+    fall back on, and writing one would recreate the gap :mod:`likhit.privacy.signals`
+    documents at length: a detection no rule removes strands a document at the publishing
+    gate forever. Counting through the same patterns *and the same guards* makes the scanner
+    report exactly what a ``strict`` pass would still take, which is the residue question.
+
+    ⚠️ Tier-blind: it counts what the rule removes, not what a given tier removes, because
+    the scanner reports presence and the gate decides which classes its tier covers.
+
+    🛑 **A value is counted once however many of ``patterns`` reach it.**
+    ``कुमारी बैंक लि.को ################ न.को खातामा`` is matched by both the bank-name and
+    the trailing-label rule, and :func:`redact` removes it once (the second rule runs on
+    text the first has already rewritten), so counting per pattern would report a residue
+    of two where one value was ever present.
+    """
+
+    rules = {pattern: kind for kind, pattern, _, _ in INLINE_RULES}
+    scratch: Counter = Counter()
+    seen: set[tuple[int, int]] = set()
+    for pattern in patterns:
+        kind = rules[pattern]
+        for match in pattern.finditer(text):
+            for val, start, end in _match_values(match, kind):
+                if _accept(val, kind, scratch, RULE_DIGIT_BOUNDS.get(pattern)):
+                    seen.add((start, end))
+    return len(seen)
 
 
 def redact(
@@ -920,7 +1192,7 @@ def redact(
             # which is exactly the "keep the label" rule stated once.
             accepted = []
             for val, start, end in _match_values(m, kind):
-                digit_count = _accept(val, kind, stats)
+                digit_count = _accept(val, kind, stats, RULE_DIGIT_BOUNDS.get(rx))
                 if digit_count is None:
                     continue
                 accepted.append((start, end))
