@@ -48,6 +48,27 @@ This file starts at 0.1.8. For earlier releases, see the
 
 ### Fixed
 
+- **`strict` redaction and the residue scan now catch the identity numbers a Kathmandu
+  District Court charge sheet and two verdicts kept** (JAW-73, JAW-74). Measured on those
+  three documents: before, 0 of 17 citizenship numbers, 0 of 3 Indian ID numbers, 0 of 7
+  refugee card numbers, 0 of 14 IMEIs, 9 bank accounts and 5 mobiles were removed or
+  reported; after, all are removed and the scanner reports 0 left. What changed:
+  - citizenship: the abbreviated label as PDFs garble it (`ना.प्रर्.नं.`, `र्नं.`) or
+    write it without the anusvara (`ना.प्र.न.`), three-digit serials behind that label,
+    a value pushed onto the next table row by an empty-cell wrap, and the unlabelled
+    `जारी भएको ######/### नम्बरको <name>को नाममा जारी भएको नागरिकता…` sentence;
+  - new kinds, all at `strict` with their own placeholders: Indian voter ID (EPIC,
+    `[REDACTED:VOTER-ID-NO]`), Aadhaar (`[REDACTED:AADHAAR-NO]`), refugee identity card
+    (`[REDACTED:REFUGEE-ID-NO]`) and phone IMEI (`[REDACTED:IMEI-NO]`), each anchored on
+    its label;
+  - bank accounts behind `खाता न.`, straight after a bank's name
+    (`कुमारी बैंक लि.को ################`) or followed by `न.को खाता` / `नं. मा ट्रान्सफर`;
+  - mobiles glued to a contact name ending in a digit (`NAME2` + number) or typed with
+    one digit too many before `न.को मोबाइल`.
+  Cheque numbers, amounts, case numbers and dates are tested to stay. `scan_text` counts
+  the new shapes through the same rules and guards that remove them
+  (`redact.count_rule_values`), so the residue check cannot report a value no rule takes.
+
 - **The repha over `र्ने` and its siblings is kept in Kalimati PDFs** (JAW-53). Kalimati
   ligates `े` + repha into one glyph (glyph00566, GSUB `uni0947 glyph00091`), and the
   repair let a metric guess of bare `े` outrank that GSUB reading, so `गर्ने` came out
