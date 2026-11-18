@@ -163,6 +163,10 @@ class _HtmlToText(HTMLParser):
             self.cell = []
         elif tag == "br" and self.cell is not None:
             self.cell.append(" ")
+        elif tag in self._BREAK and self.cell is not None:
+            # a block inside a cell (<td><p>१२</p><p>३४</p></td>) is a word break,
+            # or two numbers would merge into a third, wrong one
+            self.cell.append(" ")
         elif tag in self._BREAK:
             self._flush()
             if tag[0] == "h" and tag[1:].isdigit():
@@ -183,6 +187,8 @@ class _HtmlToText(HTMLParser):
                     self.lines.append("|" + " --- |" * len(self.row))
                 self.rows_in_table += 1
             self.row = None
+        elif tag in self._BREAK and self.cell is not None:
+            self.cell.append(" ")
         elif tag in self._BREAK:
             self._flush()
 

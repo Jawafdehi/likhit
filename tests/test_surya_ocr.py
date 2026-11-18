@@ -119,6 +119,12 @@ class TestAnswerToText:
         assert lines[1] == "| --- | --- | --- | --- | --- |"
         assert lines[3].startswith("| Paid Up Capital | 54,317,400.00 |")
 
+    def test_blocks_inside_a_cell_do_not_merge_numbers(self) -> None:
+        answer = (
+            "<table><tr><th>रकम</th></tr><tr><td><p>१२</p><p>३४</p></td></tr></table>"
+        )
+        assert surya_answer_to_text(answer).splitlines()[2] == "| १२ ३४ |"
+
     def test_box_tokens_and_fences_are_removed(self) -> None:
         answer = "```html\n<|Text|><|1|><|2|><|3|><|4|><p>क<|box|><|1|><|2|><|3|><|4|>ख</p>\n```"
         assert surya_answer_to_text(answer) == "कख"
