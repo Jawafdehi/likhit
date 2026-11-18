@@ -1036,6 +1036,24 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "date wins a tie against a four-part one; a weekday needs a visible separator "
         "anyway, so this only breaks ties",
     ),
+    # -- likhit/surya_ocr.py: Surya 2.5's own client settings (surya-ocr 0.24) -------
+    ("likhit/surya_ocr.py", "SURYA_DEFAULT_MAX_TOKENS"): (
+        12288,
+        "Surya's SURYA_MAX_TOKENS_FULL_PAGE. A dense charge-sheet page is 1-5k tokens "
+        "(JAW-51: 1,051 for a heading page), so the cap only stops a runaway loop; a "
+        "page that hits it is failed, never kept half-read",
+    ),
+    ("likhit/surya_ocr.py", "SURYA_DEFAULT_TIMEOUT"): (
+        1800.0,
+        "seconds per page request. Surya on a shared 8-core CPU took 1-12 minutes a "
+        "page in JAW-51 (one page 748 s), so 30 minutes leaves room without hanging a "
+        "batch forever on a dead server",
+    ),
+    ("likhit/surya_ocr.py", "_GRID"): (
+        28,
+        "the Surya vision encoder's patch size (scale_to_fit grid_size); every side of "
+        "the image sent must be a multiple of it",
+    ),
 }
 
 
