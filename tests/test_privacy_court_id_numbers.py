@@ -180,6 +180,17 @@ def test_both_imeis_of_a_dual_sim_phone_go() -> None:
     assert redacted.count(placeholders.IMEI) == 2
 
 
+def test_an_account_reached_by_two_rules_is_one_value() -> None:
+    """Bank name before it AND `न.को खाता` after it: one account, counted and targeted once."""
+
+    span = "कुमारी बैंक लि.को 1234567890123456 न.को खातामा पटक"
+    assert _detected(span, "bank_account") == 1
+    targets = list(iter_inline_targets(span, mode=RedactionMode.STRICT))
+    assert len(targets) == 1
+    _, kinds = _strict(span)
+    assert kinds == ["bank_account"]
+
+
 def test_the_name_digit_is_kept_with_the_name() -> None:
     redacted, _ = _strict("HARI KC29841234567 सँग")
     assert redacted == f"HARI KC2{placeholders.PHONE} सँग"
@@ -193,6 +204,9 @@ _NEGATIVES = (
     "Global IME Bank को चेक नं. 001234567890123",
     "नबिल बैंकमा रु.२५,००,०००।– जम्मा",
     "बैंक लि. 123456789 रुपैयाँ जम्मा गरेको",
+    # the integer part of a decimal or grouped amount after a bank name
+    "बैंक लि. 123456789.00 रुपैयाँ जम्मा गरेको",
+    "बैंकमा 1234567890,50 जम्मा",
     "मुद्दा नं. ०७९-C1-२२७१ को फैसला मिति २०८०।०५।१२",
     "पत्र द.नं. ४५६-२०७९ च.नं. १२३४",
     "प्रतिवादीहरु ९८४१२३४५६७८ रकम",

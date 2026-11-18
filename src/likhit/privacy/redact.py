@@ -676,13 +676,15 @@ BANK_LABEL_VALUE = re.compile(
 #: ⚠️ **The value is one unbroken run of at least nine digits**, and that is what keeps money
 #: and cheque numbers out. An amount is written grouped (``रु.##,##,###``) and always carries
 #: a separator by then; a cheque number is reached only through ``चेक नं.``, which this
-#: label does not cross; and a value followed by a rupee cue is refused outright.
+#: label does not cross; and a value followed by a rupee cue is refused outright. A run
+#: that continues through ``.`` or ``,`` into more digits is the integer part of an amount
+#: (``123456789.00 रुपैयाँ``) and is refused before the rupee cue is even consulted.
 _BANK_NAME = r"(?:बैंक|बैक|bank)"
 BANK_NAME_VALUE = re.compile(
     rf"(?P<label>{_BANK_NAME}(?:[^\S\n]*\n?[^\S\n]*(?:लि(?:मिटेड)?|ltd)\.?)?(?:[^\S\n]*(?:को|मा))?"
     r"(?:[^\S\n]*खाता(?:मा)?)?)"
     r"(?P<sep>[^\S\n]*\n?[^\S\n]*)"
-    rf"(?P<val>(?<![{AD}])[{AD}]{{9,24}})(?![{AD}])"
+    rf"(?P<val>(?<![{AD}])[{AD}]{{9,24}})(?![{AD}]|[,.][{AD}])"
     r"(?![^\S\n]*(?:रु|रुपैयाँ|रुपैया|/-|।-|लाख|करोड))",
     re.I,
 )
@@ -1098,6 +1100,9 @@ def iter_inline_targets(
     """
 
     counters: Counter = Counter() if stats is None else stats
+    # Two rules of one kind can reach the same value (a bank-name account that is also
+    # followed by `न.को खाता`); `redact` removes it once, so it is one target here too.
+    yielded: set[tuple[int, int]] = set()
     for kind, pattern, _, _ in _rules_for(mode):
         for match in pattern.finditer(text):
             # One match can carry several values -- see `_match_values`. Each is guarded on
@@ -1108,6 +1113,9 @@ def iter_inline_targets(
                 )
                 if digit_count is None:
                     continue
+                if (start, end) in yielded:
+                    continue
+                yielded.add((start, end))
                 # `_targeted`, not `_redacted` -- see the note in `likhit.privacy.contact`.
                 # The `*_refused_*` counters ARE shared with `redact`, because they are the
                 # guards' own verdicts and the two must agree on those.
@@ -1134,18 +1142,24 @@ def count_rule_values(text: str, patterns: tuple[re.Pattern[str], ...]) -> int:
 
     ⚠️ Tier-blind: it counts what the rule removes, not what a given tier removes, because
     the scanner reports presence and the gate decides which classes its tier covers.
+
+    🛑 **A value is counted once however many of ``patterns`` reach it.**
+    ``कुमारी बैंक लि.को ################ न.को खातामा`` is matched by both the bank-name and
+    the trailing-label rule, and :func:`redact` removes it once (the second rule runs on
+    text the first has already rewritten), so counting per pattern would report a residue
+    of two where one value was ever present.
     """
 
     rules = {pattern: kind for kind, pattern, _, _ in INLINE_RULES}
     scratch: Counter = Counter()
-    found = 0
+    seen: set[tuple[int, int]] = set()
     for pattern in patterns:
         kind = rules[pattern]
         for match in pattern.finditer(text):
-            for val, _start, _end in _match_values(match, kind):
+            for val, start, end in _match_values(match, kind):
                 if _accept(val, kind, scratch, RULE_DIGIT_BOUNDS.get(pattern)):
-                    found += 1
-    return found
+                    seen.add((start, end))
+    return len(seen)
 
 
 def redact(
