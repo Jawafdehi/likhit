@@ -17,7 +17,7 @@ This file starts at 0.1.8. For earlier releases, see the
   of birth.** Its `date_of_birth` label matched bare `जन्मदर्ता` ("births registered |
   1234" in municipal audit reports) and any word starting `dob`, values no rule removes,
   so JawafdehiAPI's residue gate withheld whole transcripts (JAW-53). The label now reads
-  what the remover's does, plus a birth-registration number. Over 421 staged documents
+  what the remover's does, plus a birth-registration number; scanner and both removers now also read `जन्म दर्ताको मिति`. Over 421 staged documents
   the gate's withheld count fell from 81 to 14.
 
 ### Added

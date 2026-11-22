@@ -21,6 +21,7 @@ from __future__ import annotations
 import pytest
 
 from likhit.privacy import RedactionMode, redact_text, scan_text
+from likhit.privacy.redact_tables import redact_table_text
 
 
 @pytest.mark.parametrize(
@@ -75,3 +76,31 @@ def test_a_strict_pass_leaves_no_date_of_birth_residue_on_a_count(text: str) -> 
 
     assert redacted == text, "a count is not personal data; nothing should be removed"
     assert scan_text(redacted)[0]["date_of_birth"] == 0
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["जन्म दर्ताको मिति: २०४०/०१/०१", "जन्मदर्ताको मिति २०४०-०१-०१"],
+)
+def test_the_genitive_birth_registration_date_is_counted_and_removed(text: str) -> None:
+    """`दर्ताको मिति` is a date label too (CodeRabbit on #136).
+
+    The old bare-`दर्ता` scanner counted it while no remover took it; narrowing only the
+    scanner would have left the date in the text and reported nothing. Both sides read it
+    now: the scanner counts it, the strict pass removes it, and nothing is left behind.
+    """
+    assert scan_text(text)[0]["date_of_birth"] >= 1
+
+    redacted = redact_text(text, mode=RedactionMode.STRICT).text
+
+    assert "२०४०" not in redacted
+    assert scan_text(redacted)[0]["date_of_birth"] == 0
+
+
+def test_the_genitive_birth_registration_date_column_is_removed() -> None:
+    source = "| नाम | जन्म दर्ताको मिति |\n| राम | २०५०/०१/०२ |\n"
+
+    output, targets, _ = redact_table_text(source)
+
+    assert "२०५०/०१/०२" not in output
+    assert {target.classification for target in targets} == {"date_of_birth"}

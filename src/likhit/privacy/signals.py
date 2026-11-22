@@ -288,7 +288,7 @@ LABELLED = {
     #   `dob...` word (`Dobali Construction | 123456.78`). A letter after the `b` now
     #   ends it; `DOB:`, `D.O.B.` and `dob 14/04/1983` still count.
     "date_of_birth": re.compile(
-        rf"(?:जन्म\s*(?:मिति|दर्ता\s*(?:मिति|(?:प्रमाणपत्र\s*)?(?:नम्बर|नं|न\.)))"
+        rf"(?:जन्म\s*(?:मिति|दर्ता(?:को)?\s*(?:मिति|(?:प्रमाणपत्र\s*)?(?:नम्बर|नं|न\.)))"
         rf"|date\s*of\s*birth|\bd\.?o\.?b(?![a-z]))"
         rf"[^\n]{{0,30}}?[{ANY_DIGITS}]{{4,}}",
         re.I,

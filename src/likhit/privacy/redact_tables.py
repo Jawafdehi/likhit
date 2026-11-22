@@ -56,7 +56,7 @@ CITIZENSHIP_LABEL = re.compile(
     re.I,
 )
 DOB_LABEL = re.compile(
-    r"(?:जन्म\s*(?:मिति|दर्ता\s*मिति|दिन)|जन्ममिति"
+    r"(?:जन्म\s*(?:मिति|दर्ता(?:को)?\s*मिति|दिन)|जन्ममिति"
     r"|date\s*of\s*birth|birth\s*date|\bd\.?o\.?b\.?\b)",
     re.I,
 )
