@@ -48,6 +48,24 @@ This file starts at 0.1.8. For earlier releases, see the
 
 ### Fixed
 
+- **`strict` redaction and the residue scan now catch all-digit passport numbers**
+  (JAW-79). The passport rule only knew the Latin-prefixed shape (`PA1234567`), so a
+  number written in digits alone passed both redaction and the residue check, in either
+  digit script, after `राहदानी नं.`, `राहदानी नम्बर`, `पासपोर्ट नं.` or `Passport No.`, in
+  a list, or on the line after its label. Measured on the Patan High Court charge sheet
+  that surfaced it (`ag/115641`): before, 1 of 5 passport numbers removed and 1 reported;
+  after, 5 of 5 removed and 0 reported left. A digit-only value needs a number marker or
+  a colon after the label, must be 6-9 digits, and is refused when a date or case-number
+  group, a count word or a money word follows it. `scan_text` now counts passports
+  through the remover (`redact.count_rule_values`), one per number in a list. Checked the
+  sibling labels for the same gap and closed three:
+  - citizenship behind `ना.प्र.पत्र नं.` (the प्रमाणपत्र field spelled out);
+  - Nepali national identity card numbers (`राष्ट्रिय परिचयपत्र नं.`, `राष्ट्रिय परिचय
+    नम्बर`, `National ID No.`, `NID No.`), a new kind at `strict` with its own
+    placeholder `[REDACTED:NATIONAL-ID-NO]`;
+  - the second and later bank accounts in a list under one `खाता नं.` label.
+  PAN is unchanged: no tier removes it, by design.
+
 - **`strict` redaction and the residue scan now catch the identity numbers a Kathmandu
   District Court charge sheet and two verdicts kept** (JAW-73, JAW-74). Measured on those
   three documents: before, 0 of 17 citizenship numbers, 0 of 3 Indian ID numbers, 0 of 7
