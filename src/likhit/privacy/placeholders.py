@@ -131,6 +131,9 @@ VOTER_ID: Final = "[REDACTED:VOTER-ID-NO]"
 AADHAAR: Final = "[REDACTED:AADHAAR-NO]"
 REFUGEE_ID: Final = "[REDACTED:REFUGEE-ID-NO]"
 IMEI: Final = "[REDACTED:IMEI-NO]"
+#: A Nepali national identity card (``राष्ट्रिय परिचयपत्र``) number, removed at ``strict``
+#: for the same reason as :data:`PASSPORT`.
+NATIONAL_ID: Final = "[REDACTED:NATIONAL-ID-NO]"
 
 ALL: Final = (
     CITIZENSHIP,
@@ -149,6 +152,7 @@ ALL: Final = (
     AADHAAR,
     REFUGEE_ID,
     IMEI,
+    NATIONAL_ID,
 )
 
 #: Matches any registered placeholder.

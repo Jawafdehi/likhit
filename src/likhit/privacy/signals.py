@@ -34,10 +34,13 @@ from .redact import (
     CIT_ABBREVIATED_LABEL,
     EMPTY_CELL_WRAP,
     AADHAAR_LABEL_VALUE,
+    BANK_LIST_VALUE,
     BANK_NAME_VALUE,
     BANK_TRAILING_LABEL_VALUE,
     CITIZENSHIP_ISSUED_IN_NAME_VALUE,
     IMEI_LABEL_VALUE,
+    NATIONAL_ID_LABEL_VALUE,
+    PASSPORT_LABEL_VALUE,
     REFUGEE_ID_LABEL_VALUE,
     VOTER_ID_LABEL_VALUE,
     count_rule_values,
@@ -184,15 +187,6 @@ PHONE_LABELLED = re.compile(
     rf"(?![{ANY_DIGITS}])",
     re.I,
 )
-# 🛑 **A passport number is Latin-prefixed, so no digit-only pattern can reach it.** Page 1
-# of ``samples/aarop-patra.pdf`` carries `Passport No. Z4362932/India` and `K9838300/India`
-# -- an identity-document number of the same class as a citizenship number, and the clearest
-# single case of this package seeing only what is labelled in Nepali.
-PASSPORT_LABELLED = re.compile(
-    rf"(?:passport|राहदानी)\s*(?:no\.?|number|नं\.?|नम्बर)?\s*[:ः]?\s*"
-    rf"(?P<val>[A-Z]{{1,2}}[{ANY_DIGITS}]{{6,9}})(?![{ANY_DIGITS}])",
-    re.I,
-)
 # Labelled identifiers: the label is what makes the adjacent digits personal.
 #
 # ⚠️ **Each label alternation carries its English form as well as its Nepali one.** These
@@ -285,7 +279,6 @@ LABELLED = {
         rf"[^\n]{{0,30}}?[{ANY_DIGITS}]{{4,}}",
         re.I,
     ),
-    "passport": PASSPORT_LABELLED,
     "phone_labelled": PHONE_LABELLED,
 }
 
@@ -297,9 +290,17 @@ LABELLED = {
 #: remover keeps the two in step: a value is reported exactly when a ``strict`` pass would
 #: still take it. ``citizenship`` and ``bank_account`` keep their :data:`LABELLED` patterns
 #: and ADD these counts; the four identity-card kinds are counted here alone.
+#:
+#: 🛑 ``passport`` moved here from :data:`LABELLED` (JAW-79). Its detector was a copy of the
+#: remover's Latin-prefixed shape, so when the remover missed an all-digit number the
+#: detector missed it too, and the residue check passed four live passport numbers. A copy
+#: drifts; counting through the remover cannot. It also counts every number in a list --
+#: ``findall`` over a label counted one per label.
 RULE_COUNTED: dict[str, tuple[re.Pattern[str], ...]] = {
     "citizenship": (CITIZENSHIP_ISSUED_IN_NAME_VALUE,),
-    "bank_account": (BANK_NAME_VALUE, BANK_TRAILING_LABEL_VALUE),
+    "bank_account": (BANK_NAME_VALUE, BANK_TRAILING_LABEL_VALUE, BANK_LIST_VALUE),
+    "passport": (PASSPORT_LABEL_VALUE,),
+    "national_id": (NATIONAL_ID_LABEL_VALUE,),
     "voter_id": (VOTER_ID_LABEL_VALUE,),
     "aadhaar": (AADHAAR_LABEL_VALUE,),
     "refugee_id": (REFUGEE_ID_LABEL_VALUE,),

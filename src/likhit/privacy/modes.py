@@ -63,7 +63,8 @@ class RedactionMode(str, Enum):
     CONTACT = "contact"
 
     #: Everything this package can remove: :data:`CONTACT` plus bank account, passport and the
-    #: other identity-document numbers (Indian voter ID and Aadhaar, refugee card, phone IMEI).
+    #: other identity-document numbers (Nepali national ID card, Indian voter ID and Aadhaar,
+    #: refugee card, phone IMEI).
     #:
     #: ⚠️ **Not age, and that is measured rather than overlooked.** `age` was removable here
     #: until it was counted against every corpus available: 36 removals on the CIAA annual

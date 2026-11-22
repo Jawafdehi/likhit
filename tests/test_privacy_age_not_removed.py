@@ -112,6 +112,7 @@ def test_the_age_placeholder_stays_registered() -> None:
                 "aadhaar",
                 "refugee_id",
                 "imei",
+                "national_id",
             },
         ),
     ],
