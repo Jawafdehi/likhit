@@ -740,8 +740,12 @@ BANK_LABEL_VALUE = re.compile(
 #: One account in a list: an unbroken run of nine or more digits that is not the integer
 #: part of an amount and is not followed by a money word -- the same value
 #: :data:`BANK_NAME_VALUE` takes, for the same reasons.
+#:
+#: ⚠️ A comma straight before more digits is refused only when fewer than nine follow:
+#: ``#########,##`` is an amount, but ``A,B`` with two full-length runs is two accounts
+#: written without a space, and refusing it left a third account after ``A,B, C`` in the text.
 _BANK_LIST_RUN = (
-    rf"(?<![{AD}])[{AD}]{{9,24}}(?![{AD}]|[,.][{AD}])"
+    rf"(?<![{AD}])[{AD}]{{9,24}}(?![{AD}]|\.[{AD}]|,(?![{AD}]{{9}})[{AD}])"
     r"(?![^\S\n]*(?:रु|रुपैयाँ|रुपैया|/-|।-|लाख|करोड))"
 )
 

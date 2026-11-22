@@ -90,6 +90,12 @@ _POSITIVES = (
         ("०१२३४५६७८९०१", "९८७६५४३२१०९८"),
         "bank_account",
     ),
+    # written without a space after the comma, then a third with one
+    (
+        "खाता नं. ०१२३४५६७८९०१,९८७६५४३२१०९८, ११२२३३४४५५६६ मा",
+        ("०१२३४५६७८९०१", "९८७६५४३२१०९८", "११२२३३४४५५६६"),
+        "bank_account",
+    ),
 )
 
 
@@ -126,14 +132,18 @@ def test_redaction_is_idempotent(span: str, values: tuple[str, ...], kind: str) 
 def test_span_targets_agree_with_the_text_pass(
     span: str, values: tuple[str, ...], kind: str
 ) -> None:
-    """The PDF redactor works from spans, not from the rewritten text."""
+    """The PDF redactor works from spans, not from the rewritten text.
 
-    spans = [
-        span[t.start : t.end]
-        for t in iter_inline_targets(span, mode=RedactionMode.STRICT)
-    ]
+    Every character of every value must sit inside some target. Two rules may cut a list
+    differently on the original text (``A,B`` is one bank window there, two values in the
+    rewritten text) -- what the PDF needs is that no digit is left uncovered.
+    """
+
+    targets = list(iter_inline_targets(span, mode=RedactionMode.STRICT))
     for value in values:
-        assert value in spans
+        start = span.index(value)
+        covered = {i for t in targets for i in range(t.start, t.end)}
+        assert set(range(start, start + len(value))) <= covered, value
 
 
 def test_the_residue_check_counts_every_passport_in_a_list() -> None:
@@ -177,6 +187,11 @@ _NEIGHBOURS = (
     (
         "राहदानी नं. ०८१२३४५६ र १२३४५६७ रुपैयाँ",
         f"राहदानी नं. {placeholders.PASSPORT} र १२३४५६७ रुपैयाँ",
+    ),
+    # a bank-list continuation is never the integer part of an amount
+    (
+        "खाता नं. ०१२३४५६७८९०१ र १२३४५६७८९,५० रुपैयाँ",
+        f"खाता नं. {placeholders.BANK_ACCOUNT} र १२३४५६७८९,५० रुपैयाँ",
     ),
     (
         "राहदानी नं. ०८१२३४५६, मुद्दा नं. ०८२-CR-००४८",
