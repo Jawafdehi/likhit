@@ -584,11 +584,15 @@ _PASSPORT_VALUE = rf"[A-Z]{{1,2}}[{AD}]{{6,9}}(?![{AD}])"
 #:
 #: ⚠️ A bare 6-9 digit run is what a cheque, a file or a dispatch number looks like too, so
 #: what follows the run has to rule those out: no further digit group (``/``, ``-`` or ``.``
-#: then a digit -- a date or a case number), and no unit or money word after it
+#: then a digit -- a date or a case number -- or a comma then a short group -- an amount),
+#: and no unit or money word after it
 #: (``######## जना`` is a count, ``######## रुपैयाँ`` an amount).
 _PASSPORT_ANY_VALUE = (
     rf"(?<![A-Za-z{AD}])(?:[A-Z]{{1,2}})?[{AD}]{{6,9}}(?![{AD}])"
     rf"(?![\-–—/.][{AD}])"
+    # A comma straight before digits is the grouping of an amount (`#######,##`), unless a
+    # full passport-length run follows -- that is an unspaced list (`########,########`).
+    rf"(?!,(?![{AD}]{{6}})[{AD}])"
     rf"(?![^\S\n]*(?:जना|वटा|पटक|प्रतिशत|किस्ता|थान|रु|रुपैयाँ|रुपैया|/-|।-|लाख|करोड))"
 )
 

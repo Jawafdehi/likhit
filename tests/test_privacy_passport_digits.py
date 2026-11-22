@@ -56,6 +56,8 @@ _POSITIVES = (
         "passport",
     ),
     ("Passport No. 08123456 and 11223344", ("08123456", "11223344"), "passport"),
+    # an unspaced list
+    ("राहदानी नं. ०८१२३४५६,११२२३३४४ भएका", ("०८१२३४५६", "११२२३३४४"), "passport"),
     # mixed with the Latin-prefixed shape
     ("Passport No. PA1234567 र ०८१२३४५६", ("PA1234567", "०८१२३४५६"), "passport"),
     # the value on the line after its label
@@ -183,6 +185,10 @@ _NEIGHBOURS = (
     (
         "खाता नं. ०१२३४५६७८९०१ र रु. १२,३४,५६७",
         f"खाता नं. {placeholders.BANK_ACCOUNT} र रु. १२,३४,५६७",
+    ),
+    (
+        "Passport No. 08123456 र १२३४५६७,५० रुपैयाँ",
+        f"Passport No. {placeholders.PASSPORT} र १२३४५६७,५० रुपैयाँ",
     ),
     (
         "राहदानी नं. ०८१२३४५६ र १२३४५६७ रुपैयाँ",
