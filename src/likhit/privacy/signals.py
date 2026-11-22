@@ -274,8 +274,22 @@ LABELLED = {
         rf"(?:खाता\s*(?:नम्बर|नं|न\.)|account\s*(?:no|number))[^\n]{{0,30}}?[{ANY_DIGITS}]{{6,}}",
         re.I,
     ),
+    # 🛑 **The label reads what `redact._DOB_LABEL` reads, not more.** JawafdehiAPI's
+    # residue gate withholds a whole transcript for one date of birth this finds after a
+    # strict pass, so a label wider than the remover's strands documents over values that
+    # are not dates of birth at all. Two had drifted:
+    #
+    # * bare `जन्मदर्ता` -- birth *registration*. Every municipal audit report tabulates
+    #   its civil-registration services ("births registered | 1234"), and 61 of the
+    #   Auditor General's 2081/82 local-level reports lost their transcript to it.
+    #   `जन्म दर्ता मिति` (a date) and a birth-registration *number* (`जन्मदर्ता नं.`,
+    #   which no rule removes, so it stays residue) are still counted.
+    # * `d.o.b` with every dot optional and no right edge matched the start of any
+    #   `dob...` word (`Dobali Construction | 123456.78`). A letter after the `b` now
+    #   ends it; `DOB:`, `D.O.B.` and `dob 14/04/1983` still count.
     "date_of_birth": re.compile(
-        rf"(?:जन्म\s*(?:मिति|दर्ता)|date\s*of\s*birth|\bd\.?o\.?b\.?)"
+        rf"(?:जन्म\s*(?:मिति|दर्ता\s*(?:मिति|(?:प्रमाणपत्र\s*)?(?:नम्बर|नं|न\.)))"
+        rf"|date\s*of\s*birth|\bd\.?o\.?b(?![a-z]))"
         rf"[^\n]{{0,30}}?[{ANY_DIGITS}]{{4,}}",
         re.I,
     ),
