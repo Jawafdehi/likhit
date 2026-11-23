@@ -477,7 +477,7 @@ IMEI_LABEL_VALUE = re.compile(
 #: own while matching `वि.स.` not at all.
 _DOB_ERA = r"(?:\s*(?:(?:वि|बि|ई|इ)\.?\s*सं?\.?|B\.?\s*S\.?|A\.?\s*D\.?))?"
 _DOB_LABEL = (
-    r"(?:जन्म\s*(?:मिति|दर्ता\s*मिति|दिन)|जन्ममिति"
+    r"(?:जन्म\s*(?:मिति|दर्ता(?:को)?\s*मिति|दिन)|जन्ममिति"
     rf"|date\s*of\s*birth|birth\s*date|\bd\.o\.b\.?|\bdob\b){_DOB_ERA}"
 )
 
