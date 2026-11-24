@@ -237,9 +237,12 @@ LABELLED = {
     # `materials.redaction.residual_classes` consumes this number to decide whether text is
     # publishable at all, so a miscount here strands whole documents.
     "citizenship": re.compile(
-        rf"(?:(?:नागरिकता(?:को|मा|का|की)?\s*(?:प्रमाणपत्र|प्र\.?)?\s*(?:नम्बर|नं\.?|न\.)"
+        rf"(?:(?:नागरिकता(?:को|मा|का|की)?\s*(?:प्रमाणपत्र|प्रशासन|प्र\.?)?\s*(?:नम्बर|नं\.?|न\.)"
         rf"|citizenship(?:\s*certificate)?\s*(?:no\.?|number))"
-        rf"[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}})",
+        # One line break straight after the marker: extractors wrap `नं` / value onto two
+        # lines, and the remover's gap crosses that break, so a count that refused it
+        # under-reported residue the remover would have taken (JAW-167, ag/60206).
+        rf"(?:[^\S\n]*\n)?[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}})",
         # 🛑 **The abbreviated label (`ना.प्र.नं.` and its spellings) is not here: it is
         # counted through its remover, `RULE_COUNTED` below.** A copied 40-character reach
         # counted the date in `ना.प्र.प्र.नं. मिति २०८०/०१/०१`, which the remover's gap
