@@ -755,3 +755,18 @@ def test_an_address_inside_a_longer_address_is_not_an_exact_match():
         )
         == 1
     )
+
+
+def test_dates_with_dandas_and_values_wrapped_at_a_line_end_still_match():
+    assert (
+        len(
+            locate_value(_loc("जन्ममिति २०४०।०५।१२ गते"), "२०४०।०५।१२", approximate=False)
+        )
+        == 1
+    )
+    wrapped = _loc("(ना.प्र.प.न.२७-०१-७५-\nछ १२३४५,काभ्रे)")
+    assert len(locate_value(wrapped, "२७-०१-७५-१२३४५", approximate=False)) == 1
+    # ...but two words between two numbers on one line still keep them apart.
+    assert (
+        locate_value(_loc("२७०१७५ घर नं १२३४५"), "२७०१७५१२३४५", approximate=False) == []
+    )

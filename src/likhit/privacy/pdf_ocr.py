@@ -283,9 +283,25 @@ def _bounded_levenshtein(a: str, b: str, cap: int) -> int:
 
 
 #: What may stand between two digits of one written value: whitespace and the
-#: separators IDs and phone numbers are printed with.
-_SEPARATORS = re.compile(r"[\s\-–/.,:]*")
+#: separators IDs, dates and phone numbers are printed with (the danda in
+#: `२०४०।०५।१२`; `|` is how OCR often reads a danda or a slash).
+_SEPARATORS = re.compile(r"[\s\-–/.,:।|]*")
 MAX_SEPARATOR_RUN = 3
+
+
+def _joins_one_value(gap: str) -> bool:
+    """Whether ``gap`` (the text between two digits) keeps them in one written value.
+
+    Separators only, a few at a time; or a line break with at most one stray mark beside
+    it -- a value wrapped at the end of a line, where OCR often reads the margin or a
+    hyphen as a letter (`##-##-##-\\nछ #####` on a JAW-167 charge sheet).
+    """
+
+    if len(gap) <= MAX_SEPARATOR_RUN and _SEPARATORS.fullmatch(gap):
+        return True
+    if "\n" in gap and len(gap) <= MAX_SEPARATOR_RUN + 1:
+        return len(_SEPARATORS.sub("", gap)) <= 1
+    return False
 
 
 def locate_value(
@@ -344,8 +360,7 @@ def locate_value(
         # fields (`१२३४५ ... ६७८९०`) concatenate into the needle in the digit stream,
         # their boxes are burned, and the real value elsewhere counts as placed.
         return all(
-            index[i + 1] - index[i] - 1 <= MAX_SEPARATOR_RUN
-            and _SEPARATORS.fullmatch(loc.text[index[i] + 1 : index[i + 1]])
+            _joins_one_value(loc.text[index[i] + 1 : index[i + 1]])
             for i in range(a, b - 1)
         )
 
