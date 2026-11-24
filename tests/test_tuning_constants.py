@@ -365,6 +365,90 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
     # -- quality audit: page refusal (opt-in axis) ------------------------------- #
     (
         "likhit/privacy/pdf.py",
+        "IMAGE_PAGE_COVERAGE",
+    ): (
+        0.5,
+        "the image-area share at or above which a page is a scan whatever its text layer says (scanners add an invisible Latin OCR layer). Measured on the JAW-167 corpus (23 PDFs, 439 pages): scanned charge sheets sit at ~1.0, born-digital pages with a logo or stamp under 0.2, so 0.5 sits in an empty gap. Moving it UP lets a scan with a margin through as a text page whose pixels are never redacted",
+    ),
+    (
+        "likhit/privacy/pdf.py",
+        "FLATTEN_DPI",
+    ): (
+        200,
+        "render resolution of a flattened (legacy-font) page: 200 dpi keeps 10-pt Devanagari with its matras legible at about a third of the bytes of 300 dpi (JAW-167 POC, the one flattened page of ag/115641)",
+    ),
+    (
+        "likhit/privacy/pdf.py",
+        "REENCODE_JPEG_QUALITY",
+    ): (
+        75,
+        "JPEG quality for gray/colour scans re-encoded after pixel redaction; libjpeg's default. On the JAW-167 corpus the total went from 52.8 MB in to 50.9 MB out, where lossless Flate (PyMuPDF's default after pixel redaction) had grown one charge sheet from 1.5 MB to 7.4 MB",
+    ),
+    (
+        "likhit/privacy/pdf.py",
+        "RESIDUE_ROUNDS",
+    ): (
+        2,
+        "OCR re-reads of the written file before refusing. The JAW-167 corpus needed a second round on 2 of 255 raster pages (a box changes the segmentation of its line) and never a third",
+    ),
+    (
+        "likhit/privacy/pdf_ocr.py",
+        "MAX_SEPARATOR_RUN",
+    ): (
+        3,
+        "longest run of separator characters allowed between two digits of one EXACT guided match: covers ' - ' and OCR's doubled spaces in IDs and phone numbers, while two separate fields on a line are a word or more apart and no longer join into one value (CodeRabbit on likhit#138)",
+    ),
+    (
+        "likhit/privacy/pdf_ocr.py",
+        "OCR_DPI",
+    ): (
+        300,
+        "render resolution of the locating Tesseract read: Tesseract's documented optimum, and the setting behind the JAW-167 POC's 80/84 gold values covered",
+    ),
+    (
+        "likhit/privacy/pdf_ocr.py",
+        "OCR_SECOND_READ_DPI",
+    ): (
+        400,
+        "resolution of the second read for guided values the first read could not place exactly: a different reading (also nep-only, psm 6) is what recovered garbled edge digits in the JAW-167 POC (4 of 12 such values)",
+    ),
+    (
+        "likhit/privacy/pdf_ocr.py",
+        "OCR_BOX_PAD",
+    ): (
+        0.12,
+        "vertical padding of a burned OCR box as a fraction of its height: Tesseract boxes hug the ink and matras/anti-aliasing sit just outside (JAW-167 side-by-side review)",
+    ),
+    (
+        "likhit/privacy/pdf_ocr.py",
+        "OCR_BOX_GROW_X",
+    ): (
+        0.6,
+        "horizontal padding of a burned OCR box as a fraction of its height (about half a glyph each side): the POC's first renders showed a leading digit peeking out of Tesseract's character boxes; with 0.6 none did on 22 gold pages",
+    ),
+    (
+        "likhit/privacy/pdf_ocr.py",
+        "TESSERACT_TIMEOUT_SECONDS",
+    ): (
+        180,
+        "seconds before one Tesseract call is abandoned and the page fails; a 400-dpi read of a dense page took up to ~20 s on a loaded 8-core host, so 180 only trips on a hung process",
+    ),
+    (
+        "likhit/privacy/pdf_ocr.py",
+        "GUIDED_MIN_DIGITS",
+    ): (
+        3,
+        "a guided value with fewer digits is never matched: 1-2 digit runs are ward numbers, ages and list numbers on every charge sheet",
+    ),
+    (
+        "likhit/privacy/pdf_ocr.py",
+        "GUIDED_SHORT_VALUE_DIGITS",
+    ): (
+        6,
+        "guided values shorter than this must follow a label-shaped token to match: 4-5 digit citizenship numbers exist (JAW-51 gold set) but a bare 4-5 digit run is usually a year, amount or file number",
+    ),
+    (
+        "likhit/privacy/pdf.py",
         "UNICODE_DEVANAGARI_RATIO",
     ): (
         0.20,

@@ -34,10 +34,14 @@ place -- and every court redaction guideline assumes a mark a reader can see. So
 rectangle is filled with :data:`REDACTION_FILL`, which is black, and the shape of the mark
 carries what the gap could not: that a removal happened, and roughly how much.
 
-What this module does **not** do yet is the other two page classes: legacy-encoded text needs
-likhit's own font decode plumbed through to glyph rectangles, and a pure scan needs
+What this module does **not** do on its own is the other two page classes: legacy-encoded
+text needs likhit's own font decode plumbed through to glyph rectangles, and a pure scan needs
 bounding-box OCR, which likhit's LLM-vision OCR cannot provide because it returns text without
-coordinates. Both refuse loudly rather than silently passing a page through.
+coordinates. By default both refuse loudly rather than silently passing a page through. With
+``ocr=True`` they are read by Tesseract instead (:mod:`likhit.privacy.pdf_ocr`) and burned:
+a scan in its pixels with its whole text layer removed, a legacy page by replacing it with a
+burned render. ``transcript`` adds the values the text path removed, so the PDF never shows
+what the published transcript hides.
 """
 
 from __future__ import annotations
@@ -50,6 +54,9 @@ from pathlib import Path
 
 import fitz
 
+from collections.abc import Callable, Mapping
+
+from . import pdf_ocr
 from .contact import iter_contact_targets
 from .modes import DEFAULT_MODE, RedactionMode
 from .redact import iter_inline_targets
@@ -87,6 +94,24 @@ _TEXT_LAYER_DEVANAGARI = re.compile(r"[ऀ-ॿ]")
 #: than being guessed at -- a mixed page may be part legacy, and the cost of being wrong in
 #: that direction is publishing an identifier.
 UNICODE_DEVANAGARI_RATIO = 0.20
+
+#: A page on which images cover at least this share of the area is a scan, whatever its text
+#: layer says (scanners add an invisible OCR layer). Measured on the JAW-167 corpus: scanned
+#: charge sheets are ~1.0 (one full-page raster), born-digital pages with a logo or a stamp
+#: well under 0.2, so the cut sits in a wide empty gap.
+IMAGE_PAGE_COVERAGE = 0.5
+
+#: Render resolution of a flattened page. 200 dpi keeps 10-pt Devanagari legible (matras
+#: included) at roughly a third of the bytes of 300 dpi.
+FLATTEN_DPI = 200
+
+#: JPEG quality for gray/colour images re-encoded after pixel redaction. 75 is libjpeg's
+#: default; on the JAW-167 corpus the total size went from 52.8 MB in to 50.9 MB out.
+REENCODE_JPEG_QUALITY = 75
+
+#: OCR re-reads of the written file. The JAW-167 corpus needed a second round on 2 pages of
+#: 255 (a box changes the segmentation of its line) and never a third.
+RESIDUE_ROUNDS = 2
 
 
 class PageClass(str, Enum):
@@ -150,7 +175,9 @@ def classify_text_layer(page: fitz.Page, text: str | None = None) -> PageClass:
     if not text:
         # Images OR vector drawings: a page can carry a scanned stamp as either, and both
         # are ink that may be a signature, a seal or a handwritten number.
-        has_ink = bool(page.get_images(full=True)) or bool(page.get_drawings())
+        # get_image_info, not get_images: an INLINE image (BI ... EI) is ink too, and
+        # get_images does not list it -- a text-free inline scan was called BLANK.
+        has_ink = bool(page.get_image_info()) or bool(page.get_drawings())
         return PageClass.SCANNED if has_ink else PageClass.BLANK
     if (
         len(_TEXT_LAYER_DEVANAGARI.findall(text)) / len(text)
@@ -181,6 +208,18 @@ class PdfRedactionReport:
     span_shapes: list[dict] = field(default_factory=list)
     #: Pages this module cannot redact, with the class that blocked them.
     blocked_pages: list[dict] = field(default_factory=list)
+    #: How each page was redacted: ``vector`` (glyphs deleted), ``image`` (a scan, burned
+    #: into its pixels, text layer stripped), ``flatten`` (replaced by a burned render) or
+    #: ``blank``. Only ``vector`` and ``blank`` occur without ``ocr=True``.
+    pages_by_path: Counter = field(default_factory=Counter)
+    #: Values the page transcripts' text redaction removes, and how many of them were
+    #: placed on their page by an exact match.
+    guided_values: int = 0
+    guided_placed: int = 0
+    #: Guided values with no exact match on any read: page, kind and masked shape.
+    unplaced: list[dict] = field(default_factory=list)
+    #: Boxes added by the OCR re-read of the written file (see ``_residue_pass``).
+    residue_boxes: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -193,6 +232,11 @@ class PdfRedactionReport:
             "annotations_deleted": self.annotations_deleted,
             "counters": dict(sorted(self.counters.items())),
             "blocked_pages": self.blocked_pages,
+            "pages_by_path": dict(sorted(self.pages_by_path.items())),
+            "guided_values": self.guided_values,
+            "guided_placed": self.guided_placed,
+            "unplaced": self.unplaced,
+            "residue_boxes": self.residue_boxes,
             "span_shapes": self.span_shapes,
             "no_matched_digits_recorded": True,
         }
@@ -300,18 +344,24 @@ def _merge_rects(rects: list[fitz.Rect]) -> list[fitz.Rect]:
 
 
 def _redact_page(
-    page: fitz.Page, mode: RedactionMode, report: PdfRedactionReport
+    page: fitz.Page,
+    mode: RedactionMode,
+    report: PdfRedactionReport,
+    extra: list[fitz.Rect] | None = None,
 ) -> int:
     """Redact one Unicode page. Returns the number of values removed.
 
     🛑 **Every character of every value must carry a rectangle, or the page refuses.** A span
     the detector found but the geometry cannot place is a value this module would leave in the
     file while reporting it as removed, which is the one outcome worse than refusing.
+
+    ``extra`` are boxes for guided values (see :mod:`likhit.privacy.pdf_ocr`) that were placed
+    on this page's glyph map; they are burned in the same ``apply_redactions`` call.
     """
 
     text, rects = page_glyph_map(page)
     targets = _targets(text, mode, report.counters)
-    if not targets:
+    if not targets and not extra:
         return 0
 
     to_redact: list[fitz.Rect] = []
@@ -355,6 +405,7 @@ def _redact_page(
             }
         )
 
+    to_redact.extend(extra or ())
     # 🛑 Every annotation first, then ONE apply_redactions for the page. Applying per
     # annotation is the documented performance trap and the usual cause of a loop that
     # redacts only its last iteration.
@@ -506,7 +557,12 @@ def _verify_outside_content(doc: fitz.Document, mode: RedactionMode) -> None:
             )
 
 
-def _verify(data: bytes, mode: RedactionMode, checked_pages: frozenset[int]) -> None:
+def _verify(
+    data: bytes,
+    mode: RedactionMode,
+    checked_pages: frozenset[int],
+    raster_pages: frozenset[int] = frozenset(),
+) -> None:
     """Re-read the written bytes and refuse if anything in the removal set survived.
 
     :mod:`likhit.privacy.tree`'s rule 4, at document grain: a pass that disagrees with itself
@@ -529,6 +585,15 @@ def _verify(data: bytes, mode: RedactionMode, checked_pages: frozenset[int]) -> 
 
     with fitz.open(stream=data, filetype="pdf") as doc:
         for page in doc:
+            if page.number in raster_pages:
+                # A scan or flattened page keeps NO text layer: whatever a scanner's OCR
+                # wrote there was never checked by anyone, so none of it may survive.
+                if page_glyph_map(page)[0].strip():
+                    raise ValueError(
+                        f"verification failed: page {page.number + 1} was redacted as an "
+                        "image but still carries a text layer"
+                    )
+                continue
             if page.number not in checked_pages:
                 continue
             # The same extraction the redaction ran against, not `get_text()`: verifying
@@ -544,18 +609,329 @@ def _verify(data: bytes, mode: RedactionMode, checked_pages: frozenset[int]) -> 
         _verify_outside_content(doc, mode)
 
 
+def _unrotated_rect(page: fitz.Page) -> fitz.Rect:
+    """The whole page in the coordinates PyMuPDF's drawing and redaction calls use.
+
+    🛑 Not ``page.rect``: on a page with ``/Rotate 90`` or ``270`` that is the *displayed*
+    shape (width and height swapped), while annotations, ``insert_image``, and
+    ``get_image_rects`` work in the unrotated space. A whole-page redaction drawn with
+    ``page.rect`` on a rotated landscape page missed its far corner, leaving text there.
+    """
+
+    return fitz.Rect(0, 0, page.cropbox.width, page.cropbox.height)
+
+
+def _is_image_page(page: fitz.Page) -> bool:
+    """Is most of this page one raster -- a scan, whatever its text layer claims?
+
+    A scanner's own OCR layer (invisible Latin text over the image) makes a scan classify
+    :data:`PageClass.LEGACY` or even :data:`PageClass.UNICODE`; the page is still a picture,
+    and the picture is what a reader sees, so the picture is what must be redacted.
+    """
+
+    whole = _unrotated_rect(page)
+    if whole.is_empty:
+        return False
+    # get_image_info, not get_images: it also lists INLINE images (BI ... EI), which a
+    # scanner may use for the whole page.
+    rects = [fitz.Rect(info["bbox"]) & whole for info in page.get_image_info()]
+    rects = [r for r in rects if not r.is_empty]
+    if not rects:
+        return False
+    # The UNION of the image areas, on a coarse grid: two coincident 30% images are 30%,
+    # not 60%, while disjoint tiles of one scan still add up.
+    steps = 64
+    dx, dy = whole.width / steps, whole.height / steps
+    covered = sum(
+        any(
+            r.contains(fitz.Point(whole.x0 + (i + 0.5) * dx, whole.y0 + (j + 0.5) * dy))
+            for r in rects
+        )
+        for i in range(steps)
+        for j in range(steps)
+    )
+    return covered >= IMAGE_PAGE_COVERAGE * steps * steps
+
+
+def _record_targets(
+    loc: pdf_ocr.Locator,
+    page: fitz.Page,
+    mode: RedactionMode,
+    report: PdfRedactionReport,
+    surface: str,
+    seen: list[tuple[int, str, list[fitz.Rect]]] | None = None,
+) -> list[fitz.Rect]:
+    """Boxes for every rule hit on a locator's text, journalled like a glyph-page hit.
+
+    ``seen`` is shared between the locators of one page: a hit of the same kind over a
+    box another LOCATOR already journalled (the glyph layer and OCR agreeing) is burned
+    but not counted again. Hits of one locator are never merged -- two nearby values
+    whose padded boxes touch are two values.
+    """
+
+    boxes: list[fitz.Rect] = []
+    mine: list[tuple[int, str, list[fitz.Rect]]] = []
+    for target in _targets(loc.text, mode, report.counters):
+        rects = pdf_ocr.span_rects(loc, target.start, target.end)
+        boxes += rects
+        if seen is not None:
+            # One entry per HIT (all its rects): a wrapped hit is one value.
+            mine.append((id(loc), target.kind, rects))
+            # One-to-one: the first unclaimed hit of another locator that this one
+            # overlaps is the same value; it is claimed (removed) so it cannot also
+            # stand for a second, nearby value of this locator.
+            match = next(
+                (
+                    n
+                    for n, (owner, kind, others) in enumerate(seen)
+                    if owner != id(loc)
+                    and kind == target.kind
+                    and any(not (r & o).is_empty for r in rects for o in others)
+                ),
+                None,
+            )
+            if match is not None:
+                del seen[match]
+                continue
+        report.values_removed += 1
+        report.span_shapes.append(
+            {
+                "surface": surface,
+                "page": page.number + 1,
+                "kind": target.kind,
+                "value_chars_removed": target.end - target.start,
+                "value_digit_count": target.digit_count,
+                "value_had_separators": target.had_separators,
+            }
+        )
+    if seen is not None:
+        seen += mine
+    return boxes
+
+
+def _record_guided(
+    placement: pdf_ocr.GuidedPlacement, page: fitz.Page, report: PdfRedactionReport
+) -> None:
+    report.guided_placed += placement.placed
+    report.guided_values += placement.placed + len(placement.unplaced)
+    for kind, shape in placement.unplaced:
+        report.unplaced.append({"page": page.number + 1, "kind": kind, "shape": shape})
+
+
+def _second_read(page: fitz.Page) -> Callable[[], pdf_ocr.Locator]:
+    return lambda: pdf_ocr.ocr_char_locator(
+        page, dpi=pdf_ocr.OCR_SECOND_READ_DPI, lang="nep", psm="6"
+    )
+
+
+def _strip_text_layer(page: fitz.Page) -> None:
+    """Delete every glyph on the page and nothing else (images and line art stay)."""
+
+    page.add_redact_annot(_unrotated_rect(page))
+    page.apply_redactions(
+        images=fitz.PDF_REDACT_IMAGE_NONE,
+        graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+        text=fitz.PDF_REDACT_TEXT_REMOVE,
+    )
+
+
+def _burn(page: fitz.Page, boxes: list[fitz.Rect]) -> None:
+    for rect in boxes:
+        page.add_redact_annot(rect, fill=REDACTION_FILL)
+    if boxes:
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS)
+
+
+def _redact_image_page(
+    page: fitz.Page,
+    page_class: PageClass,
+    mode: RedactionMode,
+    report: PdfRedactionReport,
+    guided: list[tuple[str, str]],
+) -> None:
+    """A scan: locate by OCR (plus the glyph map if it is Unicode), burn into the pixels,
+    then delete the page's whole text layer -- a junk OCR layer carries digits too."""
+
+    locators = [pdf_ocr.ocr_char_locator(page)]
+    if page_class is PageClass.UNICODE:
+        text, rects = page_glyph_map(page)
+        locators.append(pdf_ocr.Locator(text, rects, ocr=False))
+    boxes: list[fitz.Rect] = []
+    seen: list[tuple[int, str, list[fitz.Rect]]] = []
+    for loc in locators:
+        boxes += _record_targets(loc, page, mode, report, "page", seen)
+    if guided:
+        placement = pdf_ocr.place_guided_values(guided, locators, _second_read(page))
+        boxes += placement.boxes
+        _record_guided(placement, page, report)
+    _strip_text_layer(page)
+    _burn(page, boxes)
+    report.rects_applied += len(boxes)
+    report.pages_changed += 1
+
+
+def _flatten_page(
+    page: fitz.Page,
+    mode: RedactionMode,
+    report: PdfRedactionReport,
+    guided: list[tuple[str, str]],
+) -> None:
+    """A vector page whose text cannot be trusted (legacy font, or a Unicode layer missing
+    values the transcript has): replace the page by a burned render of itself."""
+
+    loc = pdf_ocr.ocr_char_locator(page)
+    boxes = _record_targets(loc, page, mode, report, "page")
+    if guided:
+        placement = pdf_ocr.place_guided_values(guided, [loc], _second_read(page))
+        boxes += placement.boxes
+        _record_guided(placement, page, report)
+    # Rendered UNROTATED and inserted upright, so /Rotate keeps doing the turning and the
+    # boxes (already in unrotated space) need no turning. The earlier way -- render the
+    # rotated view, insert it counter-rotated -- clipped 90/270 pages, and after
+    # rewrite_images striped the image of 180/270 pages (measured, PyMuPDF 1.26).
+    rotation = page.rotation
+    page.set_rotation(0)
+    try:
+        # annots=False: an annotation's text is not in the OCR read, so baking it into the
+        # pixels could publish a value nothing checked; the structured sweep removes it.
+        render = page.get_pixmap(dpi=FLATTEN_DPI, colorspace=fitz.csGRAY, annots=False)
+    finally:
+        page.set_rotation(rotation)
+    to_render = fitz.Matrix(FLATTEN_DPI / 72.0, FLATTEN_DPI / 72.0)
+    for rect in boxes:
+        area = fitz.IRect((rect * to_render).round()) & render.irect
+        if not area.is_empty:
+            render.set_rect(area, (0,))
+    whole = _unrotated_rect(page)
+    page.add_redact_annot(whole)
+    page.apply_redactions(
+        images=fitz.PDF_REDACT_IMAGE_REMOVE,
+        graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
+        text=fitz.PDF_REDACT_TEXT_REMOVE,
+    )
+    page.clean_contents()
+    page.insert_image(whole, stream=render.tobytes("png"))
+    report.rects_applied += len(boxes)
+    report.pages_changed += 1
+
+
+def _residue_pass(
+    data: bytes, raster_pages: set[int], mode: RedactionMode, report: PdfRedactionReport
+) -> bytes:
+    """Re-read every raster page of the WRITTEN bytes; burn whatever the rules still find.
+
+    🛑 **On the saved file, not the in-memory document.** Re-encoding a changed scan alters
+    what OCR reads, and so does every box already drawn (segmentation changes around it).
+    Measured on the JAW-167 corpus: a re-read of the written outputs found 21 values the
+    first pass had missed (wallet and mobile numbers in transaction tables, IMEIs, e-mail
+    IDs), all on pages with no transcript. Up to :data:`RESIDUE_ROUNDS` rounds; anything
+    still found after that refuses the document.
+    """
+
+    pending = set(raster_pages)
+    for round_number in range(1, RESIDUE_ROUNDS + 1):
+        if not pending:
+            return data
+        with fitz.open(stream=data, filetype="pdf") as doc:
+            changed: set[int] = set()
+            for number in sorted(pending):
+                page = doc[number]
+                loc = pdf_ocr.ocr_char_locator(page)
+                boxes = _record_targets(
+                    loc, page, mode, report, f"page_residue_{round_number}"
+                )
+                if boxes:
+                    _burn(page, boxes)
+                    report.residue_boxes += len(boxes)
+                    report.rects_applied += len(boxes)
+                    changed.add(number)
+            if not changed:
+                return data
+            _reencode_images(doc)
+            data = doc.tobytes(garbage=4, deflate=True, deflate_images=True)
+        pending = changed
+    with fitz.open(stream=data, filetype="pdf") as doc:
+        for number in sorted(pending):
+            loc = pdf_ocr.ocr_char_locator(doc[number])
+            residue = _targets(loc.text, mode, Counter())
+            if residue:
+                raise ValueError(
+                    f"verification failed: OCR still reads {len(residue)} value(s) on page "
+                    f"{number + 1} after {RESIDUE_ROUNDS} residue rounds"
+                )
+    return data
+
+
+def _reencode_images(doc: fitz.Document) -> None:
+    """Undo the size cost of pixel redaction.
+
+    ``PDF_REDACT_IMAGE_PIXELS`` writes a changed image back as lossless Flate: a 5-page
+    CCITT/JPEG charge sheet grew from 1.5 MB to 7.4 MB. 1-bit images go back to CCITT and
+    gray/colour to JPEG; images that were already lossy are left alone.
+
+    🛑 **8-bit GRAY is re-encoded here, not by ``rewrite_images``.** PyMuPDF 1.27's
+    ``rewrite_images(gray=True)`` writes a 3-component JPEG under the image's 1-component
+    colour space; MuPDF then renders it wrong -- a black block (a burned value, or a scan's
+    solid areas) came back WHITE (measured). A gray pixmap encoded as a gray JPEG and put
+    back with ``replace_image`` renders correctly.
+    """
+
+    doc.rewrite_images(
+        quality=REENCODE_JPEG_QUALITY,
+        lossy=False,
+        lossless=True,
+        bitonal=True,
+        color=True,
+        gray=False,
+    )
+    done: set[int] = set()
+    for page in doc:
+        for xref, smask, _w, _h, bpc, _cs, _alt, _name, filt, *_ in page.get_images(
+            full=True
+        ):
+            if xref in done or smask or bpc != 8 or filt not in ("FlateDecode", ""):
+                continue
+            done.add(xref)
+            pix = fitz.Pixmap(doc, xref)
+            if pix.n != 1 or pix.alpha:
+                continue
+            # The stream swapped in place (no new image object, nothing re-drawn): a gray
+            # JPEG under DeviceGray, the parameters of the Flate stream dropped.
+            doc.update_stream(
+                xref,
+                pix.tobytes("jpeg", jpg_quality=REENCODE_JPEG_QUALITY),
+                compress=False,
+            )
+            doc.xref_set_key(xref, "Filter", "/DCTDecode")
+            doc.xref_set_key(xref, "DecodeParms", "null")
+            # The pixmap already applied any /Decode inversion; keeping it would invert
+            # the scan a second time.
+            doc.xref_set_key(xref, "Decode", "null")
+            doc.xref_set_key(xref, "ColorSpace", "/DeviceGray")
+            doc.xref_set_key(xref, "BitsPerComponent", "8")
+
+
 def redact_pdf(
     source: Path,
     destination: Path | None,
     *,
     mode: RedactionMode = DEFAULT_MODE,
     dry_run: bool = False,
+    ocr: bool = False,
+    transcript: Mapping[int, str] | None = None,
 ) -> PdfRedactionReport:
     """Redact ``source`` into ``destination``, or measure it with ``dry_run``.
 
     ``destination`` must not exist and must not be ``source``. Raises :class:`ValueError` for
     anything that makes the result untrustworthy -- a page class this module cannot handle, a
     value it cannot locate, or residue in its own output -- and writes nothing when it does.
+
+    ``ocr=True`` lifts the refusal of scanned and legacy-font pages (rule 2): they are read
+    with Tesseract (:mod:`likhit.privacy.pdf_ocr`) and burned instead. ``transcript`` maps
+    1-based page numbers to that page's UNREDACTED transcript text; every value likhit's text
+    path removes from it must be placed on the page by an exact match, or the document
+    refuses (``report.unplaced`` names them in a dry run). This is what keeps the published
+    PDF from showing what the published text hides.
     """
 
     if not source.is_file():
@@ -575,6 +951,12 @@ def redact_pdf(
             )
         if destination.exists():
             raise ValueError(f"refusing to overwrite {destination}")
+    if ocr and not pdf_ocr.tesseract_available("nep+eng"):
+        raise ValueError(
+            "ocr=True needs the tesseract binary with the nep and eng language data; "
+            "refusing rather than passing scanned pages through unread"
+        )
+    transcript = transcript or {}
 
     report = PdfRedactionReport()
     with fitz.open(source) as doc:
@@ -599,14 +981,25 @@ def redact_pdf(
                 "document that was never examined"
             )
         report.pages = doc.page_count
+        # A transcript page with no PDF page would have its guided values silently
+        # dropped -- the document would pass without the check this argument exists
+        # for. A mismatched transcript is the wrong transcript; refuse it.
+        outside = sorted(n for n in transcript if not 1 <= n <= doc.page_count)
+        if outside:
+            raise ValueError(
+                f"the transcript has page(s) {outside[:5]} that this {doc.page_count}-page "
+                "PDF does not; refusing rather than ignoring their removed values"
+            )
         # Decided on the INPUT and carried to `_verify`, because redaction can change a
         # page's class -- see that function.
-        redactable: set[int] = set()
+        classes: dict[int, PageClass] = {}
+        image_pages: set[int] = set()
         for page in doc:
             page_class = classify_text_layer(page)
+            classes[page.number] = page_class
             report.pages_by_class[page_class.value] += 1
-            if page_class.is_redactable:
-                redactable.add(page.number)
+            if ocr and page_class is not PageClass.BLANK and _is_image_page(page):
+                image_pages.add(page.number)
             if page_class.needs_work:
                 report.blocked_pages.append(
                     {"page": page.number + 1, "page_class": page_class.value}
@@ -614,14 +1007,14 @@ def redact_pdf(
 
         # 🛑 Rule 2, and before a single annotation is added: a partial redaction of a
         # document whose other pages cannot be read is not a redacted document.
-        if report.blocked_pages:
-            classes = sorted({row["page_class"] for row in report.blocked_pages})
+        if report.blocked_pages and not ocr:
+            classes_seen = sorted({row["page_class"] for row in report.blocked_pages})
             if not dry_run:
                 raise ValueError(
                     f"{len(report.blocked_pages)} of {report.pages} pages are "
-                    f"{', '.join(classes)} and cannot be redacted by this module; refusing "
-                    "the document rather than emitting one whose unreadable pages were "
-                    "passed through unchanged"
+                    f"{', '.join(classes_seen)} and cannot be redacted by this module; "
+                    "refusing the document rather than emitting one whose unreadable pages "
+                    "were passed through unchanged"
                 )
             # ⚠️ A dry run **reports** the blockage instead of raising it, and that is the
             # difference between a refusal and a measurement. Rule 2 protects the written
@@ -634,12 +1027,50 @@ def redact_pdf(
             # whatever the detectors scrape off a garbled legacy page would put numbers in
             # the journal that mean nothing.
             return report
+        if ocr:
+            # With OCR every page class is handled, so nothing blocks the document.
+            report.blocked_pages = []
 
+        vector_pages: set[int] = set()
+        raster_pages: set[int] = set()
         for page in doc:
-            removed = _redact_page(page, mode, report)
-            if removed:
-                report.pages_changed += 1
-                report.values_removed += removed
+            number = page.number
+            page_class = classes[number]
+            guided = (
+                pdf_ocr.transcript_removed_values(transcript[number + 1], mode)
+                if number + 1 in transcript
+                else []
+            )
+            if page_class is PageClass.BLANK and number not in image_pages:
+                report.pages_by_path["blank"] += 1
+                # A page with nothing on it cannot show the transcript's values, so the
+                # transcript is not this PDF's: every one of them is unplaced.
+                _record_guided(pdf_ocr.unplaced_all(guided), page, report)
+                continue
+            if number in image_pages:
+                _redact_image_page(page, page_class, mode, report, guided)
+                raster_pages.add(number)
+                report.pages_by_path["image"] += 1
+                continue
+            if page_class is PageClass.UNICODE:
+                text, rects = page_glyph_map(page)
+                placement = pdf_ocr.place_guided_values(
+                    guided, [pdf_ocr.Locator(text, rects, ocr=False)]
+                )
+                if not placement.unplaced or not ocr:
+                    _record_guided(placement, page, report)
+                    removed = _redact_page(page, mode, report, extra=placement.boxes)
+                    if removed or placement.boxes:
+                        report.pages_changed += 1
+                        report.values_removed += removed
+                    vector_pages.add(number)
+                    report.pages_by_path["vector"] += 1
+                    continue
+                # The glyph layer lacks a value the transcript has (a broken ToUnicode map,
+                # a CID font): the text layer is not the page a reader sees. Flatten it.
+            _flatten_page(page, mode, report, guided)
+            raster_pages.add(number)
+            report.pages_by_path["flatten"] += 1
 
         # Rule 3. After the pages, because adding redaction annotations puts entries in the
         # same chain this walks -- ours are consumed by `apply_redactions` above, so by here
@@ -652,12 +1083,22 @@ def redact_pdf(
 
         if dry_run:
             return report
+        if report.unplaced:
+            raise ValueError(
+                f"{len(report.unplaced)} value(s) the transcript removes could not be placed "
+                "exactly on the page (see report.unplaced in a dry run); refusing rather than "
+                "publishing a PDF that may show what the published text hides"
+            )
 
         _scrub_document_metadata(doc)
+        if raster_pages:
+            _reencode_images(doc)
         # Full save, never incremental -- see this module's rule 1.
-        data = doc.tobytes(garbage=4, deflate=True)
+        data = doc.tobytes(garbage=4, deflate=True, deflate_images=True)
 
-    _verify(data, mode, frozenset(redactable))
+    if raster_pages:
+        data = _residue_pass(data, raster_pages, mode, report)
+    _verify(data, mode, frozenset(vector_pages), frozenset(raster_pages))
 
     assert destination is not None
     destination.parent.mkdir(parents=True, exist_ok=True)
