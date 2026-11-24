@@ -13,6 +13,15 @@ This file starts at 0.1.8. For earlier releases, see the
 
 ### Fixed
 
+- **Strict redaction now reads four more spellings of the abbreviated citizenship
+  label: `ना.प्र.प्र.नं.`, `ना.प्र.न.न.`, `ना.प.प.न.` and the naturalised-citizenship
+  `अ.ना.नं.`.** Special Government Attorney charge sheets write them in their party
+  lists, and none was redacted, so 105 citizenship numbers in 16 published charge sheets
+  stayed public (JAW-164). Over the 24 affected published transcripts, the branch removes
+  100 citizenship values (main: 0), and the abbreviated labels still followed by a digit
+  fall from 103 to 6: five two-digit serials, below the rule's three-digit floor, and one
+  `ना.प्र. ####/###` with no number marker.
+
 - **`scan_text` no longer counts a birth-registration count or a `dob…` word as a date
   of birth.** Its `date_of_birth` label matched bare `जन्मदर्ता` ("births registered |
   1234" in municipal audit reports) and any word starting `dob`, values no rule removes,

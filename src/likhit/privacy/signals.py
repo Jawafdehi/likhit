@@ -31,12 +31,11 @@ from collections import Counter
 from ..devanagari import ANY_DIGITS
 from .placeholders import PLACEHOLDER_PATTERN
 from .redact import (
-    CIT_ABBREVIATED_LABEL,
-    EMPTY_CELL_WRAP,
     AADHAAR_LABEL_VALUE,
     BANK_LIST_VALUE,
     BANK_NAME_VALUE,
     BANK_TRAILING_LABEL_VALUE,
+    CITIZENSHIP_ABBREVIATED_LABEL_VALUE,
     CITIZENSHIP_ISSUED_IN_NAME_VALUE,
     IMEI_LABEL_VALUE,
     NATIONAL_ID_LABEL_VALUE,
@@ -239,17 +238,13 @@ LABELLED = {
     # publishable at all, so a miscount here strands whole documents.
     "citizenship": re.compile(
         rf"(?:(?:नागरिकता(?:को|मा|का|की)?\s*(?:प्रमाणपत्र|प्र\.?)?\s*(?:नम्बर|नं\.?|न\.)"
-        rf"|{CIT_ABBREVIATED_LABEL}"
         rf"|citizenship(?:\s*certificate)?\s*(?:no\.?|number))"
-        rf"[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}}"
-        # 🛑 The abbreviated label's own reach, as `redact.CITIZENSHIP_ABBREVIATED_LABEL_VALUE`
-        # removes it: a three-digit serial (`ना.प्र.नं.###`) and a value that a table's
-        # empty-cell row break has moved onto the next line. Offered second, so a label the
-        # first branch already counts is counted once.
-        rf"|{CIT_ABBREVIATED_LABEL}(?:[^\S\n]*[:ः]?[^\S\n]*|{EMPTY_CELL_WRAP})"
-        # Three digits, or a short first group and a separator (`##/#####`): the value
-        # opens the same way the remover's window does.
-        rf"(?:[{ANY_DIGITS}]{{3,}}|[{ANY_DIGITS}]{{1,2}}[\-/–—][{ANY_DIGITS}]))",
+        rf"[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}})",
+        # 🛑 **The abbreviated label (`ना.प्र.नं.` and its spellings) is not here: it is
+        # counted through its remover, `RULE_COUNTED` below.** A copied 40-character reach
+        # counted the date in `ना.प्र.प्र.नं. मिति २०८०/०१/०१`, which the remover's gap
+        # rightly refuses, so the gate withheld a document for a value no rule removes
+        # (CodeRabbit on #137).
         re.I,
     ),
     # 🛑 **`pan` is detected here and removed nowhere**, which is the decision rather than a
@@ -311,7 +306,10 @@ LABELLED = {
 #: drifts; counting through the remover cannot. It also counts every number in a list --
 #: ``findall`` over a label counted one per label.
 RULE_COUNTED: dict[str, tuple[re.Pattern[str], ...]] = {
-    "citizenship": (CITIZENSHIP_ISSUED_IN_NAME_VALUE,),
+    "citizenship": (
+        CITIZENSHIP_ISSUED_IN_NAME_VALUE,
+        CITIZENSHIP_ABBREVIATED_LABEL_VALUE,
+    ),
     "bank_account": (BANK_NAME_VALUE, BANK_TRAILING_LABEL_VALUE, BANK_LIST_VALUE),
     "passport": (PASSPORT_LABEL_VALUE,),
     "national_id": (NATIONAL_ID_LABEL_VALUE,),

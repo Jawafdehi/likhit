@@ -105,7 +105,27 @@ _CIT_LABEL = (
 #: (``र्नं.``), and the verdicts (JAW-74) write the marker without its anusvara
 #: (``ना.प्र.न.####/####``). Each of those is a tolerated artefact here, and nothing wider:
 #: ``र्`` is admitted only in the two places the font puts it.
-CIT_ABBREVIATED_LABEL = r"ना\.?\s*प्र(?:र्)?\.?\s*(?:प(?:त्र)?\.?\s*)?(?:र्)?नं?\.?"
+#:
+#: 🛑 **Four more spellings of the same field, all found in published Special Government
+#: Attorney charge sheets (JAW-164).** Together they left 105 citizenship numbers in 16
+#: charge sheets in public text at ``strict``, 45 of them in one (ag/96611):
+#:
+#: - ``ना.प्र.प्र.नं.`` -- the प्रमाणपत्र abbreviated as ``प्र.`` rather than ``प.``; nearly
+#:   all of the 105. The middle field admitted only ``प``/``पत्र``, so ``प्र`` was neither
+#:   and the label stopped short.
+#: - ``ना.प्र.न.न.`` -- the marker typed twice, without anusvara.
+#: - ``ना.प.प.न.`` -- every ``प्र`` written as a bare ``प``. Admitted only in this fully
+#:   dotted form: an undotted ``नापन…`` is an ordinary word stem.
+#: - ``अ.ना.नं.`` -- the अंगीकृत (naturalised) citizenship number, again fully dotted, since
+#:   a bare ``अना`` begins ordinary words.
+CIT_ABBREVIATED_LABEL = (
+    r"(?:ना\.?\s*प्र(?:र्)?\.?\s*(?:(?:प(?:्र|त्र)?|न)\.?\s*)?(?:र्)?नं?"
+    r"|ना\.\s*प\.\s*प\.\s*नं?"
+    r"|अ\.\s*ना\.\s*नं?)"
+    # The marker ends the label: a following letter or vowel sign means the ``न`` was the
+    # start of the next word (``ना.प्र.नियमावली २०८१``), whose year is not an identifier.
+    r"(?![\u0900-\u0963\u0970-\u097f])\.?"
+)
 # 🛑 The danda U+0964 is a FIELD SEPARATOR inside these values as well as being the Nepali
 # sentence terminator, and leaving it out of the value class was a measured privacy defect
 # rather than a cosmetic gap. Nepali writes a date as `२०२०।०४।०१` -- danda between the digit
