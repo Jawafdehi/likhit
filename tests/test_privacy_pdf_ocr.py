@@ -904,3 +904,46 @@ def test_two_locators_finding_different_nearby_values_journal_both():
     glyphs = Locator(glyphs.text, glyphs.rects, ocr=False)
     pdf_module._record_targets(glyphs, page, RedactionMode.STRICT, report, "page", seen)
     assert report.values_removed == 2
+
+
+def _grid(rows: list[list[str]], col_x: list[float]) -> Locator:
+    """A table as a locator: each cell's characters laid out from its column's x."""
+
+    text, rects = "", []
+    for y, row in enumerate(rows):
+        for x0, cell in zip(col_x, row):
+            for i, ch in enumerate(cell + " "):
+                text += ch
+                rects.append(fitz.Rect(x0 + i * 6, y * 20, x0 + i * 6 + 6, y * 20 + 12))
+        text += "\n"
+        rects.append(None)
+    return Locator(text, rects, ocr=True)
+
+
+def test_a_short_value_under_an_id_column_header_is_placed():
+    loc = _grid(
+        [
+            ["शेयरधनीको नाम", "ना.प्र.नं.र प्राप्त गरेको जिल्ला", "शेयर"],
+            # A name long enough that nothing label-like sits within the inline-label
+            # window before the value: only the column header can place it.
+            ["कमल कमल कमल कमल कमल", "४५६७८ ललितपुर", "२०७९"],
+        ],
+        [0, 150, 400],
+    )
+    assert len(locate_value(loc, "४५६७८", approximate=False)) == 1
+    placement = place_guided_values([("TABLE-CITIZENSHIP-NO", "४५६७८ ललितपुर")], [loc])
+    assert placement.placed == 1 and not placement.unplaced
+
+
+def test_a_short_run_outside_the_id_column_is_still_not_placed():
+    loc = _grid(
+        [
+            ["शेयरधनीको नाम", "ना.प्र.नं.र प्राप्त गरेको जिल्ला", "शेयर"],
+            ["कमल कमल कमल कमल कमल", "क ख", "४५६७८"],  # nothing label-like just before
+        ],
+        [0, 150, 400],
+    )
+    assert locate_value(loc, "४५६७८", approximate=False) == []
+    # ...and above the header is not under it.
+    above = _grid([["४५६७८"], ["ना.प्र.नं."]], [150])
+    assert locate_value(above, "४५६७८", approximate=False) == []
