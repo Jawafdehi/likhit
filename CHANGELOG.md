@@ -11,6 +11,11 @@ This file starts at 0.1.8. For earlier releases, see the
 
 ## [Unreleased]
 
+### Fixed
+
+- **Citizenship numbers behind the spelled-out label `नागरिकता प्रशासन नं` are now redacted and counted** (JAW-167, ag/60206). The scanner also counts a value wrapped onto the next line after `नं`, which the remover already took.
+- **A table column headed by a citizenship label now redacts cells that carry the issuing district too** (`ना.प्र.नं.र प्राप्त गरेको जिल्ला` → `| १२३४५/६ ७ ओखलढुंगा |`), with a four-digit floor for old certificates. This applies under a header only; a same-row label still needs a whole-cell value.
+
 ### Added
 
 - **`redact_pdf(..., ocr=True, transcript=...)` / `likhit-redact pdf --ocr --transcript`

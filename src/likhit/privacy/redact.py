@@ -84,7 +84,10 @@ _CIT_LABEL = (
     # reports. The gate in `materials.redaction.residual_classes` asks "what did the scanner
     # still find", so a removal the scanner never counted costs nothing; a detection without
     # a removal is what strands a document.
-    r"(?:नागरिकता(?:को|मा|का|की)?\s*(?:प्रमाणपत्र|प्र\.?)?\s*(?:नम्बर|नं\.?|न\.)?"
+    # ``प्रशासन`` is what the full label reads as in some charge sheets
+    # (``नागरिकता प्रशासन नं ######/##``, ag/60206). Without it the label stopped at
+    # ``नागरिकता`` and the one-word gap could not cross ``प्रशासन नं``.
+    r"(?:नागरिकता(?:को|मा|का|की)?\s*(?:प्रमाणपत्र|प्रशासन|प्र\.?)?\s*(?:नम्बर|नं\.?|न\.)?"
     r"|citizenship(?:\s*certificate)?(?:\s*(?:no\.?|number))?)"
 )
 

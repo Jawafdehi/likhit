@@ -77,6 +77,22 @@ VALUE_ERA = re.compile(
 #: by shape is the prerequisite, and it is not this change.
 VALUE_CELL = re.compile(rf"[{AD}][{AD}\-/\.\s]{{3,24}}[{AD}]")
 
+#: 🛑 **A citizenship column may carry the issuing district in the same cell.** A shareholder
+#: register headed ``ना.प्र.नं.र प्राप्त गरेको जिल्ला`` (document/20260103.7d4b21f2) writes
+#: ``१२३४५/६ ७ ओखलढुंगा``: the number, then the district, in one cell. :data:`VALUE_CELL`
+#: is a whole-cell match, so the district word made every such cell undescribable and the
+#: numbers stayed. Old certificates also run to five digits, under the seven-digit floor.
+#:
+#: ⚠️ This applies ONLY under a citizenship HEADER, never to a same-row label: the header
+#: is the strong evidence that every cell beneath it is an identifier, so the shape may be
+#: looser there. The tail is letters only (up to three words, no digits) so a second
+#: number can never hide in it, and the whole cell -- district included -- is replaced.
+HEADER_CIT_CELL = re.compile(
+    rf"(?P<val>[{AD}](?:[{AD}\-/\.\s]{{0,24}}[{AD}])?)"
+    r"(?:[^\S\n]*[,(-]?[^\S\n]*[\u0900-\u0963\u0970-\u097f]+(?:[^\S\n]+[\u0900-\u0963\u0970-\u097f]+){0,2}\)?)?"
+)
+HEADER_CIT_MIN_DIGITS = 4
+
 #:
 LIMITS = {
     "citizenship": (7, 16),
@@ -195,6 +211,30 @@ def _candidate_shape(cell: str, kind: str) -> CandidateShape | None:
     )
 
 
+def _header_candidate_shape(cell: str, kind: str) -> CandidateShape | None:
+    """The shape of a cell under a header label; see :data:`HEADER_CIT_CELL`."""
+    shape = _candidate_shape(cell, kind)
+    if shape or kind != "citizenship":
+        return shape
+    match = HEADER_CIT_CELL.fullmatch(cell.strip())
+    if not match:
+        return None
+    value = match.group("val")
+    digit_count = sum(ch.isdigit() for ch in value)
+    if not HEADER_CIT_MIN_DIGITS <= digit_count <= LIMITS[kind][1]:
+        return None
+    return CandidateShape(
+        digit_count=digit_count,
+        had_separators=bool(re.search(r"[-/.\s]", value)),
+    )
+
+
+def _evidence_shape(cell: str, item: TypedEvidence) -> CandidateShape | None:
+    if item.mechanism == "header_column":
+        return _header_candidate_shape(cell, item.kind)
+    return _candidate_shape(cell, item.kind)
+
+
 def scan(text: str) -> tuple[list[Target], Counter]:
     """Return physical cells to redact and aggregate refusal counters."""
     typed: dict[tuple[CellRef, str], TypedEvidence] = {}
@@ -212,8 +252,16 @@ def scan(text: str) -> tuple[list[Target], Counter]:
         ref = CellRef(row.line_index, column_index)
         key = (ref, kind)
         typed.setdefault(key, TypedEvidence(kind, mechanism, shape))
+        # The same matcher that recorded the evidence decides protection: a header-backed
+        # five-digit citizenship cell under `नागरिकता नं / जन्म मिति` is ambiguous, not a
+        # date of birth (CodeRabbit on #140).
+        shape_of = (
+            _header_candidate_shape
+            if mechanism == "header_column"
+            else _candidate_shape
+        )
         for context_kind in label_context:
-            if _candidate_shape(row.cells[column_index], context_kind):
+            if shape_of(row.cells[column_index], context_kind):
                 protected_kinds[ref].add(context_kind)
 
     for block in _blocks(text):
@@ -230,7 +278,7 @@ def scan(text: str) -> tuple[list[Target], Counter]:
                 if column_index >= len(row.cells):
                     continue
                 for kind in kinds:
-                    shape = _candidate_shape(row.cells[column_index], kind)
+                    shape = _header_candidate_shape(row.cells[column_index], kind)
                     if shape:
                         record(
                             row,
@@ -353,8 +401,7 @@ def apply_targets(text: str, targets: list[Target]) -> str:
             part_index = logical_start + column_index
             cell = parts[part_index]
             if not any(
-                _candidate_shape(cell, item.kind) == item.shape
-                for item in target.evidence
+                _evidence_shape(cell, item) == item.shape for item in target.evidence
             ):
                 raise AssertionError(f"target value changed at {target.ref}")
 

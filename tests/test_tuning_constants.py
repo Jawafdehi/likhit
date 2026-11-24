@@ -392,6 +392,13 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "OCR re-reads of the written file before refusing. The JAW-167 corpus needed a second round on 2 of 255 raster pages (a box changes the segmentation of its line) and never a third",
     ),
     (
+        "likhit/privacy/redact_tables.py",
+        "HEADER_CIT_MIN_DIGITS",
+    ): (
+        4,
+        "digit floor for a citizenship number under a citizenship COLUMN HEADER: old certificates run to five digits (ओखलढुंगा register, JAW-167), below the seven a same-row label needs; four keeps two- and three-digit serials and share counts out",
+    ),
+    (
         "likhit/privacy/pdf_ocr.py",
         "MAX_SEPARATOR_RUN",
     ): (
