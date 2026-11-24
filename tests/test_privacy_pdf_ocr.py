@@ -738,3 +738,20 @@ def test_a_number_inside_a_longer_number_is_not_an_exact_match():
     assert locate_value(loc, "9851234567", approximate=False) == []
     placement = place_guided_values([("PHONE-NO", "9851234567")], [loc])
     assert placement.placed == 0 and len(placement.unplaced) == 1
+
+
+def test_an_address_inside_a_longer_address_is_not_an_exact_match():
+    loc = _loc("इमेल joann@example.com र ann@exarnple.com")
+    assert locate_value(loc, "ann@example.com", approximate=False) == []
+    assert (
+        locate_value(_loc("ann@example.com.np"), "ann@example.com", approximate=False)
+        == []
+    )
+    assert (
+        len(
+            locate_value(
+                _loc("(ann@example.com)."), "ann@example.com", approximate=False
+            )
+        )
+        == 1
+    )

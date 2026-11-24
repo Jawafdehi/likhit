@@ -299,9 +299,13 @@ def locate_value(
 
     if "@" in value:
         needle, hay = value.strip().lower(), loc.text.lower()
+        # A whole address, not part of a longer one (`ann@` inside `joann@`, or a
+        # domain that continues): only then does a match prove THIS value is placed.
         spans = [
-            (m.start(), m.start() + len(needle))
-            for m in re.finditer(re.escape(needle), hay)
+            (m.start(), m.end())
+            for m in re.finditer(
+                rf"(?<![\w.%+-]){re.escape(needle)}(?![\w-]|\.\w)", hay
+            )
         ]
         if not spans and approximate:
             local = needle.split("@")[0]
