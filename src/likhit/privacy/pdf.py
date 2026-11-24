@@ -659,27 +659,29 @@ def _record_targets(
     mode: RedactionMode,
     report: PdfRedactionReport,
     surface: str,
-    seen: list[tuple[str, fitz.Rect]] | None = None,
+    seen: list[tuple[int, str, fitz.Rect]] | None = None,
 ) -> list[fitz.Rect]:
     """Boxes for every rule hit on a locator's text, journalled like a glyph-page hit.
 
     ``seen`` is shared between the locators of one page: a hit of the same kind over a
-    box already journalled (the glyph layer and OCR agreeing) is burned but not counted
-    again.
+    box another LOCATOR already journalled (the glyph layer and OCR agreeing) is burned
+    but not counted again. Hits of one locator are never merged -- two nearby values
+    whose padded boxes touch are two values.
     """
 
     boxes: list[fitz.Rect] = []
+    mine: list[tuple[int, str, fitz.Rect]] = []
     for target in _targets(loc.text, mode, report.counters):
         rects = pdf_ocr.span_rects(loc, target.start, target.end)
         boxes += rects
         if seen is not None:
+            mine += [(id(loc), target.kind, rect) for rect in rects]
             if any(
-                kind == target.kind and not (rect & other).is_empty
-                for kind, other in seen
+                owner != id(loc) and kind == target.kind and not (rect & other).is_empty
+                for owner, kind, other in seen
                 for rect in rects
             ):
                 continue
-            seen += [(target.kind, rect) for rect in rects]
         report.values_removed += 1
         report.span_shapes.append(
             {
@@ -691,6 +693,8 @@ def _record_targets(
                 "value_had_separators": target.had_separators,
             }
         )
+    if seen is not None:
+        seen += mine
     return boxes
 
 
@@ -742,7 +746,7 @@ def _redact_image_page(
         text, rects = page_glyph_map(page)
         locators.append(pdf_ocr.Locator(text, rects, ocr=False))
     boxes: list[fitz.Rect] = []
-    seen: list[tuple[str, fitz.Rect]] = []
+    seen: list[tuple[int, str, fitz.Rect]] = []
     for loc in locators:
         boxes += _record_targets(loc, page, mode, report, "page", seen)
     if guided:

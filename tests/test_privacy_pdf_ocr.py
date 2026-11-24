@@ -766,7 +766,26 @@ def test_dates_with_dandas_and_values_wrapped_at_a_line_end_still_match():
     )
     wrapped = _loc("(ना.प्र.प.न.२७-०१-७५-\nछ १२३४५,काभ्रे)")
     assert len(locate_value(wrapped, "२७-०१-७५-१२३४५", approximate=False)) == 1
-    # ...but two words between two numbers on one line still keep them apart.
+    # ...not when digits merely end one line and start the next,
+    assert (
+        locate_value(_loc("मो. 98512\n34567 घर"), "9851234567", approximate=False) == []
+    )
+    # ...and two words between two numbers on one line still keep them apart.
     assert (
         locate_value(_loc("२७०१७५ घर नं १२३४५"), "२७०१७५१२३४५", approximate=False) == []
     )
+
+
+def test_two_nearby_hits_of_one_locator_are_two_values_but_agreeing_locators_one():
+    page = fitz.open().new_page()
+    text = "मो. ९८५१२३४५६७, ९८५१२३४५६८ मा"
+    report = pdf_module.PdfRedactionReport()
+    seen: list = []
+    pdf_module._record_targets(
+        _loc(text), page, RedactionMode.STRICT, report, "page", seen
+    )
+    assert report.values_removed == 2  # padded boxes touch; still two numbers
+    glyphs = _loc(text)
+    glyphs = Locator(glyphs.text, glyphs.rects, ocr=False)
+    pdf_module._record_targets(glyphs, page, RedactionMode.STRICT, report, "page", seen)
+    assert report.values_removed == 2  # the glyph layer agreeing adds nothing

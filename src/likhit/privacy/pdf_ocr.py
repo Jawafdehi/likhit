@@ -285,7 +285,8 @@ def _bounded_levenshtein(a: str, b: str, cap: int) -> int:
 #: What may stand between two digits of one written value: whitespace and the
 #: separators IDs, dates and phone numbers are printed with (the danda in
 #: `२०४०।०५।१२`; `|` is how OCR often reads a danda or a slash).
-_SEPARATORS = re.compile(r"[\s\-–/.,:।|]*")
+#: Not a newline: a line break joins two digits only after a printed separator (below).
+_SEPARATORS = re.compile(r"[ \t\-–/.,:।|]*")
 MAX_SEPARATOR_RUN = 3
 
 
@@ -299,8 +300,11 @@ def _joins_one_value(gap: str) -> bool:
 
     if len(gap) <= MAX_SEPARATOR_RUN and _SEPARATORS.fullmatch(gap):
         return True
-    if "\n" in gap and len(gap) <= MAX_SEPARATOR_RUN + 1:
-        return len(_SEPARATORS.sub("", gap)) <= 1
+    # A wrap only after a printed separator (`२७-०१-७५-` / `२०४०।०५।`): a value is broken
+    # at its separators, while `98512\n34567` -- digits ending one line and starting the
+    # next -- is as likely two values as one.
+    if "\n" in gap and len(gap) <= MAX_SEPARATOR_RUN + 1 and gap[0] in "-–/.।|":
+        return len(_SEPARATORS.sub("", gap.replace("\n", ""))) <= 1
     return False
 
 
