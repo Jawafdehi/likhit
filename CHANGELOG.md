@@ -11,6 +11,18 @@ This file starts at 0.1.8. For earlier releases, see the
 
 ## [Unreleased]
 
+### Added
+
+- **`redact_pdf(..., ocr=True, transcript=...)` / `likhit-redact pdf --ocr --transcript`
+  redact scanned and legacy-font pages instead of refusing them** (JAW-167). Scans are
+  located with Tesseract `nep+eng` character boxes and burned into the image pixels with the
+  whole text layer removed; legacy-font pages are replaced by a burned render. Every value
+  the transcript's text redaction removes must be placed exactly on its page or the document
+  is refused, and the written file is re-OCR'd and re-burned until the rules find nothing.
+  On 23 archive PDFs (439 pages) it covered 80 of 84 hand-verified sensitive numbers (the 4
+  misses are shared with the text path) and a fresh OCR read of the outputs found 0 values.
+  New module `likhit.privacy.pdf_ocr`.
+
 ### Fixed
 
 - **Strict redaction now reads four more spellings of the abbreviated citizenship

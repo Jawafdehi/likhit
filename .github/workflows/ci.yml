@@ -108,5 +108,10 @@ jobs:
       # single-file runs do not pay xdist's worker startup. ubuntu-latest is
       # 4 vCPU, so this is ~4 workers: measured 31.4s at -n 4 against 62.6s
       # serial. See the [tool.pytest.ini_options] comment for the full table.
+      # Tesseract + Nepali data, so the real-OCR tests of likhit.privacy.pdf_ocr run here
+      # rather than skip. The stub-locator tests cover the logic without it.
+      - name: Install tesseract (nep)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-nep
+
       - name: Run tests
         run: uv run pytest -n auto

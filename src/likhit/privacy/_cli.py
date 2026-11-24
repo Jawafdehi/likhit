@@ -21,6 +21,7 @@ from pathlib import Path
 
 from .modes import DEFAULT_MODE, RedactionMode
 from .pdf import redact_pdf
+from .pdf_ocr import split_transcript_pages
 from .signals import scan_text
 from .tree import redact_tree
 
@@ -66,6 +67,19 @@ def build_redact_parser() -> argparse.ArgumentParser:
     )
     pdf.add_argument("--journal", type=Path, required=True)
     pdf.add_argument("--dry-run", action="store_true")
+    pdf.add_argument(
+        "--ocr",
+        action="store_true",
+        help="read scanned and legacy-font pages with tesseract (nep+eng) and burn their "
+        "values into the page image instead of refusing the document",
+    )
+    pdf.add_argument(
+        "--transcript",
+        type=Path,
+        help="the document's UNREDACTED likhit transcript (with <!-- likhit:page N --> "
+        "anchors). Every value its text redaction removes must be placed on its page, or "
+        "the document is refused",
+    )
     pdf.add_argument(
         "--mode",
         type=RedactionMode,
@@ -198,7 +212,19 @@ def _pdf(args: argparse.Namespace) -> int:
         print(f"likhit-redact: refusing to overwrite {args.journal}", file=sys.stderr)
         return 2
     try:
-        report = redact_pdf(args.pdf, args.out, mode=args.mode, dry_run=args.dry_run)
+        transcript = (
+            split_transcript_pages(args.transcript.read_text(encoding="utf-8"))
+            if args.transcript
+            else None
+        )
+        report = redact_pdf(
+            args.pdf,
+            args.out,
+            mode=args.mode,
+            dry_run=args.dry_run,
+            ocr=args.ocr,
+            transcript=transcript,
+        )
     except ValueError as exc:
         # Exit 2, the same refusal code `redact` uses: this is "did not run", not "ran and
         # something was skipped". Every raise in `likhit.privacy.pdf` happens before anything
@@ -225,6 +251,9 @@ def _pdf(args: argparse.Namespace) -> int:
     )
     for page_class, count in sorted(report.pages_by_class.items()):
         print(f"  {page_class:10} {count:,}")
+    if report.pages_by_path:
+        paths = ", ".join(f"{k} {v:,}" for k, v in sorted(report.pages_by_path.items()))
+        print(f"  redacted as: {paths}")
     print(f"-> {args.journal}")
 
     # 🛑 Only a dry run can reach here with blocked pages -- the write path refuses them --
@@ -238,6 +267,14 @@ def _pdf(args: argparse.Namespace) -> int:
             f"likhit-redact: {len(report.blocked_pages)} of {report.pages} pages are "
             f"{', '.join(classes)} and cannot be redacted; this document would be REFUSED "
             "without --dry-run. 'values removed' above is not a finding",
+            file=sys.stderr,
+        )
+        return 1
+    # Same reasoning for guided values the pages did not show: the write path refuses them.
+    if report.unplaced:
+        print(
+            f"likhit-redact: {len(report.unplaced)} value(s) the transcript removes could "
+            "not be placed on their page; this document would be REFUSED without --dry-run",
             file=sys.stderr,
         )
         return 1

@@ -290,7 +290,43 @@ value's digits.
 > ASCII email addresses. "No personal data found" on such a page is not a finding, so those
 > pages refuse the document rather than being passed through unchanged. A pure scan refuses
 > for the same reason: it needs bounding-box OCR, which `likhit`'s LLM-vision OCR cannot
-> provide because it returns text without coordinates.
+> provide because it returns text without coordinates. `--ocr` (below) is how those pages
+> are redacted instead of refused.
+
+#### Scans and legacy-font pages: `--ocr`
+
+```bash
+likhit-redact pdf charge-sheet.pdf --out redacted.pdf --journal redaction.json \
+    --mode strict --ocr --transcript charge-sheet.unredacted.md
+```
+
+With `--ocr` (Python: `redact_pdf(..., ocr=True, transcript={page: text})`) every page class
+is handled. It needs the `tesseract` binary with the `nep` and `eng` language data
+(tessdata_best `nep` is what was measured; point `TESSDATA_PREFIX` at it if it is not the
+system default) and refuses to start without them.
+
+- **Scan** (an image covers half the page or more, whatever its text layer claims): Tesseract
+  reads a 300-dpi render and returns a box per character; the boxes of every value are burned
+  into the scan's **pixels**, and the page's **whole** text layer is deleted, since a scanner's
+  invisible OCR layer carries digits nobody has checked.
+- **Legacy-font page**, or a Unicode page whose glyph layer lacks a value the transcript has
+  (a broken ToUnicode map): the page is replaced by a burned 200-dpi render of itself.
+- **Unicode page**: glyphs deleted as before.
+
+`--transcript` is the document's *unredacted* likhit transcript (split on its
+`<!-- likhit:page N -->` anchors). Every value likhit's text redaction removes from a page
+— every pass, the table pass included — must be found **exactly** on that page, or the
+document is refused and the journal's `unplaced` lists the misses (kind and masked shape).
+That is what keeps a published PDF from showing what the published transcript hides; an
+approximate OCR match still gets a box, but never counts as proof. After the save, every
+raster page of the **written** file is OCR'd again and anything the rules still find is
+burned (up to two rounds, then refusal). Changed scans are re-encoded (CCITT for 1-bit,
+JPEG q75 otherwise), because pixel redaction writes them back as lossless Flate.
+
+Measured on 23 archive PDFs (439 pages: AG charge sheets, CIAA press releases, OAG reports;
+JAW-167): 80 of 84 hand-verified sensitive numbers on the JAW-51 gold pages covered, the 4
+misses all shared with the text path; 0 values found by a fresh OCR re-read of the outputs;
+52.8 MB in, 50.9 MB out; about 0.05 s per text page and 19 CPU-seconds per scanned page.
 
 Document metadata, XMP and embedded attachments are scrubbed too — a document redacted only
 where someone looked is worse than one nobody redacted. Saves are always full saves with
