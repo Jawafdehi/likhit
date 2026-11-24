@@ -607,6 +607,18 @@ def _verify(
         _verify_outside_content(doc, mode)
 
 
+def _unrotated_rect(page: fitz.Page) -> fitz.Rect:
+    """The whole page in the coordinates PyMuPDF's drawing and redaction calls use.
+
+    🛑 Not ``page.rect``: on a page with ``/Rotate 90`` or ``270`` that is the *displayed*
+    shape (width and height swapped), while annotations, ``insert_image``, and
+    ``get_image_rects`` work in the unrotated space. A whole-page redaction drawn with
+    ``page.rect`` on a rotated landscape page missed its far corner, leaving text there.
+    """
+
+    return fitz.Rect(0, 0, page.cropbox.width, page.cropbox.height)
+
+
 def _is_image_page(page: fitz.Page) -> bool:
     """Is most of this page one raster -- a scan, whatever its text layer claims?
 
@@ -615,13 +627,14 @@ def _is_image_page(page: fitz.Page) -> bool:
     and the picture is what a reader sees, so the picture is what must be redacted.
     """
 
-    area = abs(page.rect)
+    whole = _unrotated_rect(page)
+    area = abs(whole)
     if not area:
         return False
     covered = 0.0
     for image in page.get_images(full=True):
         for rect in page.get_image_rects(image[0]):
-            covered += abs(rect & page.rect)
+            covered += abs(rect & whole)
     return covered >= IMAGE_PAGE_COVERAGE * area
 
 
@@ -669,7 +682,7 @@ def _second_read(page: fitz.Page) -> Callable[[], pdf_ocr.Locator]:
 def _strip_text_layer(page: fitz.Page) -> None:
     """Delete every glyph on the page and nothing else (images and line art stay)."""
 
-    page.add_redact_annot(page.rect)
+    page.add_redact_annot(_unrotated_rect(page))
     page.apply_redactions(
         images=fitz.PDF_REDACT_IMAGE_NONE,
         graphics=fitz.PDF_REDACT_LINE_ART_NONE,
@@ -726,24 +739,30 @@ def _flatten_page(
         placement = pdf_ocr.place_guided_values(guided, [loc], _second_read(page))
         boxes += placement.boxes
         _record_guided(placement, page, report)
-    render = page.get_pixmap(dpi=FLATTEN_DPI, colorspace=fitz.csGRAY)
-    to_render = page.rotation_matrix * fitz.Matrix(
-        FLATTEN_DPI / 72.0, FLATTEN_DPI / 72.0
-    )
+    # Rendered UNROTATED and inserted upright, so /Rotate keeps doing the turning and the
+    # boxes (already in unrotated space) need no turning. The earlier way -- render the
+    # rotated view, insert it counter-rotated -- clipped 90/270 pages, and after
+    # rewrite_images striped the image of 180/270 pages (measured, PyMuPDF 1.26).
+    rotation = page.rotation
+    page.set_rotation(0)
+    try:
+        render = page.get_pixmap(dpi=FLATTEN_DPI, colorspace=fitz.csGRAY)
+    finally:
+        page.set_rotation(rotation)
+    to_render = fitz.Matrix(FLATTEN_DPI / 72.0, FLATTEN_DPI / 72.0)
     for rect in boxes:
         area = fitz.IRect((rect * to_render).round()) & render.irect
         if not area.is_empty:
             render.set_rect(area, (0,))
-    page.add_redact_annot(page.rect)
+    whole = _unrotated_rect(page)
+    page.add_redact_annot(whole)
     page.apply_redactions(
         images=fitz.PDF_REDACT_IMAGE_REMOVE,
         graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
         text=fitz.PDF_REDACT_TEXT_REMOVE,
     )
     page.clean_contents()
-    # insert_image draws in the page's unrotated space and applies /Rotate on display, so
-    # the render (taken of the rotated view) is inserted with the inverse rotation.
-    page.insert_image(page.rect, stream=render.tobytes("png"), rotate=-page.rotation)
+    page.insert_image(whole, stream=render.tobytes("png"))
     report.rects_applied += len(boxes)
     report.pages_changed += 1
 
@@ -943,8 +962,11 @@ def redact_pdf(
                 if number + 1 in transcript
                 else []
             )
-            if page_class is PageClass.BLANK:
+            if page_class is PageClass.BLANK and number not in image_pages:
                 report.pages_by_path["blank"] += 1
+                # A page with nothing on it cannot show the transcript's values, so the
+                # transcript is not this PDF's: every one of them is unplaced.
+                _record_guided(pdf_ocr.unplaced_all(guided), page, report)
                 continue
             if number in image_pages:
                 _redact_image_page(page, page_class, mode, report, guided)

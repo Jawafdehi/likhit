@@ -442,6 +442,14 @@ def place_guided_values(
     return GuidedPlacement(boxes, placed, unplaced)
 
 
+def unplaced_all(guided: list[tuple[str, str]]) -> GuidedPlacement:
+    """A placement in which nothing was found: for a page that has nothing to read."""
+
+    return GuidedPlacement(
+        boxes=[], placed=0, unplaced=[(kind, _shape(value)) for kind, value in guided]
+    )
+
+
 def _shape(value: str) -> str:
     """A value with every letter and digit masked: what a journal may record about it.
 

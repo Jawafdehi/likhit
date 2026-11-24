@@ -553,3 +553,84 @@ def test_a_transcript_page_the_pdf_does_not_have_refuses(tmp_path, stub_ocr):
             ocr=True,
             transcript={1: PLAIN_LINE, 2: MOBILE_LINE},
         )
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_a_rotated_landscape_legacy_page_is_flattened_whole(
+    tmp_path, stub_ocr, rotation
+):
+    # Text and a mark in the corner that only the UNROTATED page rect covers.
+    doc = fitz.open()
+    page = doc.new_page(width=842, height=595)
+    page.insert_text((72, 90), ";Dks{ g+= (*%!", fontname="helv", fontsize=14)
+    page.insert_text((700, 580), "(*%!@#", fontname="helv", fontsize=14)
+    page.draw_rect(fitz.Rect(780, 540, 842, 595), fill=(0, 0, 0))
+    page.set_rotation(rotation)
+    src = tmp_path / "rotated.pdf"
+    doc.save(src)
+    before = doc[0].get_pixmap(dpi=36, colorspace=fitz.csGRAY)
+    stub_ocr(Locator("", [], ocr=True))
+
+    report = redact_pdf(src, tmp_path / "out.pdf", mode=RedactionMode.STRICT, ocr=True)
+
+    assert report.pages_by_path["flatten"] == 1
+    with fitz.open(tmp_path / "out.pdf") as out:
+        assert out[0].get_text().strip() == ""
+        assert out[0].get_drawings() == []
+        after = out[0].get_pixmap(dpi=36, colorspace=fitz.csGRAY)
+    assert (after.width, after.height) == (before.width, before.height)
+    diff = sum(abs(a - b) for a, b in zip(before.samples, after.samples))
+    assert diff / len(before.samples) < 3, (
+        "the flattened render is misplaced or clipped"
+    )
+
+
+def test_transcript_values_for_a_blank_page_refuse_the_document(tmp_path, stub_ocr):
+    doc = fitz.open()
+    doc.new_page()
+    src = tmp_path / "blank.pdf"
+    doc.save(src)
+    stub_ocr(Locator("", [], ocr=True))
+    transcript = {1: MOBILE_LINE}
+
+    dry = redact_pdf(
+        src,
+        None,
+        mode=RedactionMode.STRICT,
+        dry_run=True,
+        ocr=True,
+        transcript=transcript,
+    )
+    assert [u["kind"] for u in dry.unplaced] == ["PHONE-NO"]
+    with pytest.raises(ValueError, match="could not be placed"):
+        redact_pdf(
+            src,
+            tmp_path / "out.pdf",
+            mode=RedactionMode.STRICT,
+            ocr=True,
+            transcript=transcript,
+        )
+
+
+def test_a_scan_drawn_upside_down_keeps_its_picture(tmp_path, stub_ocr):
+    # Some scanners place the page image with a 180° matrix instead of /Rotate.
+    vec = _vector_page_doc([PLAIN_LINE, MOBILE_LINE])
+    pix = vec[0].get_pixmap(dpi=100, colorspace=fitz.csGRAY)
+    doc = fitz.open()
+    page = doc.new_page(width=vec[0].rect.width, height=vec[0].rect.height)
+    page.insert_image(page.rect, pixmap=pix, rotate=180)
+    src = tmp_path / "flipped.pdf"
+    doc.save(src)
+    before = doc[0].get_pixmap(dpi=36, colorspace=fitz.csGRAY)
+    # The 'OCR' finds the mobile number, so the page is burned and re-encoded. Where the
+    # box lands does not matter here, only that the rest of the picture survives.
+    text, rects = pdf_module.page_glyph_map(vec[0])
+    stub_ocr(Locator(text, rects, ocr=True))
+
+    report = redact_pdf(src, tmp_path / "out.pdf", mode=RedactionMode.STRICT, ocr=True)
+    assert report.pages_changed == 1
+
+    with fitz.open(tmp_path / "out.pdf") as out:
+        after = out[0].get_pixmap(dpi=36, colorspace=fitz.csGRAY)
+    diff = sum(abs(a - b) for a, b in zip(before.samples, after.samples))
+    assert diff / len(before.samples) < 3
