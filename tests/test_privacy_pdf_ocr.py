@@ -884,3 +884,23 @@ def test_a_text_free_inline_scan_is_not_blank_and_is_redacted(tmp_path, stub_ocr
         )
         > 0.9
     )
+
+
+def test_two_locators_finding_different_nearby_values_journal_both():
+    page = fitz.open().new_page()
+    report = pdf_module.PdfRedactionReport()
+    seen: list = []
+    # OCR finds A; the glyph layer finds a different value B right next to it, whose
+    # box the padded OCR box overlaps. Two values, not one.
+    pdf_module._record_targets(
+        _loc("मो. ९८५१२३४५६७ ##########"),
+        page,
+        RedactionMode.STRICT,
+        report,
+        "page",
+        seen,
+    )
+    glyphs = _loc("मो. ########## ९८४१७६५४३२")
+    glyphs = Locator(glyphs.text, glyphs.rects, ocr=False)
+    pdf_module._record_targets(glyphs, page, RedactionMode.STRICT, report, "page", seen)
+    assert report.values_removed == 2

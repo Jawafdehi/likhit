@@ -659,7 +659,7 @@ def _record_targets(
     mode: RedactionMode,
     report: PdfRedactionReport,
     surface: str,
-    seen: list[tuple[int, str, list[fitz.Rect]]] | None = None,
+    seen: list[tuple[int, str, str, list[fitz.Rect]]] | None = None,
 ) -> list[fitz.Rect]:
     """Boxes for every rule hit on a locator's text, journalled like a glyph-page hit.
 
@@ -670,22 +670,26 @@ def _record_targets(
     """
 
     boxes: list[fitz.Rect] = []
-    mine: list[tuple[int, str, list[fitz.Rect]]] = []
+    mine: list[tuple[int, str, str, list[fitz.Rect]]] = []
     for target in _targets(loc.text, mode, report.counters):
         rects = pdf_ocr.span_rects(loc, target.start, target.end)
         boxes += rects
         if seen is not None:
             # One entry per HIT (all its rects): a wrapped hit is one value.
-            mine.append((id(loc), target.kind, rects))
+            # Matched on the VALUE as well as the place: padded boxes of two different
+            # nearby values can overlap, and overlap alone merged them into one.
+            key = pdf_ocr.match_key(loc.text[target.start : target.end])
+            mine.append((id(loc), target.kind, key, rects))
             # One-to-one: the first unclaimed hit of another locator that this one
             # overlaps is the same value; it is claimed (removed) so it cannot also
             # stand for a second, nearby value of this locator.
             match = next(
                 (
                     n
-                    for n, (owner, kind, others) in enumerate(seen)
+                    for n, (owner, kind, other_key, others) in enumerate(seen)
                     if owner != id(loc)
                     and kind == target.kind
+                    and other_key == key
                     and any(not (r & o).is_empty for r in rects for o in others)
                 ),
                 None,
@@ -757,7 +761,7 @@ def _redact_image_page(
         text, rects = page_glyph_map(page)
         locators.append(pdf_ocr.Locator(text, rects, ocr=False))
     boxes: list[fitz.Rect] = []
-    seen: list[tuple[int, str, list[fitz.Rect]]] = []
+    seen: list[tuple[int, str, str, list[fitz.Rect]]] = []
     for loc in locators:
         boxes += _record_targets(loc, page, mode, report, "page", seen)
     if guided:

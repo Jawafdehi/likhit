@@ -474,7 +474,7 @@ def place_guided_values(
     groups: dict[str, tuple[str, str]] = {}
     needed_by_key: Counter[str] = Counter()
     for kind, value in values:
-        key = _match_key(value)
+        key = match_key(value)
         groups.setdefault(key, (kind, value))
         needed_by_key[key] += 1
     for key, needed in needed_by_key.items():
@@ -517,7 +517,7 @@ def place_guided_values(
     return GuidedPlacement(boxes, placed, unplaced)
 
 
-def _match_key(value: str) -> str:
+def match_key(value: str) -> str:
     """The identity locate_value matches on: an address case-folded, else its digits."""
 
     return value.strip().lower() if "@" in value else _digits(value)
