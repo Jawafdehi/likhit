@@ -75,3 +75,25 @@ def test_rerun_is_stable():
     twice, targets, _ = redact_tables.redact_table_text(once)
     assert twice == once
     assert targets == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "नागरिकता नं मिति २०८०/०१/०१",
+        "नागरिकता नं\nमिति २०८०/०१/०१",
+        "नागरिकता प्रशासन नं\nमिति २०८०/०१/०१",
+    ],
+)
+def test_an_issue_date_after_the_marker_is_not_counted(source):
+    # The remover keeps the date (another field's cue ends its gap), so counting it
+    # would hand the residue gate a value no rule clears (CodeRabbit on #140).
+    assert redact_text(source, mode=RedactionMode.STRICT).text == source
+    assert scan_text(source)[0]["citizenship"] == 0
+
+
+def test_a_header_backed_short_cell_under_a_dual_header_is_ambiguous():
+    source = "| नाम | नागरिकता नं / जन्म मिति |\n| राम | १२३४५ |\n"
+    output, targets, _ = redact_tables.redact_table_text(source)
+    assert [t.classification for t in targets] == ["ambiguous_personal_value"]
+    assert "१२३४५" not in output

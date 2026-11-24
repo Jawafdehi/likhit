@@ -252,8 +252,16 @@ def scan(text: str) -> tuple[list[Target], Counter]:
         ref = CellRef(row.line_index, column_index)
         key = (ref, kind)
         typed.setdefault(key, TypedEvidence(kind, mechanism, shape))
+        # The same matcher that recorded the evidence decides protection: a header-backed
+        # five-digit citizenship cell under `नागरिकता नं / जन्म मिति` is ambiguous, not a
+        # date of birth (CodeRabbit on #140).
+        shape_of = (
+            _header_candidate_shape
+            if mechanism == "header_column"
+            else _candidate_shape
+        )
         for context_kind in label_context:
-            if _candidate_shape(row.cells[column_index], context_kind):
+            if shape_of(row.cells[column_index], context_kind):
                 protected_kinds[ref].add(context_kind)
 
     for block in _blocks(text):

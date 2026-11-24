@@ -42,6 +42,7 @@ from .redact import (
     PASSPORT_LABEL_VALUE,
     REFUGEE_ID_LABEL_VALUE,
     VOTER_ID_LABEL_VALUE,
+    _OTHER_FIELD_CUE,
     count_rule_values,
 )
 
@@ -242,7 +243,12 @@ LABELLED = {
         # One line break straight after the marker: extractors wrap `नं` / value onto two
         # lines, and the remover's gap crosses that break, so a count that refused it
         # under-reported residue the remover would have taken (JAW-167, ag/60206).
-        rf"(?:[^\S\n]*\n)?[^\n]{{0,40}}?[{ANY_DIGITS}]{{4,}})",
+        #
+        # 🛑 **Another field's cue ends the reach, on either line** -- the remover's own veto
+        # (`redact._OTHER_FIELD_CUE`). `नागरिकता नं मिति २०८०/०१/०१` is an issue date, which
+        # the remover rightly keeps; counting it handed the gate a residue no rule clears
+        # and withheld the document (CodeRabbit on #140).
+        rf"(?:[^\S\n]*\n)?(?:(?!{_OTHER_FIELD_CUE.pattern})[^\n]){{0,40}}?[{ANY_DIGITS}]{{4,}})",
         # 🛑 **The abbreviated label (`ना.प्र.नं.` and its spellings) is not here: it is
         # counted through its remover, `RULE_COUNTED` below.** A copied 40-character reach
         # counted the date in `ना.प्र.प्र.नं. मिति २०८०/०१/०१`, which the remover's gap
