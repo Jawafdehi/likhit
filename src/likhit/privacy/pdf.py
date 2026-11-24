@@ -630,11 +630,9 @@ def _is_image_page(page: fitz.Page) -> bool:
     whole = _unrotated_rect(page)
     if whole.is_empty:
         return False
-    rects = [
-        rect & whole
-        for image in page.get_images(full=True)
-        for rect in page.get_image_rects(image[0])
-    ]
+    # get_image_info, not get_images: it also lists INLINE images (BI ... EI), which a
+    # scanner may use for the whole page.
+    rects = [fitz.Rect(info["bbox"]) & whole for info in page.get_image_info()]
     rects = [r for r in rects if not r.is_empty]
     if not rects:
         return False
@@ -676,11 +674,21 @@ def _record_targets(
         boxes += rects
         if seen is not None:
             mine += [(id(loc), target.kind, rect) for rect in rects]
-            if any(
-                owner != id(loc) and kind == target.kind and not (rect & other).is_empty
-                for owner, kind, other in seen
-                for rect in rects
-            ):
+            # One-to-one: the first unclaimed hit of another locator that this one
+            # overlaps is the same value; it is claimed (removed) so it cannot also
+            # stand for a second, nearby value of this locator.
+            match = next(
+                (
+                    n
+                    for n, (owner, kind, other) in enumerate(seen)
+                    if owner != id(loc)
+                    and kind == target.kind
+                    and any(not (rect & other).is_empty for rect in rects)
+                ),
+                None,
+            )
+            if match is not None:
+                del seen[match]
                 continue
         report.values_removed += 1
         report.span_shapes.append(
@@ -893,6 +901,9 @@ def _reencode_images(doc: fitz.Document) -> None:
             )
             doc.xref_set_key(xref, "Filter", "/DCTDecode")
             doc.xref_set_key(xref, "DecodeParms", "null")
+            # The pixmap already applied any /Decode inversion; keeping it would invert
+            # the scan a second time.
+            doc.xref_set_key(xref, "Decode", "null")
             doc.xref_set_key(xref, "ColorSpace", "/DeviceGray")
             doc.xref_set_key(xref, "BitsPerComponent", "8")
 

@@ -159,7 +159,9 @@ def ocr_char_locator(
     exe = shutil.which("tesseract")
     if exe is None:
         raise OcrUnavailable("tesseract is not installed")
-    png = page.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY).tobytes("png")
+    # annots=False: the page body is what gets burned; an annotation's text is removed by
+    # the structured sweep, and must not supply placement credit for a body copy.
+    png = page.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY, annots=False).tobytes("png")
     try:
         out = subprocess.run(  # noqa: S603 - fixed argv, image on stdin
             [

@@ -789,3 +789,37 @@ def test_two_nearby_hits_of_one_locator_are_two_values_but_agreeing_locators_one
     glyphs = Locator(glyphs.text, glyphs.rects, ocr=False)
     pdf_module._record_targets(glyphs, page, RedactionMode.STRICT, report, "page", seen)
     assert report.values_removed == 2  # the glyph layer agreeing adds nothing
+
+
+def test_one_ocr_box_cannot_stand_for_two_nearby_glyph_values():
+    page = fitz.open().new_page()
+    report = pdf_module.PdfRedactionReport()
+    seen: list = []
+    # OCR reads the first number; the second is garbled beyond the rules.
+    pdf_module._record_targets(
+        _loc("मो. ९८५१२३४५६७, ९८५१२३#$%६८ मा"),
+        page,
+        RedactionMode.STRICT,
+        report,
+        "page",
+        seen,
+    )
+    assert report.values_removed == 1
+    glyphs = _loc("मो. ९८५१२३४५६७, ९८५१२३४५६८ मा")
+    glyphs = Locator(glyphs.text, glyphs.rects, ocr=False)
+    pdf_module._record_targets(glyphs, page, RedactionMode.STRICT, report, "page", seen)
+    assert report.values_removed == 2
+
+
+def test_an_inline_full_page_image_makes_a_scan():
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=800)
+    page.insert_text((72, 72), "x")  # a content stream to append to
+    xref = page.get_contents()[0]
+    doc.update_stream(
+        xref,
+        doc.xref_stream(xref)
+        + b"\nq 600 0 0 800 0 0 cm BI /W 1 /H 1 /CS /G /BPC 8 ID \x00 EI Q\n",
+    )
+    assert page.get_images(full=True) == []  # the case get_images misses
+    assert pdf_module._is_image_page(page)
