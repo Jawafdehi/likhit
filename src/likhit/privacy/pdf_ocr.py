@@ -404,7 +404,17 @@ def place_guided_values(
     boxes: list[fitz.Rect] = []
     placed = 0
     pending: list[tuple[str, str, int, int]] = []  # kind, value, needed, placed so far
-    for (kind, value), needed in Counter(values).items():
+    # 🛑 Grouped by what MATCHING sees, not by the raw string: `9851234567` and
+    # `९८५-१२३-४५६७` are one needle to locate_value, so as two groups each would credit
+    # the same single occurrence on the page and a garbled second copy would pass.
+    groups: dict[str, tuple[str, str]] = {}
+    needed_by_key: Counter[str] = Counter()
+    for kind, value in values:
+        key = _match_key(value)
+        groups.setdefault(key, (kind, value))
+        needed_by_key[key] += 1
+    for key, needed in needed_by_key.items():
+        kind, value = groups[key]
         exact_counts = []
         for loc in locators:
             spans = locate_value(loc, value, approximate=False)
@@ -440,6 +450,12 @@ def place_guided_values(
             got = min(best, needed)
         unplaced += [(kind, _shape(value))] * (needed - got)
     return GuidedPlacement(boxes, placed, unplaced)
+
+
+def _match_key(value: str) -> str:
+    """The identity locate_value matches on: an address case-folded, else its digits."""
+
+    return value.strip().lower() if "@" in value else _digits(value)
 
 
 def unplaced_all(guided: list[tuple[str, str]]) -> GuidedPlacement:

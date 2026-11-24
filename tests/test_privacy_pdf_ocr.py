@@ -640,3 +640,14 @@ def test_a_scan_drawn_upside_down_keeps_its_picture(tmp_path, stub_ocr):
         after = out[0].get_pixmap(dpi=36, colorspace=fitz.csGRAY)
     diff = sum(abs(a - b) for a, b in zip(before.samples, after.samples))
     assert diff / len(before.samples) < 3
+
+
+def test_one_number_written_two_ways_is_still_two_occurrences_to_place():
+    # The transcript has the mobile twice, once in ASCII digits with dashes; the page
+    # shows one copy legibly and the other garbled. One match cannot place both.
+    page_text = f"मो. {MOBILE} र मो. ९८५१२३४५६१"
+    placement = place_guided_values(
+        [("PHONE-NO", MOBILE), ("PHONE-NO", "985-123-4567")], [_loc(page_text)]
+    )
+    assert placement.placed == 1
+    assert len(placement.unplaced) == 1
