@@ -628,14 +628,29 @@ def _is_image_page(page: fitz.Page) -> bool:
     """
 
     whole = _unrotated_rect(page)
-    area = abs(whole)
-    if not area:
+    if whole.is_empty:
         return False
-    covered = 0.0
-    for image in page.get_images(full=True):
-        for rect in page.get_image_rects(image[0]):
-            covered += abs(rect & whole)
-    return covered >= IMAGE_PAGE_COVERAGE * area
+    rects = [
+        rect & whole
+        for image in page.get_images(full=True)
+        for rect in page.get_image_rects(image[0])
+    ]
+    rects = [r for r in rects if not r.is_empty]
+    if not rects:
+        return False
+    # The UNION of the image areas, on a coarse grid: two coincident 30% images are 30%,
+    # not 60%, while disjoint tiles of one scan still add up.
+    steps = 64
+    dx, dy = whole.width / steps, whole.height / steps
+    covered = sum(
+        any(
+            r.contains(fitz.Point(whole.x0 + (i + 0.5) * dx, whole.y0 + (j + 0.5) * dy))
+            for r in rects
+        )
+        for i in range(steps)
+        for j in range(steps)
+    )
+    return covered >= IMAGE_PAGE_COVERAGE * steps * steps
 
 
 def _record_targets(
@@ -644,12 +659,27 @@ def _record_targets(
     mode: RedactionMode,
     report: PdfRedactionReport,
     surface: str,
+    seen: list[tuple[str, fitz.Rect]] | None = None,
 ) -> list[fitz.Rect]:
-    """Boxes for every rule hit on a locator's text, journalled like a glyph-page hit."""
+    """Boxes for every rule hit on a locator's text, journalled like a glyph-page hit.
+
+    ``seen`` is shared between the locators of one page: a hit of the same kind over a
+    box already journalled (the glyph layer and OCR agreeing) is burned but not counted
+    again.
+    """
 
     boxes: list[fitz.Rect] = []
     for target in _targets(loc.text, mode, report.counters):
-        boxes += pdf_ocr.span_rects(loc, target.start, target.end)
+        rects = pdf_ocr.span_rects(loc, target.start, target.end)
+        boxes += rects
+        if seen is not None:
+            if any(
+                kind == target.kind and not (rect & other).is_empty
+                for kind, other in seen
+                for rect in rects
+            ):
+                continue
+            seen += [(target.kind, rect) for rect in rects]
         report.values_removed += 1
         report.span_shapes.append(
             {
@@ -712,8 +742,9 @@ def _redact_image_page(
         text, rects = page_glyph_map(page)
         locators.append(pdf_ocr.Locator(text, rects, ocr=False))
     boxes: list[fitz.Rect] = []
+    seen: list[tuple[str, fitz.Rect]] = []
     for loc in locators:
-        boxes += _record_targets(loc, page, mode, report, "page")
+        boxes += _record_targets(loc, page, mode, report, "page", seen)
     if guided:
         placement = pdf_ocr.place_guided_values(guided, locators, _second_read(page))
         boxes += placement.boxes
@@ -746,7 +777,9 @@ def _flatten_page(
     rotation = page.rotation
     page.set_rotation(0)
     try:
-        render = page.get_pixmap(dpi=FLATTEN_DPI, colorspace=fitz.csGRAY)
+        # annots=False: an annotation's text is not in the OCR read, so baking it into the
+        # pixels could publish a value nothing checked; the structured sweep removes it.
+        render = page.get_pixmap(dpi=FLATTEN_DPI, colorspace=fitz.csGRAY, annots=False)
     finally:
         page.set_rotation(rotation)
     to_render = fitz.Matrix(FLATTEN_DPI / 72.0, FLATTEN_DPI / 72.0)
@@ -820,6 +853,12 @@ def _reencode_images(doc: fitz.Document) -> None:
     ``PDF_REDACT_IMAGE_PIXELS`` writes a changed image back as lossless Flate: a 5-page
     CCITT/JPEG charge sheet grew from 1.5 MB to 7.4 MB. 1-bit images go back to CCITT and
     gray/colour to JPEG; images that were already lossy are left alone.
+
+    🛑 **8-bit GRAY is re-encoded here, not by ``rewrite_images``.** PyMuPDF 1.27's
+    ``rewrite_images(gray=True)`` writes a 3-component JPEG under the image's 1-component
+    colour space; MuPDF then renders it wrong -- a black block (a burned value, or a scan's
+    solid areas) came back WHITE (measured). A gray pixmap encoded as a gray JPEG and put
+    back with ``replace_image`` renders correctly.
     """
 
     doc.rewrite_images(
@@ -828,8 +867,30 @@ def _reencode_images(doc: fitz.Document) -> None:
         lossless=True,
         bitonal=True,
         color=True,
-        gray=True,
+        gray=False,
     )
+    done: set[int] = set()
+    for page in doc:
+        for xref, smask, _w, _h, bpc, _cs, _alt, _name, filt, *_ in page.get_images(
+            full=True
+        ):
+            if xref in done or smask or bpc != 8 or filt not in ("FlateDecode", ""):
+                continue
+            done.add(xref)
+            pix = fitz.Pixmap(doc, xref)
+            if pix.n != 1 or pix.alpha:
+                continue
+            # The stream swapped in place (no new image object, nothing re-drawn): a gray
+            # JPEG under DeviceGray, the parameters of the Flate stream dropped.
+            doc.update_stream(
+                xref,
+                pix.tobytes("jpeg", jpg_quality=REENCODE_JPEG_QUALITY),
+                compress=False,
+            )
+            doc.xref_set_key(xref, "Filter", "/DCTDecode")
+            doc.xref_set_key(xref, "DecodeParms", "null")
+            doc.xref_set_key(xref, "ColorSpace", "/DeviceGray")
+            doc.xref_set_key(xref, "BitsPerComponent", "8")
 
 
 def redact_pdf(

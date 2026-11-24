@@ -393,6 +393,13 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
     ),
     (
         "likhit/privacy/pdf_ocr.py",
+        "MAX_SEPARATOR_RUN",
+    ): (
+        3,
+        "longest run of separator characters allowed between two digits of one EXACT guided match: covers ' - ' and OCR's doubled spaces in IDs and phone numbers, while two separate fields on a line are a word or more apart and no longer join into one value (CodeRabbit on likhit#138)",
+    ),
+    (
+        "likhit/privacy/pdf_ocr.py",
         "OCR_DPI",
     ): (
         300,

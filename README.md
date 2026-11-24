@@ -313,6 +313,15 @@ system default) and refuses to start without them.
   (a broken ToUnicode map): the page is replaced by a burned 200-dpi render of itself.
 - **Unicode page**: glyphs deleted as before.
 
+To see which values were not placed, before or instead of writing:
+
+```bash
+likhit-redact pdf charge-sheet.pdf --journal unplaced.json --dry-run \
+    --mode strict --ocr --transcript charge-sheet.unredacted.md
+# exit 1 when any value is unplaced; unplaced.json lists page, kind and a fully
+# masked shape for each (never the value)
+```
+
 `--transcript` is the document's *unredacted* likhit transcript (split on its
 `<!-- likhit:page N -->` anchors). Every value likhit's text redaction removes from a page
 — every pass, the table pass included — must be found **exactly** on that page, or the

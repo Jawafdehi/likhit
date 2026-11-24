@@ -282,6 +282,12 @@ def _bounded_levenshtein(a: str, b: str, cap: int) -> int:
     return previous[-1]
 
 
+#: What may stand between two digits of one written value: whitespace and the
+#: separators IDs and phone numbers are printed with.
+_SEPARATORS = re.compile(r"[\s\-–/.,:]*")
+MAX_SEPARATOR_RUN = 3
+
+
 def locate_value(
     loc: Locator, value: str, *, approximate: bool
 ) -> list[tuple[int, int]]:
@@ -319,11 +325,27 @@ def locate_value(
             return bool(_SHORT_VALUE_LABEL.search(loc.text[max(0, start - 25) : start]))
         return True
 
-    spans = [
-        (index[m.start()], index[m.start() + n - 1] + 1)
-        for m in re.finditer(f"(?={re.escape(want)})", stream)
-        if plausible(m.start(), m.start() + n)
-    ]
+    def one_value(a: int, b: int) -> bool:
+        # 🛑 An EXACT match must be one written value: between its digits only the
+        # separators a number is written with, a few at a time. Otherwise two nearby
+        # fields (`१२३४५ ... ६७८९०`) concatenate into the needle in the digit stream,
+        # their boxes are burned, and the real value elsewhere counts as placed.
+        return all(
+            index[i + 1] - index[i] - 1 <= MAX_SEPARATOR_RUN
+            and _SEPARATORS.fullmatch(loc.text[index[i] + 1 : index[i + 1]])
+            for i in range(a, b - 1)
+        )
+
+    spans = []
+    last_end = -1
+    # Non-overlapping, left to right: an exact match counts ONE physical occurrence, and
+    # `989898989898` must not satisfy two required copies of `9898989898`.
+    for m in re.finditer(f"(?={re.escape(want)})", stream):
+        a, b = m.start(), m.start() + n
+        if a < last_end or not (plausible(a, b) and one_value(a, b)):
+            continue
+        spans.append((index[a], index[b - 1] + 1))
+        last_end = b
     if spans or not approximate or n < 4:
         return spans
     cap = max(1, n // 4)
@@ -403,7 +425,13 @@ def place_guided_values(
 
     boxes: list[fitz.Rect] = []
     placed = 0
-    pending: list[tuple[str, str, int, int]] = []  # kind, value, needed, placed so far
+    pending: list[tuple[str, str, int, int]] = []
+    # 🛑 Placement CREDIT comes only from what the page shows. On a scan the glyph layer
+    # (a stale or junk OCR overlay) may put a value where the picture does not; its
+    # matches still get boxes, but only a read of the pixels can prove a value placed.
+    credit = [
+        loc for loc in locators if loc.ocr
+    ] or locators  # kind, value, needed, placed so far
     # 🛑 Grouped by what MATCHING sees, not by the raw string: `9851234567` and
     # `९८५-१२३-४५६७` are one needle to locate_value, so as two groups each would credit
     # the same single occurrence on the page and a garbled second copy would pass.
@@ -420,7 +448,8 @@ def place_guided_values(
             spans = locate_value(loc, value, approximate=False)
             for s, e in spans:
                 boxes += span_rects(loc, s, e)
-            exact_counts.append(len(spans))
+            if loc in credit:
+                exact_counts.append(len(spans))
         got = max(exact_counts, default=0)
         placed += min(got, needed)
         if got >= needed:

@@ -589,6 +589,14 @@ def test_a_rotated_landscape_legacy_page_is_flattened_whole(
     assert diff / len(before.samples) < 3, (
         "the flattened render is misplaced or clipped"
     )
+    # The corner mark itself, wherever this rotation displays it: a clipped corner
+    # moves the whole-page mean by under 2, so it is checked directly.
+    corner = (
+        fitz.Rect(790, 550, 832, 585) * doc[0].rotation_matrix * fitz.Matrix(0.5, 0.5)
+    )
+    for pix in (before, after):
+        x, y = int((corner.x0 + corner.x1) / 2), int((corner.y0 + corner.y1) / 2)
+        assert pix.pixel(x, y)[0] < 80, "the corner mark is gone"
 
 
 def test_transcript_values_for_a_blank_page_refuse_the_document(tmp_path, stub_ocr):
@@ -651,3 +659,69 @@ def test_one_number_written_two_ways_is_still_two_occurrences_to_place():
     )
     assert placement.placed == 1
     assert len(placement.unplaced) == 1
+
+
+def test_one_digit_run_is_one_occurrence_even_when_the_needle_fits_twice():
+    run = _loc("मो. 989898989898")
+    assert len(locate_value(run, "9898989898", approximate=False)) == 1
+    placement = place_guided_values(
+        [("PHONE-NO", "9898989898"), ("PHONE-NO", "9898989898")], [run]
+    )
+    assert placement.placed == 1 and len(placement.unplaced) == 1
+
+
+def test_two_separate_fields_do_not_join_into_an_exact_match():
+    # `98512` and `34567` in neighbouring cells: their digit stream holds the mobile,
+    # but no single value on the page is it.
+    loc = _loc("वडा 98512 घर नं 34567")
+    assert locate_value(loc, "9851234567", approximate=False) == []
+    assert (
+        len(locate_value(_loc("मो. 985-123 4567"), "9851234567", approximate=False))
+        == 1
+    )
+
+
+def test_on_a_scan_only_the_picture_can_place_a_value():
+    # The junk glyph layer has the number; the OCR of the picture does not see it.
+    glyphs = _loc(f"मो. {MOBILE}")
+    glyphs = Locator(glyphs.text, glyphs.rects, ocr=False)
+    picture = _loc("मो. ##########")
+    placement = place_guided_values([("PHONE-NO", MOBILE)], [picture, glyphs])
+    assert placement.placed == 0
+    assert placement.boxes, "the glyph match is still burned"
+
+
+def test_coincident_images_count_their_area_once():
+    pix = fitz.Pixmap(fitz.csGRAY, fitz.IRect(0, 0, 10, 10), 0)
+    top, middle = fitz.Rect(0, 0, 600, 240), fitz.Rect(0, 240, 600, 480)  # 30% each
+
+    def page_with(*areas):
+        page = fitz.open().new_page(width=600, height=800)
+        for area in areas:
+            page.insert_image(area, pixmap=pix, keep_proportion=False)
+        return page
+
+    assert not pdf_module._is_image_page(page_with(top, top))  # one 30% area, twice
+    assert pdf_module._is_image_page(page_with(top, middle))  # disjoint tiles: 60%
+
+
+def test_the_cli_refuses_an_unreadable_transcript_by_path(tmp_path, capsys):
+    from likhit.privacy._cli import main
+
+    data, _loc_ = _scan_of([PLAIN_LINE])
+    src = tmp_path / "scan.pdf"
+    src.write_bytes(data)
+    code = main(
+        [
+            "pdf",
+            str(src),
+            "--journal",
+            str(tmp_path / "j.json"),
+            "--dry-run",
+            "--ocr",
+            "--transcript",
+            str(tmp_path / "missing.md"),
+        ]
+    )
+    assert code == 2
+    assert "missing.md" in capsys.readouterr().err

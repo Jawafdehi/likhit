@@ -21,7 +21,7 @@ from pathlib import Path
 
 from .modes import DEFAULT_MODE, RedactionMode
 from .pdf import redact_pdf
-from .pdf_ocr import split_transcript_pages
+from .pdf_ocr import OcrUnavailable, split_transcript_pages
 from .signals import scan_text
 from .tree import redact_tree
 
@@ -225,7 +225,14 @@ def _pdf(args: argparse.Namespace) -> int:
             ocr=args.ocr,
             transcript=transcript,
         )
-    except ValueError as exc:
+    except OSError as exc:
+        # An unreadable --transcript (or input): named by path, never by content.
+        print(
+            f"likhit-redact: cannot read {exc.filename or 'input'}: {exc.strerror}",
+            file=sys.stderr,
+        )
+        return 2
+    except (ValueError, OcrUnavailable) as exc:
         # Exit 2, the same refusal code `redact` uses: this is "did not run", not "ran and
         # something was skipped". Every raise in `likhit.privacy.pdf` happens before anything
         # is written, so a refusal here never leaves a partial artifact behind.
