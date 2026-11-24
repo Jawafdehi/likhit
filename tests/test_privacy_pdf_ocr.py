@@ -661,13 +661,18 @@ def test_one_number_written_two_ways_is_still_two_occurrences_to_place():
     assert len(placement.unplaced) == 1
 
 
-def test_one_digit_run_is_one_occurrence_even_when_the_needle_fits_twice():
+def test_one_digit_run_never_places_two_copies_of_a_value():
+    # Two copies required; the page shows one run in which the needle fits twice
+    # (overlapping) -- and which, being longer than the value, is not it at all.
     run = _loc("मो. 989898989898")
-    assert len(locate_value(run, "9898989898", approximate=False)) == 1
+    assert len(locate_value(run, "9898989898", approximate=False)) <= 1
     placement = place_guided_values(
         [("PHONE-NO", "9898989898"), ("PHONE-NO", "9898989898")], [run]
     )
-    assert placement.placed == 1 and len(placement.unplaced) == 1
+    assert placement.placed <= 1 and placement.unplaced
+    # Two separate copies are two occurrences.
+    two = _loc("मो. 9898989898 र 9898989898")
+    assert len(locate_value(two, "9898989898", approximate=False)) == 2
 
 
 def test_two_separate_fields_do_not_join_into_an_exact_match():
@@ -725,3 +730,11 @@ def test_the_cli_refuses_an_unreadable_transcript_by_path(tmp_path, capsys):
     )
     assert code == 2
     assert "missing.md" in capsys.readouterr().err
+
+
+def test_a_number_inside_a_longer_number_is_not_an_exact_match():
+    # An account number that happens to contain the mobile, and the real mobile garbled.
+    loc = _loc("खाता नं. 009851234567 मो. 98S1234567")
+    assert locate_value(loc, "9851234567", approximate=False) == []
+    placement = place_guided_values([("PHONE-NO", "9851234567")], [loc])
+    assert placement.placed == 0 and len(placement.unplaced) == 1

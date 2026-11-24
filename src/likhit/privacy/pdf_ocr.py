@@ -325,6 +325,15 @@ def locate_value(
             return bool(_SHORT_VALUE_LABEL.search(loc.text[max(0, start - 25) : start]))
         return True
 
+    def whole_run(a: int, b: int) -> bool:
+        # Not a slice of a longer number: `9851234567` inside `009851234567` (an account)
+        # is not the phone, and crediting it would leave the real, garbled phone unplaced
+        # but counted.
+        start, end = index[a], index[b - 1] + 1
+        before = loc.text[start - 1 : start].translate(_TO_ASCII_DIGITS)
+        after = loc.text[end : end + 1].translate(_TO_ASCII_DIGITS)
+        return not before.isdigit() and not after.isdigit()
+
     def one_value(a: int, b: int) -> bool:
         # 🛑 An EXACT match must be one written value: between its digits only the
         # separators a number is written with, a few at a time. Otherwise two nearby
@@ -342,7 +351,9 @@ def locate_value(
     # `989898989898` must not satisfy two required copies of `9898989898`.
     for m in re.finditer(f"(?={re.escape(want)})", stream):
         a, b = m.start(), m.start() + n
-        if a < last_end or not (plausible(a, b) and one_value(a, b)):
+        if a < last_end or not (
+            plausible(a, b) and one_value(a, b) and whole_run(a, b)
+        ):
             continue
         spans.append((index[a], index[b - 1] + 1))
         last_end = b
