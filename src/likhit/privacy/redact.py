@@ -119,9 +119,12 @@ _CIT_LABEL = (
 #: - ``अ.ना.नं.`` -- the अंगीकृत (naturalised) citizenship number, again fully dotted, since
 #:   a bare ``अना`` begins ordinary words.
 CIT_ABBREVIATED_LABEL = (
-    r"(?:ना\.?\s*प्र(?:र्)?\.?\s*(?:(?:प(?:्र|त्र)?|न)\.?\s*)?(?:र्)?नं?\.?"
-    r"|ना\.\s*प\.\s*प\.\s*नं?\."
-    r"|अ\.\s*ना\.\s*नं?\.)"
+    r"(?:ना\.?\s*प्र(?:र्)?\.?\s*(?:(?:प(?:्र|त्र)?|न)\.?\s*)?(?:र्)?नं?"
+    r"|ना\.\s*प\.\s*प\.\s*नं?"
+    r"|अ\.\s*ना\.\s*नं?)"
+    # The marker ends the label: a following letter or vowel sign means the ``न`` was the
+    # start of the next word (``ना.प्र.नियमावली २०८१``), whose year is not an identifier.
+    r"(?![\u0900-\u0963\u0970-\u097f])\.?"
 )
 # 🛑 The danda U+0964 is a FIELD SEPARATOR inside these values as well as being the Nepali
 # sentence terminator, and leaving it out of the value class was a measured privacy defect

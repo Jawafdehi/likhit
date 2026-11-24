@@ -277,3 +277,38 @@ def test_non_identifiers_are_not_counted_as_residue(span: str) -> None:
     hp, _ = scan_text(span)
     for kind in ("passport", "citizenship", "national_id", "bank_account"):
         assert hp[kind] == 0, kind
+
+
+# CodeRabbit on #137: the scanner counts what the remover removes for the abbreviated
+# label, and the label's marker never swallows the next word's first letter.
+@pytest.mark.parametrize(
+    "span",
+    (
+        "ना.प्र.प्र.नं. मिति २०८०/०१/०१",
+        "ना.प्र.नं. मिति २०८०/०१/०१",
+        "ना.प्र.नियमावली २०८१ को नियम ३",
+        "ना.प्र.प्र.नियमावली २०८१",
+        "ना.प्र.न.नियमावली २०८१",
+    ),
+)
+def test_a_date_or_statute_after_the_abbreviated_label_is_neither_removed_nor_counted(
+    span: str,
+) -> None:
+    redacted, kinds = _strict(span)
+    assert redacted == span
+    assert kinds == []
+    assert scan_text(span)[0]["citizenship"] == 0
+
+
+@pytest.mark.parametrize(
+    ("span", "count"),
+    (
+        ("ना.प्र.नं. ९८७६५४", 1),
+        ("ना.प्र.प्र.नं.:१२३४, जारी जिल्ला: काठमाडौं, जारी मिति: २०८०/०१/०१", 1),
+        ("ना.प्र.नं.\n१२३४५/६७८ जारी", 1),
+    ),
+)
+def test_the_abbreviated_label_value_is_counted_once(span: str, count: int) -> None:
+    assert scan_text(span)[0]["citizenship"] == count
+    redacted, _ = _strict(span)
+    assert scan_text(redacted)[0]["citizenship"] == 0
