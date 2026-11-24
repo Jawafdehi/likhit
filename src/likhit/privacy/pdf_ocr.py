@@ -403,7 +403,7 @@ def place_guided_values(
 
     boxes: list[fitz.Rect] = []
     placed = 0
-    pending: list[tuple[str, str, int]] = []
+    pending: list[tuple[str, str, int, int]] = []  # kind, value, needed, placed so far
     for (kind, value), needed in Counter(values).items():
         exact_counts = []
         for loc in locators:
@@ -419,28 +419,34 @@ def place_guided_values(
             if loc.ocr:
                 for s, e in locate_value(loc, value, approximate=True):
                     boxes += span_rects(loc, s, e)
-        pending.append((kind, value, needed - got))
+        pending.append((kind, value, needed, got))
 
     unplaced = []
-    if pending and second_read is not None:
-        loc2 = second_read()
-        for kind, value, missing in pending:
+    loc2 = second_read() if pending and second_read is not None else None
+    for kind, value, needed, got in pending:
+        if loc2 is not None:
             spans = locate_value(loc2, value, approximate=False)
             for s, e in spans:
                 boxes += span_rects(loc2, s, e)
-            got = min(len(spans), missing)
-            if got < missing:
+            # 🛑 The best of the two reads, never their sum: both reads see the same
+            # page, so one physical occurrence found by each is still one occurrence.
+            # Summing let a value printed twice pass when both reads found only the
+            # same copy and the other was garbled.
+            best = max(got, len(spans))
+            if best < needed:
                 for s, e in locate_value(loc2, value, approximate=True):
                     boxes += span_rects(loc2, s, e)
-            placed += got
-            unplaced += [(kind, _shape(value))] * (missing - got)
-    else:
-        for kind, value, missing in pending:
-            unplaced += [(kind, _shape(value))] * missing
+            placed += min(best, needed) - got
+            got = min(best, needed)
+        unplaced += [(kind, _shape(value))] * (needed - got)
     return GuidedPlacement(boxes, placed, unplaced)
 
 
 def _shape(value: str) -> str:
-    """A value with its digits masked: what a journal may record about it."""
+    """A value with every letter and digit masked: what a journal may record about it.
 
-    return re.sub(r"[0-9०-९]", "#", value)
+    Letters too, not just digits: guided values include e-mail addresses, whose
+    identifying part is letters.
+    """
+
+    return "".join("#" if ch.isalnum() else ch for ch in value)

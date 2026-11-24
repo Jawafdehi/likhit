@@ -883,6 +883,15 @@ def redact_pdf(
                 "document that was never examined"
             )
         report.pages = doc.page_count
+        # A transcript page with no PDF page would have its guided values silently
+        # dropped -- the document would pass without the check this argument exists
+        # for. A mismatched transcript is the wrong transcript; refuse it.
+        outside = sorted(n for n in transcript if not 1 <= n <= doc.page_count)
+        if outside:
+            raise ValueError(
+                f"the transcript has page(s) {outside[:5]} that this {doc.page_count}-page "
+                "PDF does not; refusing rather than ignoring their removed values"
+            )
         # Decided on the INPUT and carried to `_verify`, because redaction can change a
         # page's class -- see that function.
         classes: dict[int, PageClass] = {}

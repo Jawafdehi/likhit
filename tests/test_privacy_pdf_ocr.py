@@ -505,3 +505,51 @@ def test_the_cli_reads_a_transcript_and_exits_1_on_a_dry_run_with_unplaced_value
 
     assert code == 1
     assert "##########" in (tmp_path / "j.json").read_text(encoding="utf-8")
+
+
+def test_two_reads_finding_the_same_copy_do_not_place_a_value_printed_twice():
+    # The transcript has the number twice; both reads find only the FIRST copy (the
+    # second is garbled on both). One occurrence is one occurrence, whoever found it.
+    page_text = f"मो. {MOBILE} र मो. ९८५१२३४५६१"
+    first, second = _loc(page_text), _loc(page_text)
+    placement = place_guided_values(
+        [("PHONE-NO", MOBILE), ("PHONE-NO", MOBILE)], [first], lambda: second
+    )
+    assert placement.placed == 1
+    assert placement.unplaced == [("PHONE-NO", "##########")]
+
+
+def test_an_unplaced_email_is_masked_in_the_journal(tmp_path, stub_ocr):
+    data, loc = _scan_of([PLAIN_LINE])
+    src = tmp_path / "scan.pdf"
+    src.write_bytes(data)
+    stub_ocr(loc)
+    transcript = {1: f"{PLAIN_LINE}\nइमेल: ram.bahadur@example.com\n"}
+
+    dry = redact_pdf(
+        src,
+        None,
+        mode=RedactionMode.STRICT,
+        dry_run=True,
+        ocr=True,
+        transcript=transcript,
+    )
+
+    assert dry.unplaced, dry.unplaced
+    journal = repr(dry.as_dict())
+    assert "ram.bahadur" not in journal and "example" not in journal
+
+
+def test_a_transcript_page_the_pdf_does_not_have_refuses(tmp_path, stub_ocr):
+    data, loc = _scan_of([PLAIN_LINE])
+    src = tmp_path / "scan.pdf"
+    src.write_bytes(data)
+    stub_ocr(loc)
+    with pytest.raises(ValueError, match="does not"):
+        redact_pdf(
+            src,
+            tmp_path / "out.pdf",
+            mode=RedactionMode.STRICT,
+            ocr=True,
+            transcript={1: PLAIN_LINE, 2: MOBILE_LINE},
+        )
