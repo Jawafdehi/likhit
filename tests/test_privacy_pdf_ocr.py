@@ -823,3 +823,64 @@ def test_an_inline_full_page_image_makes_a_scan():
     )
     assert page.get_images(full=True) == []  # the case get_images misses
     assert pdf_module._is_image_page(page)
+
+
+def test_a_wrapped_ocr_hit_is_one_value_against_two_nearby_glyph_values():
+    page = fitz.open().new_page()
+    report = pdf_module.PdfRedactionReport()
+    seen: list = []
+    # The OCR hit wraps (its rects on two lines); each glyph value overlaps one line.
+    ocr_text = "मो. ९८५१२३४५६७ मा"
+    ocr = Locator(
+        ocr_text,
+        [fitz.Rect(i, 0, i + 1, 10) for i in range(9)]
+        + [fitz.Rect(i - 9, 20, i - 8, 30) for i in range(9, len(ocr_text))],
+        ocr=True,
+    )
+    pdf_module._record_targets(ocr, page, RedactionMode.STRICT, report, "page", seen)
+    assert report.values_removed == 1
+    glyph_text = "मो. ९८५१२३४५६७ ९८५१२३४५६८"
+    glyphs = Locator(
+        glyph_text,
+        [fitz.Rect(i, 0, i + 1, 10) for i in range(15)]
+        + [fitz.Rect(i - 15, 20, i - 14, 30) for i in range(15, len(glyph_text))],
+        ocr=False,
+    )
+    pdf_module._record_targets(glyphs, page, RedactionMode.STRICT, report, "page", seen)
+    assert report.values_removed == 2
+
+
+def test_a_text_free_inline_scan_is_not_blank_and_is_redacted(tmp_path, stub_ocr):
+    vec = _vector_page_doc([MOBILE_LINE])
+    text, rects = pdf_module.page_glyph_map(vec[0])
+    pix = vec[0].get_pixmap(dpi=72, colorspace=fitz.csGRAY)
+    doc = fitz.open()
+    page = doc.new_page(width=pix.width, height=pix.height)
+    page.insert_text((1, 1), " ")  # gives the page a content stream; no glyphs
+    xref = page.get_contents()[0]
+    inline = (
+        (
+            f"q {pix.width} 0 0 {pix.height} 0 0 cm BI /W {pix.width} /H {pix.height} "
+            "/CS /G /BPC 8 ID "
+        ).encode()
+        + bytes(pix.samples)
+        + b" EI Q\n"
+    )
+    doc.update_stream(xref, inline)
+    src = tmp_path / "inline.pdf"
+    doc.save(src)
+    assert (
+        pdf_module.classify_text_layer(fitz.open(src)[0])
+        is not pdf_module.PageClass.BLANK
+    )
+    stub_ocr(Locator(text, rects, ocr=True))
+
+    report = redact_pdf(src, tmp_path / "out.pdf", mode=RedactionMode.STRICT, ocr=True)
+
+    assert report.pages_by_path["image"] == 1
+    assert (
+        _black_share(
+            tmp_path / "out.pdf", _value_rect(Locator(text, rects, ocr=False), MOBILE)
+        )
+        > 0.9
+    )

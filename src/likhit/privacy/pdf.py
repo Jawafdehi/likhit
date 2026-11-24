@@ -175,7 +175,9 @@ def classify_text_layer(page: fitz.Page, text: str | None = None) -> PageClass:
     if not text:
         # Images OR vector drawings: a page can carry a scanned stamp as either, and both
         # are ink that may be a signature, a seal or a handwritten number.
-        has_ink = bool(page.get_images(full=True)) or bool(page.get_drawings())
+        # get_image_info, not get_images: an INLINE image (BI ... EI) is ink too, and
+        # get_images does not list it -- a text-free inline scan was called BLANK.
+        has_ink = bool(page.get_image_info()) or bool(page.get_drawings())
         return PageClass.SCANNED if has_ink else PageClass.BLANK
     if (
         len(_TEXT_LAYER_DEVANAGARI.findall(text)) / len(text)
@@ -657,7 +659,7 @@ def _record_targets(
     mode: RedactionMode,
     report: PdfRedactionReport,
     surface: str,
-    seen: list[tuple[int, str, fitz.Rect]] | None = None,
+    seen: list[tuple[int, str, list[fitz.Rect]]] | None = None,
 ) -> list[fitz.Rect]:
     """Boxes for every rule hit on a locator's text, journalled like a glyph-page hit.
 
@@ -668,22 +670,23 @@ def _record_targets(
     """
 
     boxes: list[fitz.Rect] = []
-    mine: list[tuple[int, str, fitz.Rect]] = []
+    mine: list[tuple[int, str, list[fitz.Rect]]] = []
     for target in _targets(loc.text, mode, report.counters):
         rects = pdf_ocr.span_rects(loc, target.start, target.end)
         boxes += rects
         if seen is not None:
-            mine += [(id(loc), target.kind, rect) for rect in rects]
+            # One entry per HIT (all its rects): a wrapped hit is one value.
+            mine.append((id(loc), target.kind, rects))
             # One-to-one: the first unclaimed hit of another locator that this one
             # overlaps is the same value; it is claimed (removed) so it cannot also
             # stand for a second, nearby value of this locator.
             match = next(
                 (
                     n
-                    for n, (owner, kind, other) in enumerate(seen)
+                    for n, (owner, kind, others) in enumerate(seen)
                     if owner != id(loc)
                     and kind == target.kind
-                    and any(not (rect & other).is_empty for rect in rects)
+                    and any(not (r & o).is_empty for r in rects for o in others)
                 ),
                 None,
             )
@@ -754,7 +757,7 @@ def _redact_image_page(
         text, rects = page_glyph_map(page)
         locators.append(pdf_ocr.Locator(text, rects, ocr=False))
     boxes: list[fitz.Rect] = []
-    seen: list[tuple[int, str, fitz.Rect]] = []
+    seen: list[tuple[int, str, list[fitz.Rect]]] = []
     for loc in locators:
         boxes += _record_targets(loc, page, mode, report, "page", seen)
     if guided:
