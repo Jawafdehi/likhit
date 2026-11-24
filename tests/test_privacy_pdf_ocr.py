@@ -160,11 +160,17 @@ def test_a_scanners_junk_text_layer_is_removed_whole(tmp_path, stub_ocr):
     src = tmp_path / "scan.pdf"
     src.write_bytes(data)
     stub_ocr(loc)
+    before = fitz.open(src)[0].get_pixmap(dpi=36, colorspace=fitz.csGRAY)
 
     redact_pdf(src, tmp_path / "out.pdf", mode=RedactionMode.STRICT, ocr=True)
 
     with fitz.open(tmp_path / "out.pdf") as doc:
         assert doc[0].get_text().strip() == ""
+        # ...and only the text: the picture is untouched (no white fill over the scan).
+        after = doc[0].get_pixmap(dpi=36, colorspace=fitz.csGRAY)
+    diff = sum(abs(a - b) for a, b in zip(before.samples, after.samples))
+    assert diff / len(before.samples) < 3
+    assert min(after.samples) < 200, "the scan's ink is gone"
 
 
 def test_without_ocr_a_scan_still_refuses(tmp_path):
