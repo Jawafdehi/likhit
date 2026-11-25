@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 
 import fitz
+from collections import Counter
+
 import pytest
 
 from likhit.privacy import RedactionMode, redact_pdf
@@ -377,7 +379,8 @@ def test_parse_hocr_chars_keeps_lines_words_and_scales_boxes():
 def test_split_transcript_pages_uses_likhits_page_anchors():
     md = "front\n<!-- likhit:page 1 -->\nएक\n<!-- likhit:page 2 -->\nदुई\n"
     assert split_transcript_pages(md) == {1: "\nएक\n", 2: "\nदुई\n"}
-    assert split_transcript_pages("no anchors") == {1: "no anchors"}
+    # No anchors: a whole-document transcript, placed anywhere in the PDF.
+    assert split_transcript_pages("no anchors") == "no anchors"
 
 
 def test_transcript_removed_values_match_the_text_path_and_split_lists():
@@ -947,3 +950,88 @@ def test_a_short_run_outside_the_id_column_is_still_not_placed():
     # ...and above the header is not under it.
     above = _grid([["४५६७८"], ["ना.प्र.नं."]], [150])
     assert locate_value(above, "४५६७८", approximate=False) == []
+
+
+# ------------------------------------------------------------ whole-document transcripts
+def _pages(*docs: fitz.Document) -> fitz.Document:
+    out = fitz.open()
+    for d in docs:
+        out.insert_pdf(d)
+    return out
+
+
+def test_an_unanchored_transcript_places_a_value_on_whatever_page_shows_it(tmp_path):
+    # Production transcripts have no page anchors. The value is on page 3, under a
+    # garbled label the rules miss: only the transcript can place it -- anywhere.
+    doc = _pages(
+        _vector_page_doc([PLAIN_LINE]),
+        _vector_page_doc([PLAIN_LINE]),
+        _vector_page_doc([f"सम्फ्क नं. {MOBILE}"]),
+    )
+    src = tmp_path / "three.pdf"
+    doc.save(src)
+    transcript = split_transcript_pages(f"{PLAIN_LINE}\n\n{MOBILE_LINE}\n")
+
+    report = redact_pdf(
+        src, tmp_path / "out.pdf", mode=RedactionMode.STRICT, transcript=transcript
+    )
+
+    assert report.pages_by_path["vector"] == 3
+    assert report.guided_placed == report.guided_values == 1
+    assert report.unplaced == []
+    with fitz.open(tmp_path / "out.pdf") as out:
+        assert "९८५१" not in out[2].get_text()
+
+
+def test_an_unanchored_transcript_still_needs_every_occurrence_in_the_document(
+    tmp_path,
+):
+    # The transcript has the number twice; the PDF shows it once. One copy is unaccounted
+    # for, so the document is held -- with no page to blame, and no digits in the journal.
+    doc = _pages(_vector_page_doc([PLAIN_LINE]), _vector_page_doc([MOBILE_LINE]))
+    src = tmp_path / "two.pdf"
+    doc.save(src)
+    transcript = f"{MOBILE_LINE}\n\n{MOBILE_LINE}\n"
+
+    dry = redact_pdf(
+        src, None, mode=RedactionMode.STRICT, dry_run=True, transcript=transcript
+    )
+    assert [(u["page"], u["shape"].strip("#")) for u in dry.unplaced] == [(None, "")]
+    assert "९८५" not in repr(dry.as_dict())
+    with pytest.raises(ValueError, match="could not be placed"):
+        redact_pdf(
+            src, tmp_path / "out.pdf", mode=RedactionMode.STRICT, transcript=transcript
+        )
+
+
+def test_an_unanchored_value_the_first_read_misses_is_found_by_the_second(
+    tmp_path, stub_ocr
+):
+    data1, loc1 = _scan_of([PLAIN_LINE])
+    data2, loc2 = _scan_of([f"सम्फ्क नं. {MOBILE}"])
+    src = tmp_path / "scan.pdf"
+    _pages(fitz.open("pdf", data1), fitz.open("pdf", data2)).save(src)
+    reads = Counter()
+
+    def ocr(page, _calls):
+        reads[page.number] += 1
+        if page.number == 0:
+            return _read_what_is_visible(page, loc1)
+        if reads[1] == 1:  # page 2's first read garbles the number
+            return Locator("", [], ocr=True)
+        return _read_what_is_visible(page, loc2)
+
+    stub_ocr(ocr)
+    report = redact_pdf(
+        src,
+        tmp_path / "out.pdf",
+        mode=RedactionMode.STRICT,
+        ocr=True,
+        transcript=f"{PLAIN_LINE}\n{MOBILE_LINE}\n",
+    )
+
+    assert report.unplaced == [] and report.guided_placed == 1
+    assert (
+        _black_share(tmp_path / "out.pdf", _value_rect(loc2, MOBILE), page_no=1) > 0.9
+    )
+    assert _black_share(tmp_path / "out.pdf", _value_rect(loc1, PLAIN_LINE[:4])) < 0.1

@@ -722,6 +722,119 @@ def _record_guided(
         report.unplaced.append({"page": page.number + 1, "kind": kind, "shape": shape})
 
 
+class _Guidance:
+    """The transcript's removed values, and where each must be found.
+
+    A ``{page: text}`` transcript (one with likhit page anchors) is checked PAGE BY PAGE:
+    a value is placed only on the page it belongs to.
+
+    A ``str`` transcript has no anchors -- production's transcripts do not -- so a value
+    may be anywhere. Every page is searched for every value (exact matches only, and
+    without the second read), and the counts are summed across pages: two pages are two
+    physical occurrences. What is still short after that is looked for once more by
+    :meth:`settle`, with the second read on every rasterised page, and only what THAT
+    misses is unplaced. Vector pages are not flattened for a missing value here, as the
+    page-by-page path does: a value absent from a page is the normal case.
+    """
+
+    def __init__(
+        self, transcript: Mapping[int, str] | str, mode: RedactionMode
+    ) -> None:
+        self.mode = mode
+        self.document = isinstance(transcript, str)
+        self.pages: Mapping[int, str] = (
+            {} if isinstance(transcript, str) else transcript
+        )
+        self.values: list[tuple[str, str]] = (
+            pdf_ocr.transcript_removed_values(transcript, mode)
+            if isinstance(transcript, str)
+            else []
+        )
+        self.found: dict[int, pdf_ocr.GuidedPlacement] = {}
+
+    def values_for(self, number: int) -> list[tuple[str, str]]:
+        if self.document:
+            return self.values
+        text = self.pages.get(number + 1)
+        return pdf_ocr.transcript_removed_values(text, self.mode) if text else []
+
+    def locate(
+        self, page: fitz.Page, locators: list[pdf_ocr.Locator], *, second_read: bool
+    ) -> pdf_ocr.GuidedPlacement:
+        guided = self.values_for(page.number)
+        if not guided:
+            return pdf_ocr.GuidedPlacement([], 0, [])
+        if self.document:
+            return pdf_ocr.place_guided_values(
+                guided, locators, approximate_boxes=False
+            )
+        return pdf_ocr.place_guided_values(
+            guided, locators, _second_read(page) if second_read else None
+        )
+
+    def record(
+        self,
+        page: fitz.Page,
+        placement: pdf_ocr.GuidedPlacement,
+        report: PdfRedactionReport,
+    ) -> None:
+        if self.document:
+            self.found[page.number] = placement
+        else:
+            _record_guided(placement, page, report)
+
+    def blank(self, page: fitz.Page, report: PdfRedactionReport) -> None:
+        # Page by page, a blank page cannot show its transcript's values, so the transcript
+        # is not this PDF's: every one is unplaced. Document-level, they are elsewhere.
+        if not self.document:
+            _record_guided(
+                pdf_ocr.unplaced_all(self.values_for(page.number)), page, report
+            )
+
+    def settle(
+        self, doc: fitz.Document, raster_pages: set[int], report: PdfRedactionReport
+    ) -> None:
+        if not self.document or not self.values:
+            return
+        needed: Counter[str] = Counter()
+        sample: dict[str, tuple[str, str]] = {}
+        for kind, value in self.values:
+            key = pdf_ocr.match_key(value)
+            needed[key] += 1
+            sample.setdefault(key, (kind, value))
+        got: Counter[str] = Counter()
+        for placement in self.found.values():
+            got.update(placement.placed_by_key)
+        pending = [key for key in needed if got[key] < needed[key]]
+        if pending and raster_pages:
+            # The second read sees the page AFTER the first burn, so what that burned
+            # cannot be found -- and counted -- twice.
+            reads = {n: _second_read(doc[n])() for n in sorted(raster_pages)}
+            boxes: dict[int, list[fitz.Rect]] = {n: [] for n in reads}
+            for key in pending:
+                value = sample[key][1]
+                for n, loc in reads.items():
+                    spans = pdf_ocr.locate_value(loc, value, approximate=False)
+                    got[key] += len(spans)
+                    for s, e in spans:
+                        boxes[n] += pdf_ocr.span_rects(loc, s, e)
+                if got[key] < needed[key]:
+                    for n, loc in reads.items():
+                        for s, e in pdf_ocr.locate_value(loc, value, approximate=True):
+                            boxes[n] += pdf_ocr.span_rects(loc, s, e)
+            for n, page_boxes in boxes.items():
+                _burn(doc[n], page_boxes)
+                report.rects_applied += len(page_boxes)
+        for key, n_needed in needed.items():
+            placed = min(got[key], n_needed)
+            report.guided_values += n_needed
+            report.guided_placed += placed
+            kind, value = sample[key]
+            report.unplaced += [
+                {"page": None, "kind": kind, "shape": pdf_ocr._shape(value)}
+            ] * (n_needed - placed)
+
+
 def _second_read(page: fitz.Page) -> Callable[[], pdf_ocr.Locator]:
     return lambda: pdf_ocr.ocr_char_locator(
         page, dpi=pdf_ocr.OCR_SECOND_READ_DPI, lang="nep", psm="6"
@@ -751,7 +864,7 @@ def _redact_image_page(
     page_class: PageClass,
     mode: RedactionMode,
     report: PdfRedactionReport,
-    guided: list[tuple[str, str]],
+    guidance: _Guidance,
 ) -> None:
     """A scan: locate by OCR (plus the glyph map if it is Unicode), burn into the pixels,
     then delete the page's whole text layer -- a junk OCR layer carries digits too."""
@@ -764,10 +877,9 @@ def _redact_image_page(
     seen: list[tuple[int, str, str, list[fitz.Rect]]] = []
     for loc in locators:
         boxes += _record_targets(loc, page, mode, report, "page", seen)
-    if guided:
-        placement = pdf_ocr.place_guided_values(guided, locators, _second_read(page))
-        boxes += placement.boxes
-        _record_guided(placement, page, report)
+    placement = guidance.locate(page, locators, second_read=True)
+    boxes += placement.boxes
+    guidance.record(page, placement, report)
     _strip_text_layer(page)
     _burn(page, boxes)
     report.rects_applied += len(boxes)
@@ -778,17 +890,16 @@ def _flatten_page(
     page: fitz.Page,
     mode: RedactionMode,
     report: PdfRedactionReport,
-    guided: list[tuple[str, str]],
+    guidance: _Guidance,
 ) -> None:
     """A vector page whose text cannot be trusted (legacy font, or a Unicode layer missing
     values the transcript has): replace the page by a burned render of itself."""
 
     loc = pdf_ocr.ocr_char_locator(page)
     boxes = _record_targets(loc, page, mode, report, "page")
-    if guided:
-        placement = pdf_ocr.place_guided_values(guided, [loc], _second_read(page))
-        boxes += placement.boxes
-        _record_guided(placement, page, report)
+    placement = guidance.locate(page, [loc], second_read=True)
+    boxes += placement.boxes
+    guidance.record(page, placement, report)
     # Rendered UNROTATED and inserted upright, so /Rotate keeps doing the turning and the
     # boxes (already in unrotated space) need no turning. The earlier way -- render the
     # rotated view, insert it counter-rotated -- clipped 90/270 pages, and after
@@ -922,7 +1033,7 @@ def redact_pdf(
     mode: RedactionMode = DEFAULT_MODE,
     dry_run: bool = False,
     ocr: bool = False,
-    transcript: Mapping[int, str] | None = None,
+    transcript: Mapping[int, str] | str | None = None,
 ) -> PdfRedactionReport:
     """Redact ``source`` into ``destination``, or measure it with ``dry_run``.
 
@@ -936,6 +1047,10 @@ def redact_pdf(
     path removes from it must be placed on the page by an exact match, or the document
     refuses (``report.unplaced`` names them in a dry run). This is what keeps the published
     PDF from showing what the published text hides.
+
+    A ``str`` ``transcript`` is a whole-document transcript with no page anchors (what
+    :func:`~likhit.privacy.pdf_ocr.split_transcript_pages` returns for one): each value
+    must then be placed somewhere in the document, as often as the transcript has it.
     """
 
     if not source.is_file():
@@ -960,7 +1075,7 @@ def redact_pdf(
             "ocr=True needs the tesseract binary with the nep and eng language data; "
             "refusing rather than passing scanned pages through unread"
         )
-    transcript = transcript or {}
+    guidance = _Guidance(transcript or {}, mode)
 
     report = PdfRedactionReport()
     with fitz.open(source) as doc:
@@ -988,7 +1103,7 @@ def redact_pdf(
         # A transcript page with no PDF page would have its guided values silently
         # dropped -- the document would pass without the check this argument exists
         # for. A mismatched transcript is the wrong transcript; refuse it.
-        outside = sorted(n for n in transcript if not 1 <= n <= doc.page_count)
+        outside = sorted(n for n in guidance.pages if not 1 <= n <= doc.page_count)
         if outside:
             raise ValueError(
                 f"the transcript has page(s) {outside[:5]} that this {doc.page_count}-page "
@@ -1040,29 +1155,22 @@ def redact_pdf(
         for page in doc:
             number = page.number
             page_class = classes[number]
-            guided = (
-                pdf_ocr.transcript_removed_values(transcript[number + 1], mode)
-                if number + 1 in transcript
-                else []
-            )
             if page_class is PageClass.BLANK and number not in image_pages:
                 report.pages_by_path["blank"] += 1
-                # A page with nothing on it cannot show the transcript's values, so the
-                # transcript is not this PDF's: every one of them is unplaced.
-                _record_guided(pdf_ocr.unplaced_all(guided), page, report)
+                guidance.blank(page, report)
                 continue
             if number in image_pages:
-                _redact_image_page(page, page_class, mode, report, guided)
+                _redact_image_page(page, page_class, mode, report, guidance)
                 raster_pages.add(number)
                 report.pages_by_path["image"] += 1
                 continue
             if page_class is PageClass.UNICODE:
                 text, rects = page_glyph_map(page)
-                placement = pdf_ocr.place_guided_values(
-                    guided, [pdf_ocr.Locator(text, rects, ocr=False)]
+                placement = guidance.locate(
+                    page, [pdf_ocr.Locator(text, rects, ocr=False)], second_read=False
                 )
-                if not placement.unplaced or not ocr:
-                    _record_guided(placement, page, report)
+                if not placement.unplaced or not ocr or guidance.document:
+                    guidance.record(page, placement, report)
                     removed = _redact_page(page, mode, report, extra=placement.boxes)
                     if removed or placement.boxes:
                         report.pages_changed += 1
@@ -1072,9 +1180,10 @@ def redact_pdf(
                     continue
                 # The glyph layer lacks a value the transcript has (a broken ToUnicode map,
                 # a CID font): the text layer is not the page a reader sees. Flatten it.
-            _flatten_page(page, mode, report, guided)
+            _flatten_page(page, mode, report, guidance)
             raster_pages.add(number)
             report.pages_by_path["flatten"] += 1
+        guidance.settle(doc, raster_pages, report)
 
         # Rule 3. After the pages, because adding redaction annotations puts entries in the
         # same chain this walks -- ours are consumed by `apply_redactions` above, so by here

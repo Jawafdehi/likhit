@@ -35,7 +35,7 @@ import shutil
 import subprocess
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import fitz
 
@@ -205,15 +205,19 @@ def ocr_char_locator(
 
 
 # --------------------------------------------------------------------------- guided values
-def split_transcript_pages(markdown: str) -> dict[int, str]:
+def split_transcript_pages(markdown: str) -> dict[int, str] | str:
     """Split a likhit transcript into ``{page_number: text}`` on its page anchors.
 
-    Text before the first anchor is dropped; a transcript with no anchors maps to page 1.
+    Text before the first anchor is dropped. A transcript with NO anchors is returned
+    unchanged, as a ``str``: it is a whole-document transcript, and :func:`redact_pdf
+    <likhit.privacy.pdf.redact_pdf>` places its values anywhere in the document. Mapping
+    it to page 1 -- as this did -- checked a 40-page document's values against its first
+    page only, and held nearly every real transcript (production's have no anchors).
     """
 
     anchors = list(PAGE_ANCHOR_PATTERN.finditer(markdown))
     if not anchors:
-        return {1: markdown}
+        return markdown
     pages: dict[int, str] = {}
     for i, anchor in enumerate(anchors):
         end = anchors[i + 1].start() if i + 1 < len(anchors) else len(markdown)
@@ -492,21 +496,31 @@ class GuidedPlacement:
     boxes: list
     placed: int
     unplaced: list  # (kind, value-shape) for values with no exact match on any read
+    #: Exact occurrences credited per :func:`match_key`, for document-level guidance,
+    #: which sums them across pages (different pages are different occurrences).
+    placed_by_key: Counter = field(default_factory=Counter)
 
 
 def place_guided_values(
     values: list[tuple[str, str]],
     locators: list[Locator],
     second_read: Callable[[], Locator] | None = None,
+    *,
+    approximate_boxes: bool = True,
 ) -> GuidedPlacement:
     """Box every guided value; count a value placed only on exact matches, per occurrence.
 
     ``second_read`` is a zero-argument callable returning another :class:`Locator`; it is
     only called when some value is not placed exactly by ``locators``.
+
+    ``approximate_boxes=False`` boxes exact matches only. Document-level guidance passes
+    it on its first sweep, where a value missing from a page is the normal case (it is on
+    another page) and fuzzy boxes on every page would black out look-alike numbers.
     """
 
     boxes: list[fitz.Rect] = []
     placed = 0
+    by_key: Counter[str] = Counter()
     pending: list[tuple[str, str, int, int]] = []
     # 🛑 Placement CREDIT comes only from what the page shows. On a scan the glyph layer
     # (a stale or junk OCR overlay) may put a value where the picture does not; its
@@ -534,10 +548,11 @@ def place_guided_values(
                 exact_counts.append(len(spans))
         got = max(exact_counts, default=0)
         placed += min(got, needed)
+        by_key[key] += min(got, needed)
         if got >= needed:
             continue
         for loc in locators:
-            if loc.ocr:
+            if loc.ocr and approximate_boxes:
                 for s, e in locate_value(loc, value, approximate=True):
                     boxes += span_rects(loc, s, e)
         pending.append((kind, value, needed, got))
@@ -558,9 +573,10 @@ def place_guided_values(
                 for s, e in locate_value(loc2, value, approximate=True):
                     boxes += span_rects(loc2, s, e)
             placed += min(best, needed) - got
+            by_key[match_key(value)] += min(best, needed) - got
             got = min(best, needed)
         unplaced += [(kind, _shape(value))] * (needed - got)
-    return GuidedPlacement(boxes, placed, unplaced)
+    return GuidedPlacement(boxes, placed, unplaced, by_key)
 
 
 def match_key(value: str) -> str:
