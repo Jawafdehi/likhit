@@ -1047,3 +1047,40 @@ def test_removed_values_joined_only_by_a_separator_are_split():
     # ...while one value's own separators still keep it whole.
     one = transcript_removed_values("मोबाइल नं. ९८५१-२३४५६७ बुझेको", RedactionMode.STRICT)
     assert [v for _, v in one] == ["९८५१-२३४५६७"]
+
+
+def test_an_unanchored_value_only_the_overlay_found_is_credited_by_the_second_read(
+    tmp_path, stub_ocr
+):
+    # A scan whose Unicode overlay is right: the overlay boxes the number (burned, but
+    # uncredited), the first OCR read misses it. The second read must look at the
+    # ORIGINAL page -- the burned one no longer shows the number to credit.
+    data, loc = _scan_of([f"सम्फ्क नं. {MOBILE}"])
+    scan = fitz.open("pdf", data)
+    page = scan[0]
+    page.insert_font(fontname="dev", fontfile=_font())
+    page.insert_text(
+        (72, 90), f"सम्फ्क नं. {MOBILE}", fontname="dev", fontsize=14, render_mode=3
+    )
+    src = tmp_path / "overlaid.pdf"
+    scan.save(src)
+    reads = Counter()
+
+    def ocr(page, _calls):
+        reads[page.number] += 1
+        if reads[page.number] == 1:  # the first read garbles it
+            return Locator("", [], ocr=True)
+        return _read_what_is_visible(page, loc)
+
+    stub_ocr(ocr)
+    report = redact_pdf(
+        src,
+        tmp_path / "out.pdf",
+        mode=RedactionMode.STRICT,
+        ocr=True,
+        transcript=f"{MOBILE_LINE}\n",
+    )
+
+    assert report.pages_by_path["image"] == 1
+    assert report.unplaced == [] and report.guided_placed == 1
+    assert _black_share(tmp_path / "out.pdf", _value_rect(loc, MOBILE)) > 0.9

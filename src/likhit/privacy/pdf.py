@@ -732,8 +732,8 @@ class _Guidance:
     may be anywhere. Every page is searched for every value (exact matches only, and
     without the second read), and the counts are summed across pages: two pages are two
     physical occurrences. What is still short after that is looked for once more by
-    :meth:`settle`, with the second read on every rasterised page, and only what THAT
-    misses is unplaced. Vector pages are not flattened for a missing value here, as the
+    :meth:`settle`, with the second read of every rasterised page's ORIGINAL, and only
+    what that misses is unplaced. Vector pages are not flattened for a missing value here, as the
     page-by-page path does: a value absent from a page is the normal case.
     """
 
@@ -792,7 +792,11 @@ class _Guidance:
             )
 
     def settle(
-        self, doc: fitz.Document, raster_pages: set[int], report: PdfRedactionReport
+        self,
+        doc: fitz.Document,
+        source: Path,
+        raster_pages: set[int],
+        report: PdfRedactionReport,
     ) -> None:
         if not self.document or not self.values:
             return
@@ -802,23 +806,33 @@ class _Guidance:
             key = pdf_ocr.match_key(value)
             needed[key] += 1
             sample.setdefault(key, (kind, value))
-        got: Counter[str] = Counter()
-        for placement in self.found.values():
-            got.update(placement.placed_by_key)
-        pending = [key for key in needed if got[key] < needed[key]]
+        per_page: dict[int, Counter[str]] = {
+            n: Counter(placement.placed_by_key) for n, placement in self.found.items()
+        }
+
+        def total(key: str) -> int:
+            return sum(counts[key] for counts in per_page.values())
+
+        pending = [key for key in needed if total(key) < needed[key]]
         if pending and raster_pages:
-            # The second read sees the page AFTER the first burn, so what that burned
-            # cannot be found -- and counted -- twice.
-            reads = {n: _second_read(doc[n])() for n in sorted(raster_pages)}
+            # 🛑 The second read is of the ORIGINAL page, not the burned one. A scan's
+            # Unicode overlay boxes a value the first OCR read missed: it is burned, but
+            # uncredited, and re-reading the burned page could never find it -- a
+            # correctly redacted document would refuse. Reading the original instead
+            # sees what pass 1 burned as well, so per page the count is the BEST of the
+            # two reads, never their sum (as in place_guided_values).
+            with fitz.open(source) as original:
+                reads = {n: _second_read(original[n])() for n in sorted(raster_pages)}
             boxes: dict[int, list[fitz.Rect]] = {n: [] for n in reads}
             for key in pending:
                 value = sample[key][1]
                 for n, loc in reads.items():
                     spans = pdf_ocr.locate_value(loc, value, approximate=False)
-                    got[key] += len(spans)
+                    counts = per_page.setdefault(n, Counter())
+                    counts[key] = max(counts[key], len(spans))
                     for s, e in spans:
                         boxes[n] += pdf_ocr.span_rects(loc, s, e)
-                if got[key] < needed[key]:
+                if total(key) < needed[key]:
                     for n, loc in reads.items():
                         for s, e in pdf_ocr.locate_value(loc, value, approximate=True):
                             boxes[n] += pdf_ocr.span_rects(loc, s, e)
@@ -826,7 +840,7 @@ class _Guidance:
                 _burn(doc[n], page_boxes)
                 report.rects_applied += len(page_boxes)
         for key, n_needed in needed.items():
-            placed = min(got[key], n_needed)
+            placed = min(total(key), n_needed)
             report.guided_values += n_needed
             report.guided_placed += placed
             kind, value = sample[key]
@@ -1183,7 +1197,7 @@ def redact_pdf(
             _flatten_page(page, mode, report, guidance)
             raster_pages.add(number)
             report.pages_by_path["flatten"] += 1
-        guidance.settle(doc, raster_pages, report)
+        guidance.settle(doc, source, raster_pages, report)
 
         # Rule 3. After the pages, because adding redaction annotations puts entries in the
         # same chain this walks -- ours are consumed by `apply_redactions` above, so by here
