@@ -1035,3 +1035,15 @@ def test_an_unanchored_value_the_first_read_misses_is_found_by_the_second(
         _black_share(tmp_path / "out.pdf", _value_rect(loc2, MOBILE), page_no=1) > 0.9
     )
     assert _black_share(tmp_path / "out.pdf", _value_rect(loc1, PLAIN_LINE[:4])) < 0.1
+
+
+def test_removed_values_joined_only_by_a_separator_are_split():
+    # Two numbers in adjacent table cells (`|`) or under one label with a slash are
+    # merged by the diff; the separator belongs to neither, so each is placed alone.
+    for sep in (" | ", " / "):
+        text = f"सम्पर्क नं. ९८५१२३४५६७{sep}९८६१२३४५६७ बुझेको"
+        values = transcript_removed_values(text, RedactionMode.STRICT)
+        assert [v for _, v in values] == ["९८५१२३४५६७", "९८६१२३४५६७"], sep
+    # ...while one value's own separators still keep it whole.
+    one = transcript_removed_values("मोबाइल नं. ९८५१-२३४५६७ बुझेको", RedactionMode.STRICT)
+    assert [v for _, v in one] == ["९८५१-२३४५६७"]

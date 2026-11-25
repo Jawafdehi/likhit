@@ -257,8 +257,19 @@ def transcript_removed_values(text: str, mode: RedactionMode) -> list[tuple[str,
         value = text[i1:i2].strip()
         if not kinds or not re.search(r"[0-9०-९@]", value):
             continue
-        parts = [p for p in re.split(r"[,;]\s*|\s+", value) if p]
-        if len(parts) > 1 and all(
+        # A part that is only punctuation is the separator between two values that the
+        # merge above joined -- `98… | 98…` (adjacent table cells), `98… / 98…` -- and
+        # not part of either. Kept, it made the pair one "value" that no page prints
+        # as such: live charge sheets held 28 phone numbers this way.
+        parts = [
+            p
+            for p in re.split(r"[,;]\s*|\s+", value)
+            if "@" in p or any(ch.isalnum() for ch in p)
+        ]
+        if len(kinds) > 1 and len(kinds) == len(parts):
+            # One placeholder per part: the text path removed them as separate values.
+            values.extend(zip(kinds, parts))
+        elif len(parts) > 1 and all(
             "@" in p or len(_digits(p)) >= GUIDED_SHORT_VALUE_DIGITS for p in parts
         ):
             values.extend((kinds[0], p) for p in parts)
