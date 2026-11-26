@@ -15,7 +15,7 @@ from collections import Counter
 
 import pytest
 
-from likhit.privacy import RedactionMode, redact_pdf
+from likhit.privacy import RedactionMode, redact_pdf, redact_text
 from likhit.privacy import pdf as pdf_module
 from likhit.privacy import pdf_ocr
 from likhit.privacy.pdf_ocr import (
@@ -1047,6 +1047,75 @@ def test_removed_values_joined_only_by_a_separator_are_split():
     # ...while one value's own separators still keep it whole.
     one = transcript_removed_values("मोबाइल नं. ९८५१-२३४५६७ बुझेको", RedactionMode.STRICT)
     assert [v for _, v in one] == ["९८५१-२३४५६७"]
+
+
+def test_two_phones_merged_across_a_separator_keep_one_kind_each():
+    # Each phone got its own placeholder in the text, so each is its own guided value,
+    # whatever stands between them: a table cell border, a slash, a comma.
+    for text in (
+        "| फोन | ९८५१२३४५६७ | ९८६१२३४५६७ |",
+        "सम्पर्क नं. ९८५१२३४५६७ | ९८६१२३४५६७ बुझेको",
+        "सम्पर्क नं. ९८५१२३४५६७ / ९८६१२३४५६७ बुझेको",
+        "सम्पर्क नं. ९८५१२३४५६७, ९८६१२३४५६७ बुझेको",
+    ):
+        values = transcript_removed_values(text, RedactionMode.STRICT)
+        assert values == [
+            ("PHONE-NO", "९८५१२३४५६७"),
+            ("PHONE-NO", "९८६१२३४५६७"),
+        ], text
+
+
+def test_one_bank_account_with_a_slash_stays_one_guided_value():
+    # The bank rule removes `१२३४५६ / ७८९०१२` as ONE span (one placeholder). Split at the
+    # slash, its six-digit halves would earn exact credit on unrelated amounts elsewhere.
+    for text in (
+        "खाता नं. १२३४५६ / ७८९०१२",
+        "बैंक खाता नं. १२३४५६ / ७८९०१२ रहेको",
+        "खाता नं. १२३४५६ ७८९०१२ रहेको",
+    ):
+        assert (
+            redact_text(text, mode=RedactionMode.STRICT).text.count("[REDACTED:") == 1
+        )
+        values = transcript_removed_values(text, RedactionMode.STRICT)
+        assert len(values) == 1, text
+        kind, value = values[0]
+        assert kind == "BANK-ACCOUNT-NO"
+        assert _digits_of(value) == "१२३४५६७८९०१२", text
+
+
+def _digits_of(text: str) -> str:
+    return "".join(c for c in text if c in "०१२३४५६७८९")
+
+
+def test_a_fragment_of_one_value_never_earns_credit_on_unrelated_amounts(
+    tmp_path, stub_ocr
+):
+    # OCR misses the account; the page prints its two halves as unrelated amounts. The
+    # account must stay unplaced (the document refuses), not be credited by the amounts.
+    data, loc = _scan_of(["कमल कमल रकम १२३४५६ र ७८९०१२ बुझेको"])
+    src = tmp_path / "scan.pdf"
+    src.write_bytes(data)
+    stub_ocr(loc)
+    transcript = f"{PLAIN_LINE}\nखाता नं. १२३४५६ / ७८९०१२\n"
+
+    dry = redact_pdf(
+        src,
+        None,
+        mode=RedactionMode.STRICT,
+        dry_run=True,
+        ocr=True,
+        transcript=transcript,
+    )
+    assert dry.guided_placed == 0
+    assert [(u["kind"], u["page"]) for u in dry.unplaced] == [("BANK-ACCOUNT-NO", None)]
+    with pytest.raises(ValueError, match="could not be placed"):
+        redact_pdf(
+            src,
+            tmp_path / "out.pdf",
+            mode=RedactionMode.STRICT,
+            ocr=True,
+            transcript=transcript,
+        )
 
 
 def test_an_unanchored_value_only_the_overlay_found_is_credited_by_the_second_read(

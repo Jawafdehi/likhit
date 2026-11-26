@@ -231,8 +231,11 @@ def transcript_removed_values(text: str, mode: RedactionMode) -> list[tuple[str,
 
     Derived by diffing the text against its own redaction, so it covers every pass the text
     path runs -- inline, contact AND the table pass, which the PDF glyph path has no
-    equivalent of -- without restating any rule. A list under one label (``98…, 98…``) is
-    one placeholder in the text and is split here so each item is located on its own.
+    equivalent of -- without restating any rule. Values the diff merges across a
+    separator (``98…, 98…``, ``98… | 98…``) are split so each is located on its own, but
+    only when the text path left one placeholder per value: a span it removed as ONE value
+    (``खाता नं. १२३४५६ / ७८९०१२``) stays whole, never cut into fragments that could match
+    unrelated numbers on the page.
     """
 
     redacted = redact_text(text, mode=mode).text
@@ -257,24 +260,25 @@ def transcript_removed_values(text: str, mode: RedactionMode) -> list[tuple[str,
         value = text[i1:i2].strip()
         if not kinds or not re.search(r"[0-9०-९@]", value):
             continue
-        # A part that is only punctuation is the separator between two values that the
-        # merge above joined -- `98… | 98…` (adjacent table cells), `98… / 98…` -- and
-        # not part of either. Kept, it made the pair one "value" that no page prints
-        # as such: live charge sheets held 28 phone numbers this way.
-        parts = [
-            p
-            for p in re.split(r"[,;]\s*|\s+", value)
-            if "@" in p or any(ch.isalnum() for ch in p)
-        ]
-        if len(kinds) > 1 and len(kinds) == len(parts):
-            # One placeholder per part: the text path removed them as separate values.
-            values.extend(zip(kinds, parts))
-        elif len(parts) > 1 and all(
-            "@" in p or len(_digits(p)) >= GUIDED_SHORT_VALUE_DIGITS for p in parts
-        ):
-            values.extend((kinds[0], p) for p in parts)
-        else:
-            values.append((kinds[0], value))
+        # The placeholder count, not the value's shape, says how many values this is.
+        # Several placeholders: the merge above joined values the text path removed
+        # separately -- `98… | 98…` (adjacent table cells), `98… / 98…`, `98…, 98…` --
+        # and a part that is only punctuation is the separator between them, not part
+        # of either (kept, it made the pair one "value" no page prints: live charge
+        # sheets held 28 phone numbers this way). One placeholder: the text path
+        # removed ONE value (`खाता नं. १२३४५६ / ७८९०१२`), kept whole. Split, its
+        # fragments are short numbers that match unrelated amounts on the page and
+        # earn placement credit while the value itself stays visible.
+        if len(kinds) > 1:
+            parts = [
+                p
+                for p in re.split(r"[,;]\s*|\s+", value)
+                if "@" in p or any(ch.isalnum() for ch in p)
+            ]
+            if len(parts) == len(kinds):
+                values.extend(zip(kinds, parts))
+                continue
+        values.append((kinds[0], value))
     return values
 
 
