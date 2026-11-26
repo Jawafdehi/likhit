@@ -82,6 +82,10 @@ _PLACEHOLDER = re.compile(r"\[REDACTED:([A-Z-]+)\]")
 _SHORT_VALUE_LABEL = re.compile(
     r"(प्र|प\.|नं|न\.|मो|फोन|खाता|ब्या|no|No|NO|#|:|ि|[A-Z][A-Za-z]{1,4}[.,])"
 )
+#: A column header that labels the identifier cells below it (a shareholder register's
+#: `ना.प्र.नं.र प्राप्त गरेको जिल्ला`), as read on the page -- OCR included, which turns the
+#: dots into commas or drops them.
+_ID_COLUMN_HEADER = re.compile(r"ना[.,]?\s*प्र[.,]?\s*नं|नागरिकता|citizenship", re.I)
 _DIGITISH = re.compile(r"[0-9०-९A-Za-z\-/–_|']")
 _TESSERACT_TOKEN = re.compile(
     r"<span class='(ocr_line|ocr_caption|ocr_textfloat|ocr_header|ocrx_word)'"
@@ -342,13 +346,16 @@ def locate_value(
     if n < GUIDED_MIN_DIGITS:
         return []
     stream, index = _digit_stream(loc.text)
+    headers = _column_headers(loc) if n < GUIDED_SHORT_VALUE_DIGITS else []
 
     def plausible(a: int, b: int) -> bool:
         start, end = index[a], index[b - 1] + 1
         if end - start > 3 * n + 12:  # digits scattered over the page: not one value
             return False
         if n < GUIDED_SHORT_VALUE_DIGITS:
-            return bool(_SHORT_VALUE_LABEL.search(loc.text[max(0, start - 25) : start]))
+            return bool(
+                _SHORT_VALUE_LABEL.search(loc.text[max(0, start - 25) : start])
+            ) or _under_a_header(loc, start, end, headers)
         return True
 
     def whole_run(a: int, b: int) -> bool:
@@ -398,6 +405,45 @@ def locate_value(
         taken.append((a, b))
         spans.append((index[a], index[b - 1] + 1))
     return spans
+
+
+def _column_headers(loc: Locator) -> list[fitz.Rect]:
+    """Boxes of the identifier column headers on the page."""
+
+    boxes = []
+    for m in _ID_COLUMN_HEADER.finditer(loc.text):
+        rects = [r for r in loc.rects[m.start() : m.end()] if r is not None]
+        if rects:
+            box = fitz.Rect(rects[0])
+            for r in rects[1:]:
+                box |= r
+            boxes.append(box)
+    return boxes
+
+
+def _under_a_header(
+    loc: Locator, start: int, end: int, headers: list[fitz.Rect]
+) -> bool:
+    """A short value in a TABLE: no label beside it, but an ID column header above it.
+
+    The value must sit below the header and inside its column (its centre within the
+    header's span, widened by half the header's width each side: a header's text is
+    usually narrower than its column). A 4-5 digit run anywhere else on the page --
+    a year, an amount -- is no more placed than before.
+    """
+
+    rects = [r for r in loc.rects[start:end] if r is not None]
+    if not rects or not headers:
+        return False
+    box = fitz.Rect(rects[0])
+    for r in rects[1:]:
+        box |= r
+    centre = (box.x0 + box.x1) / 2
+    for h in headers:
+        slack = h.width / 2
+        if box.y0 >= h.y1 - 1 and h.x0 - slack <= centre <= h.x1 + slack:
+            return True
+    return False
 
 
 def span_rects(loc: Locator, start: int, end: int) -> list[fitz.Rect]:
