@@ -13,6 +13,16 @@ This file starts at 0.1.8. For earlier releases, see the
 
 ### Fixed
 
+- **Four identity-card numbers court orders cite are now redacted at `strict` and counted
+  by the residue check** (JAW-167): a foreign national's citizen registration with their
+  embassy (`भारतीय नागरिक रजिष्ट्रेसन नं.`, new `[REDACTED:FOREIGN-REGISTRATION-NO]`), a
+  driving licence (`सवारी चालक अनुमति पत्र नं.`, new `[REDACTED:DRIVING-LICENCE-NO]`), any
+  other person's identity card (`परिचय पत्र नं.` -- social security, disability, freed
+  Haliya, provident fund, police; new `[REDACTED:IDENTITY-CARD-NO]`), and a Nepali voter
+  card written as digits (`मतदाता परिचय पत्र नं.`, existing `[REDACTED:VOTER-ID-NO]`).
+  Land-deed, company, exam-candidate and case/file registration numbers stay visible, as
+  do a taxpayer card (`करदाता परिचय पत्र नं.`, a PAN) and a blank form's numbered fields.
+
 - **Citizenship numbers behind the spelled-out label `नागरिकता प्रशासन नं` are now redacted and counted** (JAW-167, ag/60206). The scanner also counts a value wrapped onto the next line after `नं`, which the remover already took.
 - **A table column headed by a citizenship label now redacts cells that carry the issuing district too** (`ना.प्र.नं.र प्राप्त गरेको जिल्ला` → `| १२३४५/६ ७ ओखलढुंगा |`), with a four-digit floor for old certificates. This applies under a header only; a same-row label still needs a whole-cell value.
 
