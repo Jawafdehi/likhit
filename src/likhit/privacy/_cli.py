@@ -74,6 +74,14 @@ def build_redact_parser() -> argparse.ArgumentParser:
         "values into the page image instead of refusing the document",
     )
     pdf.add_argument(
+        "--trusted-unicode",
+        action="store_true",
+        help="ONLY for a PDF you rendered yourself from Unicode text (e.g. HTML or "
+        "markdown through Chromium): redact a page with little Devanagari (English) as "
+        "Unicode text instead of refusing it as a legacy-font page. Never for a "
+        "third-party PDF",
+    )
+    pdf.add_argument(
         "--transcript",
         type=Path,
         help="the document's UNREDACTED likhit transcript. Every value its text redaction "
@@ -225,6 +233,7 @@ def _pdf(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             ocr=args.ocr,
             transcript=transcript,
+            trusted_unicode=args.trusted_unicode,
         )
     except OSError as exc:
         # An unreadable --transcript (or input): named by path, never by content.

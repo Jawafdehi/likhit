@@ -294,6 +294,24 @@ value's digits.
 > provide because it returns text without coordinates. `--ocr` (below) is how those pages
 > are redacted instead of refused.
 
+#### PDFs you rendered yourself: `--trusted-unicode`
+
+The Devanagari-ratio test cannot tell an **English** page from a legacy-font one: both are
+Latin codepoints. A PDF the caller produced itself from Unicode text (HTML or markdown
+rendered by Chromium/Gotenberg) is Unicode by construction, so the caller can say so:
+
+```bash
+likhit-redact pdf article.pdf --out redacted.pdf --journal redaction.json \
+    --mode strict --trusted-unicode
+```
+
+(Python: `redact_pdf(..., trusted_unicode=True)`.) A page with little or no Devanagari is
+then redacted as a Unicode page (same detectors, glyph deletion, same verification of the
+written file) instead of refusing. Scanned, blank and image-covered pages are classified
+exactly as without it. The journal records `trusted_unicode` and the pages it changed
+(`trusted_unicode_pages`). 🛑 **Never use it on a third-party PDF**: on a real legacy-font
+page it would publish the identifiers the detectors cannot read.
+
 #### Scans and legacy-font pages: `--ocr`
 
 ```bash

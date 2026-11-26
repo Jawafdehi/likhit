@@ -568,3 +568,166 @@ def test_verification_refuses_when_the_sweep_does_not_run(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="annotation on page 1 still carries"):
         redact_pdf(source, destination, mode=RedactionMode.STRICT)
     assert not destination.exists(), "a refusal writes nothing"
+
+
+# --- trusted_unicode: the caller rendered the PDF itself from Unicode text -------------
+
+#: A synthetic English news paragraph. The person is invented; the mobile number and the
+#: address are made up and follow only the shape the detectors look for.
+ENGLISH_LINES = [
+    "Kathmandu, 12 Mangsir. Sita Kumari Adhikari, a resident of Lalitpur,",
+    "told reporters the land deal was approved without a public hearing.",
+    "She can be reached on mobile 9841234567 or at sita.adhikari@example.com.",
+]
+ENGLISH_MOBILE = "9841234567"
+ENGLISH_EMAIL = "sita.adhikari@example.com"
+
+
+def _make_english_pdf(path) -> None:
+    doc = fitz.open()
+    page = doc.new_page()
+    y = 72.0
+    for line in ENGLISH_LINES:
+        page.insert_text((72, y), line, fontname="helv", fontsize=11)
+        y += 18
+    doc.save(path)
+    doc.close()
+
+
+def test_an_english_page_is_refused_as_legacy_by_default(tmp_path):
+    """The default is unchanged: the ratio cannot tell English from a legacy font."""
+
+    source, out = tmp_path / "english.pdf", tmp_path / "out.pdf"
+    _make_english_pdf(source)
+    with fitz.open(source) as doc:
+        assert classify_text_layer(doc[0]) is PageClass.LEGACY
+
+    with pytest.raises(ValueError, match="legacy"):
+        redact_pdf(source, out, mode=RedactionMode.STRICT)
+    assert not out.exists()
+
+    report = redact_pdf(source, None, mode=RedactionMode.STRICT, dry_run=True)
+    assert report.blocked_pages == [{"page": 1, "page_class": "legacy"}]
+    assert report.values_removed == 0
+    assert report.as_dict()["trusted_unicode"] is False
+    assert report.trusted_unicode_pages == []
+
+
+def test_trusted_unicode_redacts_an_english_page(tmp_path):
+    source, out = tmp_path / "english.pdf", tmp_path / "out.pdf"
+    _make_english_pdf(source)
+    with fitz.open(source) as doc:
+        assert classify_text_layer(doc[0], trusted_unicode=True) is PageClass.UNICODE
+
+    report = redact_pdf(source, out, mode=RedactionMode.STRICT, trusted_unicode=True)
+
+    assert report.blocked_pages == []
+    assert report.pages_by_class == Counter({"unicode": 1})
+    assert report.pages_by_path == Counter({"vector": 1})
+    assert report.values_removed == 2
+    assert sorted(row["kind"] for row in report.span_shapes) == ["email", "mobile"]
+    assert report.rects_applied >= 2
+    journal = report.as_dict()
+    assert journal["trusted_unicode"] is True
+    assert journal["trusted_unicode_pages"] == [1]
+
+    with fitz.open(out) as doc:
+        page = doc[0]
+        text = page.get_text()
+        assert ENGLISH_MOBILE not in text and ENGLISH_EMAIL not in text
+        # The words around the values are kept: glyph deletion, not a flattened page.
+        assert "Sita Kumari Adhikari" in text and "mobile" in text
+        assert not doc[0].get_images()
+        # The removal is visible: black boxes drawn where the values were.
+        fills = [d.get("fill") for d in page.get_drawings()]
+        assert sum(1 for fill in fills if fill == (0.0, 0.0, 0.0)) >= 2
+
+
+def test_trusted_unicode_leaves_a_scanned_page_scanned(tmp_path):
+    """Image-only pages are scans whatever the caller vouches for."""
+
+    source, out = tmp_path / "scan.pdf", tmp_path / "out.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 50, 50))
+    pixmap.set_rect(pixmap.irect, (128, 128, 128))
+    page.insert_image(page.rect, pixmap=pixmap)
+    doc.save(source)
+    doc.close()
+
+    with fitz.open(source) as opened:
+        assert classify_text_layer(opened[0], trusted_unicode=True) is PageClass.SCANNED
+    with pytest.raises(ValueError, match="scanned"):
+        redact_pdf(source, out, mode=RedactionMode.STRICT, trusted_unicode=True)
+    assert not out.exists()
+
+
+def test_trusted_unicode_does_not_trust_a_scanners_latin_ocr_layer(tmp_path):
+    """🛑 A full-page scan with an invisible Latin OCR layer stays LEGACY: trusting that layer
+    would delete glyphs nobody sees while the picture keeps every value."""
+
+    source, out = tmp_path / "scan-ocr.pdf", tmp_path / "out.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 50, 50))
+    pixmap.set_rect(pixmap.irect, (200, 200, 200))
+    page.insert_image(page.rect, pixmap=pixmap)
+    for n, line in enumerate(ENGLISH_LINES):
+        page.insert_text((72, 72 + 18 * n), line, fontname="helv", render_mode=3)
+    doc.save(source)
+    doc.close()
+
+    with fitz.open(source) as opened:
+        assert classify_text_layer(opened[0], trusted_unicode=True) is PageClass.LEGACY
+    with pytest.raises(ValueError, match="legacy"):
+        redact_pdf(source, out, mode=RedactionMode.STRICT, trusted_unicode=True)
+    assert not out.exists()
+
+
+def test_trusted_unicode_does_not_change_a_devanagari_page(tmp_path):
+    source = tmp_path / "unicode.pdf"
+    _make_pdf(source, [CITIZENSHIP_LINE, MOBILE_LINE])
+
+    plain = redact_pdf(source, None, mode=RedactionMode.STRICT, dry_run=True)
+    trusted = redact_pdf(
+        source, None, mode=RedactionMode.STRICT, dry_run=True, trusted_unicode=True
+    )
+
+    assert trusted.pages_by_class == plain.pages_by_class == Counter({"unicode": 1})
+    assert trusted.values_removed == plain.values_removed > 0
+    assert trusted.span_shapes == plain.span_shapes
+    assert trusted.trusted_unicode_pages == []
+
+
+def test_trusted_unicode_keeps_a_blank_page_blank(tmp_path):
+    with fitz.open() as doc:
+        doc.new_page()
+        assert classify_text_layer(doc[0], trusted_unicode=True) is PageClass.BLANK
+
+
+def test_the_cli_passes_trusted_unicode_through(tmp_path):
+    from likhit.privacy._cli import main as redact_main
+
+    import json
+
+    source = tmp_path / "english.pdf"
+    _make_english_pdf(source)
+
+    refused = redact_main(
+        ["pdf", str(source), "--dry-run", "--mode", "strict"]
+        + ["--journal", str(tmp_path / "refused.json")]
+    )
+    assert refused == 1
+
+    out, journal = tmp_path / "out.pdf", tmp_path / "trusted.json"
+    code = redact_main(
+        ["pdf", str(source), "--out", str(out), "--mode", "strict", "--trusted-unicode"]
+        + ["--journal", str(journal)]
+    )
+    assert code == 0
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    assert payload["trusted_unicode"] is True
+    assert payload["trusted_unicode_pages"] == [1]
+    assert payload["values_removed"] == 2
+    with fitz.open(out) as doc:
+        assert ENGLISH_MOBILE not in doc[0].get_text()
