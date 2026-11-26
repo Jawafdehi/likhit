@@ -229,6 +229,9 @@ _NEGATIVES = (
     "करदाता\tपरिचय पत्र नं. ६०१२३४५६७",
     "करदाता\n    परिचय पत्र नं. ६०१२३४५६७",
     "करदाताको \n\t परिचयपत्र नं. ६०१२३४५६७",
+    # A run longer than any fixed window (review on #143).
+    "करदाता" + " " * 64 + "परिचय पत्र नं. ६०१२३४५६७",
+    "करदाता" + "\n" * 3 + " " * 200 + "परिचय पत्र नं. ६०१२३४५६७",
     "करदाता परिचय पत्र नं. ऐन २०५८ आदि",
     # a blank form's numbered field list: the digit after the label is the next field's
     # list number, not a card
