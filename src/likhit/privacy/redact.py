@@ -51,6 +51,9 @@ from .placeholders import (
     BANK_ACCOUNT,
     CITIZENSHIP,
     DATE_OF_BIRTH,
+    DRIVING_LICENCE,
+    FOREIGN_REGISTRATION,
+    IDENTITY_CARD,
     IMEI,
     NATIONAL_ID,
     PASSPORT,
@@ -471,6 +474,162 @@ NATIONAL_ID_LABEL_VALUE = re.compile(
     re.I,
 )
 
+#: A number marker after an identity-card label: ``नं.``, ``नं``, ``न.``, ``नम्बर`` (and the
+#: corpus's ``नंम्बर``/``नम्वर``), with the stray repha some fonts put in front of it
+#: (``र्नं.``, see :data:`CIT_ABBREVIATED_LABEL`).
+#:
+#: ⚠️ The bare, undotted ``नं`` ends with a letter lookahead, or it would match the start
+#: of an ordinary word (``नंगा``) and hand the next number to the rule as a value.
+_ID_CARD_MARKER = r"(?:र्)?(?:नं?म्[बव]र|नं?\.|नं(?![\u0900-\u0963\u0970-\u097f]))"
+
+
+#: The separators an identity-card value may be grouped by (spaces excluded, see below).
+_ID_CARD_SEPARATORS = r"\-–—/"
+
+
+def _id_card_value(lo: int, hi: int) -> str:
+    """An identity-card value: one digit run, grouped only by ``- – — /``.
+
+    A danda is admitted only before a digit, as :func:`_value_window` admits it. Never
+    spaces, so the value cannot join the next figure on the line; refused when it
+    continues as a date or a case number would.
+    """
+
+    return (
+        rf"(?P<val>(?<![{AD}]){_value_window(_ID_CARD_SEPARATORS, lo, hi)})"
+        rf"(?![\-–—/।.][{AD}]){_COUNTED_UNIT}"
+    )
+
+
+#: The run between an identity-card label and its value: whitespace, a colon or an opening
+#: bracket on the label's own line, and at most one line break.
+_ID_CARD_GAP = r"(?P<sep>[^\S\n]*[:ः(]?[^\S\n]*\n?[^\S\n]*)"
+
+#: 🛑 **A Nepali voter ID card number written as digits** -- ``मतदाता परिचय पत्र नं.
+#: ########``. :data:`VOTER_ID_LABEL_VALUE` already matched this label, but only in front of
+#: an Indian EPIC (three letters, seven digits), so every Nepali voter card number -- digits
+#: only -- passed ``strict`` and the residue check. Same class, so the same ``voter_id``
+#: kind and placeholder, with its own digit bounds (:data:`RULE_DIGIT_BOUNDS`).
+#:
+#: ⚠️ The marker is required: ``मतदाता परिचयपत्र`` alone is also the name of the card in
+#: prose (``मतदाता परिचयपत्र वितरण``), and a count follows it there.
+VOTER_ID_DIGITS_LABEL_VALUE = re.compile(
+    r"(?P<label>मतदाता\s*परिचय\s*-?\s*(?:पत्र|कार्ड)(?:को)?\s*"
+    rf"{_ID_CARD_MARKER}){_ID_CARD_GAP}{_id_card_value(4, 14)}",
+)
+
+#: 🛑 **A driving licence number** (``सवारी चालक अनुमति पत्र नं. ##-######``). Court orders
+#: in vehicle and smuggling cases identify the accused driver by it, and nothing removed it.
+#: It is a personal identity-document number of the same class as a passport.
+#:
+#: ⚠️ ``सवारी चालक`` is required: ``अनुमति पत्र`` alone is any permit or licence -- a
+#: teaching licence (``अध्यापन अनुमति पत्र``), a construction or export permit -- which are
+#: professional and business registrations, public by design. The class letters that may
+#: precede the label (``A र B वर्गको सवारी चालक …``) are outside it and kept.
+_DRIVING_LICENCE_LABEL = (
+    r"(?:सवारी\s*-?\s*चालक\s*-?\s*(?:अनुमति\s*-?\s*पत्र|लाइसेन्स)(?:को)?\s*"
+    rf"{_ID_CARD_MARKER}"
+    r"|driv(?:ing|er'?s?)\s*licen[cs]e\s*(?:no(?![a-z])\.?|number))"
+)
+DRIVING_LICENCE_LABEL_VALUE = re.compile(
+    rf"(?P<label>{_DRIVING_LICENCE_LABEL}){_ID_CARD_GAP}{_id_card_value(4, 22)}",
+    re.I,
+)
+
+#: 🛑 **A foreign national's registration number with their embassy** -- a Special Court
+#: money-laundering order identifies an Indian national as ``<name> (भारतीय नागरिक
+#: रजिष्ट्रेसन नं. ####/####, भारतीय राजदूतावास काठमाडौँ, नेपाल)``. It is that person's
+#: identity number, of the same class as the Aadhaar and voter ID numbers the same corpus
+#: carries for Indian nationals, and no rule reached it.
+#:
+#: ⚠️ ``नागरिक`` (citizen) is required in front of ``रजिष्ट्रेसन``. The bare word is how a
+#: land deed (``मालपोत कार्यालय … रजिष्ट्रेशन नं. ####``), a company or firm
+#: (``कम्पनी रजिष्ट्रेसन नं.``) and an exam candidate are numbered -- public registers, or
+#: (exams) an open question this rule does not settle. Every spelling the corpus uses is
+#: admitted: ष/स, स/श, ``रजिस्टे्रशन`` (the e-matra typed before the virama by legacy-font
+#: conversion).
+_FOREIGN_REGISTRATION_LABEL = (
+    r"(?:(?:(?:भारती[यि]|विदेशी)\s*)?नागरिक\s*रजि(?:ष्|स्)?ट(?:्रे|े्र)(?:स|श)न\s*"
+    rf"{_ID_CARD_MARKER}"
+    r"|(?:indian\s*|foreign\s*)?citizen\s*registration\s*(?:no(?![a-z])\.?|number))"
+)
+FOREIGN_REGISTRATION_LABEL_VALUE = re.compile(
+    rf"(?P<label>{_FOREIGN_REGISTRATION_LABEL}){_ID_CARD_GAP}{_id_card_value(2, 22)}",
+    re.I,
+)
+
+#: 🛑 **A personal identity card's number** -- ``परिचय पत्र नं.`` / ``परिचयपत्र नं.``.
+#: Court orders and audit reports cite whatever card identifies a person: a social-security
+#: beneficiary card (``सामाजिक सुरक्षा भत्ता परिचय पत्र नं. #############``), a freed-Haliya
+#: or disability card, a provident-fund card (``कर्मचारी संचय कोषको परिचय पत्र नं.``), a
+#: police ID (``नेपाल प्रहरीको परिचय पत्र नं.########``), an embassy-issued card for a
+#: foreign national (``भारतीय दुतावासबाट जारी भएको परिचय पत्र नं. ####/##``). Measured over
+#: the local corpus, every ``परिचय(-)पत्र`` + number marker with a number behind it was one
+#: person's card; none was a public document number.
+#:
+#: ⚠️ **The number marker is required** -- ``परिचयपत्र वितरण ५०० जना`` is a count -- and the
+#: cards that already have their own class are excluded by the word in front, so a value
+#: is counted under one kind: national ID (``राष्ट्रिय``), refugee card (``शरणार्थी``) and
+#: voter ID (``मतदाता``, ``आयोग(को)``). A letter directly in front (``राष्ट्रियपरिचयपत्र``)
+#: also excludes it; that glued form is the national ID's label.
+#:
+#: 🛑 ``करदाता परिचय पत्र नं.`` (taxpayer identity number) is a **PAN** and is excluded too:
+#: PAN is detected and never removed, by design -- see the ``pan`` note in
+#: :data:`INLINE_RULES`. Taking it here would undo that decision through a side door.
+#:
+#: The floor is three digits (``अपाङ्गता परिचयपत्र नं. ###``, ``भारतीय ना. परिचय पत्र नं.
+#: ###``): the marker is required, so a statute year or a bare count cannot reach it.
+#:
+#: 🛑 **A form's numbered field list is not a card.** A blank identity-document form reads
+#: ``१. कागजातको किसिम २. परिचय पत्र नं. ३. जारी गर्ने कार्यालय``: the "value" behind the
+#: label is the NEXT field's list number. Three-digit list numbers reach the floor, so a
+#: run of at most three digits followed by a full stop (and no digit) is refused -- a card
+#: serial is not written that way, a list number always is.
+#:
+#: The excluded words are matched with up to two spaces or a line break before ``परिचय``
+#: (``आयोग``/``करदाता`` also with ``को``; ``राष्ट्रियको परिचयपत्र`` is not the national ID's
+#: label, so that card stays a generic one rather than nobody's). Python's look-behind is
+#: fixed-width, so the variants are enumerated.
+_IDENTITY_CARD_EXCLUDED = ("राष्ट्रिय", "शरणार्थी", "मतदाता", "आयोग", "करदाता")
+_IDENTITY_CARD_LABEL = (
+    r"(?<![\u0900-\u0963\u0970-\u097f])"
+    + "".join(
+        rf"(?<!{word}{suffix}{space})"
+        for word in _IDENTITY_CARD_EXCLUDED
+        for suffix in (("", "को") if word in ("आयोग", "करदाता") else ("",))
+        for space in ("", " ", "  ", "\n", " \n")
+    )
+    + rf"परिचय\s*-?\s*पत्र(?:को)?\s*{_ID_CARD_MARKER}"
+)
+#: The same exclusion without the fixed-width limit: the excluded word (``को`` allowed on
+#: ``आयोग``/``करदाता``) ending where the whitespace run before the label begins (see
+#: :func:`_identity_card_excluded_before`, which skips the run however long it is).
+#: :func:`_match_values` applies it to every ``identity_card`` match, so a taxpayer
+#: label wrapped with three spaces, a tab or an indented line break stays a PAN (visible) in
+#: the remover, the scanner and the PDF path alike. The look-behinds above are kept as the
+#: cheap first filter; this is the guarantee.
+_IDENTITY_CARD_EXCLUDED_BEFORE = re.compile(
+    r"(?:राष्ट्रिय|शरणार्थी|मतदाता|आयोग(?:को)?|करदाता(?:को)?)\Z"
+)
+IDENTITY_CARD_LABEL_VALUE = re.compile(
+    rf"(?P<label>{_IDENTITY_CARD_LABEL}){_ID_CARD_GAP}"
+    rf"(?![{AD}]{{1,3}}\.(?![{AD}])){_id_card_value(1, 22)}",
+)
+
+
+def _identity_card_excluded_before(match: re.Match[str]) -> bool:
+    """Whether an excluded word sits before this card label, across ANY whitespace run.
+
+    Walks back over the whole whitespace run first (no window to fall out of, however
+    long the run), then tests the word that ends there.
+    """
+    text, i = match.string, match.start()
+    while i > 0 and text[i - 1].isspace():
+        i -= 1
+    # The longest excluded word, `करदाताको`/`राष्ट्रिय`, is well under 16 code points.
+    return bool(_IDENTITY_CARD_EXCLUDED_BEFORE.search(text[max(0, i - 16) : i]))
+
+
 #: 🛑 **A phone's IMEI number** -- fifteen digits that identify one handset, and through it one
 #: person. The JAW-74 verdict lists every phone seized from the accused by IMEI, as
 #: ``IMEI No.###############/###############`` (one per SIM slot), ``IME नम्बर ###…`` and
@@ -886,6 +1045,16 @@ DIGIT_BOUNDS = {
     # A national identity number is ten digits; the window allows one either side for a
     # mistyped digit rather than refusing the value -- a refusal here keeps the identifier.
     "national_id": (9, 11),
+    # A driving licence is a two-digit zone code and a serial (`##-######`) or, on the
+    # smart-card licence, `##-##-########`; the floor keeps a short count out.
+    "driving_licence": (6, 16),
+    # An embassy registration seen as `####/####`; the floor keeps a bare year out, though
+    # the required `नागरिक … नं.` label already does.
+    "foreign_registration": (4, 16),
+    # Cards of many issuers: a disability card is a 3-digit serial (`नं. ###`), a social
+    # security card 13 digits. The required marker is what makes 3 safe -- see the 🛑 on
+    # `RULE_DIGIT_BOUNDS` for why a floor this low needs a marker-only label.
+    "identity_card": (3, 16),
 }
 
 #: Per-RULE bounds that override :data:`DIGIT_BOUNDS` for one pattern of a kind.
@@ -896,6 +1065,9 @@ DIGIT_BOUNDS = {
 #: too, whose marker is optional -- see the 🛑 note on ``DIGIT_BOUNDS["citizenship"]``.
 RULE_DIGIT_BOUNDS: dict[re.Pattern[str], tuple[int, int]] = {
     CITIZENSHIP_ABBREVIATED_LABEL_VALUE: (3, 16),
+    # A Nepali voter card number is all digits (8 on the cards seen); the EPIC rule keeps
+    # its fixed seven digits behind three letters.
+    VOTER_ID_DIGITS_LABEL_VALUE: (6, 12),
 }
 
 #: Years a birth date can plausibly carry, covering both calendars the corpus uses --
@@ -1022,10 +1194,29 @@ INLINE_RULES = (
     # classes. Found on the JAW-73 charge sheet (an Indian national's voter ID and Aadhaar
     # number) and the JAW-74 verdicts (a refugee card number, seized phones' IMEIs).
     ("voter_id", VOTER_ID_LABEL_VALUE, VOTER_ID, RedactionMode.STRICT),
+    ("voter_id", VOTER_ID_DIGITS_LABEL_VALUE, VOTER_ID, RedactionMode.STRICT),
     ("aadhaar", AADHAAR_LABEL_VALUE, AADHAAR, RedactionMode.STRICT),
     ("refugee_id", REFUGEE_ID_LABEL_VALUE, REFUGEE_ID, RedactionMode.STRICT),
     ("imei", IMEI_LABEL_VALUE, IMEI, RedactionMode.STRICT),
     ("national_id", NATIONAL_ID_LABEL_VALUE, NATIONAL_ID, RedactionMode.STRICT),
+    # A driving licence, a foreign national's embassy registration and any other person's
+    # identity card (`परिचय पत्र नं.`): identity-document numbers of the passport's class,
+    # found in Special Court and district court orders. The generic identity card runs
+    # LAST and its label excludes the cards above by the word in front, so a national ID,
+    # refugee or voter card is never also counted as one.
+    (
+        "driving_licence",
+        DRIVING_LICENCE_LABEL_VALUE,
+        DRIVING_LICENCE,
+        RedactionMode.STRICT,
+    ),
+    (
+        "foreign_registration",
+        FOREIGN_REGISTRATION_LABEL_VALUE,
+        FOREIGN_REGISTRATION,
+        RedactionMode.STRICT,
+    ),
+    ("identity_card", IDENTITY_CARD_LABEL_VALUE, IDENTITY_CARD, RedactionMode.STRICT),
 )
 
 #: The tiers that remove a given rule, as a set per mode. Derived from :data:`INLINE_RULES`
@@ -1108,6 +1299,10 @@ def _match_values(match: re.Match[str], kind: str) -> list[tuple[str, int, int]]
     already began with a real label, so the label still decides.
     """
 
+    if match.re is IDENTITY_CARD_LABEL_VALUE and _identity_card_excluded_before(match):
+        # A card with its own class (or a PAN) behind a whitespace run the fixed-width
+        # look-behinds cannot see -- see `_IDENTITY_CARD_EXCLUDED_BEFORE`.
+        return []
     items = RULE_VALUE_ITEMS.get(match.re, VALUE_ITEMS.get(kind))
     found = []
     for name in VALUE_GROUPS:

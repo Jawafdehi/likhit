@@ -134,6 +134,15 @@ IMEI: Final = "[REDACTED:IMEI-NO]"
 #: A Nepali national identity card (``राष्ट्रिय परिचयपत्र``) number, removed at ``strict``
 #: for the same reason as :data:`PASSPORT`.
 NATIONAL_ID: Final = "[REDACTED:NATIONAL-ID-NO]"
+#: Personal identity-document numbers with no class above, each removed at ``strict`` for the
+#: same reason as :data:`PASSPORT`: a driving licence (``सवारी चालक अनुमति पत्र नं.``), a
+#: foreign national's citizen registration with their embassy (``भारतीय नागरिक रजिष्ट्रेसन
+#: नं.``), and any other person's identity card (``परिचय पत्र नं.`` -- social security,
+#: disability, freed-Haliya, provident fund, police). Their own markers rather than a reused
+#: class, so the journal and the residue check say which document it was.
+DRIVING_LICENCE: Final = "[REDACTED:DRIVING-LICENCE-NO]"
+FOREIGN_REGISTRATION: Final = "[REDACTED:FOREIGN-REGISTRATION-NO]"
+IDENTITY_CARD: Final = "[REDACTED:IDENTITY-CARD-NO]"
 
 ALL: Final = (
     CITIZENSHIP,
@@ -153,6 +162,9 @@ ALL: Final = (
     REFUGEE_ID,
     IMEI,
     NATIONAL_ID,
+    DRIVING_LICENCE,
+    FOREIGN_REGISTRATION,
+    IDENTITY_CARD,
 )
 
 #: Matches any registered placeholder.

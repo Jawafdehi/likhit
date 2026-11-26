@@ -182,7 +182,7 @@ result.text, result.journal, result.values_removed
 | `none` | nothing — output is byte-identical to the input |
 | `identifiers` | citizenship numbers, dates of birth |
 | `contact` | the above, plus mobile, landline, email |
-| `strict` *(default)* | the above, plus bank account, age, passport, Nepali national ID card, Indian voter ID and Aadhaar, refugee card, phone IMEI |
+| `strict` *(default)* | the above, plus bank account, age, passport, Nepali national ID card, voter ID (Nepali and Indian) and Aadhaar, refugee card, driving licence, foreign citizen registration, other personal identity cards, phone IMEI |
 
 Measured over the 13 CIAA annual-report transcripts, by tier:
 
@@ -219,8 +219,9 @@ Measured over the 13 CIAA annual-report transcripts, by tier:
 
 That is the distinction the widest tier is built on. `strict` means *remove the personal
 details* — citizenship number, date of birth, phone, email, bank account, age, passport and
-the other identity-document numbers (Nepali national ID card, Indian voter ID and Aadhaar,
-refugee card, phone IMEI) —
+the other identity-document numbers (Nepali national ID card, voter ID and Aadhaar,
+refugee card, driving licence, foreign citizen registration, other personal identity cards,
+phone IMEI) —
 not *remove every identifier*. Data about a **person** goes; data about a **company** stays,
 because in an accountability corpus the company identifiers are the finding.
 
