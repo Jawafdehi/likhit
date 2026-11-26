@@ -35,7 +35,7 @@ import shutil
 import subprocess
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import fitz
 
@@ -205,15 +205,19 @@ def ocr_char_locator(
 
 
 # --------------------------------------------------------------------------- guided values
-def split_transcript_pages(markdown: str) -> dict[int, str]:
+def split_transcript_pages(markdown: str) -> dict[int, str] | str:
     """Split a likhit transcript into ``{page_number: text}`` on its page anchors.
 
-    Text before the first anchor is dropped; a transcript with no anchors maps to page 1.
+    Text before the first anchor is dropped. A transcript with NO anchors is returned
+    unchanged, as a ``str``: it is a whole-document transcript, and :func:`redact_pdf
+    <likhit.privacy.pdf.redact_pdf>` places its values anywhere in the document. Mapping
+    it to page 1 -- as this did -- checked a 40-page document's values against its first
+    page only, and held nearly every real transcript (production's have no anchors).
     """
 
     anchors = list(PAGE_ANCHOR_PATTERN.finditer(markdown))
     if not anchors:
-        return {1: markdown}
+        return markdown
     pages: dict[int, str] = {}
     for i, anchor in enumerate(anchors):
         end = anchors[i + 1].start() if i + 1 < len(anchors) else len(markdown)
@@ -227,8 +231,11 @@ def transcript_removed_values(text: str, mode: RedactionMode) -> list[tuple[str,
 
     Derived by diffing the text against its own redaction, so it covers every pass the text
     path runs -- inline, contact AND the table pass, which the PDF glyph path has no
-    equivalent of -- without restating any rule. A list under one label (``98…, 98…``) is
-    one placeholder in the text and is split here so each item is located on its own.
+    equivalent of -- without restating any rule. Values the diff merges across a
+    separator (``98…, 98…``, ``98… | 98…``) are split so each is located on its own, but
+    only when the text path left one placeholder per value: a span it removed as ONE value
+    (``खाता नं. १२३४५६ / ७८९०१२``) stays whole, never cut into fragments that could match
+    unrelated numbers on the page.
     """
 
     redacted = redact_text(text, mode=mode).text
@@ -253,13 +260,25 @@ def transcript_removed_values(text: str, mode: RedactionMode) -> list[tuple[str,
         value = text[i1:i2].strip()
         if not kinds or not re.search(r"[0-9०-९@]", value):
             continue
-        parts = [p for p in re.split(r"[,;]\s*|\s+", value) if p]
-        if len(parts) > 1 and all(
-            "@" in p or len(_digits(p)) >= GUIDED_SHORT_VALUE_DIGITS for p in parts
-        ):
-            values.extend((kinds[0], p) for p in parts)
-        else:
-            values.append((kinds[0], value))
+        # The placeholder count, not the value's shape, says how many values this is.
+        # Several placeholders: the merge above joined values the text path removed
+        # separately -- `98… | 98…` (adjacent table cells), `98… / 98…`, `98…, 98…` --
+        # and a part that is only punctuation is the separator between them, not part
+        # of either (kept, it made the pair one "value" no page prints: live charge
+        # sheets held 28 phone numbers this way). One placeholder: the text path
+        # removed ONE value (`खाता नं. १२३४५६ / ७८९०१२`), kept whole. Split, its
+        # fragments are short numbers that match unrelated amounts on the page and
+        # earn placement credit while the value itself stays visible.
+        if len(kinds) > 1:
+            parts = [
+                p
+                for p in re.split(r"[,;]\s*|\s+", value)
+                if "@" in p or any(ch.isalnum() for ch in p)
+            ]
+            if len(parts) == len(kinds):
+                values.extend(zip(kinds, parts))
+                continue
+        values.append((kinds[0], value))
     return values
 
 
@@ -492,21 +511,31 @@ class GuidedPlacement:
     boxes: list
     placed: int
     unplaced: list  # (kind, value-shape) for values with no exact match on any read
+    #: Exact occurrences credited per :func:`match_key`, for document-level guidance,
+    #: which sums them across pages (different pages are different occurrences).
+    placed_by_key: Counter = field(default_factory=Counter)
 
 
 def place_guided_values(
     values: list[tuple[str, str]],
     locators: list[Locator],
     second_read: Callable[[], Locator] | None = None,
+    *,
+    approximate_boxes: bool = True,
 ) -> GuidedPlacement:
     """Box every guided value; count a value placed only on exact matches, per occurrence.
 
     ``second_read`` is a zero-argument callable returning another :class:`Locator`; it is
     only called when some value is not placed exactly by ``locators``.
+
+    ``approximate_boxes=False`` boxes exact matches only. Document-level guidance passes
+    it on its first sweep, where a value missing from a page is the normal case (it is on
+    another page) and fuzzy boxes on every page would black out look-alike numbers.
     """
 
     boxes: list[fitz.Rect] = []
     placed = 0
+    by_key: Counter[str] = Counter()
     pending: list[tuple[str, str, int, int]] = []
     # 🛑 Placement CREDIT comes only from what the page shows. On a scan the glyph layer
     # (a stale or junk OCR overlay) may put a value where the picture does not; its
@@ -534,10 +563,11 @@ def place_guided_values(
                 exact_counts.append(len(spans))
         got = max(exact_counts, default=0)
         placed += min(got, needed)
+        by_key[key] += min(got, needed)
         if got >= needed:
             continue
         for loc in locators:
-            if loc.ocr:
+            if loc.ocr and approximate_boxes:
                 for s, e in locate_value(loc, value, approximate=True):
                     boxes += span_rects(loc, s, e)
         pending.append((kind, value, needed, got))
@@ -554,13 +584,15 @@ def place_guided_values(
             # Summing let a value printed twice pass when both reads found only the
             # same copy and the other was garbled.
             best = max(got, len(spans))
-            if best < needed:
+            # The same contract as the first read: approximate boxes only when asked.
+            if best < needed and approximate_boxes:
                 for s, e in locate_value(loc2, value, approximate=True):
                     boxes += span_rects(loc2, s, e)
             placed += min(best, needed) - got
+            by_key[match_key(value)] += min(best, needed) - got
             got = min(best, needed)
         unplaced += [(kind, _shape(value))] * (needed - got)
-    return GuidedPlacement(boxes, placed, unplaced)
+    return GuidedPlacement(boxes, placed, unplaced, by_key)
 
 
 def match_key(value: str) -> str:

@@ -11,9 +11,11 @@ from __future__ import annotations
 import os
 
 import fitz
+from collections import Counter
+
 import pytest
 
-from likhit.privacy import RedactionMode, redact_pdf
+from likhit.privacy import RedactionMode, redact_pdf, redact_text
 from likhit.privacy import pdf as pdf_module
 from likhit.privacy import pdf_ocr
 from likhit.privacy.pdf_ocr import (
@@ -377,7 +379,8 @@ def test_parse_hocr_chars_keeps_lines_words_and_scales_boxes():
 def test_split_transcript_pages_uses_likhits_page_anchors():
     md = "front\n<!-- likhit:page 1 -->\nएक\n<!-- likhit:page 2 -->\nदुई\n"
     assert split_transcript_pages(md) == {1: "\nएक\n", 2: "\nदुई\n"}
-    assert split_transcript_pages("no anchors") == {1: "no anchors"}
+    # No anchors: a whole-document transcript, placed anywhere in the PDF.
+    assert split_transcript_pages("no anchors") == "no anchors"
 
 
 def test_transcript_removed_values_match_the_text_path_and_split_lists():
@@ -947,3 +950,218 @@ def test_a_short_run_outside_the_id_column_is_still_not_placed():
     # ...and above the header is not under it.
     above = _grid([["४५६७८"], ["ना.प्र.नं."]], [150])
     assert locate_value(above, "४५६७८", approximate=False) == []
+
+
+# ------------------------------------------------------------ whole-document transcripts
+def _pages(*docs: fitz.Document) -> fitz.Document:
+    out = fitz.open()
+    for d in docs:
+        out.insert_pdf(d)
+    return out
+
+
+def test_an_unanchored_transcript_places_a_value_on_whatever_page_shows_it(tmp_path):
+    # Production transcripts have no page anchors. The value is on page 3, under a
+    # garbled label the rules miss: only the transcript can place it -- anywhere.
+    doc = _pages(
+        _vector_page_doc([PLAIN_LINE]),
+        _vector_page_doc([PLAIN_LINE]),
+        _vector_page_doc([f"सम्फ्क नं. {MOBILE}"]),
+    )
+    src = tmp_path / "three.pdf"
+    doc.save(src)
+    transcript = split_transcript_pages(f"{PLAIN_LINE}\n\n{MOBILE_LINE}\n")
+
+    report = redact_pdf(
+        src, tmp_path / "out.pdf", mode=RedactionMode.STRICT, transcript=transcript
+    )
+
+    assert report.pages_by_path["vector"] == 3
+    assert report.guided_placed == report.guided_values == 1
+    assert report.unplaced == []
+    with fitz.open(tmp_path / "out.pdf") as out:
+        assert "९८५१" not in out[2].get_text()
+
+
+def test_an_unanchored_transcript_still_needs_every_occurrence_in_the_document(
+    tmp_path,
+):
+    # The transcript has the number twice; the PDF shows it once. One copy is unaccounted
+    # for, so the document is held -- with no page to blame, and no digits in the journal.
+    doc = _pages(_vector_page_doc([PLAIN_LINE]), _vector_page_doc([MOBILE_LINE]))
+    src = tmp_path / "two.pdf"
+    doc.save(src)
+    transcript = f"{MOBILE_LINE}\n\n{MOBILE_LINE}\n"
+
+    dry = redact_pdf(
+        src, None, mode=RedactionMode.STRICT, dry_run=True, transcript=transcript
+    )
+    assert [(u["page"], u["shape"].strip("#")) for u in dry.unplaced] == [(None, "")]
+    assert "९८५" not in repr(dry.as_dict())
+    with pytest.raises(ValueError, match="could not be placed"):
+        redact_pdf(
+            src, tmp_path / "out.pdf", mode=RedactionMode.STRICT, transcript=transcript
+        )
+
+
+def test_an_unanchored_value_the_first_read_misses_is_found_by_the_second(
+    tmp_path, stub_ocr
+):
+    data1, loc1 = _scan_of([PLAIN_LINE])
+    data2, loc2 = _scan_of([f"सम्फ्क नं. {MOBILE}"])
+    src = tmp_path / "scan.pdf"
+    _pages(fitz.open("pdf", data1), fitz.open("pdf", data2)).save(src)
+    reads = Counter()
+
+    def ocr(page, _calls):
+        reads[page.number] += 1
+        if page.number == 0:
+            return _read_what_is_visible(page, loc1)
+        if reads[1] == 1:  # page 2's first read garbles the number
+            return Locator("", [], ocr=True)
+        return _read_what_is_visible(page, loc2)
+
+    stub_ocr(ocr)
+    report = redact_pdf(
+        src,
+        tmp_path / "out.pdf",
+        mode=RedactionMode.STRICT,
+        ocr=True,
+        transcript=f"{PLAIN_LINE}\n{MOBILE_LINE}\n",
+    )
+
+    assert report.unplaced == [] and report.guided_placed == 1
+    assert (
+        _black_share(tmp_path / "out.pdf", _value_rect(loc2, MOBILE), page_no=1) > 0.9
+    )
+    assert _black_share(tmp_path / "out.pdf", _value_rect(loc1, PLAIN_LINE[:4])) < 0.1
+
+
+def test_removed_values_joined_only_by_a_separator_are_split():
+    # Two numbers in adjacent table cells (`|`) or under one label with a slash are
+    # merged by the diff; the separator belongs to neither, so each is placed alone.
+    for sep in (" | ", " / "):
+        text = f"सम्पर्क नं. ९८५१२३४५६७{sep}९८६१२३४५६७ बुझेको"
+        values = transcript_removed_values(text, RedactionMode.STRICT)
+        assert [v for _, v in values] == ["९८५१२३४५६७", "९८६१२३४५६७"], sep
+    # ...while one value's own separators still keep it whole.
+    one = transcript_removed_values("मोबाइल नं. ९८५१-२३४५६७ बुझेको", RedactionMode.STRICT)
+    assert [v for _, v in one] == ["९८५१-२३४५६७"]
+
+
+def test_two_phones_merged_across_a_separator_keep_one_kind_each():
+    # Each phone got its own placeholder in the text, so each is its own guided value,
+    # whatever stands between them: a table cell border, a slash, a comma.
+    for text in (
+        "| फोन | ९८५१२३४५६७ | ९८६१२३४५६७ |",
+        "सम्पर्क नं. ९८५१२३४५६७ | ९८६१२३४५६७ बुझेको",
+        "सम्पर्क नं. ९८५१२३४५६७ / ९८६१२३४५६७ बुझेको",
+        "सम्पर्क नं. ९८५१२३४५६७, ९८६१२३४५६७ बुझेको",
+    ):
+        values = transcript_removed_values(text, RedactionMode.STRICT)
+        assert values == [
+            ("PHONE-NO", "९८५१२३४५६७"),
+            ("PHONE-NO", "९८६१२३४५६७"),
+        ], text
+
+
+def test_one_bank_account_with_a_slash_stays_one_guided_value():
+    # The bank rule removes `१२३४५६ / ७८९०१२` as ONE span (one placeholder). Split at the
+    # slash, its six-digit halves would earn exact credit on unrelated amounts elsewhere.
+    for text in (
+        "खाता नं. १२३४५६ / ७८९०१२",
+        "बैंक खाता नं. १२३४५६ / ७८९०१२ रहेको",
+        "खाता नं. १२३४५६ ७८९०१२ रहेको",
+    ):
+        assert (
+            redact_text(text, mode=RedactionMode.STRICT).text.count("[REDACTED:") == 1
+        )
+        values = transcript_removed_values(text, RedactionMode.STRICT)
+        assert len(values) == 1, text
+        kind, value = values[0]
+        assert kind == "BANK-ACCOUNT-NO"
+        assert _digits_of(value) == "१२३४५६७८९०१२", text
+
+
+def _digits_of(text: str) -> str:
+    return "".join(c for c in text if c in "०१२३४५६७८९")
+
+
+def test_a_fragment_of_one_value_never_earns_credit_on_unrelated_amounts(
+    tmp_path, stub_ocr
+):
+    # OCR misses the account; the page prints its two halves as unrelated amounts. The
+    # account must stay unplaced (the document refuses), not be credited by the amounts.
+    data, loc = _scan_of(["कमल कमल रकम १२३४५६ र ७८९०१२ बुझेको"])
+    src = tmp_path / "scan.pdf"
+    src.write_bytes(data)
+    stub_ocr(loc)
+    transcript = f"{PLAIN_LINE}\nखाता नं. १२३४५६ / ७८९०१२\n"
+
+    dry = redact_pdf(
+        src,
+        None,
+        mode=RedactionMode.STRICT,
+        dry_run=True,
+        ocr=True,
+        transcript=transcript,
+    )
+    assert dry.guided_placed == 0
+    assert [(u["kind"], u["page"]) for u in dry.unplaced] == [("BANK-ACCOUNT-NO", None)]
+    with pytest.raises(ValueError, match="could not be placed"):
+        redact_pdf(
+            src,
+            tmp_path / "out.pdf",
+            mode=RedactionMode.STRICT,
+            ocr=True,
+            transcript=transcript,
+        )
+
+
+def test_an_unanchored_value_only_the_overlay_found_is_credited_by_the_second_read(
+    tmp_path, stub_ocr
+):
+    # A scan whose Unicode overlay is right: the overlay boxes the number (burned, but
+    # uncredited), the first OCR read misses it. The second read must look at the
+    # ORIGINAL page -- the burned one no longer shows the number to credit.
+    data, loc = _scan_of([f"सम्फ्क नं. {MOBILE}"])
+    scan = fitz.open("pdf", data)
+    page = scan[0]
+    page.insert_font(fontname="dev", fontfile=_font())
+    page.insert_text(
+        (72, 90), f"सम्फ्क नं. {MOBILE}", fontname="dev", fontsize=14, render_mode=3
+    )
+    src = tmp_path / "overlaid.pdf"
+    scan.save(src)
+    reads = Counter()
+
+    def ocr(page, _calls):
+        reads[page.number] += 1
+        if reads[page.number] == 1:  # the first read garbles it
+            return Locator("", [], ocr=True)
+        return _read_what_is_visible(page, loc)
+
+    stub_ocr(ocr)
+    report = redact_pdf(
+        src,
+        tmp_path / "out.pdf",
+        mode=RedactionMode.STRICT,
+        ocr=True,
+        transcript=f"{MOBILE_LINE}\n",
+    )
+
+    assert report.pages_by_path["image"] == 1
+    assert report.unplaced == [] and report.guided_placed == 1
+    assert _black_share(tmp_path / "out.pdf", _value_rect(loc, MOBILE)) > 0.9
+
+
+def test_the_second_read_honours_approximate_boxes_off():
+    # Neither read shows the value exactly; the second read has a one-digit slip.
+    first = _loc("मो. कुनै अंक छैन")
+    slipped = _loc("मो. ९८५१२३४५६१")
+    off = place_guided_values(
+        [("MOBILE", MOBILE)], [first], lambda: slipped, approximate_boxes=False
+    )
+    assert off.boxes == [] and off.placed == 0 and len(off.unplaced) == 1
+    on = place_guided_values([("MOBILE", MOBILE)], [first], lambda: slipped)
+    assert on.boxes and on.placed == 0

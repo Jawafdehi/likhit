@@ -76,9 +76,9 @@ def build_redact_parser() -> argparse.ArgumentParser:
     pdf.add_argument(
         "--transcript",
         type=Path,
-        help="the document's UNREDACTED likhit transcript (with <!-- likhit:page N --> "
-        "anchors). Every value its text redaction removes must be placed on its page, or "
-        "the document is refused",
+        help="the document's UNREDACTED likhit transcript. Every value its text redaction "
+        "removes must be placed on its page (with <!-- likhit:page N --> anchors) or "
+        "somewhere in the document (without), or the document is refused",
     )
     pdf.add_argument(
         "--mode",
@@ -281,7 +281,7 @@ def _pdf(args: argparse.Namespace) -> int:
     if report.unplaced:
         print(
             f"likhit-redact: {len(report.unplaced)} value(s) the transcript removes could "
-            "not be placed on their page; this document would be REFUSED without --dry-run",
+            "not be placed in the PDF; this document would be REFUSED without --dry-run",
             file=sys.stderr,
         )
         return 1

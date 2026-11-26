@@ -326,6 +326,10 @@ likhit-redact pdf charge-sheet.pdf --journal unplaced.json --dry-run \
 `<!-- likhit:page N -->` anchors). Every value likhit's text redaction removes from a page
 — every pass, the table pass included — must be found **exactly** on that page, or the
 document is refused and the journal's `unplaced` lists the misses (kind and masked shape).
+A transcript **without** anchors is whole-document guidance: each value may be on any page,
+and must be found there as often as the transcript has it; what the first read misses is
+looked for again with the second read on every rasterised page, and a miss is journalled
+with `page: null`.
 That is what keeps a published PDF from showing what the published transcript hides; an
 approximate OCR match still gets a box, but never counts as proof. After the save, every
 raster page of the **written** file is OCR'd again and anything the rules still find is
