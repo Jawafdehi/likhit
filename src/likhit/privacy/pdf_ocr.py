@@ -584,7 +584,8 @@ def place_guided_values(
             # Summing let a value printed twice pass when both reads found only the
             # same copy and the other was garbled.
             best = max(got, len(spans))
-            if best < needed:
+            # The same contract as the first read: approximate boxes only when asked.
+            if best < needed and approximate_boxes:
                 for s, e in locate_value(loc2, value, approximate=True):
                     boxes += span_rects(loc2, s, e)
             placed += min(best, needed) - got

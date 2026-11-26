@@ -1153,3 +1153,15 @@ def test_an_unanchored_value_only_the_overlay_found_is_credited_by_the_second_re
     assert report.pages_by_path["image"] == 1
     assert report.unplaced == [] and report.guided_placed == 1
     assert _black_share(tmp_path / "out.pdf", _value_rect(loc, MOBILE)) > 0.9
+
+
+def test_the_second_read_honours_approximate_boxes_off():
+    # Neither read shows the value exactly; the second read has a one-digit slip.
+    first = _loc("मो. कुनै अंक छैन")
+    slipped = _loc("मो. ९८५१२३४५६१")
+    off = place_guided_values(
+        [("MOBILE", MOBILE)], [first], lambda: slipped, approximate_boxes=False
+    )
+    assert off.boxes == [] and off.placed == 0 and len(off.unplaced) == 1
+    on = place_guided_values([("MOBILE", MOBILE)], [first], lambda: slipped)
+    assert on.boxes and on.placed == 0
