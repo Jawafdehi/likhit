@@ -11,6 +11,14 @@ This file starts at 0.1.8. For earlier releases, see the
 
 ## [Unreleased]
 
+### Added
+
+- **`redact_pdf(..., trusted_unicode=True)` / `likhit-redact pdf --trusted-unicode`** for a
+  PDF the caller rendered itself from Unicode text: a page with a low Devanagari share (an
+  English news article) is redacted as Unicode text instead of refusing as a legacy-font
+  page. Scanned, blank and image-covered pages are unaffected; the journal records the flag
+  and `trusted_unicode_pages`. Default off -- never for third-party PDFs.
+
 ### Fixed
 
 - **Four identity-card numbers court orders cite are now redacted at `strict` and counted

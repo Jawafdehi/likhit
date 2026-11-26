@@ -154,7 +154,9 @@ class PageClass(str, Enum):
         return self in (PageClass.LEGACY, PageClass.SCANNED)
 
 
-def classify_text_layer(page: fitz.Page, text: str | None = None) -> PageClass:
+def classify_text_layer(
+    page: fitz.Page, text: str | None = None, *, trusted_unicode: bool = False
+) -> PageClass:
     """Which of the four classes this page is.
 
     🛑 **Classified from :func:`page_glyph_map`'s text, not from ``page.get_text()``.** The
@@ -167,6 +169,15 @@ def classify_text_layer(page: fitz.Page, text: str | None = None) -> PageClass:
 
     ``text`` is accepted so a caller that already built the map does not build it twice; it
     must be that same text, which is why this is not a general "classify this string".
+
+    ``trusted_unicode`` changes ONE decision: a page with text whose Devanagari share is
+    below :data:`UNICODE_DEVANAGARI_RATIO` is :data:`PageClass.UNICODE` instead of
+    :data:`PageClass.LEGACY`. The ratio cannot tell an English page from a legacy-font one
+    (both are Latin codepoints); the caller can, when it produced the text layer itself
+    from Unicode text. See :func:`redact_pdf` for that contract. ``BLANK`` and ``SCANNED``
+    are decided before the ratio and never change, and a page that images mostly cover
+    stays ``LEGACY``: a scanner's invisible OCR layer is Latin too, and trusting it would
+    redact the text layer while the picture a reader sees kept every value.
     """
 
     if text is None:
@@ -183,6 +194,8 @@ def classify_text_layer(page: fitz.Page, text: str | None = None) -> PageClass:
         len(_TEXT_LAYER_DEVANAGARI.findall(text)) / len(text)
         >= UNICODE_DEVANAGARI_RATIO
     ):
+        return PageClass.UNICODE
+    if trusted_unicode and not _is_image_page(page):
         return PageClass.UNICODE
     return PageClass.LEGACY
 
@@ -220,6 +233,11 @@ class PdfRedactionReport:
     unplaced: list[dict] = field(default_factory=list)
     #: Boxes added by the OCR re-read of the written file (see ``_residue_pass``).
     residue_boxes: int = 0
+    #: Whether the caller vouched for the text layer (``redact_pdf(trusted_unicode=True)``),
+    #: and the 1-based pages that were Unicode only because of it -- below the Devanagari
+    #: ratio, so they would have been ``legacy`` without it.
+    trusted_unicode: bool = False
+    trusted_unicode_pages: list[int] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -237,6 +255,8 @@ class PdfRedactionReport:
             "guided_placed": self.guided_placed,
             "unplaced": self.unplaced,
             "residue_boxes": self.residue_boxes,
+            "trusted_unicode": self.trusted_unicode,
+            "trusted_unicode_pages": self.trusted_unicode_pages,
             "span_shapes": self.span_shapes,
             "no_matched_digits_recorded": True,
         }
@@ -1048,6 +1068,7 @@ def redact_pdf(
     dry_run: bool = False,
     ocr: bool = False,
     transcript: Mapping[int, str] | str | None = None,
+    trusted_unicode: bool = False,
 ) -> PdfRedactionReport:
     """Redact ``source`` into ``destination``, or measure it with ``dry_run``.
 
@@ -1065,6 +1086,18 @@ def redact_pdf(
     A ``str`` ``transcript`` is a whole-document transcript with no page anchors (what
     :func:`~likhit.privacy.pdf_ocr.split_transcript_pages` returns for one): each value
     must then be placed somewhere in the document, as often as the transcript has it.
+
+    ``trusted_unicode=True`` tells this function the text layer is Unicode by
+    construction, so a page with little or no Devanagari (an English page) is redacted as
+    a Unicode page -- normal detectors, glyph deletion, and the same post-redaction
+    verification -- instead of refusing as a legacy-font page. Scanned, blank and
+    image-covered pages are classified exactly as without it.
+
+    🛑 **Only for a PDF whose text layer the caller produced itself from Unicode text** (for
+    example rendered by Chromium/Gotenberg from HTML or markdown). Never for a third-party
+    PDF: a legacy-font page decodes to Latin-looking bytes the detectors cannot read, so
+    trusting it would publish its identifiers as a "redacted" document (module rule 2). The
+    report records the flag and the pages it changed (``trusted_unicode_pages``).
     """
 
     if not source.is_file():
@@ -1091,7 +1124,7 @@ def redact_pdf(
         )
     guidance = _Guidance(transcript or {}, mode)
 
-    report = PdfRedactionReport()
+    report = PdfRedactionReport(trusted_unicode=trusted_unicode)
     with fitz.open(source) as doc:
         # 🛑 An encrypted document reaches here happily and only fails on the first page
         # access, as a bare `ValueError: document closed or encrypted` from deep inside
@@ -1128,7 +1161,12 @@ def redact_pdf(
         classes: dict[int, PageClass] = {}
         image_pages: set[int] = set()
         for page in doc:
-            page_class = classify_text_layer(page)
+            text = page_glyph_map(page)[0]
+            page_class = classify_text_layer(page, text)
+            if trusted_unicode and page_class is PageClass.LEGACY:
+                page_class = classify_text_layer(page, text, trusted_unicode=True)
+                if page_class is PageClass.UNICODE:
+                    report.trusted_unicode_pages.append(page.number + 1)
             classes[page.number] = page_class
             report.pages_by_class[page_class.value] += 1
             if ocr and page_class is not PageClass.BLANK and _is_image_page(page):
