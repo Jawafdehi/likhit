@@ -601,6 +601,15 @@ _IDENTITY_CARD_LABEL = (
     )
     + rf"परिचय\s*-?\s*पत्र(?:को)?\s*{_ID_CARD_MARKER}"
 )
+#: The same exclusion without the fixed-width limit: the excluded word (``को`` allowed on
+#: ``आयोग``/``करदाता``) and then ANY whitespace run, at the very end of the text before the
+#: label. :func:`_match_values` applies it to every ``identity_card`` match, so a taxpayer
+#: label wrapped with three spaces, a tab or an indented line break stays a PAN (visible) in
+#: the remover, the scanner and the PDF path alike. The look-behinds above are kept as the
+#: cheap first filter; this is the guarantee.
+_IDENTITY_CARD_EXCLUDED_BEFORE = re.compile(
+    r"(?:राष्ट्रिय|शरणार्थी|मतदाता|आयोग(?:को)?|करदाता(?:को)?)\s*\Z"
+)
 IDENTITY_CARD_LABEL_VALUE = re.compile(
     rf"(?P<label>{_IDENTITY_CARD_LABEL}){_ID_CARD_GAP}"
     rf"(?![{AD}]{{1,3}}\.(?![{AD}])){_id_card_value(1, 22)}",
@@ -1275,6 +1284,14 @@ def _match_values(match: re.Match[str], kind: str) -> list[tuple[str, int, int]]
     already began with a real label, so the label still decides.
     """
 
+    if match.re is IDENTITY_CARD_LABEL_VALUE and _IDENTITY_CARD_EXCLUDED_BEFORE.search(
+        # 64 chars back: the longest excluded word plus a generous whitespace run (a
+        # wrapped, indented line). Not a tuning value -- the regex is anchored at the end.
+        match.string[max(0, match.start() - 64) : match.start()]
+    ):
+        # A card with its own class (or a PAN) behind a whitespace run the fixed-width
+        # look-behinds cannot see -- see `_IDENTITY_CARD_EXCLUDED_BEFORE`.
+        return []
     items = RULE_VALUE_ITEMS.get(match.re, VALUE_ITEMS.get(kind))
     found = []
     for name in VALUE_GROUPS:

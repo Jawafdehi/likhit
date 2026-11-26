@@ -224,6 +224,11 @@ _NEGATIVES = (
     "करदाता  परिचय पत्र नं. ६०१२३४५६७",
     "करदाताको परिचय पत्र नं. ६०१२३४५६७",
     "करदाता\nपरिचय पत्र नं. ६०१२३४५६७",
+    # Whitespace runs the fixed-width look-behinds cannot enumerate (review on #143).
+    "करदाता   परिचय पत्र नं. ६०१२३४५६७",
+    "करदाता\tपरिचय पत्र नं. ६०१२३४५६७",
+    "करदाता\n    परिचय पत्र नं. ६०१२३४५६७",
+    "करदाताको \n\t परिचयपत्र नं. ६०१२३४५६७",
     "करदाता परिचय पत्र नं. ऐन २०५८ आदि",
     # a blank form's numbered field list: the digit after the label is the next field's
     # list number, not a card
@@ -359,3 +364,11 @@ def test_redact_pdf_removes_the_new_classes_from_the_glyph_layer(tmp_path) -> No
         assert value not in after
     assert "रजिष्ट्रेसन" in after, "the label is kept"
     assert "९८७६५४" in after, "a company registration is public"
+
+
+def test_an_unqualified_identity_card_is_still_removed_at_strict() -> None:
+    """The whitespace-tolerant PAN guard must not swallow a plain card number."""
+    out, kinds = _strict("सीता थापाको परिचय पत्र नं. १२३४५६७८९ हो")
+    assert "१२३४५६७८९" not in out
+    assert placeholders.IDENTITY_CARD in out
+    assert kinds == ["identity_card"]
