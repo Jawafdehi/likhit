@@ -1705,3 +1705,26 @@ def test_document_retries_combine_on_uncapped_whole_counts(tmp_path, stub_ocr):
     )
     assert dry.guided_values == 2 and dry.guided_placed == 1
     assert [u["kind"] for u in dry.unplaced] == ["PHONE-NO"]
+
+
+def test_values_sharing_only_part_of_a_print_are_reconciled_across_reads():
+    # A standalone account `123456789 9800000001` and the list of accounts
+    # `9800000001 987654321 र 20000000002`; the page prints `123456789 9800000001
+    # 987654321` (the two accounts share their middle group) and a separate
+    # `20000000002`. Neither key contains the other, but the print is one: one read
+    # (garbling the end) credits the standalone account, the other (garbling the
+    # start) the list's part. Only one of the two values may be placed.
+    standalone = f"123456789 {PHONE_A}"
+    values = [
+        ("BANK-ACCOUNT-NO", standalone),
+        ("BANK-ACCOUNT-NO", f"{PHONE_A} 987654321 र 20000000002"),
+    ]
+    tail = "\nखाता 20000000002 कमल"
+    end_garbled = _loc(f"खाता 123456789 {PHONE_A} 98765432O कमल{tail}")
+    start_garbled = _loc(f"खाता 12345678O {PHONE_A} 987654321 कमल{tail}")
+    for first, second in ((end_garbled, start_garbled), (start_garbled, end_garbled)):
+        placement = place_guided_values(values, [first], lambda s=second: s)
+        assert placement.placed == 1 and len(placement.unplaced) == 1
+    # Printed apart, both are placed.
+    apart = _loc(f"खाता 123456789 {PHONE_A} कमल\nखाता {PHONE_A} 987654321 कमल{tail}")
+    assert place_guided_values(values, [apart]).placed == 2

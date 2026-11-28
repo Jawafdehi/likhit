@@ -937,6 +937,8 @@ class GuidedPlacement:
     #: combines a page's reads on it: a capped count hides a whole match a retry must
     #: debit an overlapping value for (:meth:`GuidedNeeds.combine`).
     whole_by_key: Counter = field(default_factory=Counter)
+    #: Where those counts were found (:attr:`GuidedRead.prints`), for the same merge.
+    prints: list = field(default_factory=list)
 
 
 #: Words that join two values in one written list (`९८५१११११११ वा ९८४१११११११`).
@@ -1034,13 +1036,26 @@ def composite_parts(kind: str, value: str) -> list[str] | None:
     return None
 
 
+def _print_boxes(loc: Locator, start: int, end: int) -> list[fitz.Rect]:
+    """Where ``loc.text[start:end]`` is printed: its character boxes, unpadded,
+    merged per line (a wrapped value is two boxes, not one spanning both lines)."""
+
+    return span_rects(Locator(loc.text, loc.rects, ocr=False), start, end)
+
+
 @dataclass
 class GuidedRead:
     """Exact occurrences one read (or a sound combination of reads) shows of a page:
-    ``whole`` per value key, ``supply`` per part key (:meth:`GuidedNeeds.read`)."""
+    ``whole`` per value key, ``supply`` per part key (:meth:`GuidedNeeds.read`).
+
+    ``prints`` is where each counted occurrence is on the page -- ``(stage, key,
+    boxes)``, stage 0 a composite's whole match, 1 another value's, 2 a part -- so
+    reads of one page can be merged print by print (:meth:`GuidedNeeds.combine`).
+    """
 
     whole: Counter
     supply: Counter
+    prints: list = field(default_factory=list)
 
 
 @dataclass
@@ -1056,7 +1071,6 @@ class GuidedNeeds:
     sample: dict
     parts: dict
     part_values: dict
-    _overlap: tuple | None = field(default=None, repr=False)
 
     @classmethod
     def of(cls, values: list[tuple[str, str]]) -> GuidedNeeds:
@@ -1089,6 +1103,7 @@ class GuidedNeeds:
         """
 
         whole: Counter[str] = Counter()
+        prints: list[tuple[int, str, list[fitz.Rect]]] = []
         taken: list[tuple[int, int]] = []
         credited: dict[str, list[tuple[int, int]]] = {}
         # Composites first, so every other value knows the prints they took.
@@ -1115,6 +1130,8 @@ class GuidedNeeds:
                 credited[key] = spans
             if spans:
                 whole[key] = len(spans)
+            stage = 0 if key in self.parts else 1
+            prints += [(stage, key, _print_boxes(loc, s, e)) for s, e in spans]
         supply: Counter[str] = Counter()
         wanted = {
             part
@@ -1144,7 +1161,8 @@ class GuidedNeeds:
                 boxes += span_rects(loc, s, e)
             claimed += spans
             supply[part] = len(spans)
-        return GuidedRead(whole, +supply)
+            prints += [(2, part, _print_boxes(loc, s, e)) for s, e in spans]
+        return GuidedRead(whole, +supply, prints)
 
     def second_read_keys(self, pending: list[str]) -> list[str]:
         """What a second read must count: the pending values -- and, when there are
@@ -1162,101 +1180,61 @@ class GuidedNeeds:
     def combine(self, reads: list[GuidedRead]) -> GuidedRead:
         """Several reads of the same page as one: never more than the page shows.
 
-        Per key, the best read: different values (and different parts) are different
-        prints, and one print found by two reads is still one print. But a print one
-        read credits to one value may be the very print another read credits to an
-        OVERLAPPING one: `A/B` whole here, `A … B` as parts there; `A/B` here, `B/C`
-        there, one printed `A/B/C`; an account `123456789 / A` here, the part `A`
-        there. So, as :meth:`read` gives a print to the first value that claims it,
-        a read's count of a later overlapping value -- and of every part -- is first
-        debited by what the other reads add, beyond this read, to the earlier values
-        (:meth:`_overlapping`). One print never places two required occurrences.
+        Without composites, per key the best read, as always: different values are
+        different prints, and one print found by two reads is still one print.
+
+        With composites, two reads may credit ONE print to two overlapping values: `A/B`
+        whole here, `A … B` as parts there; `A/B` here, `B/C` there (one `A/B/C`); an
+        account `123456789 9800000001` here, a list's part `9800000001 987654321`
+        there. No relation between the values' digits can rule that out, so the reads
+        are merged by WHERE their prints are: every read's prints are taken in
+        :meth:`read`'s order (composites, other values, parts longest first); a print
+        overlapping one already taken for the same value is the same occurrence, and
+        one overlapping a print taken for another value is that value's (a part may
+        still lie on its own standalone value's print: :meth:`allocate` spends those
+        once). One print never places two required occurrences.
         """
 
-        best: Counter[str] = Counter()
-        best_supply: Counter[str] = Counter()
-        for one in reads:
-            for key, n in one.whole.items():
-                best[key] = max(best[key], n)
-            for part, n in one.supply.items():
-                best_supply[part] = max(best_supply[part], n)
-        before, around, parts_before = self._overlapping()
-        whole: Counter[str] = Counter()
-        supply: Counter[str] = Counter()
-        for one in reads:
-            extra = {key: best[key] - one.whole[key] for key in best}
-            for key, n in one.whole.items():
-                for other, weight in before.get(key, ()):
-                    n -= weight * extra.get(other, 0)
-                whole[key] = max(whole[key], n)
-            for part, n in one.supply.items():
-                for other, weight in around.get(part, ()):
-                    n -= weight * extra.get(other, 0)
-                for other in parts_before.get(part, ()):
-                    n -= best_supply[other] - one.supply[other]
-                supply[part] = max(supply[part], n)
-        return GuidedRead(+whole, +supply)
+        if not self.parts:
+            whole: Counter[str] = Counter()
+            supply: Counter[str] = Counter()
+            for one in reads:
+                for key, n in one.whole.items():
+                    whole[key] = max(whole[key], n)
+                for part, n in one.supply.items():
+                    supply[part] = max(supply[part], n)
+            return GuidedRead(+whole, +supply)
 
-    def _overlapping(
-        self,
-    ) -> tuple[
-        dict[str, list[tuple[str, int]]],
-        dict[str, list[tuple[str, int]]],
-        dict[str, list[str]],
-    ]:
-        """``(before, around, parts_before)``: for each required value, the EARLIER
-        required values (in :meth:`read`'s order: composites first) whose print can
-        share its digits -- an account `123456789 / A` and a list `A/B` -- when either
-        is a composite or a part; for each part, every required value whose print can,
-        and the longer parts containing it. Two values share digits when a part of one
-        is in, or contains, a part of the other. Each comes with its weight: how many of the other value's
-        parts overlap this one -- one print of `A/A` holds two prints of `A`. Both
-        empty without composites: such values are combined exactly as before."""
+        def overlaps(mine: list[fitz.Rect], theirs: list[fitz.Rect]) -> bool:
+            if not mine or not theirs:  # nowhere known: assume the worst
+                return True
+            return any(not (r & o).is_empty for r in mine for o in theirs)
 
-        if self._overlap is None:
-            order = [*self.parts, *(k for k in self.needed if k not in self.parts)]
-            units = {key: self.parts.get(key, [key]) for key in order}
-
-            def weight(mine: list[str], theirs: list[str]) -> int:
-                return sum(any(a in b or b in a for a in mine) for b in theirs)
-
-            # Composites and parts on one side or the other: two plain values that
-            # merely share digits (a phone inside an account) are combined as before.
-            related = set(self.parts) | set(self.part_values)
-            before = (
-                {
-                    key: [
-                        (other, w)
-                        for other in order[:rank]
-                        if (key in related or other in related)
-                        and (w := weight(units[key], units[other]))
-                    ]
-                    for rank, key in enumerate(order)
-                }
-                if self.parts
-                else {}
-            )
-            # Parts claim prints longest first (:meth:`read`): a part is debited for
-            # the longer parts containing it, too.
-            by_length = sorted(self.part_values, key=lambda q: (-len(q), q))
-            parts_before = {
-                part: [
-                    other
-                    for other in by_length[:rank]
-                    if part in other or other in part
-                ]
-                for rank, part in enumerate(by_length)
-            }
-            around = {
-                part: [
-                    (other, w)
-                    for other in order
-                    if other != part and (w := weight([part], units[other]))
-                ]
-                for part in self.part_values
-            }
-            self._overlap = (before, around, parts_before)
-        return self._overlap
+        taken: list[tuple[int, str, list[fitz.Rect]]] = []
+        for stage in (0, 1, 2):
+            found = [p for one in reads for p in one.prints if p[0] == stage]
+            if stage == 2:
+                found.sort(key=lambda p: -len(p[1]))  # stable: read order within
+            for print_ in found:
+                _stage, key, rects = print_
+                clash = False
+                for other_stage, other, other_rects in taken:
+                    if not overlaps(rects, other_rects):
+                        continue
+                    # A part on its own standalone value's print: counted as
+                    # supply, and allocate() spends it once.
+                    if stage == 2 and other_stage == 1 and other == key:
+                        continue
+                    # Plain values sharing digits are not reconciled (as before).
+                    if stage == 1 and other_stage == 1 and other != key:
+                        continue
+                    clash = True
+                    break
+                if not clash:
+                    taken.append(print_)
+        whole = Counter(key for stage, key, _ in taken if stage < 2)
+        supply = Counter(key for stage, key, _ in taken if stage == 2)
+        return GuidedRead(whole, supply, taken)
 
     def allocate(self, whole: Counter, supply: Counter) -> Counter:
         """Occurrences placed per key: whole matches first, then composites from parts.
@@ -1377,6 +1355,7 @@ def place_guided_values(
         +placed_by_key,
         Counter(seen.supply),
         +Counter(seen.whole),
+        list(seen.prints),
     )
 
 
