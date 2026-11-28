@@ -212,6 +212,38 @@ def test_matcher_gives_difflibs_opcodes_on_repetitive_strings(
 
 
 @settings(
+    max_examples=200,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
+)
+@given(
+    a=st.text(alphabet="ab|१२ \n", max_size=300),
+    edits=st.lists(
+        st.tuples(st.integers(0, 300), st.integers(0, 6), st.text("ab[]X", max_size=6)),
+        max_size=8,
+    ),
+)
+def test_the_automaton_gives_difflibs_opcodes_on_repetitive_strings(
+    monkeypatch: pytest.MonkeyPatch, a: str, edits: list[tuple[int, int, str]]
+) -> None:
+    # Every search that would sample goes to the suffix automaton instead (the path a
+    # repetitive range takes once its index hits pass the budget), so its answer --
+    # every longest match with all its starts -- must settle the same opcodes.
+    monkeypatch.setattr(pdf_ocr, "REMOVED_VALUES_DIRECT_DIFF_CHARS", 0)
+    monkeypatch.setattr(pdf_ocr, "REMOVED_VALUES_KGRAM", 2)
+    monkeypatch.setattr(
+        pdf_ocr._TranscriptMatcher, "_sampled_longest", lambda self, *args: None
+    )
+    b = a
+    for at, cut, insert in edits:
+        at = min(at, len(b))
+        b = b[:at] + insert + b[at + cut :]
+    fast = pdf_ocr._TranscriptMatcher(a, b)
+    slow = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    assert fast.get_opcodes() == slow.get_opcodes()
+
+
+@settings(
     max_examples=300,
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
@@ -348,3 +380,72 @@ def test_a_mid_sized_transcript_matches_the_whole_text_diff() -> None:
         text = _synthetic_transcript(8_000, newline=newline)
         assert len(text) > pdf_ocr.REMOVED_VALUES_DIRECT_DIFF_CHARS
         _assert_same(text)
+
+
+def _identical_rows(rows: int, plain_every: int = 0) -> str:
+    """The same name on every row, a different phone on each: every row's window hits
+    every other row in the index, rows x rows hits for one sampled search. With
+    ``plain_every``, rows carry no value except one in ``plain_every`` -- long runs of
+    identical lines between values."""
+    rng = random.Random(11)
+    lines = ["| नाम | सम्पर्क नं. |", "|---|---|"]
+    for n in range(rows):
+        phone = "".join(rng.choice(_DEV) for _ in range(8))
+        if plain_every and n % plain_every:
+            lines.append("सीता कुमारी श्रेष्ठ उपस्थित भइन्।")
+        else:
+            lines.append(f"| सीता कुमारी श्रेष्ठ | ९८{phone} |")
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.parametrize("plain_every", [0, 2, 25])
+def test_identical_rows_match_the_whole_text_diff(plain_every: int) -> None:
+    _assert_same(_identical_rows(90, plain_every))
+
+
+@pytest.mark.parametrize("plain_every", [0, 2, 500])
+def test_thousands_of_identical_rows_stay_fast(plain_every: int) -> None:
+    # Before the automaton took over repetitive ranges, the matcher spent 39 s on 2,500
+    # identical rows and 115 s on 5,000 (rows x rows index hits); the old whole-text
+    # diff took 21 s on 200. The matcher alone is timed: redact_text has its own cost.
+    text = _identical_rows(3000, plain_every)
+    redacted = redact_text(text, mode=RedactionMode.STRICT).text
+    start = time.perf_counter()
+    opcodes = pdf_ocr._TranscriptMatcher(text, redacted).get_opcodes()
+    seconds = time.perf_counter() - start
+    replaced = sum(1 for op in opcodes if op[0] != "equal")
+    assert replaced >= redacted.count("[REDACTED:")
+    assert seconds < 3, f"{seconds:.1f}s"
+
+
+def test_a_repetitive_range_goes_to_the_automaton_not_the_sampled_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The budget is what keeps the search linear: identical rows must trip it, and the
+    # sampled search must visit no more index hits than it allows.
+    visited: list[int] = []
+    calls: list[int] = []
+    sampled = pdf_ocr._TranscriptMatcher._sampled_longest
+    automaton = pdf_ocr._removed_values_automaton_longest
+
+    def counting(self, alo, ahi, blo, bhi, step, span):  # type: ignore[no-untyped-def]
+        before = self._budget
+        result = sampled(self, alo, ahi, blo, bhi, step, span)
+        visited.append(before - self._budget)
+        return result
+
+    def automaton_counting(*args):  # type: ignore[no-untyped-def]
+        calls.append(1)
+        return automaton(*args)
+
+    monkeypatch.setattr(pdf_ocr._TranscriptMatcher, "_sampled_longest", counting)
+    monkeypatch.setattr(
+        pdf_ocr, "_removed_values_automaton_longest", automaton_counting
+    )
+    text = _identical_rows(2000)
+    redacted = redact_text(text, mode=RedactionMode.STRICT).text
+    pdf_ocr._TranscriptMatcher(text, redacted).get_opcodes()
+    assert calls
+    # A search stops at a quarter of its range (a few hits past it in the round that
+    # crosses); never anywhere near rows x rows = 4,000,000.
+    assert sum(visited) < 4 * (len(text) + len(redacted))
