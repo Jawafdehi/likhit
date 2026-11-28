@@ -1533,3 +1533,24 @@ def test_a_standalone_value_inside_the_one_printed_composite_is_not_placed_again
     for first, second in ((whole, parts), (parts, whole)):
         placement = place_guided_values(values, [first], lambda s=second: s)
         assert placement.placed == 1 and len(placement.unplaced) == 1
+
+
+def test_two_composites_sharing_a_part_are_not_both_placed_by_one_print():
+    # The transcript needs `A/B` and `B/C`; the page prints `A/B/C` once. Its one `B`
+    # places at most one of them, on one read or across two.
+    phone_c = "9800000003"
+    values = [
+        ("PHONE-NO", f"{PHONE_A}/{PHONE_B}"),
+        ("PHONE-NO", f"{PHONE_B}/{phone_c}"),
+    ]
+    joined = _loc(f"मो. {PHONE_A}/{PHONE_B}/{phone_c} कमल")
+    placement = place_guided_values(values, [joined])
+    assert placement.placed == 1 and len(placement.unplaced) == 1
+    split = _loc(f"मो. {PHONE_A} कमल {PHONE_B}/{phone_c} कमल")
+    for first, second in ((joined, split), (split, joined)):
+        placement = place_guided_values(values, [first], lambda s=second: s)
+        assert placement.placed <= 1 and placement.unplaced
+    # Printed apart, each is placed.
+    apart = _loc(f"मो. {PHONE_A}/{PHONE_B} कमल कमल\nफोन {PHONE_B}/{phone_c}")
+    placement = place_guided_values(values, [apart])
+    assert placement.placed == 2 and placement.unplaced == []

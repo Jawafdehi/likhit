@@ -1070,6 +1070,13 @@ class GuidedNeeds:
             for s, e in spans:
                 boxes += span_rects(loc, s, e)
             if key in self.parts:
+                # Nor a second composite inside the print an earlier one took: `A/B`
+                # and `B/C` both match in `A/B/C`, and its one `B` places one of them.
+                spans = [
+                    (s, e)
+                    for s, e in spans
+                    if not any(s < te and ts < e for ts, te in taken)
+                ]
                 taken += spans
             elif taken:
                 spans = [
@@ -1106,24 +1113,41 @@ class GuidedNeeds:
         of a part -- as a part, and as a standalone value -- are first debited for
         every whole match of a composite the other reads add: a print another read saw
         whole (`A/B`) may be the very print this read saw as `A … B`, and one print
-        must not place two required occurrences.
+        must not place two required occurrences. A read's whole match of a composite
+        is debited likewise for every composite sharing a part with it that the other
+        reads add (`A/B` here, `B/C` there, one printed `A/B/C`).
         """
 
-        whole: Counter[str] = Counter()
+        best: Counter[str] = Counter()
         for one in reads:
             for key in self.parts:
-                whole[key] = max(whole[key], one.whole[key])
+                best[key] = max(best[key], one.whole[key])
+        # Composites sharing a part can overlap in one print (`A/B`, `B/C` in `A/B/C`).
+        sharing = {
+            key: [
+                other
+                for other, other_parts in self.parts.items()
+                if other != key and set(part_keys) & set(other_parts)
+            ]
+            for key, part_keys in self.parts.items()
+        }
+        whole: Counter[str] = Counter()
         supply: Counter[str] = Counter()
         for one in reads:
+            extra = {key: best[key] - one.whole[key] for key in self.parts}
             debit: Counter[str] = Counter()
             for key, part_keys in self.parts.items():
-                extra = whole[key] - one.whole[key]
-                if extra > 0:
+                if extra[key] > 0:
                     for part in part_keys:
-                        debit[part] += extra
+                        debit[part] += extra[key]
             for key, n in one.whole.items():
-                if key not in self.parts:
-                    whole[key] = max(whole[key], n - debit[key])
+                if key in self.parts:
+                    # ...so a composite this read saw whole is debited for every
+                    # overlapping composite the other reads add.
+                    n -= sum(extra[other] for other in sharing[key])
+                else:
+                    n -= debit[key]
+                whole[key] = max(whole[key], n)
             for part, n in one.supply.items():
                 supply[part] = max(supply[part], n - debit[part])
         return GuidedRead(+whole, +supply)
