@@ -851,7 +851,7 @@ class _Guidance:
                 reads = {n: _second_read(original[n])() for n in sorted(raster_pages)}
             boxes: dict[int, list[fitz.Rect]] = {n: [] for n in reads}
             for n, loc in reads.items():
-                again = needs.read(loc, pending, boxes[n])
+                again = needs.read(loc, needs.second_read_keys(pending), boxes[n])
                 first = per_page.get(n)
                 per_page[n] = needs.combine(
                     [again] if first is None else [first, again]

@@ -1554,3 +1554,39 @@ def test_two_composites_sharing_a_part_are_not_both_placed_by_one_print():
     apart = _loc(f"मो. {PHONE_A}/{PHONE_B} कमल कमल\nफोन {PHONE_B}/{phone_c}")
     placement = place_guided_values(values, [apart])
     assert placement.placed == 2 and placement.unplaced == []
+
+
+def test_a_standalone_part_keeps_its_own_print_when_the_second_read_finds_the_composite():
+    # The transcript needs `A` and `A/B`; the page prints `A` on its own and `A/B`. The
+    # first read sees only the lone `A`, the second both. Both are placed: the second
+    # read's own count of the lone `A` survives the debit for the composite it adds.
+    values = [("PHONE-NO", PHONE_A), ("PHONE-NO", f"{PHONE_A}/{PHONE_B}")]
+    first = _loc(f"फोन {PHONE_A} कमल\nमो. कुनै अंक छैन")
+    second = _loc(f"फोन {PHONE_A} कमल\nमो. {PHONE_A}/{PHONE_B}")
+    placement = place_guided_values(values, [first], lambda: second)
+    assert placement.placed == 2 and placement.unplaced == []
+
+
+def test_a_standalone_part_keeps_its_print_document_wide(tmp_path, stub_ocr):
+    data, _ = _scan_of([PLAIN_LINE])
+    src = tmp_path / "scan.pdf"
+    src.write_bytes(data)
+    reads = Counter()
+
+    def ocr(page, _calls):
+        reads[page.number] += 1
+        if reads[page.number] == 1:
+            return _loc(f"फोन {PHONE_A} कमल\nमो. कुनै अंक छैन")
+        return _loc(f"फोन {PHONE_A} कमल\nमो. {PHONE_A}/{PHONE_B}")
+
+    stub_ocr(ocr)
+    transcript = f"फोन {PHONE_A}\n\nसम्पर्क नं. {PHONE_A}/{PHONE_B}\n"
+    dry = redact_pdf(
+        src,
+        None,
+        mode=RedactionMode.STRICT,
+        dry_run=True,
+        ocr=True,
+        transcript=transcript,
+    )
+    assert dry.guided_values == 2 and dry.guided_placed == 2 and dry.unplaced == []

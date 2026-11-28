@@ -1105,6 +1105,18 @@ class GuidedNeeds:
                 supply[part] = len(spans)
         return GuidedRead(whole, +supply)
 
+    def second_read_keys(self, pending: list[str]) -> list[str]:
+        """What a second read must count: the pending values, and every value that is
+        also a part of a composite. :meth:`combine` may debit a part's first-read
+        credit for a composite the second read newly sees whole; only the second
+        read's own count of it can then keep a separate print credited."""
+
+        return list(
+            dict.fromkeys(
+                [*pending, *(k for k in self.needed if k in self.part_values)]
+            )
+        )
+
     def combine(self, reads: list[GuidedRead]) -> GuidedRead:
         """Several reads of the same page as one: never more than the page shows.
 
@@ -1252,7 +1264,7 @@ def place_guided_values(
 
     loc2 = second_read() if pending and second_read is not None else None
     if loc2 is not None:
-        reads.append(needs.read(loc2, pending, boxes))
+        reads.append(needs.read(loc2, needs.second_read_keys(pending), boxes))
         seen = needs.combine(reads)
         used = needs.allocate(seen.whole, seen.supply)
         # The same contract as the first read: approximate boxes only when asked.
