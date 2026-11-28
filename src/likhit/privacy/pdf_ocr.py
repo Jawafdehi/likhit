@@ -796,14 +796,17 @@ def locate_value(
         # A match through a bare wrap is weak evidence, so it must not be glued to
         # another digit at either end either: not by a line break after a printed
         # separator (`9-` / `98512` / `34567` is a longer number), nor by a single
-        # separator mark (`9-98512` / `34567`). A list's `, ` still ends it.
+        # separator mark (`9-98512` / `34567`), nor by another bare wrap (`98512` /
+        # `34567` / `7`). A list's `, ` still ends it.
         for gap in (
             loc.text[index[a - 1] + 1 : index[a]] if a > 0 else None,
             loc.text[index[b - 1] + 1 : index[b]] if b < len(index) else None,
         ):
-            if gap is None or not _joins_one_value(gap):
+            if gap is None:
                 continue
-            if "\n" in gap or len(gap) <= 1:
+            if _wraps_one_value(gap):  # `98000` / `00001` / `7`: a longer number
+                return False
+            if _joins_one_value(gap) and ("\n" in gap or len(gap) <= 1):
                 return False
         return True
 

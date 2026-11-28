@@ -1367,6 +1367,9 @@ def test_a_number_wrapped_at_a_line_end_is_matched_whole():
         (f"मो. 9-\n{PHONE_A[:5]}\n{PHONE_A[5:]} मा", PHONE_A),
         (f"मो. 9-{PHONE_A[:5]}\n{PHONE_A[5:]} मा", PHONE_A),
         (f"मो. {PHONE_A[:5]}\n{PHONE_A[5:]}-\n7 मा", PHONE_A),
+        # ...or by another bare wrap: a prefix or a suffix of a longer wrapped number.
+        (f"मो. {PHONE_A[:5]}\n{PHONE_A[5:]}\n7 मा", PHONE_A),
+        (f"मो. 7\n{PHONE_A[:5]}\n{PHONE_A[5:]} मा", PHONE_A),
     ):
         assert locate_value(_loc(page), value, approximate=False) == [], page
 
