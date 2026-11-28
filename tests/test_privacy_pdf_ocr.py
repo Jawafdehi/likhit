@@ -1350,6 +1350,8 @@ def test_a_number_wrapped_at_a_line_end_is_matched_whole():
     for page in (
         f"मो. {PHONE_A[:5]}\n{PHONE_A[5:]} मा",
         f"मो. {PHONE_A[:5]}\n{PHONE_A[5:]}, 9800000002 मा",  # a list's `, ` ends it
+        f"मो. {PHONE_A[:5]}\n{PHONE_A[5:]},9800000002 मा",  # ...so does a bare comma
+        f"मो. 9800000002; {PHONE_A[:5]}\n{PHONE_A[5:]} मा",  # ...and a semicolon
         f"मो. {PHONE_A[:5]} \n  {PHONE_A[5:]} मा",
         f"मो. {PHONE_A[:5]}-\n{PHONE_A[5:]} मा",
         f"मो. {PHONE_A[:5]}\n-{PHONE_A[5:]} मा",
@@ -1370,6 +1372,9 @@ def test_a_number_wrapped_at_a_line_end_is_matched_whole():
         # ...or by another bare wrap: a prefix or a suffix of a longer wrapped number.
         (f"मो. {PHONE_A[:5]}\n{PHONE_A[5:]}\n7 मा", PHONE_A),
         (f"मो. 7\n{PHONE_A[:5]}\n{PHONE_A[5:]} मा", PHONE_A),
+        # ...or a joining mark with spaces around it.
+        (f"मो. 12- {PHONE_A[:5]}\n{PHONE_A[5:]} मा", PHONE_A),
+        (f"मो. {PHONE_A[:5]}\n{PHONE_A[5:]} / 7 मा", PHONE_A),
     ):
         assert locate_value(_loc(page), value, approximate=False) == [], page
 
@@ -1703,6 +1708,7 @@ def test_document_retries_combine_on_uncapped_whole_counts(tmp_path, stub_ocr):
         ocr=True,
         transcript=transcript,
     )
+    assert reads[0] == 2  # the first read and the settlement retry
     assert dry.guided_values == 2 and dry.guided_placed == 1
     assert [u["kind"] for u in dry.unplaced] == ["PHONE-NO"]
 
@@ -1728,3 +1734,23 @@ def test_values_sharing_only_part_of_a_print_are_reconciled_across_reads():
     # Printed apart, both are placed.
     apart = _loc(f"खाता 123456789 {PHONE_A} कमल\nखाता {PHONE_A} 987654321 कमल{tail}")
     assert place_guided_values(values, [apart]).placed == 2
+
+
+def test_two_values_with_the_same_digits_split_differently_each_need_their_own_parts():
+    # `111111111; 22222222222` and `1111111112; 2222222222` have the same digits.
+    # The page prints the first list's parts twice and the second's not at all: one
+    # occurrence is placed, the other (whose own parts are missing) is held.
+    first, second = "111111111; 22222222222", "1111111112; 2222222222"
+    values = [("BANK-ACCOUNT-NO", first), ("BANK-ACCOUNT-NO", second)]
+    page = _loc(
+        "खाता 111111111 कमल\nखाता 22222222222 कमल\n"
+        "खाता 111111111 कमल\nखाता 22222222222 कमल"
+    )
+    placement = place_guided_values(values, [page])
+    assert placement.placed == 1 and len(placement.unplaced) == 1
+    # With the second list's own parts printed, both are placed.
+    page = _loc(
+        "खाता 111111111 कमल\nखाता 22222222222 कमल\n"
+        "खाता 1111111112 कमल\nखाता 2222222222 कमल"
+    )
+    assert place_guided_values(values, [page]).placed == 2

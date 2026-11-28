@@ -794,10 +794,10 @@ def locate_value(
 
     def stands_alone(a: int, b: int) -> bool:
         # A match through a bare wrap is weak evidence, so it must not be glued to
-        # another digit at either end either: not by a line break after a printed
-        # separator (`9-` / `98512` / `34567` is a longer number), nor by a single
-        # separator mark (`9-98512` / `34567`), nor by another bare wrap (`98512` /
-        # `34567` / `7`). A list's `, ` still ends it.
+        # another digit at either end either: not by another bare wrap (`98512` /
+        # `34567` / `7`), nor by any joining gap (`9-` / `98512` / `34567`,
+        # `12- 98512` / `34567`, `9 98512` / `34567`) -- except a list's delimiter,
+        # a comma or semicolon with or without spaces (`…, 98…`, `…,98…`).
         for gap in (
             loc.text[index[a - 1] + 1 : index[a]] if a > 0 else None,
             loc.text[index[b - 1] + 1 : index[b]] if b < len(index) else None,
@@ -806,7 +806,10 @@ def locate_value(
                 continue
             if _wraps_one_value(gap):  # `98000` / `00001` / `7`: a longer number
                 return False
-            if _joins_one_value(gap) and ("\n" in gap or len(gap) <= 1):
+            marks = gap.replace(" ", "").replace("\t", "")
+            if marks and "\n" not in marks and set(marks) <= {",", ";"}:
+                continue  # a list delimiter ends the value
+            if _joins_one_value(gap):
                 return False
         return True
 
@@ -1071,25 +1074,38 @@ class GuidedNeeds:
     sample: dict
     parts: dict
     part_values: dict
+    #: Per composite key, each required occurrence's own split (its parts' keys), or
+    #: ``None`` for one that is not a list: two values with the same digits can split
+    #: differently (`111111111; 22222222222` / `1111111112; 2222222222`).
+    splits: dict = field(default_factory=dict)
 
     @classmethod
     def of(cls, values: list[tuple[str, str]]) -> GuidedNeeds:
         needed: Counter[str] = Counter()
         sample: dict[str, tuple[str, str]] = {}
+        occurrences: dict[str, list[tuple[str, ...] | None]] = {}
+        part_values: dict[str, str] = {}
         for kind, value in values:
             key = match_key(value)
             needed[key] += 1
             sample.setdefault(key, (kind, value))
-        parts: dict[str, list[str]] = {}
-        part_values: dict[str, str] = {}
-        for key, (kind, value) in sample.items():
             split = composite_parts(kind, value)
-            if split is None:
-                continue
-            parts[key] = [match_key(part) for part in split]
-            for part in split:
+            occurrences.setdefault(key, []).append(
+                None if split is None else tuple(match_key(part) for part in split)
+            )
+            for part in split or ():
                 part_values.setdefault(match_key(part), part)
-        return cls(needed, sample, parts, part_values)
+        splits = {
+            key: occ
+            for key, occ in occurrences.items()
+            if any(split is not None for split in occ)
+        }
+        # Every part of every split of the key: all are looked for.
+        parts = {
+            key: list(dict.fromkeys(part for split in occ if split for part in split))
+            for key, occ in splits.items()
+        }
+        return cls(needed, sample, parts, part_values, splits)
 
     def read(self, loc: Locator, keys: list[str], boxes: list[fitz.Rect]) -> GuidedRead:
         """What ONE read shows: exact whole matches of ``keys`` (and of every composite
@@ -1252,18 +1268,19 @@ class GuidedNeeds:
         for part in pool:
             if part in self.needed and part not in self.parts:
                 pool[part] = max(0, pool[part] - used[part])
-        for key, part_keys in self.parts.items():
-            short = self.needed[key] - used[key]
-            if short <= 0:
-                continue
-            per_occurrence = Counter(part_keys)
-            can = min(
-                short,
-                min(pool[part] // count for part, count in per_occurrence.items()),
-            )
-            for part, count in per_occurrence.items():
-                pool[part] -= can * count
-            used[key] += can
+        for key, occurrences in self.splits.items():
+            # A whole print places any occurrence of the key; give them to the
+            # occurrences that are not lists first (nothing else can place those),
+            # and place each remaining one from ITS OWN split's parts.
+            rest = sorted(occurrences, key=lambda split: split is not None)[used[key] :]
+            for split in rest:
+                if split is None:
+                    continue
+                per_occurrence = Counter(split)
+                if all(pool[part] >= n for part, n in per_occurrence.items()):
+                    for part, n in per_occurrence.items():
+                        pool[part] -= n
+                    used[key] += 1
         return used
 
     def pending(self, used: Counter) -> list[str]:
