@@ -1349,6 +1349,7 @@ def test_the_post_check_still_refuses_when_a_placed_part_stays_readable(
 def test_a_number_wrapped_at_a_line_end_is_matched_whole():
     for page in (
         f"मो. {PHONE_A[:5]}\n{PHONE_A[5:]} मा",
+        f"मो. {PHONE_A[:5]}\n{PHONE_A[5:]}, 9800000002 मा",  # a list's `, ` ends it
         f"मो. {PHONE_A[:5]} \n  {PHONE_A[5:]} मा",
         f"मो. {PHONE_A[:5]}-\n{PHONE_A[5:]} मा",
         f"मो. {PHONE_A[:5]}\n-{PHONE_A[5:]} मा",
@@ -1362,6 +1363,10 @@ def test_a_number_wrapped_at_a_line_end_is_matched_whole():
         (f"मो. {PHONE_A[:4]}\n{PHONE_A[4:7]}\n{PHONE_A[7:]}", PHONE_A),
         ("ना.प्र.नं. १२३\n४५ मा", "१२३४५"),
         (f"मो. {PHONE_A[:5]}\n{PHONE_A[5:]}7 मा", PHONE_A),
+        # ...or a wrapped tail of a longer number glued on by a separator.
+        (f"मो. 9-\n{PHONE_A[:5]}\n{PHONE_A[5:]} मा", PHONE_A),
+        (f"मो. 9-{PHONE_A[:5]}\n{PHONE_A[5:]} मा", PHONE_A),
+        (f"मो. {PHONE_A[:5]}\n{PHONE_A[5:]}-\n7 मा", PHONE_A),
     ):
         assert locate_value(_loc(page), value, approximate=False) == [], page
 
@@ -1384,9 +1389,15 @@ def test_an_email_wrapped_at_its_hyphen_is_matched_whole():
         f"{EMAIL}\n.np",
         f"{EMAIL} \n  -np मा",
         f"jo-\n{EMAIL}",  # ...or started on the line before
-        f"jo.  \n   {local}@{head}-\n{tail}",
+        f"jo_  \n   {local}@{head}-\n{tail}",
     ):
         assert locate_value(_loc(page), EMAIL, approximate=False) == [], page
+    # A sentence's or a label's period at the end of the line before is not one.
+    for page in (
+        f"Email address.\n{EMAIL}",
+        f"Email address.  \n  {local}@{head}-\n{tail}",
+    ):
+        assert len(locate_value(_loc(page), EMAIL, approximate=False)) == 1, page
     # A line break followed by ordinary text still ends the address.
     assert len(locate_value(_loc(f"{EMAIL}\nमा पठाइयो"), EMAIL, approximate=False)) == 1
     assert len(locate_value(_loc(f"इमेल:\n{EMAIL}"), EMAIL, approximate=False)) == 1
@@ -1629,3 +1640,65 @@ def test_a_repeated_part_is_debited_once_per_copy_across_reads():
     # Three separate prints place both.
     three = _loc(f"मो. {PHONE_A}/{PHONE_A} कमल कमल\nफोन {PHONE_A}")
     assert place_guided_values(values, [three]).placed == 2
+
+
+def test_an_account_overlapping_a_composite_print_is_not_placed_by_it_across_reads():
+    # The transcript needs the account `123456789 / A` and the list `A/B`; the page
+    # prints only `123456789 / A/B`. One read credits the list (and so not the
+    # account); another garbles `B` and credits the account. One printed `A`: one value.
+    account = f"123456789 / {PHONE_A}"
+    values = [("BANK-ACCOUNT-NO", account), ("PHONE-NO", f"{PHONE_A}/{PHONE_B}")]
+    clear = _loc(f"खाता नं. {account}/{PHONE_B} कमल")
+    garbled = _loc(f"खाता नं. {account}/98000000O2 कमल")
+    assert place_guided_values(values, [clear]).placed == 1
+    for first, second in ((clear, garbled), (garbled, clear)):
+        placement = place_guided_values(values, [first], lambda s=second: s)
+        assert placement.placed <= 1 and placement.unplaced
+
+
+def test_one_printed_run_never_supplies_two_parts_of_a_list():
+    # The list `123456789 9800000001 र 9800000001` (two accounts); the page prints only
+    # the first. Its trailing group is that account's, not a print of the second.
+    account = f"123456789 {PHONE_A}"
+    values = [("BANK-ACCOUNT-NO", f"{account} र {PHONE_A}")]
+    from likhit.privacy.pdf_ocr import composite_parts
+
+    assert composite_parts(*values[0]) == [account, PHONE_A]
+    alone = _loc(f"खाता नं. {account} कमल कमल")
+    assert place_guided_values(values, [alone]).placed == 0
+    # ...on one read or across two (the second garbles the first group).
+    garbled = _loc(f"खाता नं. 12345678O {PHONE_A} कमल कमल")
+    for first, second in ((alone, garbled), (garbled, alone)):
+        assert place_guided_values(values, [first], lambda s=second: s).placed == 0
+    # A separate print of the second account places the list.
+    both = _loc(f"खाता नं. {account} कमल कमल\nखाता {PHONE_A}")
+    assert place_guided_values(values, [both]).placed == 1
+
+
+def test_document_retries_combine_on_uncapped_whole_counts(tmp_path, stub_ocr):
+    # The transcript needs `A/B` once and `A` once. The first read finds two whole
+    # `A/B` prints (and no lone `A`); the retry sees one pair whole and the other as
+    # `A … B`. The `A` inside the second pair is that pair's: `A` stays held.
+    data, _ = _scan_of([PLAIN_LINE])
+    src = tmp_path / "scan.pdf"
+    src.write_bytes(data)
+    reads = Counter()
+
+    def ocr(page, _calls):
+        reads[page.number] += 1
+        if reads[page.number] == 1:
+            return _loc(f"मो. {PHONE_A}/{PHONE_B} कमल\nफोन {PHONE_A}/{PHONE_B}")
+        return _loc(f"मो. {PHONE_A}/{PHONE_B} कमल\nफोन {PHONE_A} कमल {PHONE_B}")
+
+    stub_ocr(ocr)
+    transcript = f"फोन {PHONE_A}\n\nसम्पर्क नं. {PHONE_A}/{PHONE_B}\n"
+    dry = redact_pdf(
+        src,
+        None,
+        mode=RedactionMode.STRICT,
+        dry_run=True,
+        ocr=True,
+        transcript=transcript,
+    )
+    assert dry.guided_values == 2 and dry.guided_placed == 1
+    assert [u["kind"] for u in dry.unplaced] == ["PHONE-NO"]

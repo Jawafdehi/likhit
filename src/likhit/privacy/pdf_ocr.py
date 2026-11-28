@@ -694,9 +694,11 @@ def _email_pattern(needle: str) -> str:
 
 
 def _email_continues_before(text: str, start: int) -> bool:
-    """Whether the line before ``start`` ends with an address mark (`.-_%+@`), so the
-    address at ``start`` may be the tail of a longer one wrapped there. Walks the whole
-    whitespace run back (a fixed window would be outrun by a long one)."""
+    """Whether the line before ``start`` ends with an address mark (`-_%+@`), so the
+    address at ``start`` may be the tail of a longer one wrapped there. Not a period:
+    that ends a sentence or a label (`Email address.` ⏎ `ann@example.com`) far more
+    often than it splits an address. Walks the whole whitespace run back (a fixed
+    window would be outrun by a long one)."""
 
     i = start
     while i and text[i - 1] in " \t":
@@ -706,7 +708,7 @@ def _email_continues_before(text: str, start: int) -> bool:
     i -= 1
     while i and text[i - 1] in " \t":
         i -= 1
-    return bool(i) and text[i - 1] in ".-_%+@"
+    return bool(i) and text[i - 1] in "-_%+@"
 
 
 def locate_value(
@@ -727,7 +729,8 @@ def locate_value(
         # domain that continues): only then does a match prove THIS value is placed.
         # ...nor one that continues over a line break: a next line starting with an
         # address mark (`ann@example.com` ⏎ `.np`), or a previous line ending with one
-        # (`jo-` ⏎ `ann@example.com`). Either may be a longer, different address.
+        # other than a sentence's period (`jo-` ⏎ `ann@example.com`). Either may be a
+        # longer, different address.
         spans = [
             (m.start(), m.end())
             for m in re.finditer(
@@ -787,6 +790,21 @@ def locate_value(
             if n < GUIDED_SHORT_VALUE_DIGITS or wraps or not _wraps_one_value(gap):
                 return False
             wraps += 1
+        return not wraps or stands_alone(a, b)
+
+    def stands_alone(a: int, b: int) -> bool:
+        # A match through a bare wrap is weak evidence, so it must not be glued to
+        # another digit at either end either: not by a line break after a printed
+        # separator (`9-` / `98512` / `34567` is a longer number), nor by a single
+        # separator mark (`9-98512` / `34567`). A list's `, ` still ends it.
+        for gap in (
+            loc.text[index[a - 1] + 1 : index[a]] if a > 0 else None,
+            loc.text[index[b - 1] + 1 : index[b]] if b < len(index) else None,
+        ):
+            if gap is None or not _joins_one_value(gap):
+                continue
+            if "\n" in gap or len(gap) <= 1:
+                return False
         return True
 
     spans = []
@@ -912,6 +930,10 @@ class GuidedPlacement:
     #: page could give that value, per part key -- outside the composite's own whole
     #: matches. Summed across pages by document-level guidance like ``placed_by_key``.
     part_supply: Counter = field(default_factory=Counter)
+    #: The UNCAPPED exact count behind ``placed_by_key``. Document-level guidance
+    #: combines a page's reads on it: a capped count hides a whole match a retry must
+    #: debit an overlapping value for (:meth:`GuidedNeeds.combine`).
+    whole_by_key: Counter = field(default_factory=Counter)
 
 
 #: Words that join two values in one written list (`९८५१११११११ वा ९८४१११११११`).
@@ -1091,30 +1113,34 @@ class GuidedNeeds:
             if spans:
                 whole[key] = len(spans)
         supply: Counter[str] = Counter()
-        for key, part_keys in self.parts.items():
-            if whole[key] >= self.needed[key]:
-                continue
-            for part in part_keys:
-                if part in supply:
-                    continue
-                # Nor inside another value's credited print: the phone-shaped group of
-                # an account written `123456789 / 9800000001` is that account's.
-                own = taken + [
-                    span
-                    for other, spans in credited.items()
-                    if other != part
-                    for span in spans
-                ]
-                spans = [
-                    (s, e)
-                    for s, e in locate_value(
-                        loc, self.part_values[part], approximate=False
-                    )
-                    if not any(s < te and ts < e for ts, te in own)
-                ]
-                for s, e in spans:
-                    boxes += span_rects(loc, s, e)
-                supply[part] = len(spans)
+        wanted = {
+            part
+            for key, part_keys in self.parts.items()
+            if whole[key] < self.needed[key]
+            for part in part_keys
+        }
+        claimed: list[tuple[int, int]] = []
+        # Longest part first, and one print to one part: `123456789 9800000001` is an
+        # account's print, not also one of the list's `9800000001`.
+        for part in sorted(wanted, key=lambda p: (-len(p), p)):
+            # Nor inside another value's credited print: the phone-shaped group of
+            # an account written `123456789 / 9800000001` is that account's.
+            own = taken + claimed
+            own += [
+                span
+                for other, spans in credited.items()
+                if other != part
+                for span in spans
+            ]
+            spans = [
+                (s, e)
+                for s, e in locate_value(loc, self.part_values[part], approximate=False)
+                if not any(s < te and ts < e for ts, te in own)
+            ]
+            for s, e in spans:
+                boxes += span_rects(loc, s, e)
+            claimed += spans
+            supply[part] = len(spans)
         return GuidedRead(whole, +supply)
 
     def second_read_keys(self, pending: list[str]) -> list[str]:
@@ -1145,10 +1171,13 @@ class GuidedNeeds:
         """
 
         best: Counter[str] = Counter()
+        best_supply: Counter[str] = Counter()
         for one in reads:
             for key, n in one.whole.items():
                 best[key] = max(best[key], n)
-        before, around = self._overlapping()
+            for part, n in one.supply.items():
+                best_supply[part] = max(best_supply[part], n)
+        before, around, parts_before = self._overlapping()
         whole: Counter[str] = Counter()
         supply: Counter[str] = Counter()
         for one in reads:
@@ -1160,17 +1189,24 @@ class GuidedNeeds:
             for part, n in one.supply.items():
                 for other, weight in around.get(part, ()):
                     n -= weight * extra.get(other, 0)
+                for other in parts_before.get(part, ()):
+                    n -= best_supply[other] - one.supply[other]
                 supply[part] = max(supply[part], n)
         return GuidedRead(+whole, +supply)
 
     def _overlapping(
         self,
-    ) -> tuple[dict[str, list[tuple[str, int]]], dict[str, list[tuple[str, int]]]]:
-        """``(before, around)``: for each composite and each standalone value that is
-        a part, the EARLIER required values (in :meth:`read`'s order: composites first)
-        whose print can share its digits; for each part, every required value whose
-        print can. Two values share digits when a part of one is in, or contains, a
-        part of the other. Each comes with its weight: how many of the other value's
+    ) -> tuple[
+        dict[str, list[tuple[str, int]]],
+        dict[str, list[tuple[str, int]]],
+        dict[str, list[str]],
+    ]:
+        """``(before, around, parts_before)``: for each required value, the EARLIER
+        required values (in :meth:`read`'s order: composites first) whose print can
+        share its digits -- an account `123456789 / A` and a list `A/B` -- when either
+        is a composite or a part; for each part, every required value whose print can,
+        and the longer parts containing it. Two values share digits when a part of one
+        is in, or contains, a part of the other. Each comes with its weight: how many of the other value's
         parts overlap this one -- one print of `A/A` holds two prints of `A`. Both
         empty without composites: such values are combined exactly as before."""
 
@@ -1181,14 +1217,32 @@ class GuidedNeeds:
             def weight(mine: list[str], theirs: list[str]) -> int:
                 return sum(any(a in b or b in a for a in mine) for b in theirs)
 
-            before = {
-                key: [
-                    (other, w)
-                    for other in order[:rank]
-                    if (w := weight(units[key], units[other]))
+            # Composites and parts on one side or the other: two plain values that
+            # merely share digits (a phone inside an account) are combined as before.
+            related = set(self.parts) | set(self.part_values)
+            before = (
+                {
+                    key: [
+                        (other, w)
+                        for other in order[:rank]
+                        if (key in related or other in related)
+                        and (w := weight(units[key], units[other]))
+                    ]
+                    for rank, key in enumerate(order)
+                }
+                if self.parts
+                else {}
+            )
+            # Parts claim prints longest first (:meth:`read`): a part is debited for
+            # the longer parts containing it, too.
+            by_length = sorted(self.part_values, key=lambda q: (-len(q), q))
+            parts_before = {
+                part: [
+                    other
+                    for other in by_length[:rank]
+                    if part in other or other in part
                 ]
-                for rank, key in enumerate(order)
-                if key in self.parts or key in self.part_values
+                for rank, part in enumerate(by_length)
             }
             around = {
                 part: [
@@ -1198,7 +1252,7 @@ class GuidedNeeds:
                 ]
                 for part in self.part_values
             }
-            self._overlap = (before, around)
+            self._overlap = (before, around, parts_before)
         return self._overlap
 
     def allocate(self, whole: Counter, supply: Counter) -> Counter:
@@ -1319,6 +1373,7 @@ def place_guided_values(
         needs.unplaced(used),
         +placed_by_key,
         Counter(seen.supply),
+        +Counter(seen.whole),
     )
 
 

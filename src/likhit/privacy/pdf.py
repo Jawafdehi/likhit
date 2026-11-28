@@ -823,7 +823,7 @@ class _Guidance:
         needs = pdf_ocr.GuidedNeeds.of(self.values)
         per_page: dict[int, pdf_ocr.GuidedRead] = {
             n: pdf_ocr.GuidedRead(
-                Counter(placement.placed_by_key), Counter(placement.part_supply)
+                Counter(placement.whole_by_key), Counter(placement.part_supply)
             )
             for n, placement in self.found.items()
         }
