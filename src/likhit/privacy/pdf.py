@@ -820,20 +820,26 @@ class _Guidance:
     ) -> None:
         if not self.document or not self.values:
             return
-        needed: Counter[str] = Counter()
-        sample: dict[str, tuple[str, str]] = {}
-        for kind, value in self.values:
-            key = pdf_ocr.match_key(value)
-            needed[key] += 1
-            sample.setdefault(key, (kind, value))
+        needs = pdf_ocr.GuidedNeeds.of(self.values)
         per_page: dict[int, Counter[str]] = {
             n: Counter(placement.placed_by_key) for n, placement in self.found.items()
         }
+        per_page_parts: dict[int, Counter[str]] = {
+            n: Counter(placement.part_supply) for n, placement in self.found.items()
+        }
 
-        def total(key: str) -> int:
-            return sum(counts[key] for counts in per_page.values())
+        def allocate() -> Counter[str]:
+            # Pages are different physical occurrences: their counts add up.
+            whole: Counter[str] = Counter()
+            supply: Counter[str] = Counter()
+            for counts in per_page.values():
+                whole.update(counts)
+            for counts in per_page_parts.values():
+                supply.update(counts)
+            return needs.allocate(whole, supply)
 
-        pending = [key for key in needed if total(key) < needed[key]]
+        used = allocate()
+        pending = needs.pending(used)
         if pending and raster_pages:
             # 🛑 The second read is of the ORIGINAL page, not the burned one. A scan's
             # Unicode overlay boxes a value the first OCR read missed: it is burned, but
@@ -844,29 +850,38 @@ class _Guidance:
             with fitz.open(source) as original:
                 reads = {n: _second_read(original[n])() for n in sorted(raster_pages)}
             boxes: dict[int, list[fitz.Rect]] = {n: [] for n in reads}
-            for key in pending:
-                value = sample[key][1]
-                for n, loc in reads.items():
+            composites = [key for key in pending if key in needs.parts]
+            for n, loc in reads.items():
+                counts = per_page.setdefault(n, Counter())
+                for key in pending:
+                    value = needs.sample[key][1]
                     spans = pdf_ocr.locate_value(loc, value, approximate=False)
-                    counts = per_page.setdefault(n, Counter())
                     counts[key] = max(counts[key], len(spans))
                     for s, e in spans:
                         boxes[n] += pdf_ocr.span_rects(loc, s, e)
-                if total(key) < needed[key]:
-                    for n, loc in reads.items():
-                        for s, e in pdf_ocr.locate_value(loc, value, approximate=True):
+                if composites:
+                    parts = per_page_parts.setdefault(n, Counter())
+                    found = needs.locate_parts(loc, composites, needs.whole_spans(loc))
+                    for part, spans in found.items():
+                        parts[part] = max(parts[part], len(spans))
+                        for s, e in spans:
+                            boxes[n] += pdf_ocr.span_rects(loc, s, e)
+            used = allocate()
+            for key in needs.pending(used):
+                for n, loc in reads.items():
+                    for needle in needs.needles(key):
+                        for s, e in pdf_ocr.locate_value(loc, needle, approximate=True):
                             boxes[n] += pdf_ocr.span_rects(loc, s, e)
             for n, page_boxes in boxes.items():
                 _burn(doc[n], page_boxes)
                 report.rects_applied += len(page_boxes)
-        for key, n_needed in needed.items():
-            placed = min(total(key), n_needed)
+        for key, n_needed in needs.needed.items():
             report.guided_values += n_needed
-            report.guided_placed += placed
-            kind, value = sample[key]
+            report.guided_placed += used[key]
+            kind, value = needs.sample[key]
             report.unplaced += [
                 {"page": None, "kind": kind, "shape": pdf_ocr._shape(value)}
-            ] * (n_needed - placed)
+            ] * (n_needed - used[key])
 
 
 def _second_read(page: fitz.Page) -> Callable[[], pdf_ocr.Locator]:

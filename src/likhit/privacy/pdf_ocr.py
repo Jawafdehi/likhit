@@ -661,6 +661,38 @@ def _joins_one_value(gap: str) -> bool:
     return False
 
 
+#: A value wrapped at a line end with nothing printed at the break, or with a hyphen
+#: the typesetter inserted there (`98000-` / `00001`, `98000` / `-00001`): spaces, at most
+#: one hyphen, exactly one line break.
+_BARE_WRAP = re.compile(r"[ \t]*[-–]?[ \t]*\n[ \t]*[-–]?[ \t]*")
+
+
+def _wraps_one_value(gap: str) -> bool:
+    """Whether ``gap`` is a bare line wrap inside one value (see :data:`_BARE_WRAP`).
+
+    Weaker evidence than :func:`_joins_one_value` -- digits ending one line and digits
+    starting the next can be two fields -- so :func:`locate_value` accepts it only for a
+    long value, at most once per match, where the two lines' digits must still spell the
+    whole value exactly and stand alone (no digit before or after).
+    """
+
+    return gap.count("\n") == 1 and len(gap) <= 8 and bool(_BARE_WRAP.fullmatch(gap))
+
+
+def _email_pattern(needle: str) -> str:
+    """A regex for the address ``needle`` that also matches it wrapped over lines.
+
+    Between any two characters the page may break the line, with or without a hyphen
+    inserted at the break (`name@kathmandu-` / `post.example`; `name@kath-` / `mandu.np`).
+    The address's own characters must all be there, in order: a hyphen of the address
+    dropped at the break is not matched, so `kathmandu` / `post` does not place
+    `kathmandu-post`.
+    """
+
+    wrap = r"(?:-?[ \t]*\n[ \t]*)?"
+    return wrap.join(re.escape(ch) for ch in needle)
+
+
 def locate_value(
     loc: Locator, value: str, *, approximate: bool
 ) -> list[tuple[int, int]]:
@@ -668,6 +700,9 @@ def locate_value(
 
     Exact digit-stream matches always; with ``approximate`` (OCR locators only) also
     windows within ``len // 4`` edits. Short values need a label-shaped token just before.
+    A value wrapped over two lines is found whole: an address at any character, a number
+    of :data:`GUIDED_SHORT_VALUE_DIGITS` digits or more at one bare line break (with or
+    without a hyphen at it) or at any break after a printed separator.
     """
 
     if "@" in value:
@@ -677,7 +712,7 @@ def locate_value(
         spans = [
             (m.start(), m.end())
             for m in re.finditer(
-                rf"(?<![\w.%+-]){re.escape(needle)}(?![\w-]|\.\w)", hay
+                rf"(?<![\w.%+-]){_email_pattern(needle)}(?![\w-]|\.\w)", hay
             )
         ]
         if not spans and approximate:
@@ -719,10 +754,18 @@ def locate_value(
         # separators a number is written with, a few at a time. Otherwise two nearby
         # fields (`१२३४५ ... ६७८९०`) concatenate into the needle in the digit stream,
         # their boxes are burned, and the real value elsewhere counts as placed.
-        return all(
-            _joins_one_value(loc.text[index[i] + 1 : index[i + 1]])
-            for i in range(a, b - 1)
-        )
+        # A bare line wrap (`98000` / `00001`, nothing printed at the break) is weaker
+        # evidence than a printed separator: accepted once per match, and only for a
+        # long value, whose exact digits two unrelated fields will not spell by chance.
+        wraps = 0
+        for i in range(a, b - 1):
+            gap = loc.text[index[i] + 1 : index[i + 1]]
+            if _joins_one_value(gap):
+                continue
+            if n < GUIDED_SHORT_VALUE_DIGITS or wraps or not _wraps_one_value(gap):
+                return False
+            wraps += 1
+        return True
 
     spans = []
     last_end = -1
@@ -839,9 +882,212 @@ class GuidedPlacement:
     boxes: list
     placed: int
     unplaced: list  # (kind, value-shape) for values with no exact match on any read
-    #: Exact occurrences credited per :func:`match_key`, for document-level guidance,
-    #: which sums them across pages (different pages are different occurrences).
+    #: Exact occurrences of each WHOLE value credited per :func:`match_key`, for
+    #: document-level guidance, which sums them across pages (different pages are
+    #: different occurrences).
     placed_by_key: Counter = field(default_factory=Counter)
+    #: Exact occurrences of each PART of a composite value (:func:`composite_parts`) the
+    #: page could give that value, per part key -- outside the composite's own whole
+    #: matches. Summed across pages by document-level guidance like ``placed_by_key``.
+    part_supply: Counter = field(default_factory=Counter)
+
+
+#: Words that join two values in one written list (`९८५१११११११ वा ९८४१११११११`).
+_COMPOSITE_CONNECTORS = frozenset({"वा", "र", "तथा", "एवं", "and", "or", "&"})
+#: Separators that always end one value of a list: slash, comma, semicolon, danda, a
+#: table bar, or a connector word between spaces.
+_COMPOSITE_STRONG_SPLIT = re.compile(
+    r"\s*[/,;।॥|]+\s*|\s+(?:वा|र|तथा|एवं|and|or|&)\s+", re.I
+)
+_COMPOSITE_ANY_SPLIT = re.compile(r"[/,;।॥|\s]+")
+_COMPOSITE_HYPHEN_SPLIT = re.compile(r"\s*[-–]\s*")
+_COMPOSITE_NUMBER = re.compile(r"\+?[0-9०-९][0-9०-९ .\-–()]*")
+_COMPOSITE_EMAIL = re.compile(r"[\w.%+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def _composite_phone_part(part: str) -> bool:
+    """A whole Nepali phone number: a mobile (10 digits, `9…`), a landline with its area
+    code (`0…`, 8-11 digits) or either with the country code (`977…`, 11-13 digits).
+    Never a bare 6-7 digit local number: that is an amount's shape too."""
+
+    if not _COMPOSITE_NUMBER.fullmatch(part):
+        return False
+    digits = _digits(part)
+    return (
+        (len(digits) == 10 and digits[0] == "9")
+        or (digits[0] == "0" and 8 <= len(digits) <= 11)
+        or (digits.startswith("977") and 11 <= len(digits) <= 13)
+    )
+
+
+def _composite_account_part(part: str) -> bool:
+    """A whole bank account number: 9-20 digits (a six-digit half of one account is not
+    one -- see :func:`composite_parts`)."""
+
+    return bool(_COMPOSITE_NUMBER.fullmatch(part)) and 9 <= len(_digits(part)) <= 20
+
+
+def _composite_email_part(part: str) -> bool:
+    return bool(_COMPOSITE_EMAIL.fullmatch(part))
+
+
+#: Kind -> (shape every part must have, whether a hyphen may separate two values).
+_COMPOSITE_KINDS: dict[str, tuple[Callable[[str], bool], bool]] = {
+    "PHONE-NO": (_composite_phone_part, True),
+    "TABLE-PHONE-NO": (_composite_phone_part, True),
+    "BANK-ACCOUNT-NO": (_composite_account_part, True),
+    "EMAIL": (_composite_email_part, False),
+}
+
+
+def composite_parts(kind: str, value: str) -> list[str] | None:
+    """The values a guided ``value`` is a list of, or ``None`` if it is one value.
+
+    The transcript diff can hand over two values as one (`९८५१११११११ / ९८४१११११११`,
+    `… वा …`, two accounts joined by `र`) -- one placeholder over the list, or a separator
+    :func:`transcript_removed_values` does not split on -- while the page prints them
+    where the joined string never matches. Each part is then placed on its own.
+
+    🛑 Every part must be a whole value of ``kind`` on its own (a full phone number, an
+    account of 9+ digits, an address), or there is no split: a part that is only a
+    fragment of one value (`खाता नं. १२३४५६ / ७८९०१२`) would earn exact credit on an
+    unrelated amount while the value stays visible. Kinds without a part shape (IDs,
+    dates) are never split: a slash or space inside them is part of the value.
+    """
+
+    spec = _COMPOSITE_KINDS.get(kind)
+    if spec is None:
+        return None
+    is_part, hyphen_splits = spec
+    splitters = [_COMPOSITE_STRONG_SPLIT, _COMPOSITE_ANY_SPLIT]
+    if hyphen_splits:
+        splitters.append(_COMPOSITE_HYPHEN_SPLIT)
+    for splitter in splitters:
+        parts = [
+            part.strip(" \t\n.:()")
+            for part in splitter.split(value.strip())
+            if part.strip(" \t\n.:()").lower() not in _COMPOSITE_CONNECTORS
+        ]
+        parts = [part for part in parts if part]
+        if len(parts) >= 2 and all(is_part(part) for part in parts):
+            return parts
+    return None
+
+
+@dataclass
+class GuidedNeeds:
+    """What a set of guided values needs placed, and how part credit is shared out.
+
+    ``needed`` counts occurrences per :func:`match_key`; ``parts`` maps the key of a
+    composite value (:func:`composite_parts`) to its parts' keys, ``part_values`` each
+    part key to a written form to locate.
+    """
+
+    needed: Counter
+    sample: dict
+    parts: dict
+    part_values: dict
+
+    @classmethod
+    def of(cls, values: list[tuple[str, str]]) -> GuidedNeeds:
+        needed: Counter[str] = Counter()
+        sample: dict[str, tuple[str, str]] = {}
+        for kind, value in values:
+            key = match_key(value)
+            needed[key] += 1
+            sample.setdefault(key, (kind, value))
+        parts: dict[str, list[str]] = {}
+        part_values: dict[str, str] = {}
+        for key, (kind, value) in sample.items():
+            split = composite_parts(kind, value)
+            if split is None:
+                continue
+            parts[key] = [match_key(part) for part in split]
+            for part in split:
+                part_values.setdefault(match_key(part), part)
+        return cls(needed, sample, parts, part_values)
+
+    def short_composites(self, whole: Counter) -> list[str]:
+        """Composite keys their whole matches leave short."""
+
+        return [key for key in self.parts if whole[key] < self.needed[key]]
+
+    def whole_spans(self, loc: Locator) -> list[tuple[int, int]]:
+        """Exact spans of every composite value written whole on ``loc``."""
+
+        return [
+            span
+            for key in self.parts
+            for span in locate_value(loc, self.sample[key][1], approximate=False)
+        ]
+
+    def locate_parts(
+        self, loc: Locator, keys: list[str], taken: list[tuple[int, int]]
+    ) -> dict[str, list[tuple[int, int]]]:
+        """Exact spans of the parts of composite ``keys`` on ``loc``, outside ``taken``
+        (the composites' whole matches: those already credit the whole value, and the
+        same digits must not credit it again part by part)."""
+
+        found: dict[str, list[tuple[int, int]]] = {}
+        for key in keys:
+            for part in self.parts[key]:
+                if part in found:
+                    continue
+                found[part] = [
+                    (s, e)
+                    for s, e in locate_value(
+                        loc, self.part_values[part], approximate=False
+                    )
+                    if not any(s < te and ts < e for ts, te in taken)
+                ]
+        return found
+
+    def allocate(self, whole: Counter, supply: Counter) -> Counter:
+        """Occurrences placed per key: whole matches first, then composites from parts.
+
+        🛑 A composite occurrence is placed only when EVERY one of its parts has an
+        occurrence of its own, and each part occurrence is spent once: on a value the
+        transcript also has standalone first, then on one composite. One printed number
+        never places two required occurrences.
+        """
+
+        used = Counter(
+            {key: min(whole[key], need) for key, need in self.needed.items()}
+        )
+        pool = Counter(supply)
+        for part in pool:
+            if part in self.needed and part not in self.parts:
+                pool[part] = max(0, pool[part] - used[part])
+        for key, part_keys in self.parts.items():
+            short = self.needed[key] - used[key]
+            if short <= 0:
+                continue
+            per_occurrence = Counter(part_keys)
+            can = min(
+                short,
+                min(pool[part] // count for part, count in per_occurrence.items()),
+            )
+            for part, count in per_occurrence.items():
+                pool[part] -= can * count
+            used[key] += can
+        return used
+
+    def pending(self, used: Counter) -> list[str]:
+        return [key for key, need in self.needed.items() if used[key] < need]
+
+    def needles(self, key: str) -> list[str]:
+        """What to box approximately for an unplaced key: the value, and its parts."""
+
+        return [self.sample[key][1]] + [
+            self.part_values[part] for part in dict.fromkeys(self.parts.get(key, ()))
+        ]
+
+    def unplaced(self, used: Counter) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        for key, need in self.needed.items():
+            kind, value = self.sample[key]
+            out += [(kind, _shape(value))] * (need - used[key])
+        return out
 
 
 def place_guided_values(
@@ -859,68 +1105,92 @@ def place_guided_values(
     ``approximate_boxes=False`` boxes exact matches only. Document-level guidance passes
     it on its first sweep, where a value missing from a page is the normal case (it is on
     another page) and fuzzy boxes on every page would black out look-alike numbers.
+
+    A composite value (:func:`composite_parts`) not found whole is placed part by part:
+    every part is boxed where it matches exactly, and the value counts as placed only if
+    every part is (:meth:`GuidedNeeds.allocate`).
     """
 
     boxes: list[fitz.Rect] = []
-    placed = 0
-    by_key: Counter[str] = Counter()
-    pending: list[tuple[str, str, int, int]] = []
     # 🛑 Placement CREDIT comes only from what the page shows. On a scan the glyph layer
     # (a stale or junk OCR overlay) may put a value where the picture does not; its
     # matches still get boxes, but only a read of the pixels can prove a value placed.
-    credit = [
-        loc for loc in locators if loc.ocr
-    ] or locators  # kind, value, needed, placed so far
+    credit = [loc for loc in locators if loc.ocr] or locators
     # 🛑 Grouped by what MATCHING sees, not by the raw string: `9851234567` and
     # `९८५-१२३-४५६७` are one needle to locate_value, so as two groups each would credit
     # the same single occurrence on the page and a garbled second copy would pass.
-    groups: dict[str, tuple[str, str]] = {}
-    needed_by_key: Counter[str] = Counter()
-    for kind, value in values:
-        key = match_key(value)
-        groups.setdefault(key, (kind, value))
-        needed_by_key[key] += 1
-    for key, needed in needed_by_key.items():
-        kind, value = groups[key]
-        exact_counts = []
+    needs = GuidedNeeds.of(values)
+    whole: Counter[str] = Counter()
+    taken: dict[int, list[tuple[int, int]]] = {id(loc): [] for loc in locators}
+    for key in needs.needed:
+        value = needs.sample[key][1]
+        counts = []
         for loc in locators:
             spans = locate_value(loc, value, approximate=False)
             for s, e in spans:
                 boxes += span_rects(loc, s, e)
+            if key in needs.parts:
+                taken[id(loc)] += spans
             if loc in credit:
-                exact_counts.append(len(spans))
-        got = max(exact_counts, default=0)
-        placed += min(got, needed)
-        by_key[key] += min(got, needed)
-        if got >= needed:
-            continue
-        for loc in locators:
-            if loc.ocr and approximate_boxes:
-                for s, e in locate_value(loc, value, approximate=True):
-                    boxes += span_rects(loc, s, e)
-        pending.append((kind, value, needed, got))
+                counts.append(len(spans))
+        whole[key] = max(counts, default=0)
+    supply: Counter[str] = Counter()
+    short = needs.short_composites(whole)
+    for loc in locators:
+        for part, spans in needs.locate_parts(loc, short, taken[id(loc)]).items():
+            for s, e in spans:
+                boxes += span_rects(loc, s, e)
+            if loc in credit:
+                supply[part] = max(supply[part], len(spans))
+    used = needs.allocate(whole, supply)
+    pending = needs.pending(used)
+    if approximate_boxes:
+        for key in pending:
+            for loc in locators:
+                if loc.ocr:
+                    for needle in needs.needles(key):
+                        for s, e in locate_value(loc, needle, approximate=True):
+                            boxes += span_rects(loc, s, e)
 
-    unplaced = []
     loc2 = second_read() if pending and second_read is not None else None
-    for kind, value, needed, got in pending:
-        if loc2 is not None:
-            spans = locate_value(loc2, value, approximate=False)
+    if loc2 is not None:
+        # 🛑 The best of the two reads, never their sum: both reads see the same
+        # page, so one physical occurrence found by each is still one occurrence.
+        # Summing let a value printed twice pass when both reads found only the
+        # same copy and the other was garbled.
+        for key in pending:
+            spans = locate_value(loc2, needs.sample[key][1], approximate=False)
             for s, e in spans:
                 boxes += span_rects(loc2, s, e)
-            # 🛑 The best of the two reads, never their sum: both reads see the same
-            # page, so one physical occurrence found by each is still one occurrence.
-            # Summing let a value printed twice pass when both reads found only the
-            # same copy and the other was garbled.
-            best = max(got, len(spans))
-            # The same contract as the first read: approximate boxes only when asked.
-            if best < needed and approximate_boxes:
-                for s, e in locate_value(loc2, value, approximate=True):
+            whole[key] = max(whole[key], len(spans))
+        composites = [key for key in pending if key in needs.parts]
+        if composites:
+            found = needs.locate_parts(loc2, composites, needs.whole_spans(loc2))
+            for part, spans in found.items():
+                for s, e in spans:
                     boxes += span_rects(loc2, s, e)
-            placed += min(best, needed) - got
-            by_key[match_key(value)] += min(best, needed) - got
-            got = min(best, needed)
-        unplaced += [(kind, _shape(value))] * (needed - got)
-    return GuidedPlacement(boxes, placed, unplaced, by_key)
+                supply[part] = max(supply[part], len(spans))
+        used = needs.allocate(whole, supply)
+        # The same contract as the first read: approximate boxes only when asked.
+        if approximate_boxes:
+            for key in needs.pending(used):
+                for needle in needs.needles(key):
+                    for s, e in locate_value(loc2, needle, approximate=True):
+                        boxes += span_rects(loc2, s, e)
+    placed_by_key = Counter(
+        {
+            key: min(whole[key], need)
+            for key, need in needs.needed.items()
+            if min(whole[key], need)
+        }
+    )
+    return GuidedPlacement(
+        boxes,
+        sum(used.values()),
+        needs.unplaced(used),
+        placed_by_key,
+        Counter({part: n for part, n in supply.items() if n}),
+    )
 
 
 def match_key(value: str) -> str:

@@ -769,9 +769,9 @@ def test_dates_with_dandas_and_values_wrapped_at_a_line_end_still_match():
     )
     wrapped = _loc("(ना.प्र.प.न.२७-०१-७५-\nछ १२३४५,काभ्रे)")
     assert len(locate_value(wrapped, "२७-०१-७५-१२३४५", approximate=False)) == 1
-    # ...not when digits merely end one line and start the next,
+    # ...not when a word stands between the two lines' digits,
     assert (
-        locate_value(_loc("मो. 98512\n34567 घर"), "9851234567", approximate=False) == []
+        locate_value(_loc("मो. 98512\nघर 34567"), "9851234567", approximate=False) == []
     )
     # ...and two words between two numbers on one line still keep them apart.
     assert (
@@ -1165,3 +1165,287 @@ def test_the_second_read_honours_approximate_boxes_off():
     assert off.boxes == [] and off.placed == 0 and len(off.unplaced) == 1
     on = place_guided_values([("MOBILE", MOBILE)], [first], lambda: slipped)
     assert on.boxes and on.placed == 0
+
+
+# ------------------------------------------- composite values and values wrapped over lines
+# Synthetic values only: obviously fake numbers and addresses.
+PHONE_A, PHONE_B = "9800000001", "9800000002"
+ACCOUNT_A, ACCOUNT_B = "100000000001", "20000000002"
+EMAIL = "sita.sharma@nepal-example.org"
+
+
+def test_composite_parts_split_lists_of_whole_values_only():
+    from likhit.privacy.pdf_ocr import composite_parts
+
+    for joined in (
+        f"{PHONE_A}/{PHONE_B}",
+        f"{PHONE_A} / {PHONE_B}",
+        f"{PHONE_A}, {PHONE_B}",
+        f"{PHONE_A}; {PHONE_B}",
+        f"{PHONE_A} {PHONE_B}",
+        f"{PHONE_A}।{PHONE_B}",
+        f"{PHONE_A} वा {PHONE_B}",
+        f"{PHONE_A} र {PHONE_B}",
+        f"{PHONE_A}-{PHONE_B}",
+    ):
+        assert composite_parts("PHONE-NO", joined) == [PHONE_A, PHONE_B], joined
+    assert composite_parts("BANK-ACCOUNT-NO", f"{ACCOUNT_A} र {ACCOUNT_B}") == [
+        ACCOUNT_A,
+        ACCOUNT_B,
+    ]
+    assert composite_parts("EMAIL", f"{EMAIL}, ram@example.org") == [
+        EMAIL,
+        "ram@example.org",
+    ]
+    # One value, never cut: its own separators, halves too short to be whole values,
+    # a local landline, and kinds whose slashes and spaces belong to the value.
+    for kind, one in (
+        ("PHONE-NO", PHONE_A),
+        ("PHONE-NO", "९८५१-२३४५६७"),
+        ("PHONE-NO", "01 4123456"),
+        ("PHONE-NO", f"{PHONE_A}/02"),
+        ("BANK-ACCOUNT-NO", "१२३४५६ / ७८९०१२"),
+        ("BANK-ACCOUNT-NO", "0123 4567 8901"),
+        ("BANK-ACCOUNT-NO", f"{ACCOUNT_A} 2 {ACCOUNT_B}"),
+        ("CITIZENSHIP-NO", "१२३४५/६७८९०"),
+        ("EMAIL", EMAIL),
+    ):
+        assert composite_parts(kind, one) is None, one
+
+
+def test_two_phones_joined_in_the_transcript_are_placed_where_the_page_separates_them():
+    # The transcript wrote `A/B` (one diff value: the slash merged the two placeholders);
+    # the page prints each number on its own line, where the joined string never matches.
+    text = f"सम्पर्क नं. {PHONE_A}/{PHONE_B} बुझेको"
+    values = transcript_removed_values(text, RedactionMode.STRICT)
+    assert values == [("PHONE-NO", f"{PHONE_A}/{PHONE_B}")]
+    loc = _loc(f"मो. {PHONE_A} कमल कमल कमल\nफोन {PHONE_B}")
+    placement = place_guided_values(values, [loc])
+    assert placement.placed == 1 and placement.unplaced == []
+    # Both parts are boxed: every one of their characters lies under a box.
+    for part in (PHONE_A, PHONE_B):
+        assert any(b.contains(_value_rect(loc, part)) for b in placement.boxes), part
+    # Written joined on the page, the whole value places it as before.
+    joined = place_guided_values(values, [_loc(f"मो. {PHONE_A}/{PHONE_B}")])
+    assert joined.placed == 1 and joined.unplaced == []
+
+
+def test_a_composite_with_one_part_missing_keeps_the_document_held(tmp_path):
+    values = [("PHONE-NO", f"{PHONE_A}/{PHONE_B}")]
+    # The second number is garbled on the page (O for 0): one part placed is not enough.
+    loc = _loc(f"मो. {PHONE_A} कमल कमल कमल\nफोन 98000000O2")
+    placement = place_guided_values(values, [loc])
+    assert placement.placed == 0
+    assert [kind for kind, _ in placement.unplaced] == ["PHONE-NO"]
+    assert any(b.contains(_value_rect(loc, PHONE_A)) for b in placement.boxes)
+    # End to end, unanchored transcript: the document refuses, the journal is masked.
+    doc = _vector_page_doc([f"सम्फ्क नं. {PHONE_A}", "फोन 98000000O2"])
+    src = tmp_path / "held.pdf"
+    doc.save(src)
+    transcript = f"सम्पर्क नं. {PHONE_A}/{PHONE_B} बुझेको\n"
+    dry = redact_pdf(
+        src, None, mode=RedactionMode.STRICT, dry_run=True, transcript=transcript
+    )
+    assert [(u["page"], u["kind"]) for u in dry.unplaced] == [(None, "PHONE-NO")]
+    assert "98000" not in repr(dry.as_dict())
+    with pytest.raises(ValueError, match="could not be placed"):
+        redact_pdf(
+            src, tmp_path / "out.pdf", mode=RedactionMode.STRICT, transcript=transcript
+        )
+
+
+def test_one_printed_part_is_spent_once_across_values():
+    # The transcript has A standalone AND inside `A/B`; the page prints A once and B once.
+    # The single A cannot stand for both required occurrences.
+    values = [("PHONE-NO", PHONE_A), ("PHONE-NO", f"{PHONE_A}/{PHONE_B}")]
+    loc = _loc(f"मो. {PHONE_A} कमल कमल कमल\nफोन {PHONE_B}")
+    placement = place_guided_values(values, [loc])
+    assert placement.placed == 1 and len(placement.unplaced) == 1
+    # A composite written whole does not credit its parts a second time either.
+    whole = _loc(f"मो. {PHONE_A}/{PHONE_B}")
+    twice = place_guided_values([("PHONE-NO", f"{PHONE_A}/{PHONE_B}")] * 2, [whole])
+    assert twice.placed == 1 and len(twice.unplaced) == 1
+
+
+def test_a_two_part_bank_account_value_is_placed_part_by_part(tmp_path):
+    text = f"बैंक खाता नं. {ACCOUNT_A} र {ACCOUNT_B} रहेको"
+    values = transcript_removed_values(text, RedactionMode.STRICT)
+    assert values == [("BANK-ACCOUNT-NO", f"{ACCOUNT_A} र {ACCOUNT_B}")]
+    # The page is a table: each account in its own row, under neutral words.
+    doc = _vector_page_doc(
+        [f"कमल कमल पहिलो {ACCOUNT_A}", "कमल कमल कमल", f"कमल कमल दोस्रो {ACCOUNT_B}"]
+    )
+    src = tmp_path / "accounts.pdf"
+    doc.save(src)
+    report = redact_pdf(
+        src, tmp_path / "out.pdf", mode=RedactionMode.STRICT, transcript=text
+    )
+    assert report.unplaced == [] and report.guided_placed == report.guided_values == 1
+    with fitz.open(tmp_path / "out.pdf") as out:
+        page_text = out[0].get_text()
+    assert ACCOUNT_A not in page_text and ACCOUNT_B not in page_text
+    assert "पहिलो" in page_text and "दोस्रो" in page_text
+
+
+def test_a_composite_on_a_scan_is_burned_part_by_part(tmp_path, stub_ocr):
+    data, loc = _scan_of([f"सम्फ्क नं. {PHONE_A} कमल", f"कमल कमल अर्को {PHONE_B}"])
+    src = tmp_path / "scan.pdf"
+    src.write_bytes(data)
+    stub_ocr(loc)
+    report = redact_pdf(
+        src,
+        tmp_path / "out.pdf",
+        mode=RedactionMode.STRICT,
+        ocr=True,
+        transcript=f"सम्पर्क नं. {PHONE_A}/{PHONE_B} बुझेको\n",
+    )
+    assert report.unplaced == [] and report.guided_placed == 1
+    for part in (PHONE_A, PHONE_B):
+        assert _black_share(tmp_path / "out.pdf", _value_rect(loc, part)) > 0.9
+
+
+def test_the_post_check_still_refuses_when_a_placed_part_stays_readable(
+    tmp_path, stub_ocr, monkeypatch
+):
+    # Both parts are placed (credited), but the burn of the second one is lost: the
+    # residue check on the written file must still read it and refuse the document.
+    data, loc = _scan_of([f"सम्फ्क नं. {PHONE_A} कमल", f"कमल कमल फोन {PHONE_B}"])
+    src = tmp_path / "scan.pdf"
+    src.write_bytes(data)
+    stub_ocr(loc)
+    keep = _value_rect(loc, PHONE_B)
+    real_burn = pdf_module._burn
+
+    def lossy_burn(page, boxes):
+        real_burn(page, [b for b in boxes if (b & keep).is_empty])
+
+    monkeypatch.setattr(pdf_module, "_burn", lossy_burn)
+    transcript = f"सम्पर्क नं. {PHONE_A}/{PHONE_B} बुझेको\n"
+    dry = redact_pdf(
+        src,
+        None,
+        mode=RedactionMode.STRICT,
+        dry_run=True,
+        ocr=True,
+        transcript=transcript,
+    )
+    assert dry.unplaced == []  # placement is satisfied...
+    with pytest.raises(
+        ValueError, match="verification failed"
+    ):  # ...the post-check is not
+        redact_pdf(
+            src,
+            tmp_path / "out.pdf",
+            mode=RedactionMode.STRICT,
+            ocr=True,
+            transcript=transcript,
+        )
+    assert not (tmp_path / "out.pdf").exists()
+
+
+def test_a_number_wrapped_at_a_line_end_is_matched_whole():
+    for page in (
+        f"मो. {PHONE_A[:5]}\n{PHONE_A[5:]} मा",
+        f"मो. {PHONE_A[:5]} \n  {PHONE_A[5:]} मा",
+        f"मो. {PHONE_A[:5]}-\n{PHONE_A[5:]} मा",
+        f"मो. {PHONE_A[:5]}\n-{PHONE_A[5:]} मा",
+    ):
+        assert len(locate_value(_loc(page), PHONE_A, approximate=False)) == 1, page
+    # Still not: a word between, a blank line between, two bare wraps in one value,
+    # a short value, or a slice of a longer number on the next line.
+    for page, value in (
+        (f"मो. {PHONE_A[:5]}\nघर {PHONE_A[5:]}", PHONE_A),
+        (f"मो. {PHONE_A[:5]}\n\n{PHONE_A[5:]}", PHONE_A),
+        (f"मो. {PHONE_A[:4]}\n{PHONE_A[4:7]}\n{PHONE_A[7:]}", PHONE_A),
+        ("ना.प्र.नं. १२३\n४५ मा", "१२३४५"),
+        (f"मो. {PHONE_A[:5]}\n{PHONE_A[5:]}7 मा", PHONE_A),
+    ):
+        assert locate_value(_loc(page), value, approximate=False) == [], page
+
+
+def test_an_email_wrapped_at_its_hyphen_is_matched_whole():
+    local, domain = EMAIL.split("@")
+    head, tail = domain.split("-")
+    for page in (
+        f"इमेल {local}@{head}-\n{tail} मा",  # broken after the hyphen
+        f"इमेल {local}@{head}\n-{tail} मा",  # ...or before it
+        f"इमेल {local[:4]}-\n{local[4:]}@{domain} मा",  # a hyphen inserted at the break
+    ):
+        assert len(locate_value(_loc(page), EMAIL, approximate=False)) == 1, page
+    # The address's own hyphen dropped at the break is a different address; a longer
+    # address continuing on the next line is not this one.
+    assert locate_value(_loc(f"{local}@{head}\n{tail}"), EMAIL, approximate=False) == []
+    assert (
+        locate_value(_loc(f"{local}@{head}-\n{tail}.np"), EMAIL, approximate=False)
+        == []
+    )
+
+
+def test_a_wrapped_email_on_a_unicode_page_is_placed_and_deleted(tmp_path):
+    local, domain = EMAIL.split("@")
+    head, tail = domain.split("-")
+    filler = "रामबहादुर थापाले निवेदन दिएको व्यहोरा सदर कायम गरिएको छ"
+    doc = _vector_page_doc([filler, "", "", filler])
+    # The address in a Latin font, wrapped after its hyphen (lines 2 and 3).
+    doc[0].insert_text((72, 118), f"{local}@{head}-", fontname="helv", fontsize=14)
+    doc[0].insert_text((72, 146), tail, fontname="helv", fontsize=14)
+    src = tmp_path / "email.pdf"
+    doc.save(src)
+    report = redact_pdf(
+        src,
+        tmp_path / "out.pdf",
+        mode=RedactionMode.STRICT,
+        transcript=f"इमेल {EMAIL} मा\n",
+    )
+    assert report.unplaced == [] and report.guided_placed == 1
+    with fitz.open(tmp_path / "out.pdf") as out:
+        page_text = out[0].get_text()
+    assert local not in page_text and head not in page_text and tail not in page_text
+
+
+def test_composite_parts_on_different_pages_place_an_unanchored_value(tmp_path):
+    doc = _pages(
+        _vector_page_doc([f"कमल कमल पहिलो {PHONE_A}"]),
+        _vector_page_doc([PLAIN_LINE]),
+        _vector_page_doc([f"कमल कमल दोस्रो {PHONE_B}"]),
+    )
+    src = tmp_path / "three.pdf"
+    doc.save(src)
+    report = redact_pdf(
+        src,
+        tmp_path / "out.pdf",
+        mode=RedactionMode.STRICT,
+        transcript=f"सम्पर्क नं. {PHONE_A}/{PHONE_B} बुझेको\n",
+    )
+    assert report.unplaced == [] and report.guided_placed == 1
+
+
+def test_a_composite_part_the_first_read_misses_is_found_by_the_second(
+    tmp_path, stub_ocr
+):
+    data1, loc1 = _scan_of([f"कमल कमल पहिलो {PHONE_A}"])
+    data2, loc2 = _scan_of([f"कमल कमल दोस्रो {PHONE_B}"])
+    src = tmp_path / "scan.pdf"
+    _pages(fitz.open("pdf", data1), fitz.open("pdf", data2)).save(src)
+    reads = Counter()
+
+    def ocr(page, _calls):
+        reads[page.number] += 1
+        if page.number == 0:
+            return _read_what_is_visible(page, loc1)
+        if reads[1] == 1:  # page 2's first read misses the second number
+            return Locator("", [], ocr=True)
+        return _read_what_is_visible(page, loc2)
+
+    stub_ocr(ocr)
+    report = redact_pdf(
+        src,
+        tmp_path / "out.pdf",
+        mode=RedactionMode.STRICT,
+        ocr=True,
+        transcript=f"सम्पर्क नं. {PHONE_A}/{PHONE_B} बुझेको\n",
+    )
+    assert report.unplaced == [] and report.guided_placed == 1
+    assert (
+        _black_share(tmp_path / "out.pdf", _value_rect(loc2, PHONE_B), page_no=1) > 0.9
+    )
