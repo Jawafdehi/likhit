@@ -21,6 +21,14 @@ This file starts at 0.1.8. For earlier releases, see the
 
 ### Fixed
 
+- **`redact_pdf(..., transcript=...)` no longer spends minutes diffing a long transcript.**
+  `transcript_removed_values` diffed the whole transcript against its redaction with one
+  character-level `difflib.SequenceMatcher`, whose `find_longest_match` is quadratic:
+  production backfills spent 20-45 minutes per court order inside it. A synthetic 300 KB
+  transcript with 232 values now takes ~0.7 s (it took ~20 min; 80 KB took 80 s). The
+  longest-match search is replaced by an exact k-gram-indexed one, so the opcodes -- and the
+  guided values -- are identical to difflib's, not approximately so: checked against
+  difflib on generated transcripts, adversarial repetitive strings and the POC corpus.
 - **Four identity-card numbers court orders cite are now redacted at `strict` and counted
   by the residue check** (JAW-167): a foreign national's citizen registration with their
   embassy (`भारतीय नागरिक रजिष्ट्रेसन नं.`, new `[REDACTED:FOREIGN-REGISTRATION-NO]`), a

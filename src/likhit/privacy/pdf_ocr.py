@@ -28,11 +28,13 @@ that needs it says so by raising :class:`OcrUnavailable` rather than returning n
 
 from __future__ import annotations
 
+import bisect
 import difflib
 import html
 import re
 import shutil
 import subprocess
+from array import array
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -71,6 +73,18 @@ GUIDED_MIN_DIGITS = 3
 #: A guided value shorter than this must sit right after something label-shaped (see
 #: :data:`_SHORT_VALUE_LABEL`) to be matched. Citizenship numbers of 4-5 digits exist.
 GUIDED_SHORT_VALUE_DIGITS = 6
+
+#: Largest range (both sides' characters together) whose longest common substring
+#: :func:`transcript_removed_values` leaves to difflib's own search, which costs roughly the
+#: square of the range: 2,000 keeps one call in the low milliseconds. Bigger ranges use the
+#: k-gram index (:class:`_TranscriptMatcher`); the answer is the same either way.
+REMOVED_VALUES_DIRECT_DIFF_CHARS = 2000
+
+#: Length of the substrings of the redacted text indexed for that search. Long enough that
+#: a k-gram is rare in a transcript (few index hits per sample), short enough that the
+#: unchanged text between two placeholders -- a name, a label -- still holds one; a range
+#: with no common run this long falls back to difflib's search.
+REMOVED_VALUES_KGRAM = 16
 
 _TO_ASCII_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 _PLACEHOLDER = re.compile(r"\[REDACTED:([A-Z-]+)\]")
@@ -236,16 +250,19 @@ def transcript_removed_values(text: str, mode: RedactionMode) -> list[tuple[str,
     only when the text path left one placeholder per value: a span it removed as ONE value
     (``खाता नं. १२३४५६ / ७८९०१२``) stays whole, never cut into fragments that could match
     unrelated numbers on the page.
+
+    The diff is difflib's, opcode for opcode, but its longest-match search is the
+    near-linear one of :class:`_TranscriptMatcher`: difflib's own took 20-45 minutes on a
+    long court order.
     """
 
     redacted = redact_text(text, mode=mode).text
     if redacted == text:
         return []
-    matcher = difflib.SequenceMatcher(None, text, redacted, autojunk=False)
     # difflib splits a value wherever its characters happen to recur in the placeholder;
     # merge non-equal opcodes separated by an equal run of 3 characters or fewer.
     groups: list[list] = [[]]
-    for op in matcher.get_opcodes():
+    for op in _TranscriptMatcher(text, redacted).get_opcodes():
         if op[0] == "equal" and op[2] - op[1] > 3:
             groups.append([])
         else:
@@ -280,6 +297,317 @@ def transcript_removed_values(text: str, mode: RedactionMode) -> list[tuple[str,
                 continue
         values.append((kinds[0], value))
     return values
+
+
+#: The longest matches of one range, grouped by their text: ``text -> (sorted starts in
+#: a, sorted starts in b)``. Every start in ``a`` pairs with every start in ``b``.
+_LongestMatches = dict[str, tuple[list[int], list[int]]]
+
+
+class _TranscriptMatcher(difflib.SequenceMatcher):
+    """``SequenceMatcher(None, a, b, autojunk=False)`` with the same opcodes, but fast.
+
+    🛑 ``difflib``'s :meth:`find_longest_match` walks, for each character of ``a``, every
+    position of that character in ``b``: quadratic on a transcript, which is tens to
+    hundreds of KB over a ~60-letter alphabet. Production backfills spent 20-45 minutes per
+    court order inside it. Only that method is replaced; ``get_matching_blocks`` and
+    ``get_opcodes`` are difflib's own and recurse exactly as before. The replacement returns
+    the SAME match difflib's would -- the longest common substring of the two ranges, ties
+    going to the smallest ``i``, then the smallest ``j`` -- so the opcodes are identical,
+    not merely similar: :func:`transcript_removed_values` turns them into the values a PDF
+    must burn, and "close" would mean a different set of boxes.
+
+    * A range of at most :data:`REMOVED_VALUES_DIRECT_DIFF_CHARS` characters goes to
+      difflib itself, on slices (its answer does not depend on where the range sits).
+    * A larger one is searched through an index of ``b``'s
+      :data:`REMOVED_VALUES_KGRAM`-character substrings: sampling ``a`` every ``step``
+      characters meets every common substring of at least ``step + KGRAM - 1`` characters,
+      so once the longest one met is that long, it is the longest there is. ``b`` is ``a``
+      with a few spans swapped for placeholders, so the unchanged stretches are long and a
+      handful of samples settle a range.
+    * A table whose every row lost a value is the opposite: hundreds of equally long
+      matches, and difflib's recursion peels one row per call. The search that settles a
+      range finds all of its longest matches, grouped by text; the range after the answer
+      inherits them, and while it still holds one whole, the earliest is its answer with no
+      new search (a longer or equally long match there would be one of them). Nothing goes
+      to the range before the answer: it cannot hold one, the answer being the earliest.
+      Inherited lists hold starts, never pairs: N rows are 2N numbers, not N x N tuples.
+    * Identical rows defeat sampling: each row's window hits every other row, N x N
+      index hits for one search. A search that visits more hits than a quarter of its
+      range's length stops and hands the range to
+      :func:`_removed_values_automaton_longest`, which is linear whatever repeats.
+    """
+
+    def __init__(self, a: str, b: str) -> None:
+        super().__init__(None, a, b, autojunk=False)
+        self._kgrams: dict[str, list[int]] | None = None
+        self._budget = 0  # index hits the current search may still visit
+        #: (alo, ahi, blo, bhi) -> every longest match of the range that range came from.
+        self._inherited: dict[tuple[int, int, int, int], _LongestMatches] = {}
+
+    def find_longest_match(
+        self, alo: int = 0, ahi: int | None = None, blo: int = 0, bhi: int | None = None
+    ) -> difflib.Match:
+        a, b = self.a, self.b
+        ahi = len(a) if ahi is None else ahi
+        bhi = len(b) if bhi is None else bhi
+        inherited = self._inherited.pop((alo, ahi, blo, bhi), None)
+        width = REMOVED_VALUES_KGRAM
+        if (ahi - alo) + (bhi - blo) <= REMOVED_VALUES_DIRECT_DIFF_CHARS or (
+            min(ahi - alo, bhi - blo) < width
+        ):
+            match = difflib.SequenceMatcher(
+                None, a[alo:ahi], b[blo:bhi], autojunk=False
+            ).find_longest_match()
+            return difflib.Match(alo + match.a, blo + match.b, match.size)
+        if inherited is not None:
+            settled = self._settled(alo, ahi, blo, bhi, inherited)
+            if settled is not None:
+                return settled
+        # Coarse to fine. A round looking for matches of at least `need` characters
+        # samples `a` every `step` characters and checks the `span` characters after each
+        # sample (step + span - 1 == need, so every such match covers one whole window).
+        # The first round that finds any has found all of them, the longest included.
+        need = min(ahi - alo, bhi - blo)
+        # Index hits the rounds may visit before the range counts as repetitive and
+        # goes to the automaton instead. Prose visits under 1% of the range's length
+        # (300 KB transcript: 0.6%), a register of distinct names up to ~60%, and N
+        # identical rows N x N: a quarter of the range bounds the work either way.
+        self._budget = ((ahi - alo) + (bhi - blo)) // 4
+        while True:
+            span = max(width, need * 3 // 4)
+            longest = self._sampled_longest(alo, ahi, blo, bhi, need - span + 1, span)
+            if longest is None:
+                longest = _removed_values_automaton_longest(a, b, alo, ahi, blo, bhi)
+                if not longest:
+                    return difflib.Match(alo, blo, 0)
+            if longest:
+                settled = self._settled(alo, ahi, blo, bhi, longest)
+                if settled is not None:  # always: every match found lies in the range
+                    return settled
+                break
+            if need == width:
+                break
+            need = max(width, need * 3 // 4)
+        # No common run as long as one k-gram: rare in a transcript, left to difflib.
+        match = difflib.SequenceMatcher(
+            None, a[alo:ahi], b[blo:bhi], autojunk=False
+        ).find_longest_match()
+        return difflib.Match(alo + match.a, blo + match.b, match.size)
+
+    def _settled(
+        self, alo: int, ahi: int, blo: int, bhi: int, longest: _LongestMatches
+    ) -> difflib.Match | None:
+        """The earliest of ``longest`` lying whole in the range (smallest ``i``, then
+        ``j``), or ``None`` if none does; ``longest`` is handed on to the range after it."""
+        best: tuple[int, int, int] | None = None
+        for text, (starts_a, starts_b) in longest.items():
+            size = len(text)
+            n = bisect.bisect_left(starts_a, alo)
+            m = bisect.bisect_left(starts_b, blo)
+            if n == len(starts_a) or m == len(starts_b):
+                continue
+            i, j = starts_a[n], starts_b[m]
+            if (
+                i + size <= ahi
+                and j + size <= bhi
+                and (best is None or (i, j) < best[:2])
+            ):
+                best = (i, j, size)
+        if best is None:
+            return None
+        i, j, size = best
+        if i + size < ahi and j + size < bhi:  # difflib skips an empty range
+            self._inherited[(i + size, ahi, j + size, bhi)] = longest
+        return difflib.Match(i, j, size)
+
+    def _sampled_longest(
+        self, alo: int, ahi: int, blo: int, bhi: int, step: int, span: int
+    ) -> _LongestMatches | None:
+        """The longest of the maximal matches covering ``a[p:p + span]`` for a sample ``p``
+        taken every ``step`` characters (``span`` >= KGRAM), all of them, grouped by text;
+        empty if none is ``step + span - 1`` characters long. Every match that long
+        covers such a window, so the result is the range's longest matches whenever it is
+        not empty."""
+        a, b = self.a, self.b
+        width = REMOVED_VALUES_KGRAM
+        need = step + span - 1
+        if self._kgrams is None:
+            self._kgrams = {}
+            for q in range(len(b) - width + 1):
+                self._kgrams.setdefault(b[q : q + width], []).append(q)
+        # A match of step + span - 1 characters starts at most step - 1 before some sample
+        # p and so covers the window a[p:p + span]. Every k-gram in that window recurs in
+        # `b` at the same offset, so look up the RAREST of a few: a repeated name has
+        # hundreds of index hits, the window around it rarely more than one. Four evenly
+        # spread k-grams are enough to find a rare one; more only cost lookups.
+        offsets = sorted({(span - width) * n // 3 for n in range(4)})
+        best = need
+        found: dict[str, tuple[set[int], set[int]]] = {}
+        # Diagonal j - i -> end of the match met on it, so a later window inside that
+        # match is not extended again. Only ends past the current window matter, so the
+        # map is pruned as `p` advances.
+        reached: dict[int, int] = {}
+        prune_at = 1024
+        for p in range(alo, ahi - span + 1, step):
+            hits: list[int] = []
+            offset = 0
+            for o in offsets:
+                hit = self._kgrams.get(a[p + o : p + o + width])
+                if not hit:
+                    hits = []
+                    break
+                if not hits or len(hit) < len(hits):
+                    hits, offset = hit, o
+            if not hits:
+                continue
+            if len(reached) > prune_at:
+                reached = {d: end for d, end in reached.items() if end >= p + span}
+                prune_at = max(1024, 2 * len(reached))
+            low = bisect.bisect_left(hits, blo + offset)
+            high = bisect.bisect_right(hits, bhi - span + offset)
+            self._budget -= high - low
+            if self._budget < 0:
+                return None  # repetitive: rows x rows pairs; see the automaton
+            for q in hits[low:high]:
+                q -= offset
+                if reached.get(q - p, -1) >= p + span:
+                    continue  # this window sits inside a match already met
+                if span > width and a[p : p + span] != b[q : q + span]:
+                    continue  # no match covers the whole window here
+                ahead = _removed_values_common_run(a, b, p, q, min(ahi - p, bhi - q))
+                short = best - ahead  # characters the match must still have before p
+                if short > 0 and (
+                    short > min(p - alo, q - blo)
+                    or a[p - short : p] != b[q - short : q]
+                ):
+                    continue  # shorter than the longest met so far
+                back = _removed_values_common_run(a, b, p, q, -min(p - alo, q - blo))
+                size = back + ahead
+                reached[q - p] = p - back + size
+                if size > best or not found:
+                    best, found = size, {}
+                text = a[p - back : p + ahead]
+                starts_a, starts_b = found.setdefault(text, (set(), set()))
+                starts_a.add(p - back)
+                starts_b.add(q - back)
+        return {
+            text: (sorted(starts_a), sorted(starts_b))
+            for text, (starts_a, starts_b) in found.items()
+        }
+
+
+def _removed_values_automaton_longest(
+    a: str, b: str, alo: int, ahi: int, blo: int, bhi: int
+) -> _LongestMatches:
+    """Every longest common substring of ``a[alo:ahi]`` and ``b[blo:bhi]``, with ALL its
+    starts in each: the search for a range too repetitive to sample (identical rows meet
+    rows x rows index hits). Linear in the range whatever repeats in it.
+
+    A suffix automaton of the ``b`` range (the standard construction: per state its
+    longest length, suffix link and transitions) is walked with ``a``; at each end ``e``
+    the walk holds the longest substring ending at ``e`` that occurs in the ``b`` range.
+    Every occurrence in ``a`` of a longest common substring ends where that length
+    peaks, so the peaks give all its starts in ``a``; ``str.find`` gives those in ``b``.
+    A state keeps its first transition in two arrays and only the rest in a dict (most
+    states have one), so the automaton of a 400 KB range takes ~15 MB, not ~230 MB.
+    Empty if nothing matches."""
+    size = 2 * (bhi - blo) + 2  # an automaton has fewer states than that
+    length = array("i", [0]) * size
+    link = array("i", [-1]) * size
+    first = array("i", [-1]) * size  # code point of the first transition, -1: none
+    target = array("i", [0]) * size
+    more: dict[int, dict[int, int]] = {}
+
+    def step(state: int, code: int) -> int:
+        if first[state] == code:
+            return target[state]
+        rest = more.get(state)
+        return -1 if rest is None else rest.get(code, -1)
+
+    def add(state: int, code: int, to: int) -> None:
+        if first[state] in (code, -1):
+            first[state], target[state] = code, to
+        else:
+            more.setdefault(state, {})[code] = to
+
+    states, last = 1, 0
+    for ch in b[blo:bhi]:
+        code = ord(ch)
+        cur, states = states, states + 1
+        length[cur], link[cur] = length[last] + 1, 0
+        state = last
+        while state != -1 and step(state, code) == -1:
+            add(state, code, cur)
+            state = link[state]
+        if state != -1:
+            nxt = step(state, code)
+            if length[state] + 1 == length[nxt]:
+                link[cur] = nxt
+            else:
+                clone, states = states, states + 1
+                length[clone], link[clone] = length[state] + 1, link[nxt]
+                first[clone], target[clone] = first[nxt], target[nxt]
+                if nxt in more:
+                    more[clone] = dict(more[nxt])
+                while state != -1 and step(state, code) == nxt:
+                    add(state, code, clone)
+                    state = link[state]
+                link[nxt] = link[cur] = clone
+        last = cur
+    state = run = best = 0
+    ends: list[int] = []
+    for e in range(alo, ahi):
+        code = ord(a[e])
+        while state and step(state, code) == -1:
+            state = link[state]
+            run = length[state]
+        nxt = step(state, code)
+        if nxt != -1:
+            state, run = nxt, run + 1
+        if run > best:
+            best, ends = run, [e]
+        elif run == best and best:
+            ends.append(e)
+    starts_a: dict[str, list[int]] = {}
+    for e in ends:
+        starts_a.setdefault(a[e + 1 - best : e + 1], []).append(e + 1 - best)
+    longest: _LongestMatches = {}
+    for text, starts in starts_a.items():
+        starts_b: list[int] = []
+        at = b.find(text, blo, bhi)
+        while at != -1:
+            starts_b.append(at)
+            at = b.find(text, at + 1, bhi)
+        longest[text] = (starts, starts_b)
+    return longest
+
+
+def _removed_values_common_run(a: str, b: str, p: int, q: int, limit: int) -> int:
+    """Length of the common run of ``a`` and ``b`` from ``p``/``q`` forward (``limit`` > 0)
+    or backward (``limit`` < 0), at most ``abs(limit)``. Compared in doubling slices, so a
+    50 KB unchanged stretch costs a dozen C-speed comparisons rather than a Python loop,
+    and a short run one."""
+    run, chunk, cap = 0, 32, abs(limit)
+    while run < cap:
+        size = min(chunk, cap - run)
+        if limit > 0:
+            x, y = a[p + run : p + run + size], b[q + run : q + run + size]
+        else:
+            x = a[p - run - size : p - run][::-1]
+            y = b[q - run - size : q - run][::-1]
+        if x != y:
+            low, high = 0, size  # x[:low] == y[:low], x[:high] != y[:high]
+            while high - low > 1:
+                mid = (low + high) // 2
+                if x[:mid] == y[:mid]:
+                    low = mid
+                else:
+                    high = mid
+            return run + low
+        run += size
+        chunk *= 2
+    return run
 
 
 def _digits(text: str) -> str:
