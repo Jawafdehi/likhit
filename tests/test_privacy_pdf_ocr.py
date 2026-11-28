@@ -1754,3 +1754,19 @@ def test_two_values_with_the_same_digits_split_differently_each_need_their_own_p
         "खाता 1111111112 कमल\nखाता 2222222222 कमल"
     )
     assert place_guided_values(values, [page]).placed == 2
+
+
+def test_a_whole_print_and_another_splits_parts_place_both_in_either_order():
+    # One whole print of the shared digits plus the first list's own parts: the
+    # parts place the first list and the whole print the second, whichever comes
+    # first in the transcript. With only the whole print, one stays held.
+    first, second = "111111111; 22222222222", "1111111112; 2222222222"
+    both = "खाता 11111111122222222222 कमल\nखाता 111111111 कमल\nखाता 22222222222 कमल"
+    whole_only = "खाता 11111111122222222222 कमल"
+    for values in (
+        [("BANK-ACCOUNT-NO", first), ("BANK-ACCOUNT-NO", second)],
+        [("BANK-ACCOUNT-NO", second), ("BANK-ACCOUNT-NO", first)],
+    ):
+        assert place_guided_values(values, [_loc(both)]).placed == 2
+        held = place_guided_values(values, [_loc(whole_only)])
+        assert held.placed == 1 and len(held.unplaced) == 1

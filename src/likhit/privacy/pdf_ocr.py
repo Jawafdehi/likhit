@@ -1269,18 +1269,28 @@ class GuidedNeeds:
             if part in self.needed and part not in self.parts:
                 pool[part] = max(0, pool[part] - used[part])
         for key, occurrences in self.splits.items():
-            # A whole print places any occurrence of the key; give them to the
-            # occurrences that are not lists first (nothing else can place those),
-            # and place each remaining one from ITS OWN split's parts.
-            rest = sorted(occurrences, key=lambda split: split is not None)[used[key] :]
-            for split in rest:
-                if split is None:
-                    continue
+            # A whole print places any occurrence of the key, so it goes to the
+            # occurrences that are not lists first (nothing else can place those).
+            # Every other occurrence is placed from ITS OWN split's parts. Try each
+            # list occurrence rather than a fixed slice: which list the whole print
+            # covers must not depend on transcript order (two lists of one key may
+            # split differently, and only one may have its parts printed). Spend
+            # parts only on the occurrences the whole prints cannot cover, so they
+            # stay available to other values.
+            whole_credit = used[key]
+            lists = [split for split in occurrences if split is not None]
+            spare_whole = max(0, whole_credit - (len(occurrences) - len(lists)))
+            wanted = max(0, len(lists) - spare_whole)
+            from_parts = 0
+            for split in lists:
+                if from_parts >= wanted:
+                    break
                 per_occurrence = Counter(split)
                 if all(pool[part] >= n for part, n in per_occurrence.items()):
                     for part, n in per_occurrence.items():
                         pool[part] -= n
-                    used[key] += 1
+                    from_parts += 1
+            used[key] = min(len(occurrences), whole_credit + from_parts)
         return used
 
     def pending(self, used: Counter) -> list[str]:
