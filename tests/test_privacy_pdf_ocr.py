@@ -1614,3 +1614,18 @@ def test_a_part_inside_another_values_credited_print_does_not_place_a_composite(
     for first, second in ((whole, garbled), (garbled, whole)):
         placement = place_guided_values(values, [first], lambda s=second: s)
         assert [kind for kind, _ in placement.unplaced] == ["PHONE-NO"]
+
+
+def test_a_repeated_part_is_debited_once_per_copy_across_reads():
+    # The transcript needs `A` on its own and the list `A/A`; the page prints only the
+    # pair (two copies of `A`). One read sees `A … A`, the other the pair whole: two
+    # prints place one of the two values, never both (that would need three).
+    values = [("PHONE-NO", PHONE_A), ("PHONE-NO", f"{PHONE_A}/{PHONE_A}")]
+    parts = _loc(f"मो. {PHONE_A} कमल {PHONE_A} कमल")
+    whole = _loc(f"मो. {PHONE_A}/{PHONE_A} कमल कमल")
+    for first, second in ((parts, whole), (whole, parts)):
+        placement = place_guided_values(values, [first], lambda s=second: s)
+        assert placement.placed <= 1 and placement.unplaced
+    # Three separate prints place both.
+    three = _loc(f"मो. {PHONE_A}/{PHONE_A} कमल कमल\nफोन {PHONE_A}")
+    assert place_guided_values(values, [three]).placed == 2

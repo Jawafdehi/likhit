@@ -1154,40 +1154,47 @@ class GuidedNeeds:
         for one in reads:
             extra = {key: best[key] - one.whole[key] for key in best}
             for key, n in one.whole.items():
-                n -= sum(extra.get(other, 0) for other in before.get(key, ()))
+                for other, weight in before.get(key, ()):
+                    n -= weight * extra.get(other, 0)
                 whole[key] = max(whole[key], n)
             for part, n in one.supply.items():
-                n -= sum(extra.get(other, 0) for other in around.get(part, ()))
+                for other, weight in around.get(part, ()):
+                    n -= weight * extra.get(other, 0)
                 supply[part] = max(supply[part], n)
         return GuidedRead(+whole, +supply)
 
-    def _overlapping(self) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    def _overlapping(
+        self,
+    ) -> tuple[dict[str, list[tuple[str, int]]], dict[str, list[tuple[str, int]]]]:
         """``(before, around)``: for each composite and each standalone value that is
         a part, the EARLIER required values (in :meth:`read`'s order: composites first)
         whose print can share its digits; for each part, every required value whose
         print can. Two values share digits when a part of one is in, or contains, a
-        part of the other. Both empty without composites: such values are combined
-        exactly as before."""
+        part of the other. Each comes with its weight: how many of the other value's
+        parts overlap this one -- one print of `A/A` holds two prints of `A`. Both
+        empty without composites: such values are combined exactly as before."""
 
         if self._overlap is None:
             order = [*self.parts, *(k for k in self.needed if k not in self.parts)]
             units = {key: self.parts.get(key, [key]) for key in order}
 
-            def share(mine: list[str], theirs: list[str]) -> bool:
-                return any(a in b or b in a for a in mine for b in theirs)
+            def weight(mine: list[str], theirs: list[str]) -> int:
+                return sum(any(a in b or b in a for a in mine) for b in theirs)
 
             before = {
                 key: [
-                    other for other in order[:rank] if share(units[key], units[other])
+                    (other, w)
+                    for other in order[:rank]
+                    if (w := weight(units[key], units[other]))
                 ]
                 for rank, key in enumerate(order)
                 if key in self.parts or key in self.part_values
             }
             around = {
                 part: [
-                    other
+                    (other, w)
                     for other in order
-                    if other != part and share([part], units[other])
+                    if other != part and (w := weight([part], units[other]))
                 ]
                 for part in self.part_values
             }
