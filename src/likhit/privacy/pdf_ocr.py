@@ -1031,6 +1031,7 @@ class GuidedNeeds:
     sample: dict
     parts: dict
     part_values: dict
+    _overlap: tuple | None = field(default=None, repr=False)
 
     @classmethod
     def of(cls, values: list[tuple[str, str]]) -> GuidedNeeds:
@@ -1064,6 +1065,7 @@ class GuidedNeeds:
 
         whole: Counter[str] = Counter()
         taken: list[tuple[int, int]] = []
+        credited: dict[str, list[tuple[int, int]]] = {}
         # Composites first, so every other value knows the prints they took.
         for key in dict.fromkeys([*self.parts, *keys]):
             spans = locate_value(loc, self.sample[key][1], approximate=False)
@@ -1078,12 +1080,14 @@ class GuidedNeeds:
                     if not any(s < te and ts < e for ts, te in taken)
                 ]
                 taken += spans
-            elif taken:
-                spans = [
-                    (s, e)
-                    for s, e in spans
-                    if not any(s < te and ts < e for ts, te in taken)
-                ]
+            else:
+                if taken:
+                    spans = [
+                        (s, e)
+                        for s, e in spans
+                        if not any(s < te and ts < e for ts, te in taken)
+                    ]
+                credited[key] = spans
             if spans:
                 whole[key] = len(spans)
         supply: Counter[str] = Counter()
@@ -1093,12 +1097,20 @@ class GuidedNeeds:
             for part in part_keys:
                 if part in supply:
                     continue
+                # Nor inside another value's credited print: the phone-shaped group of
+                # an account written `123456789 / 9800000001` is that account's.
+                own = taken + [
+                    span
+                    for other, spans in credited.items()
+                    if other != part
+                    for span in spans
+                ]
                 spans = [
                     (s, e)
                     for s, e in locate_value(
                         loc, self.part_values[part], approximate=False
                     )
-                    if not any(s < te and ts < e for ts, te in taken)
+                    if not any(s < te and ts < e for ts, te in own)
                 ]
                 for s, e in spans:
                     boxes += span_rects(loc, s, e)
@@ -1106,63 +1118,81 @@ class GuidedNeeds:
         return GuidedRead(whole, +supply)
 
     def second_read_keys(self, pending: list[str]) -> list[str]:
-        """What a second read must count: the pending values, and every value that is
-        also a part of a composite. :meth:`combine` may debit a part's first-read
-        credit for a composite the second read newly sees whole; only the second
-        read's own count of it can then keep a separate print credited."""
+        """What a second read must count: the pending values -- and, when there are
+        composites, every value. :meth:`combine` may debit a part's first-read credit
+        for a composite the second read newly sees whole, and a part counts only
+        outside other values' credited prints; only a read that counts them all can
+        keep a separate print credited and an overlapping one excluded."""
 
-        return list(
-            dict.fromkeys(
-                [*pending, *(k for k in self.needed if k in self.part_values)]
-            )
-        )
+        if not self.parts:
+            return pending
+        # Every value, not just the parts: a part is counted only outside the prints
+        # other values are credited with (:meth:`read`), so the read must see them.
+        return list(dict.fromkeys([*pending, *self.needed]))
 
     def combine(self, reads: list[GuidedRead]) -> GuidedRead:
         """Several reads of the same page as one: never more than the page shows.
 
         Per key, the best read: different values (and different parts) are different
-        prints, and one print found by two reads is still one print. A read's counts
-        of a part -- as a part, and as a standalone value -- are first debited for
-        every whole match of a composite the other reads add: a print another read saw
-        whole (`A/B`) may be the very print this read saw as `A … B`, and one print
-        must not place two required occurrences. A read's whole match of a composite
-        is debited likewise for every composite sharing a part with it that the other
-        reads add (`A/B` here, `B/C` there, one printed `A/B/C`).
+        prints, and one print found by two reads is still one print. But a print one
+        read credits to one value may be the very print another read credits to an
+        OVERLAPPING one: `A/B` whole here, `A … B` as parts there; `A/B` here, `B/C`
+        there, one printed `A/B/C`; an account `123456789 / A` here, the part `A`
+        there. So, as :meth:`read` gives a print to the first value that claims it,
+        a read's count of a later overlapping value -- and of every part -- is first
+        debited by what the other reads add, beyond this read, to the earlier values
+        (:meth:`_overlapping`). One print never places two required occurrences.
         """
 
         best: Counter[str] = Counter()
         for one in reads:
-            for key in self.parts:
-                best[key] = max(best[key], one.whole[key])
-        # Composites sharing a part can overlap in one print (`A/B`, `B/C` in `A/B/C`).
-        sharing = {
-            key: [
-                other
-                for other, other_parts in self.parts.items()
-                if other != key and set(part_keys) & set(other_parts)
-            ]
-            for key, part_keys in self.parts.items()
-        }
+            for key, n in one.whole.items():
+                best[key] = max(best[key], n)
+        before, around = self._overlapping()
         whole: Counter[str] = Counter()
         supply: Counter[str] = Counter()
         for one in reads:
-            extra = {key: best[key] - one.whole[key] for key in self.parts}
-            debit: Counter[str] = Counter()
-            for key, part_keys in self.parts.items():
-                if extra[key] > 0:
-                    for part in part_keys:
-                        debit[part] += extra[key]
+            extra = {key: best[key] - one.whole[key] for key in best}
             for key, n in one.whole.items():
-                if key in self.parts:
-                    # ...so a composite this read saw whole is debited for every
-                    # overlapping composite the other reads add.
-                    n -= sum(extra[other] for other in sharing[key])
-                else:
-                    n -= debit[key]
+                n -= sum(extra.get(other, 0) for other in before.get(key, ()))
                 whole[key] = max(whole[key], n)
             for part, n in one.supply.items():
-                supply[part] = max(supply[part], n - debit[part])
+                n -= sum(extra.get(other, 0) for other in around.get(part, ()))
+                supply[part] = max(supply[part], n)
         return GuidedRead(+whole, +supply)
+
+    def _overlapping(self) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+        """``(before, around)``: for each composite and each standalone value that is
+        a part, the EARLIER required values (in :meth:`read`'s order: composites first)
+        whose print can share its digits; for each part, every required value whose
+        print can. Two values share digits when a part of one is in, or contains, a
+        part of the other. Both empty without composites: such values are combined
+        exactly as before."""
+
+        if self._overlap is None:
+            order = [*self.parts, *(k for k in self.needed if k not in self.parts)]
+            units = {key: self.parts.get(key, [key]) for key in order}
+
+            def share(mine: list[str], theirs: list[str]) -> bool:
+                return any(a in b or b in a for a in mine for b in theirs)
+
+            before = {
+                key: [
+                    other for other in order[:rank] if share(units[key], units[other])
+                ]
+                for rank, key in enumerate(order)
+                if key in self.parts or key in self.part_values
+            }
+            around = {
+                part: [
+                    other
+                    for other in order
+                    if other != part and share([part], units[other])
+                ]
+                for part in self.part_values
+            }
+            self._overlap = (before, around)
+        return self._overlap
 
     def allocate(self, whole: Counter, supply: Counter) -> Counter:
         """Occurrences placed per key: whole matches first, then composites from parts.

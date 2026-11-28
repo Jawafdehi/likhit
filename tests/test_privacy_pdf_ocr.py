@@ -1590,3 +1590,27 @@ def test_a_standalone_part_keeps_its_print_document_wide(tmp_path, stub_ocr):
         transcript=transcript,
     )
     assert dry.guided_values == 2 and dry.guided_placed == 2 and dry.unplaced == []
+
+
+def test_a_part_inside_another_values_credited_print_does_not_place_a_composite():
+    # An account written `123456789 / 9800000001` (one value, placed whole) and the
+    # list `9800000001/9800000002`; the page prints the account and a lone
+    # `9800000002`. The account's phone-shaped group is the account's, not a print of
+    # the phone: the list stays held.
+    account = f"123456789 / {PHONE_A}"
+    values = [("BANK-ACCOUNT-NO", account), ("PHONE-NO", f"{PHONE_A}/{PHONE_B}")]
+    loc = _loc(f"खाता नं. {account} कमल कमल\nफोन {PHONE_B}")
+    placement = place_guided_values(values, [loc])
+    assert placement.placed == 1
+    assert [kind for kind, _ in placement.unplaced] == ["PHONE-NO"]
+    # With a print of its own, the phone is placed too.
+    loc = _loc(f"खाता नं. {account} कमल कमल\nफोन {PHONE_B} र {PHONE_A}")
+    assert place_guided_values(values, [loc]).placed == 2
+
+    # ...and across reads: one read credits the account, another (which garbles the
+    # account's first group) sees only the phone-shaped group. Still one print.
+    garbled = _loc(f"खाता नं. 12345678O / {PHONE_A} कमल कमल\nफोन {PHONE_B}")
+    whole = _loc(f"खाता नं. {account} कमल कमल\nफोन {PHONE_B}")
+    for first, second in ((whole, garbled), (garbled, whole)):
+        placement = place_guided_values(values, [first], lambda s=second: s)
+        assert [kind for kind, _ in placement.unplaced] == ["PHONE-NO"]
