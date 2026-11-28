@@ -1056,21 +1056,29 @@ class GuidedNeeds:
         value), and the parts of each composite value it does not show whole often
         enough. Every exact match's boxes are appended to ``boxes``.
 
-        A part is counted only outside the composites' whole matches on this read:
-        those already credit the whole value, and the same digits must not credit it
-        again part by part.
+        A part -- and any other value -- is counted only outside the composites' whole
+        matches on this read: those already credit the composite, and the same digits
+        must not credit a second required value (a standalone `A` inside the one
+        printed `A/B`).
         """
 
         whole: Counter[str] = Counter()
         taken: list[tuple[int, int]] = []
-        for key in dict.fromkeys([*keys, *self.parts]):
+        # Composites first, so every other value knows the prints they took.
+        for key in dict.fromkeys([*self.parts, *keys]):
             spans = locate_value(loc, self.sample[key][1], approximate=False)
             for s, e in spans:
                 boxes += span_rects(loc, s, e)
-            if spans:
-                whole[key] = len(spans)
             if key in self.parts:
                 taken += spans
+            elif taken:
+                spans = [
+                    (s, e)
+                    for s, e in spans
+                    if not any(s < te and ts < e for ts, te in taken)
+                ]
+            if spans:
+                whole[key] = len(spans)
         supply: Counter[str] = Counter()
         for key, part_keys in self.parts.items():
             if whole[key] >= self.needed[key]:
@@ -1094,16 +1102,17 @@ class GuidedNeeds:
         """Several reads of the same page as one: never more than the page shows.
 
         Per key, the best read: different values (and different parts) are different
-        prints, and one print found by two reads is still one print. A read's part
-        count is first debited for every whole match of a composite the other reads
-        add: a print another read saw whole (`A/B`) may be the very print this read saw
-        as parts (`A … B`), and one print must not place two required occurrences.
+        prints, and one print found by two reads is still one print. A read's counts
+        of a part -- as a part, and as a standalone value -- are first debited for
+        every whole match of a composite the other reads add: a print another read saw
+        whole (`A/B`) may be the very print this read saw as `A … B`, and one print
+        must not place two required occurrences.
         """
 
         whole: Counter[str] = Counter()
         for one in reads:
-            for key, n in one.whole.items():
-                whole[key] = max(whole[key], n)
+            for key in self.parts:
+                whole[key] = max(whole[key], one.whole[key])
         supply: Counter[str] = Counter()
         for one in reads:
             debit: Counter[str] = Counter()
@@ -1112,9 +1121,12 @@ class GuidedNeeds:
                 if extra > 0:
                     for part in part_keys:
                         debit[part] += extra
+            for key, n in one.whole.items():
+                if key not in self.parts:
+                    whole[key] = max(whole[key], n - debit[key])
             for part, n in one.supply.items():
                 supply[part] = max(supply[part], n - debit[part])
-        return GuidedRead(whole, +supply)
+        return GuidedRead(+whole, +supply)
 
     def allocate(self, whole: Counter, supply: Counter) -> Counter:
         """Occurrences placed per key: whole matches first, then composites from parts.

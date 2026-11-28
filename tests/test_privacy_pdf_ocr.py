@@ -1515,3 +1515,21 @@ def test_a_slash_joined_account_is_never_placed_from_its_halves():
     loc = _loc("कमल कमल रकम 123456789 कमल कमल कमल\nरकम 987654321 बुझेको")
     placement = place_guided_values(values, [loc])
     assert placement.placed == 0 and len(placement.unplaced) == 1
+
+
+def test_a_standalone_value_inside_the_one_printed_composite_is_not_placed_again():
+    # The transcript needs `A` on its own and `A/B`; the page prints `A/B` once. That
+    # one print places the composite; the standalone `A` has no print of its own.
+    values = [("PHONE-NO", PHONE_A), ("PHONE-NO", f"{PHONE_A}/{PHONE_B}")]
+    whole = _loc(f"मो. {PHONE_A}/{PHONE_B} कमल कमल")
+    placement = place_guided_values(values, [whole])
+    assert placement.placed == 1 and len(placement.unplaced) == 1
+    # A second, separate print of `A` places it.
+    both = _loc(f"मो. {PHONE_A}/{PHONE_B} कमल कमल\nफोन {PHONE_A}")
+    placement = place_guided_values(values, [both])
+    assert placement.placed == 2 and placement.unplaced == []
+    # One read sees the print whole, the other as `A … B`: still one print.
+    parts = _loc(f"मो. {PHONE_A} कमल {PHONE_B} कमल कमल")
+    for first, second in ((whole, parts), (parts, whole)):
+        placement = place_guided_values(values, [first], lambda s=second: s)
+        assert placement.placed == 1 and len(placement.unplaced) == 1
