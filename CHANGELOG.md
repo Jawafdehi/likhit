@@ -21,6 +21,20 @@ This file starts at 0.1.8. For earlier releases, see the
 
 ### Fixed
 
+- **`redact_pdf(..., transcript=...)` places list-valued and line-wrapped values instead of
+  holding the document** (JAW-167). A removed value the transcript wrote as a list -- two
+  phone numbers joined by `/`, `,`, `;`, a danda, a space or `वा`/`र`, two bank accounts
+  joined by `र`, two addresses -- is placed part by part when the page does not print it
+  joined; it counts as placed only when every part is found exactly, and one printed digit
+  run is never credited to two required occurrences, not even when two reads see the same
+  print once as parts and once whole. Parts must each be a whole value of the kind (a
+  full phone number, an account of 9+ digits, an address); accounts split only at a list
+  word, a comma or a semicolon, never at a slash, space or hyphen that may sit inside one
+  account. Values wrapped over two lines are matched in both the text layer and the OCR
+  read: an address at any character (with or without a hyphen at the break; not when the
+  next line continues it, e.g. `.np`), a number of 6+ digits at one bare line break when
+  no other digit is glued to either end. The post-redaction verification and residue
+  check are unchanged.
 - **`redact_pdf(..., transcript=...)` no longer spends minutes diffing a long transcript.**
   `transcript_removed_values` diffed the whole transcript against its redaction with one
   character-level `difflib.SequenceMatcher`, whose `find_longest_match` is quadratic:

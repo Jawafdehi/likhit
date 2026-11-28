@@ -349,6 +349,13 @@ A transcript **without** anchors is whole-document guidance: each value may be o
 and must be found there as often as the transcript has it; what the first read misses is
 looked for again with the second read on every rasterised page, and a miss is journalled
 with `page: null`.
+A value the transcript wrote as a list (two phone numbers `98…/98…` or `98… वा 98…`, two
+accounts joined by `र`, two addresses) that the page never prints joined is placed part by
+part, and counts as placed only when **every** part is found exactly (each part a whole
+phone number, account or address; accounts split only at a list word, a comma or a
+semicolon; a value whose pieces would be fragments stays whole). A value wrapped over two
+lines -- an address at any character, a long number at a line break, either with or
+without a hyphen at the break -- is matched whole.
 That is what keeps a published PDF from showing what the published transcript hides; an
 approximate OCR match still gets a box, but never counts as proof. After the save, every
 raster page of the **written** file is OCR'd again and anything the rules still find is
