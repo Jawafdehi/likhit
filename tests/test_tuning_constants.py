@@ -455,6 +455,20 @@ _PINNED: dict[tuple[str, str], tuple[float, str]] = {
         "guided values shorter than this must follow a label-shaped token to match: 4-5 digit citizenship numbers exist (JAW-51 gold set) but a bare 4-5 digit run is usually a year, amount or file number",
     ),
     (
+        "likhit/privacy/pdf_ocr.py",
+        "REMOVED_VALUES_DIRECT_DIFF_CHARS",
+    ): (
+        2000,
+        "largest range (both sides together) whose longest common substring transcript_removed_values leaves to difflib's own quadratic search: one such call stays in the low milliseconds, while a whole-document search took 20-45 min per court order in production backfills; the answer is identical either way (tests/test_privacy_removed_values_diff.py)",
+    ),
+    (
+        "likhit/privacy/pdf_ocr.py",
+        "REMOVED_VALUES_KGRAM",
+    ): (
+        16,
+        "length of the redacted-text substrings indexed for the longest-common-substring search: long enough that most index lookups hit once (a 300 KB transcript diffs in under a second), short enough that a name or label between two placeholders still holds one; a range with no common 16-character run falls back to difflib",
+    ),
+    (
         "likhit/privacy/pdf.py",
         "UNICODE_DEVANAGARI_RATIO",
     ): (

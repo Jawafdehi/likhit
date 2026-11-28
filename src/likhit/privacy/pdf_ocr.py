@@ -28,6 +28,7 @@ that needs it says so by raising :class:`OcrUnavailable` rather than returning n
 
 from __future__ import annotations
 
+import bisect
 import difflib
 import html
 import re
@@ -71,6 +72,18 @@ GUIDED_MIN_DIGITS = 3
 #: A guided value shorter than this must sit right after something label-shaped (see
 #: :data:`_SHORT_VALUE_LABEL`) to be matched. Citizenship numbers of 4-5 digits exist.
 GUIDED_SHORT_VALUE_DIGITS = 6
+
+#: Largest range (both sides' characters together) whose longest common substring
+#: :func:`transcript_removed_values` leaves to difflib's own search, which costs roughly the
+#: square of the range: 2,000 keeps one call in the low milliseconds. Bigger ranges use the
+#: k-gram index (:class:`_TranscriptMatcher`); the answer is the same either way.
+REMOVED_VALUES_DIRECT_DIFF_CHARS = 2000
+
+#: Length of the substrings of the redacted text indexed for that search. Long enough that
+#: a k-gram is rare in a transcript (few index hits per sample), short enough that the
+#: unchanged text between two placeholders -- a name, a label -- still holds one; a range
+#: with no common run this long falls back to difflib's search.
+REMOVED_VALUES_KGRAM = 16
 
 _TO_ASCII_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 _PLACEHOLDER = re.compile(r"\[REDACTED:([A-Z-]+)\]")
@@ -236,16 +249,19 @@ def transcript_removed_values(text: str, mode: RedactionMode) -> list[tuple[str,
     only when the text path left one placeholder per value: a span it removed as ONE value
     (``खाता नं. १२३४५६ / ७८९०१२``) stays whole, never cut into fragments that could match
     unrelated numbers on the page.
+
+    The diff is difflib's, opcode for opcode, but its longest-match search is the
+    near-linear one of :class:`_TranscriptMatcher`: difflib's own took 20-45 minutes on a
+    long court order.
     """
 
     redacted = redact_text(text, mode=mode).text
     if redacted == text:
         return []
-    matcher = difflib.SequenceMatcher(None, text, redacted, autojunk=False)
     # difflib splits a value wherever its characters happen to recur in the placeholder;
     # merge non-equal opcodes separated by an equal run of 3 characters or fewer.
     groups: list[list] = [[]]
-    for op in matcher.get_opcodes():
+    for op in _TranscriptMatcher(text, redacted).get_opcodes():
         if op[0] == "equal" and op[2] - op[1] > 3:
             groups.append([])
         else:
@@ -280,6 +296,202 @@ def transcript_removed_values(text: str, mode: RedactionMode) -> list[tuple[str,
                 continue
         values.append((kinds[0], value))
     return values
+
+
+class _TranscriptMatcher(difflib.SequenceMatcher):
+    """``SequenceMatcher(None, a, b, autojunk=False)`` with the same opcodes, but fast.
+
+    🛑 ``difflib``'s :meth:`find_longest_match` walks, for each character of ``a``, every
+    position of that character in ``b``: quadratic on a transcript, which is tens to
+    hundreds of KB over a ~60-letter alphabet. Production backfills spent 20-45 minutes per
+    court order inside it. Only that method is replaced; ``get_matching_blocks`` and
+    ``get_opcodes`` are difflib's own and recurse exactly as before. The replacement returns
+    the SAME match difflib's would -- the longest common substring of the two ranges, ties
+    going to the smallest ``i``, then the smallest ``j`` -- so the opcodes are identical,
+    not merely similar: :func:`transcript_removed_values` turns them into the values a PDF
+    must burn, and "close" would mean a different set of boxes.
+
+    * A range of at most :data:`REMOVED_VALUES_DIRECT_DIFF_CHARS` characters goes to
+      difflib itself, on slices (its answer does not depend on where the range sits).
+    * A larger one is searched through an index of ``b``'s
+      :data:`REMOVED_VALUES_KGRAM`-character substrings: sampling ``a`` every ``step``
+      characters meets every common substring of at least ``step + KGRAM - 1`` characters,
+      so once the longest one met is that long, it is the longest there is. ``b`` is ``a``
+      with a few spans swapped for placeholders, so the unchanged stretches are long and a
+      handful of samples settle a range.
+    * A table whose every row lost a value is the opposite: hundreds of equally long
+      matches, and difflib's recursion peels one row per call. The search that settled a
+      range found every match at least as long as its answer; those are handed to the two
+      sub-ranges, and a sub-range whose best inherited match is still that long takes it
+      without searching again (any longer or equally long match in it would be one of them).
+    """
+
+    def __init__(self, a: str, b: str) -> None:
+        super().__init__(None, a, b, autojunk=False)
+        self._kgrams: dict[str, list[int]] | None = None
+        #: (alo, ahi, blo, bhi) -> (need, matches): every maximal match of at least
+        #: `need` characters in that range, as (i, diagonal j - i, size).
+        self._inherited: dict[tuple, tuple[int, list[tuple[int, int, int]]]] = {}
+
+    def find_longest_match(
+        self, alo: int = 0, ahi: int | None = None, blo: int = 0, bhi: int | None = None
+    ) -> difflib.Match:
+        a, b = self.a, self.b
+        ahi = len(a) if ahi is None else ahi
+        bhi = len(b) if bhi is None else bhi
+        inherited = self._inherited.pop((alo, ahi, blo, bhi), None)
+        width = REMOVED_VALUES_KGRAM
+        if (ahi - alo) + (bhi - blo) <= REMOVED_VALUES_DIRECT_DIFF_CHARS or (
+            min(ahi - alo, bhi - blo) < width
+        ):
+            match = difflib.SequenceMatcher(
+                None, a[alo:ahi], b[blo:bhi], autojunk=False
+            ).find_longest_match()
+            return difflib.Match(alo + match.a, blo + match.b, match.size)
+        if inherited is not None:
+            need, matches = inherited
+            clipped = _removed_values_clip(matches, alo, ahi, blo, bhi, need)
+            if clipped:
+                return self._settled(alo, ahi, blo, bhi, clipped)
+        # Coarse to fine. A round looking for matches of at least `need` characters
+        # samples `a` every `step` characters and checks the `span` characters after each
+        # sample (step + span - 1 == need, so every such match covers one whole window).
+        # The first round that finds any has found all of them, the longest included.
+        need = min(ahi - alo, bhi - blo)
+        while True:
+            span = max(width, need * 3 // 4)
+            matches = self._sampled_matches(alo, ahi, blo, bhi, need - span + 1, span)
+            if matches:
+                return self._settled(alo, ahi, blo, bhi, matches)
+            if need == width:
+                break
+            need = max(width, need * 3 // 4)
+        # No common run as long as one k-gram: rare in a transcript, left to difflib.
+        match = difflib.SequenceMatcher(
+            None, a[alo:ahi], b[blo:bhi], autojunk=False
+        ).find_longest_match()
+        return difflib.Match(alo + match.a, blo + match.b, match.size)
+
+    def _settled(
+        self,
+        alo: int,
+        ahi: int,
+        blo: int,
+        bhi: int,
+        matches: list[tuple[int, int, int]],
+    ) -> difflib.Match:
+        """The longest of ``matches`` (ties to the smallest ``i``, then ``j``), which hold
+        every match in the range at least as long as their shortest.
+
+        The ones as long as the answer go to the two sub-ranges: in a table where every
+        row lost a value, every row's match ties with it and settles the next call.
+        """
+        i, diagonal, size = min(matches, key=lambda m: (-m[2], m[0], m[0] + m[1]))
+        j = i + diagonal
+        longest = [m for m in matches if m[2] == size]
+        self._inherited[(alo, i, blo, j)] = (size, longest)
+        self._inherited[(i + size, ahi, j + size, bhi)] = (size, longest)
+        return difflib.Match(i, j, size)
+
+    def _sampled_matches(
+        self, alo: int, ahi: int, blo: int, bhi: int, step: int, span: int
+    ) -> list[tuple[int, int, int]]:
+        """Maximal matches ``(i, j - i, size)`` covering ``a[p:p + span]`` for a sample
+        ``p`` taken every ``step`` characters (``span`` >= KGRAM): every match of at least
+        ``step + span - 1`` characters, and none shorter."""
+        a, b = self.a, self.b
+        width = REMOVED_VALUES_KGRAM
+        need = step + span - 1
+        if self._kgrams is None:
+            self._kgrams = {}
+            for q in range(len(b) - width + 1):
+                self._kgrams.setdefault(b[q : q + width], []).append(q)
+        # A match of step + span - 1 characters starts at most step - 1 before some sample
+        # p and so covers the window a[p:p + span]. Every k-gram in that window recurs in
+        # `b` at the same offset, so look up the RAREST of a few: a repeated name has
+        # hundreds of index hits, the window around it rarely more than one. Four evenly
+        # spread k-grams are enough to find a rare one; more only cost lookups.
+        offsets = sorted({(span - width) * n // 3 for n in range(4)})
+        matches: list[tuple[int, int, int]] = []
+        reached: dict[int, int] = {}  # diagonal j - i -> end of the match met on it
+        for p in range(alo, ahi - span + 1, step):
+            hits: list[int] = []
+            offset = 0
+            for o in offsets:
+                found = self._kgrams.get(a[p + o : p + o + width])
+                if not found:
+                    hits = []
+                    break
+                if not hits or len(found) < len(hits):
+                    hits, offset = found, o
+            if not hits:
+                continue
+            low = bisect.bisect_left(hits, blo + offset)
+            high = bisect.bisect_right(hits, bhi - span + offset)
+            for q in hits[low:high]:
+                q -= offset
+                if reached.get(q - p, -1) >= p + span:
+                    continue  # this window sits inside a match already met
+                if span > width and a[p : p + span] != b[q : q + span]:
+                    continue  # no match covers the whole window here
+                ahead = _removed_values_common_run(a, b, p, q, min(ahi - p, bhi - q))
+                short = need - ahead  # characters the match must still have before p
+                if short > 0 and (
+                    short > min(p - alo, q - blo)
+                    or a[p - short : p] != b[q - short : q]
+                ):
+                    continue  # shorter than this round looks for
+                back = _removed_values_common_run(a, b, p, q, -min(p - alo, q - blo))
+                size = back + ahead
+                reached[q - p] = p - back + size
+                matches.append((p - back, q - p, size))
+        return matches
+
+
+def _removed_values_clip(
+    matches: list[tuple[int, int, int]],
+    alo: int,
+    ahi: int,
+    blo: int,
+    bhi: int,
+    need: int,
+) -> list[tuple[int, int, int]]:
+    """``matches`` cut to the range, keeping those still at least ``need`` long. A match
+    maximal in a range stays maximal in a sub-range once cut at its edges."""
+    clipped = []
+    for i, diagonal, size in matches:
+        start = max(i, alo, blo - diagonal)
+        end = min(i + size, ahi, bhi - diagonal)
+        if end - start >= need:
+            clipped.append((start, diagonal, end - start))
+    return clipped
+
+
+def _removed_values_common_run(a: str, b: str, p: int, q: int, limit: int) -> int:
+    """Length of the common run of ``a`` and ``b`` from ``p``/``q`` forward (``limit`` > 0)
+    or backward (``limit`` < 0), at most ``abs(limit)``. Compared in doubling slices, so a
+    50 KB unchanged stretch costs a dozen C-speed comparisons rather than a Python loop,
+    and a short run one."""
+    run, chunk, cap = 0, 32, abs(limit)
+    while run < cap:
+        size = min(chunk, cap - run)
+        if limit > 0:
+            x, y = a[p + run : p + run + size], b[q + run : q + run + size]
+        else:
+            x = a[p - run - size : p - run][::-1]
+            y = b[q - run - size : q - run][::-1]
+        if x != y:
+            low, high = 0, size  # x[:low] == y[:low], x[:high] != y[:high]
+            while high - low > 1:
+                mid = (low + high) // 2
+                if x[:mid] == y[:mid]:
+                    low = mid
+                else:
+                    high = mid
+            return run + low
+        run += size
+        chunk *= 2
+    return run
 
 
 def _digits(text: str) -> str:
