@@ -693,6 +693,22 @@ def _email_pattern(needle: str) -> str:
     return wrap.join(re.escape(ch) for ch in needle)
 
 
+def _email_continues_before(text: str, start: int) -> bool:
+    """Whether the line before ``start`` ends with an address mark (`.-_%+@`), so the
+    address at ``start`` may be the tail of a longer one wrapped there. Walks the whole
+    whitespace run back (a fixed window would be outrun by a long one)."""
+
+    i = start
+    while i and text[i - 1] in " \t":
+        i -= 1
+    if not i or text[i - 1] != "\n":
+        return False
+    i -= 1
+    while i and text[i - 1] in " \t":
+        i -= 1
+    return bool(i) and text[i - 1] in ".-_%+@"
+
+
 def locate_value(
     loc: Locator, value: str, *, approximate: bool
 ) -> list[tuple[int, int]]:
@@ -709,11 +725,17 @@ def locate_value(
         needle, hay = value.strip().lower(), loc.text.lower()
         # A whole address, not part of a longer one (`ann@` inside `joann@`, or a
         # domain that continues): only then does a match prove THIS value is placed.
+        # ...nor one that continues over a line break: a next line starting with an
+        # address mark (`ann@example.com` ⏎ `.np`), or a previous line ending with one
+        # (`jo-` ⏎ `ann@example.com`). Either may be a longer, different address.
         spans = [
             (m.start(), m.end())
             for m in re.finditer(
-                rf"(?<![\w.%+-]){_email_pattern(needle)}(?![\w-]|\.\w)", hay
+                rf"(?<![\w.%+-]){_email_pattern(needle)}"
+                r"(?![\w-]|\.\w|[ \t]*\n[ \t]*[.\-_%+@])",
+                hay,
             )
+            if not _email_continues_before(hay, m.start())
         ]
         if not spans and approximate:
             local = needle.split("@")[0]
@@ -931,12 +953,27 @@ def _composite_email_part(part: str) -> bool:
     return bool(_COMPOSITE_EMAIL.fullmatch(part))
 
 
-#: Kind -> (shape every part must have, whether a hyphen may separate two values).
-_COMPOSITE_KINDS: dict[str, tuple[Callable[[str], bool], bool]] = {
-    "PHONE-NO": (_composite_phone_part, True),
-    "TABLE-PHONE-NO": (_composite_phone_part, True),
-    "BANK-ACCOUNT-NO": (_composite_account_part, True),
-    "EMAIL": (_composite_email_part, False),
+#: Two bank accounts are told apart only by a list word or a comma (`… र …`, `…, …`):
+#: a slash, a space or a hyphen can sit inside ONE account (`१२३४५६७८९ / ९८७६५४३२१` may
+#: be one number written in two groups), and no shape check can tell the two apart.
+_COMPOSITE_ACCOUNT_SPLIT = re.compile(
+    r"\s*[,;]\s*|\s+(?:वा|र|तथा|एवं|and|or|&)\s+", re.I
+)
+
+#: Kind -> (shape every part must have, the separators tried in turn). A phone number
+#: and an address are whole values by shape (a ten-digit `9…` mobile is never half of
+#: one), so any list separator splits them; an account needs a list word or a comma.
+_COMPOSITE_KINDS: dict[str, tuple[Callable[[str], bool], tuple[re.Pattern, ...]]] = {
+    "PHONE-NO": (
+        _composite_phone_part,
+        (_COMPOSITE_STRONG_SPLIT, _COMPOSITE_ANY_SPLIT, _COMPOSITE_HYPHEN_SPLIT),
+    ),
+    "TABLE-PHONE-NO": (
+        _composite_phone_part,
+        (_COMPOSITE_STRONG_SPLIT, _COMPOSITE_ANY_SPLIT, _COMPOSITE_HYPHEN_SPLIT),
+    ),
+    "BANK-ACCOUNT-NO": (_composite_account_part, (_COMPOSITE_ACCOUNT_SPLIT,)),
+    "EMAIL": (_composite_email_part, (_COMPOSITE_STRONG_SPLIT, _COMPOSITE_ANY_SPLIT)),
 }
 
 
@@ -951,17 +988,15 @@ def composite_parts(kind: str, value: str) -> list[str] | None:
     🛑 Every part must be a whole value of ``kind`` on its own (a full phone number, an
     account of 9+ digits, an address), or there is no split: a part that is only a
     fragment of one value (`खाता नं. १२३४५६ / ७८९०१२`) would earn exact credit on an
-    unrelated amount while the value stays visible. Kinds without a part shape (IDs,
+    unrelated amount while the value stays visible. An account is split only at a list
+    word or a comma (:data:`_COMPOSITE_ACCOUNT_SPLIT`). Kinds without a part shape (IDs,
     dates) are never split: a slash or space inside them is part of the value.
     """
 
     spec = _COMPOSITE_KINDS.get(kind)
     if spec is None:
         return None
-    is_part, hyphen_splits = spec
-    splitters = [_COMPOSITE_STRONG_SPLIT, _COMPOSITE_ANY_SPLIT]
-    if hyphen_splits:
-        splitters.append(_COMPOSITE_HYPHEN_SPLIT)
+    is_part, splitters = spec
     for splitter in splitters:
         parts = [
             part.strip(" \t\n.:()")
@@ -972,6 +1007,15 @@ def composite_parts(kind: str, value: str) -> list[str] | None:
         if len(parts) >= 2 and all(is_part(part) for part in parts):
             return parts
     return None
+
+
+@dataclass
+class GuidedRead:
+    """Exact occurrences one read (or a sound combination of reads) shows of a page:
+    ``whole`` per value key, ``supply`` per part key (:meth:`GuidedNeeds.read`)."""
+
+    whole: Counter
+    supply: Counter
 
 
 @dataclass
@@ -1007,40 +1051,70 @@ class GuidedNeeds:
                 part_values.setdefault(match_key(part), part)
         return cls(needed, sample, parts, part_values)
 
-    def short_composites(self, whole: Counter) -> list[str]:
-        """Composite keys their whole matches leave short."""
+    def read(self, loc: Locator, keys: list[str], boxes: list[fitz.Rect]) -> GuidedRead:
+        """What ONE read shows: exact whole matches of ``keys`` (and of every composite
+        value), and the parts of each composite value it does not show whole often
+        enough. Every exact match's boxes are appended to ``boxes``.
 
-        return [key for key in self.parts if whole[key] < self.needed[key]]
+        A part is counted only outside the composites' whole matches on this read:
+        those already credit the whole value, and the same digits must not credit it
+        again part by part.
+        """
 
-    def whole_spans(self, loc: Locator) -> list[tuple[int, int]]:
-        """Exact spans of every composite value written whole on ``loc``."""
-
-        return [
-            span
-            for key in self.parts
-            for span in locate_value(loc, self.sample[key][1], approximate=False)
-        ]
-
-    def locate_parts(
-        self, loc: Locator, keys: list[str], taken: list[tuple[int, int]]
-    ) -> dict[str, list[tuple[int, int]]]:
-        """Exact spans of the parts of composite ``keys`` on ``loc``, outside ``taken``
-        (the composites' whole matches: those already credit the whole value, and the
-        same digits must not credit it again part by part)."""
-
-        found: dict[str, list[tuple[int, int]]] = {}
-        for key in keys:
-            for part in self.parts[key]:
-                if part in found:
+        whole: Counter[str] = Counter()
+        taken: list[tuple[int, int]] = []
+        for key in dict.fromkeys([*keys, *self.parts]):
+            spans = locate_value(loc, self.sample[key][1], approximate=False)
+            for s, e in spans:
+                boxes += span_rects(loc, s, e)
+            if spans:
+                whole[key] = len(spans)
+            if key in self.parts:
+                taken += spans
+        supply: Counter[str] = Counter()
+        for key, part_keys in self.parts.items():
+            if whole[key] >= self.needed[key]:
+                continue
+            for part in part_keys:
+                if part in supply:
                     continue
-                found[part] = [
+                spans = [
                     (s, e)
                     for s, e in locate_value(
                         loc, self.part_values[part], approximate=False
                     )
                     if not any(s < te and ts < e for ts, te in taken)
                 ]
-        return found
+                for s, e in spans:
+                    boxes += span_rects(loc, s, e)
+                supply[part] = len(spans)
+        return GuidedRead(whole, +supply)
+
+    def combine(self, reads: list[GuidedRead]) -> GuidedRead:
+        """Several reads of the same page as one: never more than the page shows.
+
+        Per key, the best read: different values (and different parts) are different
+        prints, and one print found by two reads is still one print. A read's part
+        count is first debited for every whole match of a composite the other reads
+        add: a print another read saw whole (`A/B`) may be the very print this read saw
+        as parts (`A … B`), and one print must not place two required occurrences.
+        """
+
+        whole: Counter[str] = Counter()
+        for one in reads:
+            for key, n in one.whole.items():
+                whole[key] = max(whole[key], n)
+        supply: Counter[str] = Counter()
+        for one in reads:
+            debit: Counter[str] = Counter()
+            for key, part_keys in self.parts.items():
+                extra = whole[key] - one.whole[key]
+                if extra > 0:
+                    for part in part_keys:
+                        debit[part] += extra
+            for part, n in one.supply.items():
+                supply[part] = max(supply[part], n - debit[part])
+        return GuidedRead(whole, +supply)
 
     def allocate(self, whole: Counter, supply: Counter) -> Counter:
         """Occurrences placed per key: whole matches first, then composites from parts.
@@ -1120,29 +1194,17 @@ def place_guided_values(
     # `९८५-१२३-४५६७` are one needle to locate_value, so as two groups each would credit
     # the same single occurrence on the page and a garbled second copy would pass.
     needs = GuidedNeeds.of(values)
-    whole: Counter[str] = Counter()
-    taken: dict[int, list[tuple[int, int]]] = {id(loc): [] for loc in locators}
-    for key in needs.needed:
-        value = needs.sample[key][1]
-        counts = []
-        for loc in locators:
-            spans = locate_value(loc, value, approximate=False)
-            for s, e in spans:
-                boxes += span_rects(loc, s, e)
-            if key in needs.parts:
-                taken[id(loc)] += spans
-            if loc in credit:
-                counts.append(len(spans))
-        whole[key] = max(counts, default=0)
-    supply: Counter[str] = Counter()
-    short = needs.short_composites(whole)
+    reads = []
     for loc in locators:
-        for part, spans in needs.locate_parts(loc, short, taken[id(loc)]).items():
-            for s, e in spans:
-                boxes += span_rects(loc, s, e)
-            if loc in credit:
-                supply[part] = max(supply[part], len(spans))
-    used = needs.allocate(whole, supply)
+        one = needs.read(loc, list(needs.needed), boxes)
+        if loc in credit:
+            reads.append(one)
+    # 🛑 The best of the reads, never their sum: every read sees the same page, so one
+    # physical occurrence found by each is still one occurrence. Summing let a value
+    # printed twice pass when both reads found only the same copy and the other was
+    # garbled.
+    seen = needs.combine(reads)
+    used = needs.allocate(seen.whole, seen.supply)
     pending = needs.pending(used)
     if approximate_boxes:
         for key in pending:
@@ -1154,23 +1216,9 @@ def place_guided_values(
 
     loc2 = second_read() if pending and second_read is not None else None
     if loc2 is not None:
-        # 🛑 The best of the two reads, never their sum: both reads see the same
-        # page, so one physical occurrence found by each is still one occurrence.
-        # Summing let a value printed twice pass when both reads found only the
-        # same copy and the other was garbled.
-        for key in pending:
-            spans = locate_value(loc2, needs.sample[key][1], approximate=False)
-            for s, e in spans:
-                boxes += span_rects(loc2, s, e)
-            whole[key] = max(whole[key], len(spans))
-        composites = [key for key in pending if key in needs.parts]
-        if composites:
-            found = needs.locate_parts(loc2, composites, needs.whole_spans(loc2))
-            for part, spans in found.items():
-                for s, e in spans:
-                    boxes += span_rects(loc2, s, e)
-                supply[part] = max(supply[part], len(spans))
-        used = needs.allocate(whole, supply)
+        reads.append(needs.read(loc2, pending, boxes))
+        seen = needs.combine(reads)
+        used = needs.allocate(seen.whole, seen.supply)
         # The same contract as the first read: approximate boxes only when asked.
         if approximate_boxes:
             for key in needs.pending(used):
@@ -1178,18 +1226,14 @@ def place_guided_values(
                     for s, e in locate_value(loc2, needle, approximate=True):
                         boxes += span_rects(loc2, s, e)
     placed_by_key = Counter(
-        {
-            key: min(whole[key], need)
-            for key, need in needs.needed.items()
-            if min(whole[key], need)
-        }
+        {key: min(seen.whole[key], need) for key, need in needs.needed.items()}
     )
     return GuidedPlacement(
         boxes,
         sum(used.values()),
         needs.unplaced(used),
-        placed_by_key,
-        Counter({part: n for part, n in supply.items() if n}),
+        +placed_by_key,
+        Counter(seen.supply),
     )
 
 

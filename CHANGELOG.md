@@ -26,11 +26,13 @@ This file starts at 0.1.8. For earlier releases, see the
   phone numbers joined by `/`, `,`, `;`, a danda, a space or `वा`/`र`, two bank accounts
   joined by `र`, two addresses -- is placed part by part when the page does not print it
   joined; it counts as placed only when every part is found exactly, and one printed part
-  is never credited to two required occurrences. Parts must each be a whole value of the
-  kind (a full phone number, an account of 9+ digits, an address), so one account's
-  six-digit halves are still never split. Values wrapped over two lines are matched in
+  is never credited to two required occurrences, not even when two reads see the same
+  print once as parts and once whole. Parts must each be a whole value of the kind (a
+  full phone number, an account of 9+ digits, an address); accounts split only at a list
+  word or a comma, never at a slash, space or hyphen that may sit inside one account. Values wrapped over two lines are matched in
   both the text layer and the OCR read: an address at any character (with or without a
-  hyphen at the break), a number of 6+ digits at one bare line break. The post-redaction
+  hyphen at the break; not when the next line continues it, e.g. `.np`), a number of 6+
+  digits at one bare line break. The post-redaction
   verification and residue check are unchanged.
 - **`redact_pdf(..., transcript=...)` no longer spends minutes diffing a long transcript.**
   `transcript_removed_values` diffed the whole transcript against its redaction with one

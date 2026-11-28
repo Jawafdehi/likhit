@@ -1189,10 +1189,8 @@ def test_composite_parts_split_lists_of_whole_values_only():
         f"{PHONE_A}-{PHONE_B}",
     ):
         assert composite_parts("PHONE-NO", joined) == [PHONE_A, PHONE_B], joined
-    assert composite_parts("BANK-ACCOUNT-NO", f"{ACCOUNT_A} र {ACCOUNT_B}") == [
-        ACCOUNT_A,
-        ACCOUNT_B,
-    ]
+    for joined in (f"{ACCOUNT_A} र {ACCOUNT_B}", f"{ACCOUNT_A}, {ACCOUNT_B}"):
+        assert composite_parts("BANK-ACCOUNT-NO", joined) == [ACCOUNT_A, ACCOUNT_B]
     assert composite_parts("EMAIL", f"{EMAIL}, ram@example.org") == [
         EMAIL,
         "ram@example.org",
@@ -1207,6 +1205,11 @@ def test_composite_parts_split_lists_of_whole_values_only():
         ("BANK-ACCOUNT-NO", "१२३४५६ / ७८९०१२"),
         ("BANK-ACCOUNT-NO", "0123 4567 8901"),
         ("BANK-ACCOUNT-NO", f"{ACCOUNT_A} 2 {ACCOUNT_B}"),
+        # A slash, space or hyphen may sit inside ONE account: never split there,
+        # however long the halves are.
+        ("BANK-ACCOUNT-NO", "123456789 / 987654321"),
+        ("BANK-ACCOUNT-NO", "123456789 987654321"),
+        ("BANK-ACCOUNT-NO", "123456789-987654321"),
         ("CITIZENSHIP-NO", "१२३४५/६७८९०"),
         ("EMAIL", EMAIL),
     ):
@@ -1375,10 +1378,18 @@ def test_an_email_wrapped_at_its_hyphen_is_matched_whole():
     # The address's own hyphen dropped at the break is a different address; a longer
     # address continuing on the next line is not this one.
     assert locate_value(_loc(f"{local}@{head}\n{tail}"), EMAIL, approximate=False) == []
-    assert (
-        locate_value(_loc(f"{local}@{head}-\n{tail}.np"), EMAIL, approximate=False)
-        == []
-    )
+    for page in (
+        f"{local}@{head}-\n{tail}.np",
+        f"{local}@{head}-\n{tail}\n.np",  # the longer address wraps again
+        f"{EMAIL}\n.np",
+        f"{EMAIL} \n  -np मा",
+        f"jo-\n{EMAIL}",  # ...or started on the line before
+        f"jo.  \n   {local}@{head}-\n{tail}",
+    ):
+        assert locate_value(_loc(page), EMAIL, approximate=False) == [], page
+    # A line break followed by ordinary text still ends the address.
+    assert len(locate_value(_loc(f"{EMAIL}\nमा पठाइयो"), EMAIL, approximate=False)) == 1
+    assert len(locate_value(_loc(f"इमेल:\n{EMAIL}"), EMAIL, approximate=False)) == 1
 
 
 def test_a_wrapped_email_on_a_unicode_page_is_placed_and_deleted(tmp_path):
@@ -1449,3 +1460,58 @@ def test_a_composite_part_the_first_read_misses_is_found_by_the_second(
     assert (
         _black_share(tmp_path / "out.pdf", _value_rect(loc2, PHONE_B), page_no=1) > 0.9
     )
+
+
+def test_one_print_read_as_parts_then_whole_places_one_occurrence_not_two():
+    # The transcript needs `A/B` twice; the page prints one legible pair and one garbled.
+    # The first read sees the legible pair as `A … B` (parts), the second as `A/B`
+    # (whole). That is still one print: one occurrence placed, the other held.
+    values = [("PHONE-NO", f"{PHONE_A}/{PHONE_B}")] * 2
+    garbled = "मो. 98000000O1/98000000O2"
+    first = _loc(f"मो. {PHONE_A} कमल {PHONE_B}\n{garbled}")
+    second = _loc(f"मो. {PHONE_A}/{PHONE_B}\n{garbled}")
+    placement = place_guided_values(values, [first], lambda: second)
+    assert placement.placed == 1 and len(placement.unplaced) == 1
+    # ...and the same pair read whole first, as parts second.
+    placement = place_guided_values(values, [second], lambda: first)
+    assert placement.placed == 1 and len(placement.unplaced) == 1
+
+
+def test_one_print_read_as_parts_then_whole_is_one_occurrence_document_wide(
+    tmp_path, stub_ocr
+):
+    data, _ = _scan_of([PLAIN_LINE])
+    src = tmp_path / "scan.pdf"
+    src.write_bytes(data)
+    garbled = "मो. 98000000O1/98000000O2"
+    reads = Counter()
+
+    def ocr(page, _calls):
+        reads[page.number] += 1
+        if reads[page.number] == 1:
+            return _loc(f"मो. {PHONE_A} कमल {PHONE_B}\n{garbled}")
+        return _loc(f"मो. {PHONE_A}/{PHONE_B}\n{garbled}")
+
+    stub_ocr(ocr)
+    transcript = f"सम्पर्क नं. {PHONE_A}/{PHONE_B}\n\nसम्पर्क नं. {PHONE_A}/{PHONE_B}\n"
+    dry = redact_pdf(
+        src,
+        None,
+        mode=RedactionMode.STRICT,
+        dry_run=True,
+        ocr=True,
+        transcript=transcript,
+    )
+    assert dry.guided_values == 2 and dry.guided_placed == 1
+    assert [(u["page"], u["kind"]) for u in dry.unplaced] == [(None, "PHONE-NO")]
+
+
+def test_a_slash_joined_account_is_never_placed_from_its_halves():
+    # One account written `123456789 / 987654321` (one placeholder): each nine-digit
+    # half printed elsewhere on the page must not place it.
+    text = "खाता नं. 123456789 / 987654321 रहेको"
+    values = transcript_removed_values(text, RedactionMode.STRICT)
+    assert [kind for kind, _ in values] == ["BANK-ACCOUNT-NO"]
+    loc = _loc("कमल कमल रकम 123456789 कमल कमल कमल\nरकम 987654321 बुझेको")
+    placement = place_guided_values(values, [loc])
+    assert placement.placed == 0 and len(placement.unplaced) == 1

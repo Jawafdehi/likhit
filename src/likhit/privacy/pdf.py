@@ -821,21 +821,20 @@ class _Guidance:
         if not self.document or not self.values:
             return
         needs = pdf_ocr.GuidedNeeds.of(self.values)
-        per_page: dict[int, Counter[str]] = {
-            n: Counter(placement.placed_by_key) for n, placement in self.found.items()
-        }
-        per_page_parts: dict[int, Counter[str]] = {
-            n: Counter(placement.part_supply) for n, placement in self.found.items()
+        per_page: dict[int, pdf_ocr.GuidedRead] = {
+            n: pdf_ocr.GuidedRead(
+                Counter(placement.placed_by_key), Counter(placement.part_supply)
+            )
+            for n, placement in self.found.items()
         }
 
         def allocate() -> Counter[str]:
             # Pages are different physical occurrences: their counts add up.
             whole: Counter[str] = Counter()
             supply: Counter[str] = Counter()
-            for counts in per_page.values():
-                whole.update(counts)
-            for counts in per_page_parts.values():
-                supply.update(counts)
+            for seen in per_page.values():
+                whole.update(seen.whole)
+                supply.update(seen.supply)
             return needs.allocate(whole, supply)
 
         used = allocate()
@@ -846,26 +845,17 @@ class _Guidance:
             # uncredited, and re-reading the burned page could never find it -- a
             # correctly redacted document would refuse. Reading the original instead
             # sees what pass 1 burned as well, so per page the count is the BEST of the
-            # two reads, never their sum (as in place_guided_values).
+            # two reads, never their sum (GuidedNeeds.combine, as in
+            # place_guided_values).
             with fitz.open(source) as original:
                 reads = {n: _second_read(original[n])() for n in sorted(raster_pages)}
             boxes: dict[int, list[fitz.Rect]] = {n: [] for n in reads}
-            composites = [key for key in pending if key in needs.parts]
             for n, loc in reads.items():
-                counts = per_page.setdefault(n, Counter())
-                for key in pending:
-                    value = needs.sample[key][1]
-                    spans = pdf_ocr.locate_value(loc, value, approximate=False)
-                    counts[key] = max(counts[key], len(spans))
-                    for s, e in spans:
-                        boxes[n] += pdf_ocr.span_rects(loc, s, e)
-                if composites:
-                    parts = per_page_parts.setdefault(n, Counter())
-                    found = needs.locate_parts(loc, composites, needs.whole_spans(loc))
-                    for part, spans in found.items():
-                        parts[part] = max(parts[part], len(spans))
-                        for s, e in spans:
-                            boxes[n] += pdf_ocr.span_rects(loc, s, e)
+                again = needs.read(loc, pending, boxes[n])
+                first = per_page.get(n)
+                per_page[n] = needs.combine(
+                    [again] if first is None else [first, again]
+                )
             used = allocate()
             for key in needs.pending(used):
                 for n, loc in reads.items():
